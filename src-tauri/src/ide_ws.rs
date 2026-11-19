@@ -38,10 +38,14 @@ struct Inner {
     pending: HashMap<u64, oneshot::Sender<Value>>,
 }
 
+fn home_dir() -> PathBuf {
+    PathBuf::from(std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).unwrap_or_default())
+}
+
 fn lock_dir() -> PathBuf {
     match std::env::var("CLAUDE_CONFIG_DIR") {
         Ok(d) if !d.is_empty() => PathBuf::from(d).join("ide"),
-        _ => PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".claude/ide"),
+        _ => home_dir().join(".claude").join("ide"),
     }
 }
 
@@ -61,10 +65,13 @@ fn remove_stale_locks() {
 }
 
 fn write_lock(port: u16, token: &str, folders: &[String]) -> Option<PathBuf> {
-    use std::os::unix::fs::PermissionsExt;
     let dir = lock_dir();
     std::fs::create_dir_all(&dir).ok()?;
-    let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+    }
     let path = dir.join(format!("{port}.lock"));
     let body = json!({
         "pid": std::process::id(),
@@ -75,7 +82,11 @@ fn write_lock(port: u16, token: &str, folders: &[String]) -> Option<PathBuf> {
     });
     let tmp = dir.join(format!(".{port}.lock.tmp"));
     std::fs::write(&tmp, body.to_string()).ok()?;
-    let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+    }
     std::fs::rename(&tmp, &path).ok()?;
     Some(path)
 }

@@ -3,12 +3,17 @@
 //! JSON frames) and prepends our answer (active file, selection, open tabs) to the prompt.
 //! The frontend keeps the context current via `codex_set_context`.
 use serde_json::{json, Value};
+#[cfg(unix)]
 use std::io::{Read, Write};
+#[cfg(unix)]
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::Mutex;
+#[cfg(unix)]
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, Manager};
+#[cfg(unix)]
+use tauri::Emitter;
+use tauri::{AppHandle, Manager};
 
 #[derive(Default)]
 pub struct CodexState {
@@ -18,6 +23,7 @@ pub struct CodexState {
     status: Mutex<String>,
 }
 
+#[cfg(unix)]
 fn socket_path() -> PathBuf {
     let home = match std::env::var("CODEX_HOME") {
         Ok(h) if !h.is_empty() => PathBuf::from(h),
@@ -26,6 +32,7 @@ fn socket_path() -> PathBuf {
     home.join("ipc").join("ipc.sock")
 }
 
+#[cfg(unix)]
 fn read_frame(s: &mut UnixStream) -> Option<Value> {
     let mut len = [0u8; 4];
     s.read_exact(&mut len).ok()?;
@@ -38,6 +45,7 @@ fn read_frame(s: &mut UnixStream) -> Option<Value> {
     serde_json::from_slice(&buf).ok()
 }
 
+#[cfg(unix)]
 fn write_frame(s: &mut UnixStream, v: &Value) -> std::io::Result<()> {
     let body = serde_json::to_vec(v)?;
     s.write_all(&(body.len() as u32).to_le_bytes())?;
@@ -45,6 +53,7 @@ fn write_frame(s: &mut UnixStream, v: &Value) -> std::io::Result<()> {
     s.flush()
 }
 
+#[cfg(unix)]
 fn serve(app: AppHandle, mut s: UnixStream) {
     let _ = s.set_read_timeout(Some(Duration::from_secs(30)));
     while let Some(msg) = read_frame(&mut s) {
@@ -69,6 +78,7 @@ fn serve(app: AppHandle, mut s: UnixStream) {
     }
 }
 
+#[cfg(unix)]
 /// Binds the socket (unless another IDE, e.g. VS Code with the Codex extension, serves it).
 pub fn start(app: &AppHandle) {
     use std::os::unix::fs::PermissionsExt;
@@ -101,6 +111,12 @@ pub fn start(app: &AppHandle) {
             std::thread::spawn(move || serve(app, s));
         }
     });
+}
+
+/// Codex's IPC uses a Unix domain socket; not available on Windows.
+#[cfg(not(unix))]
+pub fn start(app: &AppHandle) {
+    *app.state::<CodexState>().status.lock().unwrap() = "unsupported".into();
 }
 
 pub fn cleanup(app: &AppHandle) {
