@@ -7,6 +7,7 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import "@xterm/xterm/css/xterm.css";
 import { t } from "./i18n/index.svelte";
+import { q, cd, CLEAR_LINE, IS_MAC } from "./platform";
 
 /** Set by the command registry: true if the key is an app shortcut that should bypass the shell. */
 let terminalKeyFilter: (e: KeyboardEvent) => boolean = () => false;
@@ -29,6 +30,7 @@ export const terms = $state({
 });
 
 interface Instance {
+  kind: "shell" | "run";
   term: Terminal;
   fit: FitAddon;
   el: HTMLDivElement;
@@ -117,6 +119,15 @@ export function newTerminal(cwd: string | null, kind: "shell" | "run" = "shell",
   // Ctrl+Shift+C / V copy & paste like other Linux terminals; Ctrl+C stays SIGINT.
   term.attachCustomKeyEventHandler((e) => {
     if (e.type !== "keydown") return true;
+    // macOS: Cmd+C / Cmd+V like Terminal.app.
+    if (IS_MAC && e.metaKey && !e.ctrlKey && !e.altKey && e.key.toLowerCase() === "c" && term.hasSelection()) {
+      navigator.clipboard.writeText(term.getSelection());
+      return false;
+    }
+    if (IS_MAC && e.metaKey && !e.ctrlKey && !e.altKey && e.key.toLowerCase() === "v") {
+      navigator.clipboard.readText().then((t) => invoke("pty_write", { id, data: t }));
+      return false;
+    }
     if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "c") {
       navigator.clipboard.writeText(term.getSelection());
       return false;
@@ -135,7 +146,7 @@ export function newTerminal(cwd: string | null, kind: "shell" | "run" = "shell",
   const el = document.createElement("div");
   el.className = "term-host";
   el.dataset.tid = id;
-  instances.set(id, { term, fit, el, spawned: false, cwd, pending: [] });
+  instances.set(id, { kind, term, fit, el, spawned: false, cwd, pending: [] });
   // Lowest free number, so a fresh panel starts again at "Terminal 1".
   let n = 1;
   while (terms.tabs.some((t) => t.title === `Terminal ${n}`)) n++;
@@ -159,7 +170,7 @@ export async function attach(id: string, container: HTMLElement, cwdFallback: st
   if (!inst.spawned) {
     inst.spawned = true;
     await leftoversKilled;
-    await invoke("pty_spawn", { id, cwd: inst.cwd ?? cwdFallback, cols: inst.term.cols, rows: inst.term.rows });
+    await invoke("pty_spawn", { id, cwd: inst.cwd ?? cwdFallback, cols: inst.term.cols, rows: inst.term.rows, kind: inst.kind });
     for (const p of inst.pending) await invoke("pty_write", { id, data: p });
     inst.pending = [];
   }
@@ -205,10 +216,10 @@ export function runCommand(cmd: string, cwd: string | null, title = t("common.ru
   terms.visible = true;
   const inst = instances.get(tab.id)!;
   inst.runDir ??= inst.cwd;
-  // Ctrl+U clears whatever is typed at the prompt; cd only when the project dir changed.
+  // Ctrl+U (Esc in cmd.exe) clears whatever is typed at the prompt; cd only when the project dir changed.
   const needCd = cwd && cwd !== inst.runDir;
   if (cwd) inst.runDir = cwd;
-  const line = `\x15${needCd ? `cd ${shellQuote(cwd!)} && ` : ""}${cmd}\r`;
+  const line = `${CLEAR_LINE}${needCd ? `${cd(cwd!)} && ` : ""}${cmd}\r`;
   if (inst.spawned) invoke("pty_write", { id: tab.id, data: line });
   else inst.pending.push(line);
   if (focus) setTimeout(() => focusTerm(tab!.id), 50);
@@ -220,9 +231,8 @@ export function interruptRun() {
   if (tab) invoke("pty_write", { id: tab.id, data: "\x03" });
 }
 
-export function shellQuote(s: string) {
-  return /^[\w@%+=:,./-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`;
-}
+/** Quotes for the Run terminal's shell (POSIX sh, or cmd.exe on Windows). */
+export const shellQuote = q;
 
 export function setHeight(h: number) {
   terms.height = h;

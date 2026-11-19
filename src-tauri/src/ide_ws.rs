@@ -39,7 +39,7 @@ struct Inner {
 }
 
 fn home_dir() -> PathBuf {
-    PathBuf::from(std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).unwrap_or_default())
+    crate::env::home()
 }
 
 fn lock_dir() -> PathBuf {
@@ -57,7 +57,7 @@ fn remove_stale_locks() {
         if p.extension().and_then(|x| x.to_str()) != Some("lock") { continue }
         let Ok(v) = std::fs::read_to_string(&p).map(|t| serde_json::from_str::<Value>(&t).unwrap_or_default()) else { continue };
         if v["ideName"] != "Studio" { continue }
-        let alive = v["pid"].as_u64().is_some_and(|pid| std::path::Path::new(&format!("/proc/{pid}")).exists());
+        let alive = v["pid"].as_u64().is_some_and(|pid| crate::env::pid_alive(pid as u32));
         if !alive {
             let _ = std::fs::remove_file(&p);
         }

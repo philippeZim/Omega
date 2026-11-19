@@ -23,36 +23,31 @@ struct Msg {
 }
 
 pub fn which(cmd: &str) -> Option<PathBuf> {
-    if cmd.contains('/') {
-        let p = PathBuf::from(cmd);
-        return p.is_file().then_some(p);
-    }
-    std::env::var_os("PATH")
-        .and_then(|paths| std::env::split_paths(&paths).map(|p| p.join(cmd)).find(|p| p.is_file()))
+    crate::env::which(cmd)
 }
 
 #[tauri::command]
 pub fn which_cmd(cmd: String) -> Option<String> {
-    which(&cmd).map(|p| p.display().to_string())
+    which(&cmd).map(crate::env::norm)
 }
 
 /// True if `cmd --version` runs successfully (catches rustup proxies without the component).
 #[tauri::command]
 pub fn cmd_works(cmd: String) -> bool {
-    which(&cmd).is_some_and(|exe| Command::new(exe).arg("--version").output().is_ok_and(|o| o.status.success()))
+    which(&cmd).is_some_and(|exe| crate::env::command(exe).arg("--version").output().is_ok_and(|o| o.status.success()))
 }
 
 #[tauri::command]
-pub fn tools_dir(app: AppHandle) -> Result<String, String> {
-    let d = app.path().app_data_dir().map_err(|e| e.to_string())?.join("tools");
+pub fn tools_dir() -> Result<String, String> {
+    let d = crate::env::tools_dir();
     std::fs::create_dir_all(&d).map_err(|e| e.to_string())?;
-    Ok(d.display().to_string())
+    Ok(crate::env::norm(d))
 }
 
 fn command(cmd: &str, args: &[String], cwd: Option<String>, env: Option<HashMap<String, String>>) -> Result<Command, String> {
     let exe = which(cmd).ok_or_else(|| format!("{cmd} nicht gefunden"))?;
-    let mut c = Command::new(exe);
-    c.args(args).current_dir(cwd.filter(|d| std::path::Path::new(d).is_dir()).unwrap_or_else(|| "/".into()));
+    let mut c = crate::env::command(exe);
+    c.args(args).current_dir(cwd.map(PathBuf::from).filter(|d| d.is_dir()).unwrap_or_else(crate::env::home));
     if let Some(env) = env {
         c.envs(env);
     }
@@ -223,7 +218,7 @@ pub async fn run_capture(cmd: String, args: Vec<String>, cwd: Option<String>) ->
 /// Installs a language server into the app's tools dir. Returns the executable path.
 #[tauri::command]
 pub async fn install_server(app: AppHandle, kind: String) -> Result<String, String> {
-    let dir = PathBuf::from(tools_dir(app)?);
+    let dir = PathBuf::from(tools_dir()?);
     tauri::async_runtime::spawn_blocking(move || {
         let run = |cmd: &mut Command| -> Result<(), String> {
             let out = cmd.output().map_err(|e| e.to_string())?;
@@ -238,23 +233,25 @@ pub async fn install_server(app: AppHandle, kind: String) -> Result<String, Stri
                 let target = dir.join(&kind);
                 std::fs::create_dir_all(&target).map_err(|e| e.to_string())?;
                 let pkgs: &[&str] = if kind == "python" { &["basedpyright"] } else { &["typescript", "typescript-language-server"] };
-                run(Command::new(which("npm").ok_or("npm fehlt")?).arg("install").arg("--prefix").arg(&target).arg("--no-fund").arg("--no-audit").args(pkgs))?;
+                run(crate::env::tool("npm")?.arg("install").arg("--prefix").arg(&target).arg("--no-fund").arg("--no-audit").args(pkgs))?;
                 let bin = if kind == "python" { "basedpyright-langserver" } else { "typescript-language-server" };
-                Ok(target.join("node_modules/.bin").join(bin).display().to_string())
+                Ok(crate::env::norm(target.join("node_modules").join(".bin").join(bin)))
             }
             "java" => {
+                let archive = dir.join(".jdtls.tar.gz");
+                crate::tools::download(&app, "jdtls", "https://download.eclipse.org/jdtls/snapshots/jdt-language-server-latest.tar.gz", &archive)?;
                 let target = dir.join("jdtls");
-                std::fs::create_dir_all(&target).map_err(|e| e.to_string())?;
-                let archive = dir.join("jdtls.tar.gz");
-                run(Command::new("curl").args(["-fsSL", "-o"]).arg(&archive).arg("https://download.eclipse.org/jdtls/snapshots/jdt-language-server-latest.tar.gz"))?;
-                run(Command::new("tar").arg("xzf").arg(&archive).arg("-C").arg(&target))?;
+                let _ = std::fs::remove_dir_all(&target);
+                let r = crate::tools::unpack(&archive, "jdtls.tar.gz", &target, "");
                 let _ = std::fs::remove_file(archive);
-                Ok(target.join("bin/jdtls").display().to_string())
+                r?;
+                Ok(crate::env::norm(target))
             }
             "rust" => {
-                run(Command::new(which("rustup").ok_or("rustup fehlt")?).args(["component", "add", "rust-analyzer"]))?;
+                run(crate::env::tool("rustup")?.args(["component", "add", "rust-analyzer"]))?;
                 Ok("rust-analyzer".into())
             }
+            "clangd" => crate::tools::tool_install_blocking(&app, "clangd"),
             _ => Err(format!("Keine automatische Installation für {kind}")),
         }
     })
@@ -262,73 +259,78 @@ pub async fn install_server(app: AppHandle, kind: String) -> Result<String, Stri
     .map_err(|e| e.to_string())?
 }
 
-fn curl(url: &str, out: &std::path::Path) -> Result<(), String> {
-    let o = Command::new("curl").args(["-fsSL", "-o"]).arg(out).arg(url).output().map_err(|e| e.to_string())?;
-    if o.status.success() { Ok(()) } else { Err(format!("Download fehlgeschlagen: {url}\n{}", String::from_utf8_lossy(&o.stderr))) }
-}
-
-fn curl_text(url: &str) -> Result<String, String> {
-    let o = Command::new("curl").args(["-fsSL", "-H", "User-Agent: studio-ide", url]).output().map_err(|e| e.to_string())?;
-    if o.status.success() { Ok(String::from_utf8_lossy(&o.stdout).into()) } else { Err(format!("Download fehlgeschlagen: {url}")) }
-}
-
 /// Installs a debug adapter into the tools dir and returns its main path.
 #[tauri::command]
 pub async fn install_debugger(app: AppHandle, kind: String) -> Result<String, String> {
-    let dir = PathBuf::from(tools_dir(app)?);
+    let dir = PathBuf::from(tools_dir()?);
     tauri::async_runtime::spawn_blocking(move || match kind.as_str() {
         "codelldb" => {
-            let vsix = dir.join("codelldb.vsix");
-            curl("https://github.com/vadimcn/codelldb/releases/latest/download/codelldb-linux-x64.vsix", &vsix)?;
+            let plat = match (std::env::consts::OS, std::env::consts::ARCH) {
+                ("windows", "aarch64") => "win32-arm64",
+                ("windows", _) => "win32-x64",
+                ("macos", "aarch64") => "darwin-arm64",
+                ("macos", _) => "darwin-x64",
+                (_, "aarch64") => "linux-arm64",
+                _ => "linux-x64",
+            };
+            let vsix = dir.join(".codelldb.vsix");
+            crate::tools::download(&app, "codelldb", &format!("https://github.com/vadimcn/codelldb/releases/latest/download/codelldb-{plat}.vsix"), &vsix)?;
             let target = dir.join("codelldb");
             let _ = std::fs::remove_dir_all(&target);
-            let file = std::fs::File::open(&vsix).map_err(|e| e.to_string())?;
-            zip::ZipArchive::new(file).map_err(|e| e.to_string())?.extract(&target).map_err(|e| e.to_string())?;
+            let r = crate::tools::unpack(&vsix, "codelldb.vsix", &target, "");
             let _ = std::fs::remove_file(&vsix);
-            let exe = target.join("extension/adapter/codelldb");
+            r?;
+            let exe = target.join("extension").join("adapter").join(if cfg!(windows) { "codelldb.exe" } else { "codelldb" });
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                for p in [exe.clone(), target.join("extension/lldb/bin/lldb"), target.join("extension/lldb/bin/lldb-server")] {
+                let lldb = target.join("extension").join("lldb").join("bin");
+                for p in [exe.clone(), lldb.join("lldb"), lldb.join("lldb-server"), lldb.join("lldb-argdumper")] {
                     let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755));
                 }
+                if cfg!(target_os = "macos") {
+                    if let Ok(rd) = std::fs::read_dir(&lldb) {
+                        for e in rd.flatten() {
+                            let _ = std::fs::set_permissions(e.path(), std::fs::Permissions::from_mode(0o755));
+                        }
+                    }
+                }
             }
-            Ok(exe.display().to_string())
+            Ok(crate::env::norm(exe))
         }
         "debugpy" => {
             let target = dir.join("debugpy");
             let ok = which("uv").is_some_and(|uv| {
-                Command::new(uv).args(["pip", "install", "--quiet", "--target"]).arg(&target).arg("debugpy").status().is_ok_and(|s| s.success())
+                crate::env::command(uv).args(["pip", "install", "--quiet", "--target"]).arg(&target).arg("debugpy").status().is_ok_and(|s| s.success())
             });
             if !ok {
-                let st = Command::new("python3").args(["-m", "pip", "install", "--quiet", "--target"]).arg(&target).arg("debugpy").status().map_err(|e| e.to_string())?;
+                let py = which("python3").or_else(|| which("python")).ok_or("Python nicht gefunden")?;
+                let st = crate::env::command(py).args(["-m", "pip", "install", "--quiet", "--target"]).arg(&target).arg("debugpy").status().map_err(|e| e.to_string())?;
                 if !st.success() {
                     return Err("debugpy konnte nicht installiert werden".into());
                 }
             }
-            Ok(target.display().to_string())
+            Ok(crate::env::norm(target))
         }
         "jsdebug" => {
-            let release: serde_json::Value = serde_json::from_str(&curl_text("https://api.github.com/repos/microsoft/vscode-js-debug/releases/latest")?).map_err(|e| e.to_string())?;
+            let release: serde_json::Value = serde_json::from_str(&crate::tools::http_text("https://api.github.com/repos/microsoft/vscode-js-debug/releases/latest")?).map_err(|e| e.to_string())?;
             let url = release["assets"]
                 .as_array()
                 .and_then(|a| a.iter().find(|x| x["name"].as_str().is_some_and(|n| n.starts_with("js-debug-dap-") && n.ends_with(".tar.gz"))))
                 .and_then(|x| x["browser_download_url"].as_str())
                 .ok_or("js-debug-Release nicht gefunden")?
                 .to_string();
-            let archive = dir.join("js-debug.tar.gz");
-            curl(&url, &archive)?;
+            let archive = dir.join(".js-debug.tar.gz");
+            crate::tools::download(&app, "jsdebug", &url, &archive)?;
             let _ = std::fs::remove_dir_all(dir.join("js-debug"));
-            let st = Command::new("tar").arg("xzf").arg(&archive).arg("-C").arg(&dir).status().map_err(|e| e.to_string())?;
+            let r = crate::tools::unpack(&archive, "js-debug.tar.gz", &dir, "");
             let _ = std::fs::remove_file(&archive);
-            if !st.success() {
-                return Err("Entpacken fehlgeschlagen".into());
-            }
-            Ok(dir.join("js-debug/src/dapDebugServer.js").display().to_string())
+            r?;
+            Ok(crate::env::norm(dir.join("js-debug").join("src").join("dapDebugServer.js")))
         }
         "javadebug" => {
             let base = "https://repo1.maven.org/maven2/com/microsoft/java/com.microsoft.java.debug.plugin";
-            let meta = curl_text(&format!("{base}/maven-metadata.xml"))?;
+            let meta = crate::tools::http_text(&format!("{base}/maven-metadata.xml"))?;
             let version = meta
                 .split("<release>")
                 .nth(1)
@@ -338,8 +340,8 @@ pub async fn install_debugger(app: AppHandle, kind: String) -> Result<String, St
             let target = dir.join("java-debug");
             std::fs::create_dir_all(&target).map_err(|e| e.to_string())?;
             let jar = target.join(format!("com.microsoft.java.debug.plugin-{version}.jar"));
-            curl(&format!("{base}/{version}/com.microsoft.java.debug.plugin-{version}.jar"), &jar)?;
-            Ok(jar.display().to_string())
+            crate::tools::download(&app, "javadebug", &format!("{base}/{version}/com.microsoft.java.debug.plugin-{version}.jar"), &jar)?;
+            Ok(crate::env::norm(jar))
         }
         _ => Err(format!("Unbekannter Debugger: {kind}")),
     })

@@ -9,6 +9,8 @@ mod collab;
 mod mcp_control;
 mod ide_ws;
 mod codex_ipc;
+mod env;
+mod tools;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -24,6 +26,9 @@ pub fn run() {
         .manage(ide_ws::IdeState::default())
         .manage(codex_ipc::CodexState::default())
         .setup(|app| {
+            use tauri::Manager;
+            let tools = app.path().app_data_dir().map(|d| d.join("tools")).unwrap_or_else(|_| env::home().join(".studio-tools"));
+            env::init(tools);
             // Start the Claude Code IDE server before any terminal spawns (they get its port).
             let h = app.handle().clone();
             if let Err(e) = tauri::async_runtime::block_on(ide_ws::ide_start(h, serde_json::json!([]), vec![])) {
@@ -33,6 +38,10 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            env::platform_info,
+            env::refresh_path,
+            tools::tool_install,
+            tools::tool_installable,
             fs::list_dir,
             fs::read_file,
             fs::write_file,

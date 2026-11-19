@@ -1,5 +1,5 @@
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
-import { basename, extname, fsApi } from "./api";
+import { basename, extname, fsApi, normPath } from "./api";
 import * as ed from "./editor";
 import { modeForExtension, type Mode } from "./modes";
 import { ui } from "./ui.svelte";
@@ -217,6 +217,7 @@ export function activate(id: string) {
 }
 
 export async function openFile(path: string) {
+  path = normPath(path);
   const existing = app.tabs.find((t) => t.path === path);
   if (existing) return activate(existing.id);
   if (isRemotePath(path)) return collabHooks.openRemote(path);
@@ -320,7 +321,7 @@ export async function save(id = app.activeId, forceDialog = false): Promise<bool
   if (!path || forceDialog) {
     const chosen = await saveDialog({ defaultPath: path ?? (app.root ? `${app.root}/${tab.name}` : undefined) });
     if (!chosen) return false;
-    path = chosen;
+    path = normPath(chosen);
   }
   const snapshot = ed.getDoc(tab.id);
   // Never write without a live document (e.g. after an editor reset) – that would empty the file.
@@ -354,6 +355,7 @@ export async function openFolder() {
 export const recentFolders = $state<string[]>(JSON.parse(localStorage.getItem("recentFolders") || "[]"));
 
 export function setRoot(dir: string | null) {
+  if (dir) dir = normPath(dir);
   if (dir) {
     const i = recentFolders.indexOf(dir);
     if (i >= 0) recentFolders.splice(i, 1);

@@ -4,7 +4,7 @@
   import { runner, createProject } from "../lib/code/runner.svelte";
   import { TEMPLATES } from "../lib/code/projects";
   import { app } from "../lib/state.svelte";
-  import { fsApi, dirname, joinPath } from "../lib/api";
+  import { fsApi, dirname, joinPath, normPath } from "../lib/api";
   import { cloneInto, cloneTabRequested } from "../lib/git/git.svelte";
   import { t } from "../lib/i18n/index.svelte";
 
@@ -57,7 +57,7 @@
 
   async function choose() {
     const d = await openDialog({ directory: true, defaultPath: parent || undefined });
-    if (typeof d === "string") parent = d;
+    if (typeof d === "string") parent = normPath(d);
   }
 
   async function submit() {

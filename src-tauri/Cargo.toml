@@ -38,6 +38,8 @@ tiny_http = "0.12.0"
 tokio-tungstenite = "0.28"
 getrandom = "0.4.3"
 futures-util = { version = "0.3.34", default-features = false, features = ["sink"] }
+ureq = "2"
+tar = "0.4"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

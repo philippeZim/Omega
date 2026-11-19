@@ -5,6 +5,8 @@ import { app, activeTab, save, setRoot, openFile, setMode } from "../state.svelt
 import { ui } from "../ui.svelte";
 import { fsApi, joinPath } from "../api";
 import { t } from "../i18n/index.svelte";
+import { ensureTools } from "../tools.svelte";
+import { cd } from "../platform";
 
 export const runner = $state({
   project: null as Project | null,
@@ -31,6 +33,7 @@ export async function runAction(a: Action | null | undefined) {
     if (!v) return;
     cmd = cmd.replace("{}", v);
   }
+  if (!(await ensureTools([...p.needs, ...(a.needs ?? [])], t("tools.purpose.run")))) return;
   await saveAll();
   runCommand(cmd, p.root, `${p.label}: ${a.label.replace("…", "")}`);
   // Dependency changes may alter the project (e.g. new scripts).
@@ -42,22 +45,29 @@ export const stopRun = interruptRun;
 export async function createProject(templateId: string, parent: string, name: string) {
   const tpl = TEMPLATES.find((x) => x.id === templateId);
   if (!tpl) return;
-  const [cmd] = tpl.create(parent, name);
   const dir = joinPath(parent, name);
+  if (await fsApi.exists(dir)) return ui.toast(t("code.existsAlready", { name }), "error");
   if (tpl.id === "empty") {
-    if (await fsApi.exists(dir)) return ui.toast(t("code.existsAlready", { name }), "error");
     await fsApi.createDir(dir);
     runner.newProject = false;
     setRoot(dir);
     refreshProject();
     return;
   }
+  const needs = typeof tpl.needs === "function" ? await tpl.needs() : tpl.needs;
+  if (!(await ensureTools(needs, t("tools.purpose.create")))) return;
+  const plan = await tpl.create(name);
+  if (!plan.inParent) {
+    await fsApi.createDir(dir);
+    for (const [rel, content] of Object.entries(plan.files ?? {})) await fsApi.writeFile(joinPath(dir, rel), content);
+  }
   runner.newProject = false;
   setMode("code");
-  runCommand(cmd, null, t("code.newProjectTitle", { name }));
+  const cmd = plan.cmds.join(" && ");
+  if (cmd) runCommand(plan.inParent ? cmd : `${cd(dir)} && ${cmd}`, plan.inParent ? parent : null, t("code.newProjectTitle", { name }));
   // Open the folder as soon as the project file exists (tools differ in which source files they create).
   for (let i = 0; i < 240; i++) {
-    await new Promise((r) => setTimeout(r, 500));
+    if (i) await new Promise((r) => setTimeout(r, 500));
     if (!(await fsApi.exists(joinPath(dir, tpl.marker)))) continue;
     setRoot(dir);
     // Give the tool a moment to write its source files, then open the best candidate.

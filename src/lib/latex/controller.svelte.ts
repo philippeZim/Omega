@@ -1,4 +1,6 @@
 /** Live LaTeX compilation: debounced compile of the active buffer, diagnostics, SyncTeX lookup, outline. */
+import { ensureTools } from "../tools.svelte";
+import { t } from "../i18n/index.svelte";
 import { invoke } from "@tauri-apps/api/core";
 import { setDiagnostics, type Diagnostic as CmDiagnostic } from "@codemirror/lint";
 import * as ed from "../editor";
@@ -49,6 +51,13 @@ let running = false;
 let again = false;
 let current: { id: string; path: string | null } | null = null;
 let outlineTimer: number | undefined;
+
+/** Installs Tectonic (into Studio's tools folder) and recompiles the current document. */
+export async function installLatex() {
+  if (!(await ensureTools(["tectonic"], t("tools.purpose.latex")))) return;
+  await checkAvailable();
+  if (current) schedule(current.id, current.path, 0);
+}
 
 export async function checkAvailable() {
   latex.available = await invoke<boolean>("latex_available");

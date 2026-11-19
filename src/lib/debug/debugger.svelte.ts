@@ -8,6 +8,8 @@ import { ui } from "../ui.svelte";
 import * as ed from "../editor";
 import { invoke } from "@tauri-apps/api/core";
 import { runCommand, shellQuote } from "../terminal.svelte";
+import { IS_WIN } from "../platform";
+import { normPath } from "../api";
 import { t, i18n, type Key } from "../i18n/index.svelte";
 
 type Json = any;
@@ -77,7 +79,7 @@ async function sendBreakpoints(s: DapSession, path: string) {
   const list = dbg.breakpoints[path] ?? [];
   try {
     const r = await s.request("setBreakpoints", {
-      source: { path, name: path.split("/").pop() },
+      source: { path: IS_WIN ? path.replace(/\//g, "\\") : path, name: path.split("/").pop() },
       breakpoints: list.map((b) => ({ line: b.line, condition: b.condition || undefined })),
       lines: list.map((b) => b.line),
     });
@@ -258,7 +260,7 @@ function onEvent(s: DapSession, ev: Json) {
       break;
     case "breakpoint":
       if (b.breakpoint?.source?.path && b.breakpoint.line) {
-        const list = dbg.breakpoints[b.breakpoint.source.path];
+        const list = dbg.breakpoints[normPath(b.breakpoint.source.path)];
         const bp = list?.find((x) => x.line === b.breakpoint.line);
         if (bp) {
           bp.verified = b.breakpoint.verified;
@@ -272,10 +274,16 @@ function onEvent(s: DapSession, ev: Json) {
 async function onReverse(s: DapSession, req: Json): Promise<Json> {
   const a = req.arguments ?? {};
   if (req.command === "runInTerminal") {
-    const env = Object.entries(a.env ?? {})
-      .map(([k, v]) => (v === null ? `-u ${k}` : `${k}=${shellQuote(String(v))}`))
-      .join(" ");
-    const cmd = `${env ? `env ${env} ` : ""}${(a.args as string[]).map(shellQuote).join(" ")}`;
+    const entries = Object.entries(a.env ?? {});
+    const argv = (a.args as string[]).map(shellQuote).join(" ");
+    let cmd: string;
+    if (IS_WIN) {
+      // cmd.exe: `set "K=V"` (an empty value unsets the variable).
+      cmd = [...entries.map(([k, v]) => `set "${k}=${v === null ? "" : String(v)}"`), argv].join(" && ");
+    } else {
+      const env = entries.map(([k, v]) => (v === null ? `-u ${k}` : `${k}=${shellQuote(String(v))}`)).join(" ");
+      cmd = `${env ? `env ${env} ` : ""}${argv}`;
+    }
     runCommand(cmd, a.cwd || null, `Debug: ${dbg.label}`, false);
     return {};
   }
@@ -348,7 +356,7 @@ async function loadStack() {
     (f): Frame => ({
       id: f.id,
       name: f.name,
-      path: f.source?.path ?? null,
+      path: f.source?.path ? normPath(f.source.path) : null,
       line: f.line,
       column: f.column,
       subtle: f.presentationHint === "subtle" || f.source?.presentationHint === "deemphasize" || !f.source?.path,

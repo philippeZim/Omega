@@ -1,6 +1,8 @@
 /** Project detection and the recommended tool per language: cargo, uv, pnpm, CMake, Gradle. */
-import { fsApi, basename, dirname, joinPath } from "../api";
-import { shellQuote as q } from "../terminal.svelte";
+import { invoke } from "@tauri-apps/api/core";
+import { fsApi, basename, dirname, joinPath, isRoot } from "../api";
+import { q, cd, exe, IS_WIN, OS, runRel, unlessExists, rmrf, tmpPath } from "../platform";
+import type { ToolId } from "../tools.svelte";
 import { langFor, type LangId } from "./languages";
 import { t, type Key } from "../i18n/index.svelte";
 
@@ -14,6 +16,8 @@ export interface Action {
   /** Needs a user-provided argument (e.g. package name); `{}` is replaced. */
   ask?: string;
   shortcut?: string;
+  /** Tools the command needs (offered for installation when missing). */
+  needs?: ToolId[];
 }
 
 export interface Project {
@@ -24,7 +28,11 @@ export interface Project {
   build: Action | null;
   test: Action | null;
   more: Action[];
+  /** Tools every action of this project needs. */
+  needs: ToolId[];
 }
+
+const which = (c: string) => invoke<string | null>("which_cmd", { cmd: c }).catch(() => null);
 
 const MARKERS: [string, ProjectKind][] = [
   ["Cargo.toml", "cargo"],
@@ -41,7 +49,7 @@ async function findProject(file: string | null, workspace: string | null): Promi
   let dir = file ? dirname(file) : workspace;
   const stop = workspace ? dirname(workspace) : "/";
   let found: { kind: ProjectKind; root: string } | null = null;
-  while (dir && dir !== stop && dir !== "/") {
+  while (dir && dir !== stop && !isRoot(dir)) {
     for (const [m, kind] of MARKERS) {
       if (await fsApi.exists(joinPath(dir, m))) {
         // Cargo workspaces: keep walking to the outermost Cargo.toml.
@@ -116,6 +124,7 @@ export async function detectProject(file: string | null, workspace: string | nul
     return {
       ...p,
       label: "cargo",
+      needs: ["rust"],
       run: act("run", "common.run", "cargo run", { shortcut: RUN }),
       build: act("build", "code.act.build", "cargo build", { shortcut: BUILD }),
       test: act("test", "code.act.test", "cargo test"),
@@ -136,6 +145,7 @@ export async function detectProject(file: string | null, workspace: string | nul
     return {
       ...p,
       label: "uv",
+      needs: ["uv"],
       run: act("run", "common.run", `uv run ${target}`, { shortcut: RUN }),
       build: act("build", "code.act.buildPackage", "uv build", { shortcut: BUILD }),
       test: act("test", "code.act.test", "uv run pytest"),
@@ -159,6 +169,7 @@ export async function detectProject(file: string | null, workspace: string | nul
     return {
       ...p,
       label: "pnpm",
+      needs: ["node", "pnpm"],
       run: fileRun
         ? act("run", "common.run", fileRun, { shortcut: RUN })
         : runScript
@@ -178,28 +189,32 @@ export async function detectProject(file: string | null, workspace: string | nul
 
   if (p?.kind === "cmake") {
     const target = await cmakeTarget(p.root);
-    const configure = "cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DCMAKE_EXPORT_COMPILE_COMMANDS=ON && ln -sf build/compile_commands.json .";
-    const ensure = `{ [ -f build/CMakeCache.txt ] || ${configure}; }`;
+    const cfg = await cmakeConfigure("build", "Debug");
+    const ensure = unlessExists("build/CMakeCache.txt", cfg.cmd);
+    const run = runRel(`build/${exe(target)}`);
     return {
       ...p,
       label: "CMake",
-      run: act("run", "common.run", `${ensure} && cmake --build build && ./build/${target}`, { shortcut: RUN }),
+      needs: cfg.needs,
+      run: act("run", "common.run", `${ensure} && cmake --build build && ${run}`, { shortcut: RUN }),
       build: act("build", "code.act.build", `${ensure} && cmake --build build`, { shortcut: BUILD }),
       test: act("test", "code.act.test", `${ensure} && cmake --build build && ctest --test-dir build --output-on-failure`),
       more: [
-        act("configure", "code.act.configure", configure),
-        act("release", "code.act.buildRelease", "cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release && cmake --build build-release"),
+        act("configure", "code.act.configure", cfg.cmd),
+        act("release", "code.act.buildRelease", `${(await cmakeConfigure("build-release", "Release")).cmd} && cmake --build build-release`),
         act("clean", "code.act.clean", "cmake --build build --target clean"),
-        act("reset", "code.act.resetBuild", "rm -rf build"),
+        act("reset", "code.act.resetBuild", rmrf("build")),
       ],
     };
   }
 
   if (p?.kind === "gradle") {
-    const g = (await fsApi.exists(joinPath(p.root, "gradlew"))) ? "./gradlew" : "gradle";
+    const wrapper = await fsApi.exists(joinPath(p.root, IS_WIN ? "gradlew.bat" : "gradlew"));
+    const g = wrapper ? (IS_WIN ? "gradlew.bat" : "./gradlew") : "gradle";
     return {
       ...p,
       label: "Gradle",
+      needs: wrapper ? ["jdk"] : ["jdk", "gradle"],
       run: act("run", "common.run", `${g} run --console=plain`, { shortcut: RUN }),
       build: act("build", "code.act.build", `${g} build`, { shortcut: BUILD }),
       test: act("test", "code.act.test", `${g} test`),
@@ -215,11 +230,13 @@ export async function detectProject(file: string | null, workspace: string | nul
   // No project: run the single file with the language's default tool.
   if (!file) return null;
   const lang = langFor(file)?.id;
-  const cmd = singleFileRun(lang, file);
-  if (!cmd) return null;
+  const single = await singleFileRun(lang, file);
+  if (!single) return null;
+  const [cmd, needs] = single;
   return {
     kind: "file",
     root: dirname(file),
+    needs,
     get label() { return t("code.project.file"); },
     run: act("run", "common.run", cmd, { shortcut: RUN }),
     build: null,
@@ -228,19 +245,36 @@ export async function detectProject(file: string | null, workspace: string | nul
   };
 }
 
-function singleFileRun(lang: LangId | undefined, file: string): string | null {
+/** Compiler commands per OS: GCC on Linux, Apple clang on macOS, LLVM-MinGW clang on Windows. */
+const C_COMPILER = OS === "linux" ? "gcc" : "clang";
+const CXX_COMPILER = OS === "linux" ? "g++" : "clang++";
+
+async function singleFileRun(lang: LangId | undefined, file: string): Promise<[string, ToolId[]] | null> {
   const f = q(file);
-  const out = q(`/tmp/studio-${basename(file).replace(/\.\w+$/, "")}`);
+  const out = q(await tmpPath(exe(`studio-${basename(file).replace(/\.\w+$/, "")}`)));
   switch (lang) {
-    case "python": return `uv run ${f}`;
-    case "c": return `gcc -g -Wall ${f} -o ${out} -lm && ${out}`;
-    case "cpp": return `g++ -g -Wall -std=c++20 ${f} -o ${out} && ${out}`;
-    case "java": return `java ${f}`;
-    case "javascript": return `node ${f}`;
-    case "typescript": return `pnpm dlx tsx ${f}`;
-    case "rust": return `rustc -g ${f} -o ${out} && ${out}`;
+    case "python": return [`uv run ${f}`, ["uv"]];
+    case "c": return [`${C_COMPILER} -g -Wall ${f} -o ${out}${OS === "linux" ? " -lm" : ""} && ${out}`, ["cc"]];
+    case "cpp": return [`${CXX_COMPILER} -g -Wall -std=c++20 ${f} -o ${out} && ${out}`, ["cc"]];
+    case "java": return [`java ${f}`, ["jdk"]];
+    case "javascript": return [`node ${f}`, ["node"]];
+    case "typescript": return [`pnpm dlx tsx ${f}`, ["node", "pnpm"]];
+    case "rust": return [`rustc -g ${f} -o ${out} && ${out}`, ["rust"]];
     default: return null;
   }
+}
+
+/**
+ * CMake configure command. Ninja is used when available and always on Windows (there, without
+ * Visual Studio's cl.exe, the LLVM-MinGW clang is selected). clangd finds build/compile_commands.json
+ * by itself, so no symlink is needed.
+ */
+export async function cmakeConfigure(dir: string, type: "Debug" | "Release"): Promise<{ cmd: string; needs: ToolId[] }> {
+  const ninja = IS_WIN || !!(await which("ninja"));
+  let cmd = `cmake -S . -B ${dir} -DCMAKE_BUILD_TYPE=${type} -DCMAKE_EXPORT_COMPILE_COMMANDS=ON`;
+  if (ninja) cmd += " -G Ninja";
+  if (IS_WIN && !(await which("cl"))) cmd += " -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++";
+  return { cmd, needs: ninja ? ["cmake", "ninja", "cc"] : ["cmake", "cc"] };
 }
 
 // ---------------------------------------------------------------- new projects
@@ -249,61 +283,80 @@ export interface Template {
   id: string;
   label: string;
   tool: string;
-  /** Builds the shell command creating `name` inside `parent`; returns [command, preferred file to open]. */
-  create: (parent: string, name: string) => [string, string];
+  /** Tools needed to create (and later run) the project. */
+  needs: ToolId[] | (() => Promise<ToolId[]>);
+  /**
+   * What to do for project `name`: files to write first (relative to the project folder), then
+   * commands run in the Run terminal — in the project folder, or in `parent` when the tool creates
+   * the folder itself (`inParent`).
+   */
+  create: (name: string) => Promise<{ files?: Record<string, string>; cmds: string[]; inParent?: boolean }>;
   /** File whose appearance means the project exists (relative to the project dir). */
   marker: string;
   /** Files to open afterwards, first existing wins (relative; {name} = project name). */
   open: string[];
 }
 
-const cmakeFiles = (name: string, cxx: boolean) => {
+const gitInit = async () => ((await which("git")) ? ["git init -q"] : []);
+
+const cmakeProject = (name: string, cxx: boolean) => async () => {
   const ext = cxx ? "cpp" : "c";
-  const lists = `cmake_minimum_required(VERSION 3.20)\\nproject(${name} ${cxx ? "CXX" : "C"})\\n\\nset(CMAKE_${cxx ? "CXX" : "C"}_STANDARD ${cxx ? 20 : 17})\\nset(CMAKE_EXPORT_COMPILE_COMMANDS ON)\\n\\nadd_executable(${name} src/main.${ext})\\n`;
+  const lists = `cmake_minimum_required(VERSION 3.20)\nproject(${name} ${cxx ? "CXX" : "C"})\n\nset(CMAKE_${cxx ? "CXX" : "C"}_STANDARD ${cxx ? 20 : 17})\nset(CMAKE_EXPORT_COMPILE_COMMANDS ON)\n\nadd_executable(${name} src/main.${ext})\n`;
   const main = cxx
-    ? `#include <iostream>\\n\\nint main() {\\n    std::cout << "Hallo, Welt!" << std::endl;\\n    return 0;\\n}\\n`
-    : `#include <stdio.h>\\n\\nint main(void) {\\n    printf("Hallo, Welt!\\\\n");\\n    return 0;\\n}\\n`;
-  return `mkdir -p src && printf '${lists}' > CMakeLists.txt && printf '${main.replace(/'/g, "'\\''")}' > src/main.${ext} && printf 'build/\\ncompile_commands.json\\n' > .gitignore && git init -q && cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DCMAKE_EXPORT_COMPILE_COMMANDS=ON && ln -sf build/compile_commands.json .`;
+    ? `#include <iostream>\n\nint main() {\n    std::cout << "Hallo, Welt!" << std::endl;\n    return 0;\n}\n`
+    : `#include <stdio.h>\n\nint main(void) {\n    printf("Hallo, Welt!\\n");\n    return 0;\n}\n`;
+  return {
+    files: { "CMakeLists.txt": lists, [`src/main.${ext}`]: main, ".gitignore": "build/\nbuild-release/\n" },
+    cmds: [...(await gitInit()), (await cmakeConfigure("build", "Debug")).cmd],
+  };
 };
 
+const packageJson = (name: string, extra: Record<string, unknown>) => JSON.stringify({ name, version: "0.1.0", private: true, ...extra }, null, 2) + "\n";
+
 export const TEMPLATES: Template[] = [
-  // Plain folder, no tooling: created directly via the fs API (see createProject), the shell command is unused.
-  { id: "empty", get label() { return t("code.tpl.empty"); }, get tool() { return t("code.tpl.folderOnly"); }, marker: "", open: [], create: (p, n) => ["", joinPath(p, n)] },
-  { id: "rust", label: "Rust", tool: "cargo new", marker: "Cargo.toml", open: ["src/main.rs"], create: (p, n) => [`cd ${q(p)} && cargo new ${q(n)} && cd ${q(n)}`, joinPath(joinPath(p, n), "src/main.rs")] },
-  { id: "python", label: "Python", tool: "uv init", marker: "pyproject.toml", open: ["main.py", "src/{name}/__init__.py", "hello.py"], create: (p, n) => [`cd ${q(p)} && uv init --app --no-package ${q(n)} && cd ${q(n)} && uv sync`, joinPath(joinPath(p, n), "main.py")] },
+  // Plain folder, no tooling: created directly via the fs API (see createProject).
+  { id: "empty", get label() { return t("code.tpl.empty"); }, get tool() { return t("code.tpl.folderOnly"); }, needs: [], marker: "", open: [], create: async () => ({ cmds: [] }) },
+  { id: "rust", label: "Rust", tool: "cargo new", needs: ["rust"], marker: "Cargo.toml", open: ["src/main.rs"], create: async (n) => ({ inParent: true, cmds: [`cargo new ${q(n)}`] }) },
+  { id: "python", label: "Python", tool: "uv init", needs: ["uv"], marker: "pyproject.toml", open: ["main.py", "src/{name}/__init__.py", "hello.py"], create: async (n) => ({ inParent: true, cmds: [`uv init --app --no-package ${q(n)}`, cd(n), "uv sync"] }) },
   {
     id: "typescript",
     label: "TypeScript",
     tool: "pnpm + tsx",
+    needs: ["node", "pnpm"],
     marker: "package.json",
     open: ["src/index.ts"],
-    create: (p, n) => [
-      `mkdir -p ${q(joinPath(p, n))}/src && cd ${q(joinPath(p, n))} && pnpm init && pnpm add -D typescript tsx @types/node && pnpm exec tsc --init --target es2022 --module nodenext --rootDir src --outDir dist && printf 'console.log("Hallo, Welt!");\\n' > src/index.ts && npm pkg set scripts.dev="tsx watch src/index.ts" scripts.start="tsx src/index.ts" scripts.build="tsc" && printf 'node_modules/\\ndist/\\n' > .gitignore && git init -q`,
-      joinPath(joinPath(p, n), "src/index.ts"),
-    ],
+    create: async (n) => ({
+      files: {
+        "package.json": packageJson(n, { type: "module", scripts: { dev: "tsx watch src/index.ts", start: "tsx src/index.ts", build: "tsc" } }),
+        "src/index.ts": 'console.log("Hallo, Welt!");\n',
+        ".gitignore": "node_modules/\ndist/\n",
+      },
+      cmds: [...(await gitInit()), "pnpm add -D typescript tsx @types/node", "pnpm exec tsc --init --target es2022 --module nodenext --rootDir src --outDir dist"],
+    }),
   },
   {
     id: "javascript",
     label: "JavaScript",
     tool: "pnpm",
+    needs: ["node", "pnpm"],
     marker: "package.json",
     open: ["index.js"],
-    create: (p, n) => [
-      `mkdir -p ${q(joinPath(p, n))} && cd ${q(joinPath(p, n))} && pnpm init && npm pkg set type=module scripts.start="node index.js" && printf 'console.log("Hallo, Welt!");\\n' > index.js && printf 'node_modules/\\n' > .gitignore && git init -q`,
-      joinPath(joinPath(p, n), "index.js"),
-    ],
+    create: async (n) => ({
+      files: { "package.json": packageJson(n, { type: "module", scripts: { start: "node index.js" } }), "index.js": 'console.log("Hallo, Welt!");\n', ".gitignore": "node_modules/\n" },
+      cmds: [...(await gitInit())],
+    }),
   },
-  { id: "cpp", label: "C++", tool: "CMake", marker: "CMakeLists.txt", open: ["src/main.cpp"], create: (p, n) => [`mkdir -p ${q(joinPath(p, n))} && cd ${q(joinPath(p, n))} && ${cmakeFiles(n, true)}`, joinPath(joinPath(p, n), "src/main.cpp")] },
-  { id: "c", label: "C", tool: "CMake", marker: "CMakeLists.txt", open: ["src/main.c"], create: (p, n) => [`mkdir -p ${q(joinPath(p, n))} && cd ${q(joinPath(p, n))} && ${cmakeFiles(n, false)}`, joinPath(joinPath(p, n), "src/main.c")] },
+  { id: "cpp", label: "C++", tool: "CMake", needs: async () => (await cmakeConfigure("build", "Debug")).needs, marker: "CMakeLists.txt", open: ["src/main.cpp"], create: (n) => cmakeProject(n, true)() },
+  { id: "c", label: "C", tool: "CMake", needs: async () => (await cmakeConfigure("build", "Debug")).needs, marker: "CMakeLists.txt", open: ["src/main.c"], create: (n) => cmakeProject(n, false)() },
   {
     id: "java",
     label: "Java",
     tool: "Gradle",
+    needs: ["jdk", "gradle"],
     marker: "settings.gradle.kts",
     open: ["app/src/main/java/app/App.java"],
-    create: (p, n) => [
-      `mkdir -p ${q(joinPath(p, n))} && cd ${q(joinPath(p, n))} && gradle init --type java-application --dsl kotlin --test-framework junit-jupiter --package app --project-name ${q(n)} --no-split-project --java-version 21 --use-defaults --no-incubating`,
-      joinPath(joinPath(p, n), "app/src/main/java/app/App.java"),
-    ],
+    create: async (n) => ({
+      cmds: [`gradle init --type java-application --dsl kotlin --test-framework junit-jupiter --package app --project-name ${q(n)} --no-split-project --java-version 21 --use-defaults --no-incubating`],
+    }),
   },
 ];

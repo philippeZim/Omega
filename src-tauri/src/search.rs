@@ -152,7 +152,7 @@ pub fn search_text(app: AppHandle, id: u64, root: String, opts: SearchOptions) -
                 }
                 total += ranges.len();
                 let shown: String = line.chars().take(400).collect();
-                batch.push(Hit { file: path.display().to_string(), line: n + 1, ranges, text: shown });
+                batch.push(Hit { file: crate::env::norm(&path), line: n + 1, ranges, text: shown });
                 if total >= opts.max_results {
                     truncated = true;
                     break;

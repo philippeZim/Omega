@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { IS_MAC } from "../lib/platform";
   import { onMount } from "svelte";
   import * as ed from "../lib/editor";
   import { app, newFile, openFolder } from "../lib/state.svelte";
@@ -42,7 +43,7 @@
     }
     const s = view.state.selection.main;
     const hasSel = !s.empty;
-    const ctrl = t("code.key.ctrl");
+    const ctrl = IS_MAC ? "⌘" : t("code.key.ctrl");
     items.push(
       ...(hasSel
         ? [
@@ -66,8 +67,8 @@
     <div class="welcome">
       <h1>{modeLabel}</h1>
       <div class="actions">
-        <button class="btn" onclick={newFile}>{t("code.ed.newFile")} <kbd>{t("code.key.ctrl")} N</kbd></button>
-        <button class="btn" onclick={openFolder}>{t("code.ed.openFolder")} <kbd>{t("code.key.ctrl")} O</kbd></button>
+        <button class="btn" onclick={newFile}>{t("code.ed.newFile")} <kbd>{IS_MAC ? "⌘" : t("code.key.ctrl")} N</kbd></button>
+        <button class="btn" onclick={openFolder}>{t("code.ed.openFolder")} <kbd>{IS_MAC ? "⌘" : t("code.key.ctrl")} O</kbd></button>
         {#if app.mode === "code"}<button class="btn primary" onclick={() => (runner.newProject = true)}>{t("code.np.newProject")}</button>{/if}
       </div>
       <p class="hint">{t("code.ed.hint")}</p>

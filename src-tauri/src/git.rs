@@ -10,7 +10,7 @@ pub struct GitOut {
 }
 
 fn git_cmd(root: &str) -> Command {
-    let mut c = Command::new("git");
+    let mut c = crate::env::which("git").map(crate::env::command).unwrap_or_else(|| crate::env::command("git"));
     c.current_dir(root)
         // Never block on an interactive prompt (no TTY here): fail with a readable message instead.
         .env("GIT_TERMINAL_PROMPT", "0")

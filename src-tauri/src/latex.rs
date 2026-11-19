@@ -9,7 +9,6 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use tauri::{AppHandle, Manager};
 
 #[derive(Serialize)]
@@ -45,9 +44,7 @@ pub struct CompileResult {
 }
 
 fn which(cmd: &str) -> Option<PathBuf> {
-    std::env::var_os("PATH").and_then(|paths| {
-        std::env::split_paths(&paths).map(|p| p.join(cmd)).find(|p| p.is_file())
-    })
+    crate::env::which(cmd)
 }
 
 #[tauri::command]
@@ -88,9 +85,9 @@ pub async fn latex_compile(app: AppHandle, path: Option<String>, content: String
 
 fn compile(app: &AppHandle, path: Option<String>, content: String) -> Result<CompileResult, String> {
     let started = std::time::Instant::now();
-    let tectonic = which("tectonic").ok_or("Tectonic ist nicht installiert (sudo pacman -S tectonic)")?;
+    let tectonic = which("tectonic").ok_or("TECTONIC_MISSING")?;
 
-    let home = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/tmp".into()));
+    let home = crate::env::home();
     let src_path = path.map(PathBuf::from).unwrap_or_else(|| home.join("untitled.tex"));
     let src_dir = src_path.parent().unwrap_or(&home).to_path_buf();
     let root = find_root(&src_path, &content);
@@ -124,7 +121,7 @@ fn compile(app: &AppHandle, path: Option<String>, content: String) -> Result<Com
 
     // Offline first (≈0.2 s); if a package isn't cached yet, retry online so Tectonic can fetch it.
     let run = |cached: bool| {
-        let mut c = Command::new(&tectonic);
+        let mut c = crate::env::command(&tectonic);
         c.current_dir(&build);
         if cached {
             c.arg("--only-cached");
@@ -148,7 +145,7 @@ fn compile(app: &AppHandle, path: Option<String>, content: String) -> Result<Com
         let p = Path::new(f);
         let rel = p.strip_prefix(&build).unwrap_or(p);
         let rel = rel.strip_prefix("./").unwrap_or(rel);
-        if rel.is_absolute() { rel.display().to_string() } else { root_dir.join(rel).display().to_string() }
+        crate::env::norm(if rel.is_absolute() { rel.to_path_buf() } else { root_dir.join(rel) })
     };
 
     let mut diagnostics = parse_tectonic(&log, &map_file);
@@ -161,7 +158,7 @@ fn compile(app: &AppHandle, path: Option<String>, content: String) -> Result<Com
     let ok = out.status.success() && !diagnostics.iter().any(|d| d.severity == "error");
     Ok(CompileResult {
         ok,
-        pdf: pdf.exists().then(|| pdf.display().to_string()),
+        pdf: pdf.exists().then(|| crate::env::norm(&pdf)),
         diagnostics,
         log: if tex_log.is_empty() { log } else { format!("{log}\n{tex_log}") },
         sync,

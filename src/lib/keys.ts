@@ -5,6 +5,7 @@
  * is the key left of 1 (^ on German layouts).
  */
 
+import { IS_MAC } from "./platform";
 import { pick, type Locale } from "./i18n/index.svelte";
 
 const MODIFIER_KEYS = new Set(["Control", "Shift", "Alt", "Meta", "AltGraph", "CapsLock", "OS"]);
@@ -61,6 +62,9 @@ const COMMON: Record<string, string> = {
   Backspace: "⌫", Tab: "Tab", Comma: ",", Period: ".", Hyphen: "-", Plus: "+",
 };
 
+/** macOS: Mod is the Command key (Ctrl also works). */
+const MAC: Record<string, string> = { Mod: "⌘", Alt: "⌥" };
+
 // Key names per UI language; physical keys are labelled as on that language's usual layout (US / QWERTZ / AZERTY).
 const LABELS: Record<Locale, Record<string, string>> = {
   en: {
@@ -89,6 +93,6 @@ export function formatKey(binding: string): string {
     .split("-")
     .map((p, i, arr) => (p === "" && arr[i + 1] === "" ? "-" : p))
     .filter((p) => p !== "")
-    .map((p) => pick(LABELS)[p] ?? (p.length === 1 ? p.toUpperCase() : p))
+    .map((p) => (IS_MAC && MAC[p]) || pick(LABELS)[p] || (p.length === 1 ? p.toUpperCase() : p))
     .join(" ");
 }

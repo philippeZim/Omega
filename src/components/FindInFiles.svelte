@@ -7,7 +7,7 @@
   import { syntaxHighlighting } from "@codemirror/language";
   import { find, runSearch, gotoHit, dockResults, replaceInFile, replaceAll, buildRegex, persistOptions, matchSummary, type Hit } from "../lib/search/search.svelte";
   import { app } from "../lib/state.svelte";
-  import { fsApi, basename } from "../lib/api";
+  import { fsApi, basename, normPath } from "../lib/api";
   import * as ed from "../lib/editor";
   import { langFor, indentFor } from "../lib/code/languages";
   import { baseTheme, codeHighlight } from "../lib/theme";
@@ -150,7 +150,7 @@
   async function chooseFolder() {
     const d = await openDialog({ directory: true, defaultPath: find.folder ?? app.root ?? undefined });
     if (typeof d === "string") {
-      find.folder = d;
+      find.folder = normPath(d);
       setScope("folder");
     }
   }

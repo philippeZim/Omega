@@ -27,7 +27,7 @@ pub struct CodexState {
 fn socket_path() -> PathBuf {
     let home = match std::env::var("CODEX_HOME") {
         Ok(h) if !h.is_empty() => PathBuf::from(h),
-        _ => PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".codex"),
+        _ => crate::env::home().join(".codex"),
     };
     home.join("ipc").join("ipc.sock")
 }

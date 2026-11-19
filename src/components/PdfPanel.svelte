@@ -3,7 +3,7 @@
   import { convertFileSrc } from "@tauri-apps/api/core";
   import * as pdfjs from "pdfjs-dist";
   import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
-  import { latex, setDark, reverseSync, forwardSync } from "../lib/latex/controller.svelte";
+  import { latex, setDark, reverseSync, forwardSync, installLatex } from "../lib/latex/controller.svelte";
   import { app, activeTab, openFile } from "../lib/state.svelte";
   import * as ed from "../lib/editor";
   import { t } from "../lib/i18n/index.svelte";
@@ -170,8 +170,7 @@
     {#if latex.available === false}
       <div class="empty">
         <h3>{t("code.pdf.notInstalled")}</h3>
-        <p>{t("code.pdf.runInTerminal")}</p>
-        <code>sudo pacman -S tectonic</code>
+        <button class="install" onclick={installLatex}>{t("tools.installLatex")}</button>
       </div>
     {:else if !latex.pdf}
       <div class="empty"><p>{latex.status === "compiling" ? t("code.pdf.firstCompile") : t("code.pdf.noPdf")}</p></div>
@@ -283,7 +282,7 @@
   @keyframes fade { 0%, 60% { opacity: 1; } 100% { opacity: 0; } }
   .empty { text-align: center; color: var(--label-2); padding-top: 80px; }
   .empty h3 { color: var(--label); margin: 0 0 8px; }
-  .empty code { display: inline-block; margin-top: 6px; padding: 6px 14px; border-radius: 999px; background: var(--recess); font-family: var(--mono); color: var(--teal); user-select: text; }
+  .empty .install { margin-top: 10px; padding: 7px 16px; border-radius: 999px; background: var(--accent); color: #fff; font-weight: 600; }
   .log { max-height: 45%; display: flex; flex-direction: column; border-top: 1px solid rgba(var(--fg-rgb), 0.06); background: var(--well); }
   .log-head { display: flex; justify-content: space-between; align-items: center; padding: 6px 8px 6px 16px; font-weight: 600; font-size: 12px; color: var(--label-2); }
   .log-list { overflow: auto; padding: 0 8px 10px; user-select: text; }

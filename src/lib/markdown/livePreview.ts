@@ -31,18 +31,21 @@ function dirOf(p: string) {
 }
 
 export function resolvePath(href: string, fromPath: string | null): string | null {
-  if (/^[a-z][a-z0-9+.-]*:/i.test(href)) return null;
-  let p = decodeURI(href.split("#")[0]);
-  if (!p.startsWith("/")) {
+  const drive = /^[A-Za-z]:[\\/]/.test(href);
+  if (!drive && /^[a-z][a-z0-9+.-]*:/i.test(href)) return null;
+  let p = decodeURI(href.split("#")[0]).replace(/\\/g, "/");
+  if (!p.startsWith("/") && !drive) {
     if (!fromPath) return null;
     p = dirOf(fromPath) + "/" + p;
   }
+  // Windows paths keep their drive ("C:/…"), POSIX paths start with "/".
+  const prefix = /^[A-Za-z]:\//.test(p) ? p.slice(0, 2) : "";
   const parts: string[] = [];
-  for (const seg of p.split("/")) {
+  for (const seg of p.slice(prefix.length).split("/")) {
     if (seg === "..") parts.pop();
     else if (seg && seg !== ".") parts.push(seg);
   }
-  return "/" + parts.join("/");
+  return prefix + "/" + parts.join("/");
 }
 
 function imageSrc(url: string, fromPath: string | null) {

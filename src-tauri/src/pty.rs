@@ -24,18 +24,37 @@ struct PtyData {
     data: String,
 }
 
+/// The user's shell. Windows: PowerShell for interactive terminals (pwsh if installed); the "Run"
+/// terminal uses cmd.exe because Studio's run commands use `&&`, which Windows PowerShell 5 lacks.
+fn shell_command(run: bool) -> CommandBuilder {
+    if cfg!(windows) {
+        if run {
+            let mut c = CommandBuilder::new("cmd.exe");
+            c.arg("/Q");
+            return c;
+        }
+        let ps = crate::env::which("pwsh").map(|p| p.display().to_string()).unwrap_or_else(|| "powershell.exe".into());
+        let mut c = CommandBuilder::new(ps);
+        c.arg("-NoLogo");
+        return c;
+    }
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| if cfg!(target_os = "macos") { "/bin/zsh".into() } else { "/bin/bash".into() });
+    let mut c = CommandBuilder::new(shell);
+    c.arg("-l");
+    c
+}
+
 #[tauri::command]
-pub fn pty_spawn(app: AppHandle, id: String, cwd: Option<String>, cols: u16, rows: u16) -> Result<(), String> {
+pub fn pty_spawn(app: AppHandle, id: String, cwd: Option<String>, cols: u16, rows: u16, kind: Option<String>) -> Result<(), String> {
     let pair = native_pty_system()
         .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
         .map_err(|e| e.to_string())?;
 
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".into());
-    let mut cmd = CommandBuilder::new(&shell);
-    cmd.arg("-l");
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
+    let mut cmd = shell_command(kind.as_deref() == Some("run"));
+    let home = crate::env::home().display().to_string();
     let dir = cwd.filter(|d| std::path::Path::new(d).is_dir()).unwrap_or(home);
     cmd.cwd(dir);
+    cmd.env("PATH", crate::env::path());
     // Don't leak a parent Claude Code session's markers (e.g. Studio started from `claude`) into
     // the user's shells; the login shell re-reads the user's own profile anyway.
     for (k, _) in std::env::vars() {

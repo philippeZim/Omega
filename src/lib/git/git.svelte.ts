@@ -1,4 +1,5 @@
 /** Git integration (PyCharm-like, simple): status, commit (+push), pull, branches, rollback. */
+import { ensureTools } from "../tools.svelte";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { app, setRoot, openFile, save, syncFromDisk } from "../state.svelte";
@@ -210,12 +211,14 @@ export async function newBranch() {
 
 export async function initRepo() {
   if (!app.root) return;
+  if (!(await ensureTools(["git"], t("tools.purpose.git")))) return;
   if (await runOk(["init", "-q"], "git.op.init")) ui.toast(t("git.repoCreated"));
   await refresh();
 }
 
 /** Clones `url` into `dest`, opens it as the workspace. Returns an error message or null. */
 export async function cloneInto(url: string, dest: string): Promise<string | null> {
+  if (!(await ensureTools(["git"], t("tools.purpose.git")))) return t("git.cloneFailed");
   const parent = dest.replace(/\/[^/]+$/, "") || "/";
   const r = await invoke<Out>("git", { root: parent, args: ["clone", url, dest] });
   if (r.code !== 0) return (r.stderr || r.stdout).trim().split("\n").filter((l) => !l.startsWith("Cloning")).pop() ?? t("git.cloneFailed");

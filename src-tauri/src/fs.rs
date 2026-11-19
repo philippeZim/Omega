@@ -26,7 +26,7 @@ pub fn list_dir(path: String) -> Result<Vec<Entry>, String> {
                 return None;
             }
             let is_dir = e.file_type().ok()?.is_dir();
-            Some(Entry { name, path: e.path().to_string_lossy().to_string(), is_dir })
+            Some(Entry { name, path: crate::env::norm(e.path()), is_dir })
         })
         .collect();
     out.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then(a.name.to_lowercase().cmp(&b.name.to_lowercase())));
@@ -73,7 +73,7 @@ pub fn path_exists(path: String) -> bool {
 
 #[tauri::command]
 pub fn home_dir() -> String {
-    std::env::var("HOME").unwrap_or_else(|_| "/".into())
+    crate::env::norm(crate::env::home())
 }
 
 /// Paths passed on the command line (`studio <ordner|datei>…`), made absolute.
@@ -86,7 +86,7 @@ pub fn cli_paths() -> Vec<String> {
         .map(|a| {
             let p = PathBuf::from(&a);
             let p = if p.is_absolute() { p } else { cwd.join(p) };
-            p.canonicalize().unwrap_or(p).display().to_string()
+            crate::env::norm(p.canonicalize().unwrap_or(p))
         })
         .collect()
 }
@@ -110,7 +110,7 @@ pub async fn list_files(root: String) -> Result<Vec<String>, String> {
                     }
                 } else if ft.is_file() {
                     if let Ok(rel) = e.path().strip_prefix(&base) {
-                        out.push(rel.to_string_lossy().to_string());
+                        out.push(crate::env::norm(rel));
                     }
                     if out.len() >= 50_000 {
                         return Ok(out);

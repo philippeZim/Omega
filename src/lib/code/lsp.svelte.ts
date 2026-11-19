@@ -3,7 +3,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { onRpc } from "../rpc";
 import { t } from "../i18n/index.svelte";
 import { ui } from "../ui.svelte";
-import { fsApi, dirname, joinPath } from "../api";
+import { fsApi, dirname, joinPath, isRoot } from "../api";
+import { OS, platform } from "../platform";
+import { ensureTools, type ToolId } from "../tools.svelte";
 import type { LangInfo } from "./languages";
 
 type Json = any;
@@ -16,8 +18,17 @@ export const lspState = $state({
   message: {} as Record<string, string>,
 });
 
-export const fileUri = (path: string) => "file://" + path.split("/").map(encodeURIComponent).join("/");
-export const uriPath = (uri: string) => decodeURIComponent(uri.replace(/^file:\/\//, ""));
+/** file URI for a path ("/a/b" → file:///a/b, "C:/a" → file:///c%3A/a like VS Code). */
+export const fileUri = (path: string) => {
+  const win = /^[A-Za-z]:\//.test(path);
+  const p = win ? "/" + path[0].toLowerCase() + path.slice(1) : path;
+  return "file://" + p.split("/").map(encodeURIComponent).join("/");
+};
+export const uriPath = (uri: string) => {
+  const p = decodeURIComponent(uri.replace(/^file:\/\//, ""));
+  // file:///c:/x → C:/x
+  return /^\/[A-Za-z]:/.test(p) ? p[1].toUpperCase() + p.slice(2) : p;
+};
 
 export class LspClient {
   readonly id: string;
@@ -137,8 +148,10 @@ export class LspClient {
       return;
     }
     if (msg.method === "textDocument/publishDiagnostics") {
-      this.diagnostics.set(msg.params.uri, msg.params.diagnostics);
-      for (const l of this.diagnosticListeners) l(msg.params.uri);
+      // Servers spell Windows URIs differently (file:///C:/ vs file:///c%3A/): use our form.
+      const uri = fileUri(uriPath(msg.params.uri));
+      this.diagnostics.set(uri, msg.params.diagnostics);
+      for (const l of this.diagnosticListeners) l(uri);
     } else if (msg.method === "window/showMessage" && msg.params?.type <= 2) {
       lspState.message[this.key] = msg.params.message;
     }
@@ -199,7 +212,7 @@ export async function findRoot(file: string, markers: string[], workspace: strin
   let dir = dirname(file);
   const stop = workspace ? dirname(workspace) : "/";
   const candidates: string[] = [];
-  while (dir && dir !== stop && dir !== "/") {
+  while (dir && dir !== stop && !isRoot(dir)) {
     for (const m of markers) if (await fsApi.exists(joinPath(dir, m))) candidates.push(dir);
     if (candidates.length && markers[0] !== "Cargo.toml") break;
     dir = dirname(dir);
@@ -272,23 +285,57 @@ async function resolveCommand(kind: ServerKind, root: string): Promise<{ cmd: st
       return ok ? { cmd: "rust-analyzer", args: [] } : null;
     }
     case "java": {
-      const cmd = await first(`${tools}/jdtls/bin/jdtls`, "jdtls");
       let h = 0;
       for (const c of root) h = (h * 31 + c.charCodeAt(0)) | 0;
+      const data = `${tools}/jdtls-workspace/${(h >>> 0).toString(16)}`;
       const bundles = await javaDebugBundles();
-      return cmd ? { cmd, args: ["-data", `${tools}/jdtls-workspace/${(h >>> 0).toString(16)}`], init: bundles.length ? { bundles } : undefined } : null;
+      const init = bundles.length ? { bundles } : undefined;
+      // Studio's own jdtls is started with `java -jar` directly (its bin/jdtls wrapper needs Python).
+      const home = `${tools}/jdtls`;
+      const launcher = (await fsApi.listDir(`${home}/plugins`).catch(() => [])).find((e) => /^org\.eclipse\.equinox\.launcher_.*\.jar$/.test(e.name));
+      const java = await which("java");
+      if (launcher && java) {
+        const arm = (await platform()).arch === "aarch64";
+        const config = `${home}/config_${OS === "windows" ? "win" : OS === "macos" ? "mac" : "linux"}${arm && OS !== "windows" ? "_arm" : ""}`;
+        return {
+          cmd: java,
+          args: [
+            "-Declipse.application=org.eclipse.jdt.ls.core.id1",
+            "-Dosgi.bundles.defaultStartLevel=4",
+            "-Declipse.product=org.eclipse.jdt.ls.core.product",
+            "-Dosgi.checkConfiguration=true",
+            `-Dosgi.sharedConfiguration.area=${config}`,
+            "-Dosgi.sharedConfiguration.area.readOnly=true",
+            "-Dosgi.configuration.cascaded=true",
+            "-Xms1G",
+            "--add-modules=ALL-SYSTEM",
+            "--add-opens", "java.base/java.util=ALL-UNNAMED",
+            "--add-opens", "java.base/java.lang=ALL-UNNAMED",
+            "-jar", launcher.path,
+            "-configuration", `${tools}/jdtls-config`,
+            "-data", data,
+          ],
+          init,
+        };
+      }
+      const cmd = await first("jdtls");
+      return cmd ? { cmd, args: ["-data", data], init } : null;
     }
   }
 }
 
 export const INSTALLABLE: Partial<Record<ServerKind, string>> = {
   python: "basedpyright (Python)",
+  clangd: "clangd (C/C++)",
   typescript: "typescript-language-server (JS/TS)",
   java: "Eclipse JDT Language Server (Java)",
   get rust() {
     return t("code.lsp.rustAnalyzer");
   },
 };
+
+/** Tools a language server installation builds on. */
+const PREREQ: Partial<Record<ServerKind, ToolId[]>> = { python: ["node"], typescript: ["node"], java: ["jdk"], rust: ["rust"] };
 
 /**
  * Returns a running client for this file's server, starting it if necessary.
@@ -319,6 +366,11 @@ export async function clientFor(
       lspState.status[key] = "missing";
       const name = INSTALLABLE[kind];
       if (!name || !(await askInstall(kind, name))) return null;
+      const prereq = PREREQ[kind];
+      if (prereq && !(await ensureTools(prereq, t("tools.purpose.lsp")))) {
+        lspState.status[key] = "missing";
+        return null;
+      }
       lspState.status[key] = "installing";
       try {
         await invoke("install_server", { kind });

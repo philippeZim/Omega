@@ -6,6 +6,7 @@
   import Dialog from "./components/Dialog.svelte";
   import ContextMenu from "./components/ContextMenu.svelte";
   import Toasts from "./components/Toasts.svelte";
+  import ToolProgress from "./components/ToolProgress.svelte";
   import HelpPanel from "./components/HelpPanel.svelte";
   import SettingsPanel from "./components/SettingsPanel.svelte";
   import { settings } from "./lib/settings.svelte";
@@ -116,6 +117,7 @@
   <CollabPanel />
 {/if}
 <Toasts />
+<ToolProgress />
 <Tooltip />
 
 <style>
