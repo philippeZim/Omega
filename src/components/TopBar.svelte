@@ -40,6 +40,7 @@
   import { runner } from "../lib/code/runner.svelte";
   import { settings } from "../lib/settings.svelte";
   import { collab } from "../lib/collab/collab.svelte";
+  import { share } from "../lib/collab/share.svelte";
 
   const activeIndex = $derived(MODES.findIndex((m) => m.id === app.mode));
 </script>
@@ -50,7 +51,7 @@
       <svg width="16" height="16" viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.3"/><line x1="6" y1="2.5" x2="6" y2="13.5" stroke="currentColor" stroke-width="1.3"/></svg>
     </button>
     <button class="title" onclick={projectMenu} title={app.root ?? "Ordner öffnen"}>
-      {app.root ? basename(app.root) : "Kein Ordner"}
+      {collab.role === "guest" && collab.status === "connected" ? `${share.hostRoot || "Projekt"} (Host)` : app.root ? basename(app.root) : "Kein Ordner"}
       <svg width="9" height="9" viewBox="0 0 10 10"><path d="M2.5 3.8L5 6.3l2.5-2.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
     </button>
     {#if git.repo && git.branch}

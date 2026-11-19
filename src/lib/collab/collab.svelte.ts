@@ -17,6 +17,7 @@ export interface Participant {
   /** Connection quality (host↔guest), refreshed periodically. */
   direct?: boolean;
   rtt?: number;
+  addr?: string;
 }
 
 export interface JoinRequest {
@@ -235,14 +236,14 @@ setInterval(async () => {
   if (!collab.role) return;
   const peers = collab.role === "host" ? collab.participants.filter((p) => p.peer !== "self").map((p) => p.peer) : collab.hostPeer ? [collab.hostPeer] : [];
   for (const peer of peers) {
-    const info = await invoke<{ direct: boolean; rtt_ms: number } | null>("collab_conn_info", { peer });
+    const info = await invoke<{ direct: boolean; rtt_ms: number; addr: string } | null>("collab_conn_info", { peer });
     if (!info) continue;
     if (collab.role === "host") {
       const p = collab.participants.find((x) => x.peer === peer);
-      if (p) Object.assign(p, { direct: info.direct, rtt: info.rtt_ms });
+      if (p) Object.assign(p, { direct: info.direct, rtt: info.rtt_ms, addr: info.addr });
     } else {
       const h = collab.participants.find((x) => x.role === "host");
-      if (h) Object.assign(h, { direct: info.direct, rtt: info.rtt_ms });
+      if (h) Object.assign(h, { direct: info.direct, rtt: info.rtt_ms, addr: info.addr });
     }
   }
 }, 2000);

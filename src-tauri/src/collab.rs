@@ -55,7 +55,13 @@ async fn endpoint(app: &AppHandle) -> Result<Endpoint, String> {
     if let Some(ep) = guard.as_ref() {
         return Ok(ep.clone());
     }
-    let ep = Endpoint::builder(presets::N0).alpns(vec![ALPN.to_vec()]).bind().await.map_err(err)?;
+    let mut builder = Endpoint::builder(presets::N0).alpns(vec![ALPN.to_vec()]);
+    // Diagnostics: STUDIO_COLLAB_RELAY_ONLY=1 disables direct connections (simulates networks
+    // like eduroam that block peer-to-peer traffic).
+    if std::env::var("STUDIO_COLLAB_RELAY_ONLY").is_ok_and(|v| v == "1") {
+        builder = builder.clear_ip_transports();
+    }
+    let ep = builder.bind().await.map_err(err)?;
     *guard = Some(ep.clone());
     Ok(ep)
 }
@@ -178,6 +184,8 @@ pub async fn collab_stop(app: AppHandle) {
 
 #[derive(Serialize)]
 pub struct ConnInfo {
+    /// Address of the selected path ("192.168.1.5:1234" or the relay URL), for diagnostics.
+    addr: String,
     direct: bool,
     rtt_ms: u64,
 }
@@ -188,7 +196,12 @@ pub async fn collab_conn_info(app: AppHandle, peer: String) -> Option<ConnInfo> 
     let p = app.state::<CollabState>().peers.lock().await.get(&peer).cloned()?;
     let paths = p.conn.paths();
     let sel = paths.iter().find(|x| x.is_selected())?;
-    Some(ConnInfo { direct: sel.is_ip(), rtt_ms: sel.rtt().as_millis() as u64 })
+    let addr = match sel.remote_addr() {
+        iroh::TransportAddr::Ip(a) => a.to_string(),
+        iroh::TransportAddr::Relay(u) => u.to_string(),
+        other => format!("{other:?}"),
+    };
+    Some(ConnInfo { addr, direct: sel.is_ip(), rtt_ms: sel.rtt().as_millis() as u64 })
 }
 
 #[cfg(test)]

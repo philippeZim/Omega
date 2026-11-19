@@ -180,7 +180,7 @@ const TOOLS: Tool[] = [
       git: git.repo ? { branch: git.branch, ahead: git.ahead, behind: git.behind, remote: git.remoteUrl, changes: git.changes.map((c) => `${c.x}${c.y} ${c.path}`) } : null,
       debugger: { status: dbg.status, label: dbg.label, stopReason: dbg.stopReason, location: dbg.exec, panel: dbg.panel },
       terminal: { visible: terms.visible, tabs: terms.tabs.map((t) => ({ id: t.id, title: t.title, kind: t.kind, exited: t.exited, active: t.id === terms.active })) },
-      collab: collab.role ? { role: collab.role, status: collab.status, participants: collab.participants.map((p) => ({ name: p.name, role: p.role, direct: p.direct, rtt: p.rtt })), pendingRequests: collab.requests.map((r) => r.name) } : null,
+      collab: collab.role ? { role: collab.role, status: collab.status, ticket: collab.ticket || undefined, participants: collab.participants.map((p) => ({ name: p.name, role: p.role, direct: p.direct, rtt: p.rtt, addr: p.addr })), pendingRequests: collab.requests.map((r) => r.name) } : collab.error ? { role: null, error: collab.error } : null,
       recentToasts: toastLog.slice(-8),
     }),
   },
@@ -329,8 +329,8 @@ const TOOLS: Tool[] = [
   {
     name: "type_text",
     description: "Gibt Text in das fokussierte Element ein (Eingabefeld oder Editor), optional vorher ein Element per Text/Selektor fokussieren. submit=true drückt danach Enter.",
-    inputSchema: obj({ text: str("Text"), target: str("Optional: Element per Text/Placeholder fokussieren"), selector: str("Optional: CSS-Selektor"), submit: bool("Danach Enter drücken") }, ["text"]),
-    run: async ({ text, target, selector, submit }) => {
+    inputSchema: obj({ text: str("Text"), target: str("Optional: Element per Text/Placeholder fokussieren"), selector: str("Optional: CSS-Selektor"), submit: bool("Danach Enter drücken"), clear: bool("Feld vorher leeren") }, ["text"]),
+    run: async ({ text, target, selector, submit, clear }) => {
       if (target || selector) {
         const el = findElements({ text: target, selector }).find((e) => e.matches("input, textarea, [contenteditable=true]")) ?? findElements({ text: target, selector })[0];
         if (!el) throw new Error("Zielelement nicht gefunden");
@@ -344,6 +344,7 @@ const TOOLS: Tool[] = [
         const at = v.state.selection.main;
         v.dispatch({ changes: { from: at.from, to: at.to, insert: text }, selection: { anchor: at.from + text.length }, userEvent: "input.type" });
       } else if (el && (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) {
+        if (clear) el.value = "";
         const start = el.selectionStart ?? el.value.length;
         el.value = el.value.slice(0, start) + text + el.value.slice(el.selectionEnd ?? start);
         el.setSelectionRange(start + text.length, start + text.length);
@@ -381,7 +382,20 @@ const TOOLS: Tool[] = [
     run: async ({ selector, text, scale }) => {
       const el = selector || text ? findElements({ selector, text })[0] : document.body;
       if (!el) throw new Error("Element nicht gefunden");
-      const url = await toPng(el, { pixelRatio: scale ?? 0.75, cacheBust: true, backgroundColor: "#030304", filter: (n) => !(n instanceof HTMLElement && n.classList.contains("tip")) });
+      const base = { pixelRatio: scale ?? 0.75, backgroundColor: "#030304", filter: (n: Node) => !(n instanceof HTMLElement && (n.classList.contains("tip") || n.classList.contains("cm-widgetBuffer"))) };
+      // A resource that fails to load (font/image) rejects with a bare Event → retry without them.
+      const PIXEL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+      let url: string;
+      try {
+        url = await toPng(el, { ...base, cacheBust: true });
+      } catch (e) {
+        try {
+          url = await toPng(el, { ...base, skipFonts: true, imagePlaceholder: PIXEL });
+        } catch (e2) {
+          const what = (x: unknown) => (x instanceof Event ? `${x.type} bei ${(x.target as HTMLElement | null)?.outerHTML?.slice(0, 120) ?? "?"}` : String(x));
+          throw new Error(`Screenshot fehlgeschlagen: ${what(e)} / ${what(e2)}`);
+        }
+      }
       return { __image: url.split(",")[1] };
     },
   },
