@@ -124,7 +124,9 @@ pub fn search_text(app: AppHandle, id: u64, root: String, opts: SearchOptions) -
             if cancelled() {
                 return;
             }
-            let rel = path.strip_prefix(&root_path).unwrap_or(&path);
+            // Globs use "/" (also on Windows).
+            let rel = crate::env::norm(path.strip_prefix(&root_path).unwrap_or(&path));
+            let rel = rel.as_str();
             if let Some(i) = &inc {
                 if !i.is_match(rel) {
                     continue;
