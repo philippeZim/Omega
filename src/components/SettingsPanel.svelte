@@ -1,0 +1,293 @@
+<script lang="ts">
+  import { settings, applySyntaxTheme, setSize } from "../lib/settings.svelte";
+
+  const SIZES = [
+    { key: "codeFontSize", label: "Code-Schrift", sub: "Code-Modus, LaTeX, Code-Blöcke", min: 10, max: 24, step: 1, unit: "px" },
+    { key: "proseFontSize", label: "Text-Schrift", sub: "Text- und Markdown-Modus", min: 12, max: 28, step: 1, unit: "px" },
+    { key: "terminalFontSize", label: "Terminal-Schrift", sub: "Alle Terminals", min: 9, max: 22, step: 1, unit: "px" },
+    { key: "uiScale", label: "Gesamte Oberfläche", sub: "Skaliert alles (Strg+Plus / Strg+Minus)", min: 0.75, max: 1.5, step: 0.05, unit: "%" },
+  ] as const;
+  import { SYNTAX_THEMES, themeVars } from "../lib/syntaxThemes";
+  import * as ed from "../lib/editor";
+  import KeybindingEditor from "./KeybindingEditor.svelte";
+  import { app, activeTab, toggleSpell, setSpellLang, spellLangFor } from "../lib/state.svelte";
+  import { SPELL_LANGS } from "../lib/spell";
+  import { control, setControlEnabled, regenerateToken, mcpAddCommand, setControlPort } from "../lib/ai/control.svelte";
+  import { ideLink, AGENTS, startAgent, isConnected, detectAgents, type Agent } from "../lib/ai/ide.svelte";
+  import { runCommand } from "../lib/terminal.svelte";
+
+  const AGENT_INFO: Record<Agent["id"], string> = {
+    claude: "Auswahl, offene Datei, Diagnosen, Dateien öffnen – volle IDE-Integration",
+    codex: "Auswahl, offene Datei und Tabs (schaltet /ide in Codex automatisch ein)",
+    opencode: "Auswahl und offene Datei, @-Erwähnungen",
+  };
+  let mcpAgent = $state<Agent["id"]>("claude");
+  $effect(() => {
+    if (tab === "ai") detectAgents();
+  });
+  import { formatKey } from "../lib/keys";
+  import { keysFor } from "../lib/commands.svelte";
+  import { writeText } from "@tauri-apps/plugin-clipboard-manager";
+  import { ui } from "../lib/ui.svelte";
+
+  let showToken = $state(false);
+  async function copy(t: string, what: string) {
+    await writeText(t);
+    ui.toast(`${what} kopiert`);
+  }
+
+  const TABS = [
+    { id: "look", label: "Darstellung" },
+    { id: "theme", label: "Syntax-Theme" },
+    { id: "spell", label: "Rechtschreibung" },
+    { id: "keys", label: "Tastenkürzel" },
+    { id: "ai", label: "KI" },
+  ] as const;
+  let tab = $state<(typeof TABS)[number]["id"]>((localStorage.getItem("settingsTab") as any) || "look");
+  $effect(() => localStorage.setItem("settingsTab", tab));
+  const spellLang = $derived(spellLangFor(activeTab()?.path ?? null));
+
+  const groups = ["Klassiker", "Modern", "Warm & Retro"] as const;
+
+  function close() {
+    settings.open = false;
+    queueMicrotask(() => ed.focus());
+  }
+</script>
+
+<svelte:window onkeydown={(e) => e.key === "Escape" && settings.open && !e.defaultPrevented && (e.preventDefault(), close())} />
+
+<div class="overlay" role="dialog" aria-label="Einstellungen">
+  <div class="sheet">
+    <header>
+      <h1>Einstellungen</h1>
+      <button class="close" onclick={close} aria-label="Schließen" title="Schließen (Esc)">
+        <svg width="12" height="12" viewBox="0 0 10 10"><path d="M1.5 1.5l7 7M8.5 1.5l-7 7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+      </button>
+    </header>
+    <nav class="tabs">
+      {#each TABS as t (t.id)}
+        <button class="tab" class:on={tab === t.id} onclick={() => (tab = t.id)}>{t.label}</button>
+      {/each}
+    </nav>
+
+    <div class="scroll">
+      {#if tab === "look"}
+      <section>
+        <h2>Darstellung</h2>
+        <p class="desc">Größen werden sofort übernommen und gespeichert.</p>
+        <div class="box">
+          {#each SIZES as sz (sz.key)}
+            {@const v = settings[sz.key]}
+            <div class="srow">
+              <div><b>{sz.label}</b><span class="sub2">{sz.sub}</span></div>
+              <div class="stepper">
+                <button onclick={() => setSize(sz.key, Math.max(sz.min, +(v - sz.step).toFixed(2)))} aria-label="Kleiner">−</button>
+                <input type="range" min={sz.min} max={sz.max} step={sz.step} value={v} oninput={(e) => setSize(sz.key, Number((e.currentTarget as HTMLInputElement).value))} />
+                <button onclick={() => setSize(sz.key, Math.min(sz.max, +(v + sz.step).toFixed(2)))} aria-label="Größer">+</button>
+                <span class="val">{sz.unit === "%" ? Math.round(v * 100) + " %" : v + " px"}</span>
+              </div>
+            </div>
+          {/each}
+        </div>
+      </section>
+      {:else if tab === "spell"}
+      <section>
+        <h2>Rechtschreibung</h2>
+        <p class="desc">Prüft Text, Markdown, LaTeX (ohne Befehle/Formeln) sowie Kommentare und Strings im Code. Fehler per Rechtsklick korrigieren oder ins Wörterbuch aufnehmen.</p>
+        <div class="box">
+          <div class="srow">
+            <div><b>Rechtschreibprüfung</b><span class="sub2">Auch mit F7 umschaltbar</span></div>
+            <button class="switch" class:on={app.spellEnabled} onclick={toggleSpell} role="switch" aria-checked={app.spellEnabled} aria-label="Rechtschreibprüfung"><span></span></button>
+          </div>
+          <div class="srow">
+            <div><b>Sprache</b><span class="sub2">{activeTab()?.path ? `Gilt für „${activeTab()?.name}“ und als Standard für neue Dateien` : "Standard für neue Dateien"}</span></div>
+            <div class="seg">
+              {#each SPELL_LANGS as l (l.id)}
+                <button class:on={spellLang === l.id} onclick={() => setSpellLang(l.id)}>{l.label}</button>
+              {/each}
+            </div>
+          </div>
+        </div>
+      </section>
+      {:else if tab === "ai"}
+      <section>
+        <h2>KI-Agenten</h2>
+        <p class="desc">Starte einen Agenten im Terminal der IDE – er sieht automatisch deine geöffnete Datei und Auswahl. Claude Code öffnet außerdem Dateien hier und liest die Fehler der Language-Server. Änderungen der Agenten werden direkt übernommen; bestätigt wird im Terminal.</p>
+        <div class="box">
+          {#each AGENTS as a (a.id)}
+            {@const inst = ideLink.installed[a.id]}
+            {@const conn = isConnected(a)}
+            <div class="srow">
+              <div><b>{a.label}</b><span class="sub2">{AGENT_INFO[a.id]}</span></div>
+              <div class="rowend">
+                <span class="pill" class:ok={conn}>{conn ? "verbunden" : inst === false ? "nicht installiert" : "bereit"}</span>
+                <button class="btn" disabled={inst === false} onclick={() => { startAgent(a.id); settings.open = false; }}>Starten</button>
+              </div>
+            </div>
+          {/each}
+          <div class="srow">
+            <div><b>Auswahl an Agent senden</b><span class="sub2">Fügt die markierten Zeilen als Referenz in den Chat des Agenten ein</span></div>
+            <span class="kbd">{keysFor("ai.mention").map(formatKey).join(" / ") || "—"}</span>
+          </div>
+        </div>
+        <p class="note">{ideLink.port ? `IDE-Server: localhost:${ideLink.port} (Claude Code, OpenCode)` : "IDE-Server nicht gestartet"} · Codex-Kontext: {ideLink.codex === "listening" ? "~/.codex/ipc/ipc.sock" : ideLink.codex === "busy" ? "belegt von einer anderen IDE" : "nicht verfügbar"}</p>
+
+        <h2 class="mt">Steuerungs-MCP</h2>
+        <p class="desc">Ein MCP-Server, über den KI-Agenten die IDE bedienen können: Zustand lesen, Befehle ausführen, Dateien öffnen und bearbeiten, Elemente anklicken, Text eingeben, Screenshots, Konsole und Terminal. Läuft nur auf diesem Rechner (localhost) und ist mit einem Token geschützt.</p>
+        <div class="box">
+          <div class="srow">
+            <div><b>Steuerungs-MCP</b><span class="sub2">{control.running ? `Läuft auf Port ${control.port}${control.calls ? ` · ${control.calls} Aufrufe, zuletzt ${control.lastTool}` : ""}` : control.error ? control.error : "Aus"}</span></div>
+            <button class="switch" class:on={control.enabled} onclick={() => setControlEnabled(!control.enabled)} role="switch" aria-checked={control.enabled} aria-label="Steuerungs-MCP"><span></span></button>
+          </div>
+          {#if control.enabled}
+            <div class="srow">
+              <div class="grow"><b>In Agenten eintragen</b><span class="sub2">Einmalig pro Agent. Führt den Befehl im Terminal aus; danach hat der Agent die Werkzeuge des Servers „studio“.{mcpAgent === "codex" ? " Codex liest den Token aus STUDIO_MCP_TOKEN, das in den Terminals von Studio gesetzt ist." : ""}</span>
+                <div class="seg small">
+                  {#each AGENTS as a (a.id)}<button class:on={mcpAgent === a.id} onclick={() => (mcpAgent = a.id)}>{a.label}</button>{/each}
+                </div>
+                <code class="cmd">{showToken ? mcpAddCommand(mcpAgent) : mcpAddCommand(mcpAgent).replace(control.token, "•".repeat(12))}</code>
+              </div>
+              <div class="col">
+                <button class="btn" disabled={ideLink.installed[mcpAgent] === false} onclick={() => { runCommand(mcpAddCommand(mcpAgent), app.root, "MCP einrichten"); settings.open = false; }}>Ausführen</button>
+                <button class="btn ghost" onclick={() => copy(mcpAddCommand(mcpAgent), "Befehl")}>Kopieren</button>
+                <button class="btn ghost" onclick={() => (showToken = !showToken)}>{showToken ? "Verbergen" : "Token zeigen"}</button>
+              </div>
+            </div>
+            <div class="srow">
+              <div><b>Port</b><span class="sub2">Nur 127.0.0.1</span></div>
+              <input class="port" type="number" min="1024" max="65535" value={control.port} onchange={(e) => setControlPort(Number((e.currentTarget as HTMLInputElement).value))} />
+            </div>
+            <div class="srow">
+              <div><b>Token erneuern</b><span class="sub2">Danach in allen Agenten neu eintragen</span></div>
+              <button class="btn ghost" onclick={regenerateToken}>Erneuern</button>
+            </div>
+          {/if}
+        </div>
+      </section>
+      {:else if tab === "keys"}
+      <section>
+        <h2>Tastenkürzel</h2>
+        <p class="desc">Klick auf + und drücke die gewünschte Kombination. Eigene Belegungen sind hervorgehoben; ↺ stellt den Standard wieder her.</p>
+        <KeybindingEditor />
+      </section>
+      {:else}
+      <section>
+        <h2>Syntax-Theme</h2>
+        <p class="desc">Färbt Code im Editor, in Markdown-Code-Blöcken, im LaTeX-Editor und die Terminal-Farben. Klick wendet sofort an.</p>
+
+        {#each groups as g (g)}
+          <h3>{g}</h3>
+          <div class="grid">
+            {#each SYNTAX_THEMES.filter((t) => t.group === g) as t (t.id)}
+              <button class="card" class:on={settings.syntaxTheme === t.id} style={themeVars(t)} onclick={() => applySyntaxTheme(t.id)}>
+                <pre class="code"><span class="k">def</span> <span class="f">fib</span>(<span class="d">n</span>: <span class="t">int</span>) <span class="o">-&gt;</span> <span class="t">list</span>:
+    <span class="c"># Fibonacci-Folge</span>
+    <span class="d">xs</span> <span class="o">=</span> [<span class="n">0</span>, <span class="n">1</span>]
+    <span class="k">for</span> _ <span class="k">in</span> <span class="f">range</span>(<span class="d">n</span>):
+        <span class="d">xs</span>.<span class="f">append</span>(<span class="s">"…"</span>)
+    <span class="k">return</span> <span class="p">self</span>.<span class="pr">werte</span></pre>
+                <div class="foot">
+                  <span class="name">{t.name}</span>
+                  <span class="swatches">
+                    {#each t.ansi.slice(1, 7) as c (c)}<i style="background: {c}"></i>{/each}
+                  </span>
+                </div>
+              </button>
+            {/each}
+          </div>
+        {/each}
+      </section>
+      {/if}
+    </div>
+  </div>
+</div>
+
+<style>
+  .overlay { position: fixed; inset: 0; z-index: 80; padding: 14px; background: rgba(0, 0, 0, 0.55); backdrop-filter: blur(18px) saturate(140%); }
+  .sheet { height: 100%; display: flex; flex-direction: column; border-radius: 28px; background: var(--glass); box-shadow: var(--glass-highlight), 0 30px 90px rgba(0, 0, 0, 0.6); overflow: hidden; }
+  header { display: flex; align-items: center; justify-content: space-between; padding: 26px 26px 8px 34px; }
+  h1 { margin: 0; font-size: 32px; font-weight: 750; letter-spacing: -0.025em; }
+  .close { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 50%; color: var(--label); background: rgba(255, 255, 255, 0.08); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08); transition: transform 0.35s cubic-bezier(0.34, 1.56, 0.64, 1), background 0.2s; }
+  .close:hover { background: rgba(255, 255, 255, 0.14); transform: rotate(90deg); }
+  .scroll { flex: 1; overflow: auto; padding: 8px 34px 34px; }
+  /* One centred column for title, tabs and content (wide windows would otherwise spread it). */
+  header, .tabs, .scroll > section { width: 100%; max-width: 900px; margin-left: auto; margin-right: auto; }
+  header { padding-left: 34px; padding-right: 26px; }
+  .tabs { padding-left: 30px; }
+  .tabs { display: flex; gap: 6px; padding: 6px 30px 10px; }
+  .tab { height: 32px; padding: 0 16px; border-radius: 999px; font-size: 13px; font-weight: 600; color: var(--label-2); background: rgba(255, 255, 255, 0.05); transition: background 0.2s, color 0.2s, transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1); }
+  .tab:hover { color: var(--label); background: rgba(255, 255, 255, 0.1); }
+  .tab:active { transform: scale(0.95); }
+  .tab.on { color: #fff; background: linear-gradient(180deg, rgba(255, 255, 255, 0.22), rgba(255, 255, 255, 0.12)); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2); }
+  .box { border-radius: 18px; background: rgba(255, 255, 255, 0.035); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04); padding: 4px; margin-top: 14px; }
+  .srow { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 14px 16px; }
+  .srow + .srow { border-top: 1px solid rgba(255, 255, 255, 0.05); }
+  .srow b { display: block; font-size: 14px; font-weight: 600; }
+  .sub2 { display: block; margin-top: 2px; font-size: 12px; color: var(--label-3); }
+  .switch { position: relative; width: 50px; height: 30px; border-radius: 999px; background: rgba(120, 120, 128, 0.32); transition: background 0.25s; flex-shrink: 0; }
+  .switch span { position: absolute; top: 2px; left: 2px; width: 26px; height: 26px; border-radius: 50%; background: #fff; box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35); transition: transform 0.35s cubic-bezier(0.34, 1.56, 0.64, 1); }
+  .switch.on { background: var(--green); }
+  .switch.on span { transform: translateX(20px); }
+  .stepper { display: flex; align-items: center; gap: 8px; }
+  .stepper button { width: 28px; height: 28px; border-radius: 50%; background: rgba(255, 255, 255, 0.07); color: var(--label); font-size: 15px; transition: background 0.15s, transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1); }
+  .stepper button:hover { background: rgba(255, 255, 255, 0.14); }
+  .stepper button:active { transform: scale(0.88); }
+  .stepper .val { width: 56px; text-align: right; font-variant-numeric: tabular-nums; color: var(--label-2); font-size: 12.5px; }
+  input[type="range"] { width: 180px; padding: 0; height: 4px; appearance: none; background: var(--recess); box-shadow: var(--recess-shadow); border-radius: 999px; }
+  input[type="range"]::-webkit-slider-thumb { appearance: none; width: 20px; height: 20px; border-radius: 50%; background: #fff; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45); cursor: pointer; transition: transform 0.2s; }
+  input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.12); }
+  .seg { display: flex; padding: 3px; border-radius: 999px; background: var(--recess); box-shadow: var(--recess-shadow); }
+  .seg button { height: 28px; padding: 0 14px; border-radius: 999px; font-size: 12.5px; font-weight: 500; color: var(--label-2); transition: background 0.2s, color 0.2s; }
+  .seg button.on { color: #fff; background: rgba(255, 255, 255, 0.16); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.15); }
+  h2.mt { margin-top: 30px; }
+  .rowend { display: flex; align-items: center; gap: 10px; }
+  .btn:disabled { opacity: 0.4; pointer-events: none; }
+  .note { margin: 10px 4px 0; font-size: 11.5px; color: var(--label-3); }
+  .seg.small { display: inline-flex; margin-top: 10px; }
+  .seg.small button { height: 24px; padding: 0 11px; font-size: 12px; }
+  .pill { height: 26px; padding: 0 12px; display: inline-flex; align-items: center; border-radius: 999px; font-size: 12px; color: var(--label-2); background: rgba(255, 255, 255, 0.06); white-space: nowrap; }
+  .pill.ok { color: #fff; background: rgba(123, 191, 142, 0.35); }
+  .btn { height: 30px; padding: 0 14px; border-radius: 999px; font-size: 12.5px; font-weight: 600; color: #fff; background: linear-gradient(180deg, rgba(255, 255, 255, 0.2), rgba(255, 255, 255, 0.1)); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18); white-space: nowrap; transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), background 0.2s; }
+  .btn:hover { background: linear-gradient(180deg, rgba(255, 255, 255, 0.26), rgba(255, 255, 255, 0.14)); }
+  .btn:active { transform: scale(0.94); }
+  .btn.ghost { background: rgba(255, 255, 255, 0.06); box-shadow: none; color: var(--label-2); }
+  .col { display: flex; flex-direction: column; gap: 6px; align-items: stretch; }
+  .grow { flex: 1; min-width: 0; }
+  .cmd { display: block; margin-top: 8px; padding: 8px 10px; border-radius: 10px; background: var(--recess); font-family: var(--mono); font-size: 11.5px; color: var(--label-2); word-break: break-all; user-select: text; }
+  .kbd { font-family: var(--mono); font-size: 12px; color: var(--label-2); padding: 4px 10px; border-radius: 8px; background: rgba(255, 255, 255, 0.06); }
+  .port { width: 90px; height: 30px; border-radius: 10px; background: var(--recess); box-shadow: var(--recess-shadow); color: var(--label); padding: 0 10px; font-variant-numeric: tabular-nums; }
+  h2 { margin: 12px 0 4px; font-size: 20px; font-weight: 700; }
+  .desc { margin: 0 0 8px; color: var(--label-2); font-size: 13px; }
+  h3 { margin: 22px 2px 10px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--label-2); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
+  .card {
+    display: flex;
+    flex-direction: column;
+    text-align: left;
+    border-radius: 20px;
+    background: rgba(0, 0, 0, 0.32);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 0 0 1px rgba(255, 255, 255, 0.05);
+    overflow: hidden;
+    transition: transform 0.35s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.25s;
+  }
+  .card:hover { transform: translateY(-3px); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07), 0 0 0 1px rgba(255, 255, 255, 0.12), 0 14px 30px rgba(0, 0, 0, 0.4); }
+  .card:active { transform: scale(0.98); }
+  .card.on { box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 0 0 2px rgba(255, 255, 255, 0.55), 0 14px 30px rgba(0, 0, 0, 0.4); }
+  .code { margin: 0; padding: 16px 18px 12px; font-family: var(--mono); font-size: 12px; line-height: 1.6; color: var(--syn-plain); white-space: pre; overflow: hidden; }
+  .k { color: var(--syn-keyword); font-weight: 600; }
+  .f { color: var(--syn-function); }
+  .d { color: var(--syn-definition); }
+  .t { color: var(--syn-type); }
+  .o { color: var(--syn-operator); }
+  .c { color: var(--syn-comment); font-style: italic; }
+  .n { color: var(--syn-number); }
+  .s { color: var(--syn-string); }
+  .p { color: var(--syn-keyword); }
+  .pr { color: var(--syn-property); }
+  .foot { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px 12px; border-top: 1px solid rgba(255, 255, 255, 0.05); background: rgba(255, 255, 255, 0.025); }
+  .name { font-weight: 600; font-size: 13px; }
+  .swatches { display: flex; gap: 4px; }
+  .swatches i { width: 10px; height: 10px; border-radius: 50%; }
+  /* No open animation: any fade over the blurred backdrop flashes the editor in WebKitGTK. */
+</style>

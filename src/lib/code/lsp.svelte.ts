@@ -1,0 +1,341 @@
+/** Minimal LSP client: one server process per (server kind, project root), full-text document sync. */
+import { invoke } from "@tauri-apps/api/core";
+import { onRpc } from "../rpc";
+import { ui } from "../ui.svelte";
+import { fsApi, dirname, joinPath } from "../api";
+import type { LangInfo } from "./languages";
+
+type Json = any;
+
+export type ServerKind = NonNullable<LangInfo["server"]>;
+export type ServerStatus = "starting" | "ready" | "missing" | "installing" | "error" | "stopped";
+
+export const lspState = $state({
+  status: {} as Record<string, ServerStatus>,
+  message: {} as Record<string, string>,
+});
+
+export const fileUri = (path: string) => "file://" + path.split("/").map(encodeURIComponent).join("/");
+export const uriPath = (uri: string) => decodeURIComponent(uri.replace(/^file:\/\//, ""));
+
+export class LspClient {
+  readonly id: string;
+  private seq = 1;
+  private pending = new Map<number, { resolve: (v: Json) => void; reject: (e: Error) => void }>();
+  capabilities: Json = {};
+  ready: Promise<void>;
+  /** uri -> version of what the server has */
+  docs = new Map<string, { version: number; text: string }>();
+  diagnostics = new Map<string, Json[]>();
+  diagnosticListeners = new Set<(uri: string) => void>();
+  alive = true;
+  stopping = false;
+
+  constructor(readonly kind: ServerKind, readonly root: string, cmd: string, args: string[], readonly initOptions?: Json) {
+    this.id = `lsp-${kind}-${Math.random().toString(36).slice(2, 8)}`;
+    const tail: string[] = [];
+    onRpc(this.id, {
+      message: (m) => this.handle(m),
+      stderr: (line) => {
+        tail.push(line);
+        if (tail.length > 6) tail.shift();
+      },
+      exit: () => {
+        this.alive = false;
+        lspState.status[this.key] = "stopped";
+        lspState.message[this.key] = tail.join("\n");
+        clients.delete(this.key);
+        if (!this.stopping) ui.toast(`Language Server (${this.kind}) wurde beendet${tail.length ? ": " + tail[tail.length - 1] : ""}`, "error");
+      },
+    });
+    this.ready = this.start(cmd, args);
+  }
+
+  get key() {
+    return `${this.kind}|${this.root}`;
+  }
+
+  private async start(cmd: string, args: string[]) {
+    lspState.status[this.key] = "starting";
+    await invoke("proc_spawn", { id: this.id, cmd, args, cwd: this.root });
+    const res = await this.request("initialize", {
+      processId: null,
+      rootUri: fileUri(this.root),
+      rootPath: this.root,
+      workspaceFolders: [{ uri: fileUri(this.root), name: this.root.split("/").pop() }],
+      clientInfo: { name: "Studio" },
+      capabilities: {
+        general: { positionEncodings: ["utf-16"] },
+        textDocument: {
+          synchronization: { didSave: true, dynamicRegistration: false },
+          completion: {
+            completionItem: {
+              snippetSupport: true,
+              documentationFormat: ["markdown", "plaintext"],
+              insertReplaceSupport: true,
+              labelDetailsSupport: true,
+              resolveSupport: { properties: ["documentation", "detail", "additionalTextEdits"] },
+            },
+            contextSupport: true,
+          },
+          hover: { contentFormat: ["markdown", "plaintext"] },
+          signatureHelp: { signatureInformation: { documentationFormat: ["markdown", "plaintext"], parameterInformation: { labelOffsetSupport: true } } },
+          definition: { linkSupport: true },
+          formatting: {},
+          publishDiagnostics: { relatedInformation: false },
+        },
+        workspace: { configuration: true, workspaceFolders: true },
+        window: { workDoneProgress: true },
+      },
+      initializationOptions: this.initOptions ?? (this.kind === "rust" ? { checkOnSave: true } : undefined),
+    });
+    this.capabilities = res?.capabilities ?? {};
+    this.notify("initialized", {});
+    lspState.status[this.key] = "ready";
+  }
+
+  private send(msg: Json) {
+    return invoke("proc_send", { id: this.id, msg: JSON.stringify({ jsonrpc: "2.0", ...msg }) });
+  }
+
+  request<T = Json>(method: string, params: Json, timeoutMs = 15000): Promise<T> {
+    const id = this.seq++;
+    return new Promise<T>((resolve, reject) => {
+      this.pending.set(id, { resolve, reject });
+      this.send({ id, method, params }).catch((e) => {
+        this.pending.delete(id);
+        reject(e);
+      });
+      setTimeout(() => {
+        if (this.pending.delete(id)) reject(new Error(`${method}: Timeout`));
+      }, timeoutMs);
+    });
+  }
+
+  notify(method: string, params: Json) {
+    if (!this.alive) return;
+    this.send({ method, params }).catch(() => {});
+  }
+
+  private handle(msg: Json) {
+    if (msg.id !== undefined && !msg.method) {
+      const p = this.pending.get(msg.id);
+      if (!p) return;
+      this.pending.delete(msg.id);
+      if (msg.error) p.reject(new Error(msg.error.message));
+      else p.resolve(msg.result);
+      return;
+    }
+    if (msg.id !== undefined && msg.method) {
+      // Requests from the server.
+      let result: Json = null;
+      if (msg.method === "workspace/configuration") result = (msg.params?.items ?? []).map(() => null);
+      else if (msg.method === "workspace/workspaceFolders") result = [{ uri: fileUri(this.root), name: this.root }];
+      else if (msg.method === "workspace/applyEdit") result = { applied: false };
+      this.send({ id: msg.id, result });
+      return;
+    }
+    if (msg.method === "textDocument/publishDiagnostics") {
+      this.diagnostics.set(msg.params.uri, msg.params.diagnostics);
+      for (const l of this.diagnosticListeners) l(msg.params.uri);
+    } else if (msg.method === "window/showMessage" && msg.params?.type <= 2) {
+      lspState.message[this.key] = msg.params.message;
+    }
+  }
+
+  // ---------------------------------------------------------- documents
+
+  open(uri: string, languageId: string, text: string) {
+    const d = this.docs.get(uri);
+    if (d) return this.change(uri, text);
+    this.docs.set(uri, { version: 1, text });
+    this.notify("textDocument/didOpen", { textDocument: { uri, languageId, version: 1, text } });
+  }
+
+  change(uri: string, text: string) {
+    const d = this.docs.get(uri);
+    if (!d || d.text === text) return;
+    d.version++;
+    d.text = text;
+    this.notify("textDocument/didChange", { textDocument: { uri, version: d.version }, contentChanges: [{ text }] });
+  }
+
+  save(uri: string, text: string) {
+    if (this.docs.has(uri)) this.notify("textDocument/didSave", { textDocument: { uri }, text });
+  }
+
+  close(uri: string) {
+    if (!this.docs.delete(uri)) return;
+    this.notify("textDocument/didClose", { textDocument: { uri } });
+  }
+
+  stop() {
+    this.stopping = true;
+    this.request("shutdown", null, 2000)
+      .catch(() => {})
+      .finally(() => {
+        this.notify("exit", null);
+        setTimeout(() => invoke("proc_kill", { id: this.id }), 300);
+      });
+  }
+}
+
+// ---------------------------------------------------------- server registry
+
+const clients = new Map<string, LspClient>();
+const starting = new Map<string, Promise<LspClient | null>>();
+
+const ROOT_MARKERS: Record<ServerKind, string[]> = {
+  python: ["pyproject.toml", "setup.py", "requirements.txt", ".git"],
+  clangd: ["compile_commands.json", "CMakeLists.txt", "Makefile", ".git"],
+  java: ["settings.gradle", "settings.gradle.kts", "build.gradle", "build.gradle.kts", "pom.xml", ".git"],
+  typescript: ["tsconfig.json", "jsconfig.json", "package.json", ".git"],
+  rust: ["Cargo.toml"],
+};
+
+/** Walks up from the file to find the project root (stops at the workspace root's parent). */
+export async function findRoot(file: string, markers: string[], workspace: string | null): Promise<string> {
+  let dir = dirname(file);
+  const stop = workspace ? dirname(workspace) : "/";
+  const candidates: string[] = [];
+  while (dir && dir !== stop && dir !== "/") {
+    for (const m of markers) if (await fsApi.exists(joinPath(dir, m))) candidates.push(dir);
+    if (candidates.length && markers[0] !== "Cargo.toml") break;
+    dir = dirname(dir);
+  }
+  // For Cargo workspaces the outermost Cargo.toml is the root.
+  return candidates.length ? candidates[candidates.length - 1] : (workspace ?? dirname(file));
+}
+
+let toolsDirCache: string | null = null;
+export async function toolsDir() {
+  return (toolsDirCache ??= await invoke<string>("tools_dir"));
+}
+
+/** java-debug plugin jars (loaded into jdtls as bundles to enable Java debugging). */
+export async function javaDebugBundles(): Promise<string[]> {
+  try {
+    return (await fsApi.listDir(`${await toolsDir()}/java-debug`)).filter((e) => e.name.endsWith(".jar")).map((e) => e.path);
+  } catch {
+    return [];
+  }
+}
+
+async function resolveCommand(kind: ServerKind, root: string): Promise<{ cmd: string; args: string[]; init?: Json } | null> {
+  const tools = await toolsDir();
+  const which = (c: string) => invoke<string | null>("which_cmd", { cmd: c });
+  const first = async (...cands: string[]) => {
+    for (const c of cands) {
+      const p = await which(c);
+      if (p) return p;
+    }
+    return null;
+  };
+  switch (kind) {
+    case "python": {
+      const cmd = await first(`${tools}/python/node_modules/.bin/basedpyright-langserver`, "basedpyright-langserver", "pyright-langserver");
+      return cmd ? { cmd, args: ["--stdio"] } : null;
+    }
+    case "typescript": {
+      const cmd = await first(`${tools}/typescript/node_modules/.bin/typescript-language-server`, "typescript-language-server");
+      return cmd ? { cmd, args: ["--stdio"] } : null;
+    }
+    case "clangd": {
+      const cmd = await first("clangd");
+      return cmd ? { cmd, args: ["--background-index", "--clang-tidy", "--header-insertion=never", "--completion-style=detailed"] } : null;
+    }
+    case "rust": {
+      const ok = await invoke<boolean>("cmd_works", { cmd: "rust-analyzer" });
+      return ok ? { cmd: "rust-analyzer", args: [] } : null;
+    }
+    case "java": {
+      const cmd = await first(`${tools}/jdtls/bin/jdtls`, "jdtls");
+      let h = 0;
+      for (const c of root) h = (h * 31 + c.charCodeAt(0)) | 0;
+      const bundles = await javaDebugBundles();
+      return cmd ? { cmd, args: ["-data", `${tools}/jdtls-workspace/${(h >>> 0).toString(16)}`], init: bundles.length ? { bundles } : undefined } : null;
+    }
+  }
+}
+
+export const INSTALLABLE: Partial<Record<ServerKind, string>> = {
+  python: "basedpyright (Python)",
+  typescript: "typescript-language-server (JS/TS)",
+  java: "Eclipse JDT Language Server (Java)",
+  rust: "rust-analyzer (über rustup)",
+};
+
+/**
+ * Returns a running client for this file's server, starting it if necessary.
+ * `askInstall` is called when the server is missing; it should return true to install.
+ */
+export async function clientFor(
+  lang: LangInfo,
+  file: string,
+  workspace: string | null,
+  askInstall: (kind: ServerKind, name: string) => Promise<boolean>,
+  /** Java: make sure jdtls runs with the java-debug bundle (restarts it if needed). */
+  needDebug = false,
+): Promise<LspClient | null> {
+  const kind = lang.server;
+  if (!kind) return null;
+  const root = await findRoot(file, ROOT_MARKERS[kind], workspace);
+  const key = `${kind}|${root}`;
+  const existing = clients.get(key);
+  if (existing && needDebug && kind === "java" && !existing.initOptions?.bundles) {
+    existing.stop();
+    clients.delete(key);
+  } else if (existing) return existing.ready.then(() => existing);
+  if (starting.has(key)) return starting.get(key)!;
+
+  const p = (async () => {
+    let cmd = await resolveCommand(kind, root);
+    if (!cmd) {
+      lspState.status[key] = "missing";
+      const name = INSTALLABLE[kind];
+      if (!name || !(await askInstall(kind, name))) return null;
+      lspState.status[key] = "installing";
+      try {
+        await invoke("install_server", { kind });
+      } catch (e) {
+        lspState.status[key] = "error";
+        lspState.message[key] = String(e);
+        ui.toast(`Installation fehlgeschlagen: ${e}`, "error");
+        return null;
+      }
+      cmd = await resolveCommand(kind, root);
+      if (!cmd) return null;
+    }
+    const c = new LspClient(kind, root, cmd.cmd, cmd.args, cmd.init);
+    clients.set(key, c);
+    try {
+      await c.ready;
+      return c;
+    } catch (e) {
+      lspState.status[key] = "error";
+      lspState.message[key] = String(e);
+      clients.delete(key);
+      ui.toast(`Language Server (${kind}) konnte nicht starten: ${e}`, "error");
+      return null;
+    }
+  })();
+  starting.set(key, p);
+  const r = await p;
+  starting.delete(key);
+  return r;
+}
+
+export function allClients() {
+  return [...clients.values()];
+}
+
+export function statusFor(lang: LangInfo | null, file: string | null): { status: ServerStatus | null; message?: string } {
+  if (!lang?.server || !file) return { status: null };
+  // Find the client whose root contains the file (most specific).
+  let best: string | null = null;
+  for (const key of Object.keys(lspState.status)) {
+    const [kind, root] = key.split("|");
+    if (kind === lang.server && file.startsWith(root + "/") && (!best || root.length > best.split("|")[1].length)) best = key;
+  }
+  return best ? { status: lspState.status[best], message: lspState.message[best] } : { status: null };
+}
