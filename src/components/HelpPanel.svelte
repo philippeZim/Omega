@@ -5,6 +5,7 @@
   import { allSheets, sheetIdFor, type Sheet } from "../lib/help";
   import { COMMANDS, keysFor, keymapState } from "../lib/commands.svelte";
   import { formatKey } from "../lib/keys";
+  import { t } from "../lib/i18n/index.svelte";
 
   /** Shortcuts are generated from the command registry, so custom bindings show up here. */
   function shortcutsSheet(): Sheet {
@@ -17,25 +18,26 @@
       groups.get(c.group)!.push([keys.map(formatKey).join("  ·  "), c.label + (c.modes ? ` (${c.modes.join(", ")})` : "")]);
     }
     const mouse: [string, string][] = [
-      ["Alt + Klick", "Weiteren Cursor setzen"],
-      ["Alt + Ziehen", "Rechteck-Auswahl (Block)"],
-      ["Strg + Klick", "Gehe zu Definition (Code)"],
-      ["Rechtsklick auf Wort", "Rechtschreib-Vorschläge"],
-      ["Klick links der Zeilennr.", "Breakpoint (Code)"],
-      ["Mittelklick auf Tab", "Tab schließen"],
+      [t("help.altClick"), t("help.altClickDesc")],
+      [t("help.altDrag"), t("help.altDragDesc")],
+      [t("help.ctrlClick"), t("help.ctrlClickDesc")],
+      [t("help.rightClickWord"), t("help.rightClickWordDesc")],
+      [t("help.gutterClick"), t("help.gutterClickDesc")],
+      [t("help.middleClickTab"), t("help.middleClickTabDesc")],
     ];
-    return { title: "Shortcuts", sections: [...[...groups].map(([title, rows]) => ({ title, rows })), { title: "Maus", rows: mouse }] };
+    return { title: t("help.shortcuts"), sections: [...[...groups].map(([title, rows]) => ({ title, rows })), { title: t("help.mouse"), rows: mouse }] };
   }
   import { langFor } from "../lib/code/languages";
   import * as ed from "../lib/editor";
 
-  const sheets = allSheets();
+  /** Re-localized when the UI language changes (allSheets reads i18n.locale). */
+  const sheets = $derived(allSheets());
   let selected = $state(sheetIdFor(app.mode, langFor(activeTab()?.path ?? null)?.id ?? null));
   let filter = $state("");
   let input: HTMLInputElement | undefined = $state();
   const q = $derived(filter.trim().toLowerCase());
   const shortcuts = $derived(shortcutsSheet());
-  const current = $derived(selected === "shortcuts" ? shortcuts : (sheets.find((s) => s.id === selected)?.sheet ?? sheets[0].sheet));
+  const current = $derived(selected === "shortcuts" ? shortcuts : (sheets.find((s) => s.id === selected)?.sheet ?? shortcuts));
   /** Filtered once per keystroke; empty sections are dropped without re-creating the others. */
   const visibleSections = $derived(
     current.sections
@@ -61,15 +63,15 @@
 
 <svelte:window onkeydown={onKey} />
 
-<div class="overlay" role="dialog" aria-label="Cheat Sheet">
+<div class="overlay" role="dialog" aria-label={t("help.cheatSheet")}>
   <div class="sheet">
     <header>
       <div class="title">
         <h1>{current.title}</h1>
-        <span class="sub">Cheat Sheet</span>
+        <span class="sub">{t("help.cheatSheet")}</span>
       </div>
-      <input bind:this={input} class="search" placeholder="Suchen…" bind:value={filter} spellcheck="false" />
-      <button class="close" onclick={close} aria-label="Schließen" title="Schließen (Esc)">
+      <input bind:this={input} class="search" placeholder={t("help.search")} bind:value={filter} spellcheck="false" />
+      <button class="close" onclick={close} aria-label={t("common.close")} title={t("help.closeEsc")}>
         <svg width="12" height="12" viewBox="0 0 10 10"><path d="M1.5 1.5l7 7M8.5 1.5l-7 7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
       </button>
     </header>
@@ -98,7 +100,7 @@
         {/each}
       </div>
       {#if q && !current.sections.some((sec) => sec.rows.some(([a, b]) => a.toLowerCase().includes(q) || b.toLowerCase().includes(q)))}
-        <p class="none">Keine Treffer für „{filter}“.</p>
+        <p class="none">{t("help.noMatches", { q: filter })}</p>
       {/if}
     </div>
   </div>
@@ -110,7 +112,7 @@
     inset: 0;
     z-index: 80;
     padding: 14px;
-    background: rgba(0, 0, 0, 0.55);
+    background: var(--scrim);
     backdrop-filter: blur(18px) saturate(140%);
     user-select: text;
   }
@@ -137,11 +139,11 @@
     place-items: center;
     border-radius: 50%;
     color: var(--label);
-    background: rgba(255, 255, 255, 0.08);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    background: rgba(var(--fg-rgb), 0.08);
+    box-shadow: inset 0 1px 0 rgba(var(--hl-rgb), 0.08);
     transition: transform 0.35s cubic-bezier(0.34, 1.56, 0.64, 1), background 0.2s;
   }
-  .close:hover { background: rgba(255, 255, 255, 0.14); transform: rotate(90deg); }
+  .close:hover { background: rgba(var(--fg-rgb), 0.14); transform: rotate(90deg); }
   .close:active { transform: rotate(90deg) scale(0.9); }
 
   .chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 4px 30px 16px; }
@@ -152,13 +154,13 @@
     font-size: 12.5px;
     font-weight: 600;
     color: var(--label-2);
-    background: rgba(255, 255, 255, 0.05);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    background: rgba(var(--fg-rgb), 0.05);
+    box-shadow: inset 0 1px 0 rgba(var(--hl-rgb), 0.05);
     transition: background 0.2s, color 0.2s, transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
   }
-  .chip:hover { color: var(--label); background: rgba(255, 255, 255, 0.1); transform: translateY(-1px); }
+  .chip:hover { color: var(--label); background: rgba(var(--fg-rgb), 0.1); transform: translateY(-1px); }
   .chip:active { transform: scale(0.94); }
-  .chip.on { color: #fff; background: linear-gradient(180deg, rgba(255, 255, 255, 0.22), rgba(255, 255, 255, 0.12)); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2), 0 4px 12px rgba(0, 0, 0, 0.35); }
+  .chip.on { color: var(--label); background: var(--raised-bg); box-shadow: var(--raised-shadow); }
 
   .scroll { flex: 1; overflow: auto; padding: 4px 26px 30px; }
   .columns { columns: 360px; column-gap: 16px; }
@@ -167,13 +169,13 @@
     margin-bottom: 16px;
     padding: 14px 6px 6px;
     border-radius: 20px;
-    background: rgba(255, 255, 255, 0.04);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    background: rgba(var(--fg-rgb), 0.04);
+    box-shadow: inset 0 1px 0 rgba(var(--hl-rgb), 0.05);
   }
   h3 { margin: 0 12px 8px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--label-2); }
   .row { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 14px; padding: 8px 12px; border-radius: 12px; font-size: 13px; align-items: baseline; }
-  .row:hover { background: rgba(255, 255, 255, 0.05); }
-  .row + .row { border-top: 1px solid rgba(255, 255, 255, 0.04); }
+  .row:hover { background: rgba(var(--fg-rgb), 0.05); }
+  .row + .row { border-top: 1px solid rgba(var(--fg-rgb), 0.04); }
   code { font-family: var(--mono); font-size: 12.5px; color: var(--teal); white-space: pre-wrap; word-break: break-word; }
   .row span { color: var(--label-2); }
   .none { color: var(--label-3); padding: 20px 8px; }

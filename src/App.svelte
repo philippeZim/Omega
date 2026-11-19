@@ -43,15 +43,16 @@
   import { handleGlobalKey, palette } from "./lib/commands.svelte";
   import { app } from "./lib/state.svelte";
   import { ui } from "./lib/ui.svelte";
+  import { t } from "./lib/i18n/index.svelte";
 
-  setConditionHook((current) => ui.prompt("Breakpoint-Bedingung (leer = keine)", current, "z.B. i == 5"));
+  setConditionHook((current) => ui.prompt(t("app.breakpointCondition"), current, t("app.breakpointConditionPlaceholder")));
 
   import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { openFile, setRoot } from "./lib/state.svelte";
   import { fsApi } from "./lib/api";
 
-  // `studio <ordner|datei>…` opens folders as workspace and files as tabs.
+  // `studio <folder|file>…` opens folders as workspace and files as tabs.
   onMount(async () => {
     for (const p of await invoke<string[]>("cli_paths")) {
       try {

@@ -5,6 +5,7 @@
   import { fsApi, joinPath, basename } from "../lib/api";
   import { latex } from "../lib/latex/controller.svelte";
   import * as ed from "../lib/editor";
+  import { t } from "../lib/i18n/index.svelte";
 
   import ChangesPanel from "./ChangesPanel.svelte";
   import RemoteTree from "./RemoteTree.svelte";
@@ -30,7 +31,7 @@
 
   async function newEntry(dir: boolean) {
     if (!app.root) return;
-    const name = await ui.prompt(dir ? "Neuer Ordner" : "Neue Datei", "", dir ? "ordnername" : "datei.txt");
+    const name = await ui.prompt(dir ? t("app.newFolder") : t("app.newFile"), "", dir ? t("app.folderNamePlaceholder") : t("app.fileNamePlaceholder"));
     if (!name) return;
     const p = joinPath(app.root, name);
     try {
@@ -58,28 +59,28 @@
   function rootMenu(e: MouseEvent) {
     if (!app.root) return;
     ui.openMenu(e, [
-      { label: "Neue Datei", action: () => newEntry(false) },
-      { label: "Neuer Ordner", action: () => newEntry(true) },
+      { label: t("app.newFile"), action: () => newEntry(false) },
+      { label: t("app.newFolder"), action: () => newEntry(true) },
       { separator: true, label: "" },
-      { label: "Aktualisieren", action: () => app.treeVersion++ },
-      { label: "Ordner schließen", action: () => setRoot(null) },
+      { label: t("app.refresh"), action: () => app.treeVersion++ },
+      { label: t("app.closeFolder"), action: () => setRoot(null) },
     ]);
   }
 </script>
 
 <aside class="sidebar glass" style="width: {width}px">
   <div class="switch" style="--n: {app.mode === 'latex' ? 3 : 2}">
-    <button class:on={app.sidebarView === "files"} onclick={() => (app.sidebarView = "files")}>Dateien</button>
+    <button class:on={app.sidebarView === "files"} onclick={() => (app.sidebarView = "files")}>{t("app.files")}</button>
     <button class:on={showChanges} onclick={() => { app.sidebarView = "changes"; gitRefresh(); }}>
-      Änderungen{#if git.changes.length}<span class="count">{git.changes.length}</span>{/if}
+      {t("app.changes")}{#if git.changes.length}<span class="count">{git.changes.length}</span>{/if}
     </button>
     {#if app.mode === "latex"}
-      <button class:on={showOutline} onclick={() => (app.sidebarView = "outline")}>Gliederung</button>
+      <button class:on={showOutline} onclick={() => (app.sidebarView = "outline")}>{t("app.outline")}</button>
     {/if}
   </div>
   {#if guestView && app.sidebarView === "files"}
     <div class="head">
-      <span class="label">Host · {share.hostRoot || "Projekt"}</span>
+      <span class="label">{t("app.hostLabel", { name: share.hostRoot || t("app.project") })}</span>
     </div>
     <div class="tree" role="tree">
       <RemoteTree />
@@ -94,17 +95,17 @@
           <span class="oline">{item.line}</span>
         </button>
       {:else}
-        <p class="hint" style="padding: 16px">Keine Abschnitte (\section{"{…}"}) gefunden.</p>
+        <p class="hint" style="padding: 16px">{t("app.noSections")}</p>
       {/each}
     </div>
   {:else if app.root}
     <div class="head">
       <span class="label">{basename(app.root)}</span>
       <div class="actions">
-        <button title="Neue Datei" onclick={() => newEntry(false)} aria-label="Neue Datei">
+        <button title={t("app.newFile")} onclick={() => newEntry(false)} aria-label={t("app.newFile")}>
           <svg width="14" height="14" viewBox="0 0 14 14"><path d="M7 2.5v9M2.5 7h9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
         </button>
-        <button title="Neuer Ordner" onclick={() => newEntry(true)} aria-label="Neuer Ordner">
+        <button title={t("app.newFolder")} onclick={() => newEntry(true)} aria-label={t("app.newFolder")}>
           <svg width="15" height="14" viewBox="0 0 15 14"><path d="M1.5 3.5a1 1 0 0 1 1-1h3l1.3 1.5h5.7a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1h-10a1 1 0 0 1-1-1z" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
         </button>
       </div>
@@ -116,9 +117,9 @@
     </div>
   {:else}
     <div class="empty">
-      <p>Kein Ordner geöffnet</p>
-      <button class="btn primary" onclick={openFolder}>Ordner öffnen</button>
-      <span class="hint">Strg+O</span>
+      <p>{t("app.noFolderOpen")}</p>
+      <button class="btn primary" onclick={openFolder}>{t("app.openFolder")}</button>
+      <span class="hint">{t("app.ctrl")}+O</span>
     </div>
   {/if}
   <div class="resizer" role="separator" onpointerdown={startResize}></div>
@@ -179,8 +180,8 @@
     box-shadow: var(--recess-shadow);
   }
   .switch button { height: 26px; border-radius: 999px; font-size: 12px; font-weight: 500; color: var(--label-2); }
-  .count { margin-left: 5px; padding: 0 5px; border-radius: 999px; font-size: 10px; background: rgba(255, 255, 255, 0.14); }
-  .switch button.on { background: rgba(255, 255, 255, 0.14); color: var(--label); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12); }
+  .count { margin-left: 5px; padding: 0 5px; border-radius: 999px; font-size: 10px; background: rgba(var(--fg-rgb), 0.14); }
+  .switch button.on { color: var(--label); background: var(--raised-bg); box-shadow: var(--raised-shadow); }
   .outline { flex: 1; overflow: auto; padding: 10px 10px 20px; }
   .oitem { width: 100%; display: flex; gap: 8px; align-items: center; height: 30px; padding-right: 10px; border-radius: 10px; text-align: left; color: var(--label-2); }
   .oitem.top { color: var(--label); font-weight: 600; }

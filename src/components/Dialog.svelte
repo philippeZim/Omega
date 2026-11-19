@@ -66,7 +66,7 @@
     z-index: 100;
     display: grid;
     place-items: center;
-    background: rgba(0, 0, 0, 0.55);
+    background: var(--scrim);
     animation: fade 0.15s ease-out;
   }
   .alert {
@@ -84,8 +84,8 @@
   p { margin: 6px 0 0; font-size: 12.5px; color: var(--label-2); line-height: 1.4; }
   input { width: 100%; margin-top: 14px; }
   .buttons { display: grid; grid-template-columns: repeat(var(--n), 1fr); gap: 8px; padding: 0 14px 14px; }
-  .buttons button { height: 38px; border-radius: 999px; font-size: 13.5px; font-weight: 500; background: rgba(255, 255, 255, 0.08); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06); }
-  .buttons button:hover { background: rgba(255, 255, 255, 0.14); }
+  .buttons button { height: 38px; border-radius: 999px; font-size: 13.5px; font-weight: 500; background: rgba(var(--fg-rgb), 0.08); box-shadow: inset 0 1px 0 rgba(var(--hl-rgb), 0.06); }
+  .buttons button:hover { background: rgba(var(--fg-rgb), 0.14); }
   .buttons button.primary { font-weight: 600; background: var(--accent); color: white; }
   .buttons button.danger { color: var(--red); }
   @keyframes fade { from { opacity: 0; } }

@@ -3,6 +3,7 @@ import { RangeSet, StateEffect, StateField, Text, type Extension } from "@codemi
 import { EditorView, GutterMarker, ViewPlugin, gutter } from "@codemirror/view";
 import { Chunk } from "@codemirror/merge";
 import { invoke } from "@tauri-apps/api/core";
+import { t } from "../i18n/index.svelte";
 
 type Kind = "added" | "modified" | "deleted";
 
@@ -119,7 +120,7 @@ export function gitGutter(path: string): Extension {
           if (!chunk) return false;
           hooks.menu(e as MouseEvent, [
             {
-              label: "Änderung zurücksetzen",
+              label: t("git.revertChange"),
               danger: true,
               action: () => {
                 const doc = view.state.doc;
@@ -128,7 +129,7 @@ export function gitGutter(path: string): Extension {
                 view.dispatch({ changes: { from: chunk.fromB, to, insert: chunk.toB > doc.length && original.endsWith("\n") ? original.slice(0, -1) : original } });
               },
             },
-            { label: "Unterschiede anzeigen", action: () => hooks.showDiff(path) },
+            { label: t("git.showDiff"), action: () => hooks.showDiff(path) },
           ]);
           return true;
         },

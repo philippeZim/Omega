@@ -4,6 +4,7 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { app, setRoot, openFile, save, syncFromDisk } from "../state.svelte";
 import { ui } from "../ui.svelte";
 import { joinPath, fsApi } from "../api";
+import { t, type Key } from "../i18n/index.svelte";
 
 export interface Change {
   path: string;
@@ -39,14 +40,14 @@ interface Out {
 }
 
 export async function run(args: string[], root = git.top || app.root): Promise<Out> {
-  if (!root) throw new Error("Kein Ordner geöffnet");
+  if (!root) throw new Error(t("git.noFolderOpen"));
   return invoke<Out>("git", { root, args });
 }
 
-async function runOk(args: string[], what: string): Promise<Out | null> {
+async function runOk(args: string[], what: Key): Promise<Out | null> {
   const r = await run(args);
   if (r.code !== 0) {
-    ui.toast(`${what} fehlgeschlagen: ${(r.stderr || r.stdout).trim().split("\n").slice(-2).join(" ")}`, "error");
+    ui.toast(t("git.failed", { what: t(what), msg: (r.stderr || r.stdout).trim().split("\n").slice(-2).join(" ") }), "error");
     return null;
   }
   return r;
@@ -78,7 +79,7 @@ export async function refresh() {
   }
 }
 
-/** Display status of a change: neu / geändert / gelöscht / umbenannt / Konflikt. */
+/** Display status of a change: new / modified / deleted / renamed / conflict. */
 export function kind(c: Change): "new" | "modified" | "deleted" | "renamed" | "conflict" {
   if (c.x === "U" || c.y === "U" || (c.x === "A" && c.y === "A") || (c.x === "D" && c.y === "D")) return "conflict";
   if (c.x === "?" || c.x === "A") return "new";
@@ -97,17 +98,17 @@ async function saveAll() {
 
 export async function commit(andPush: boolean) {
   const files = git.changes.filter((c) => !git.excluded.includes(c.path));
-  if (!files.length) return ui.toast("Keine Dateien ausgewählt", "error");
-  if (!git.message.trim()) return ui.toast("Bitte eine Commit-Nachricht eingeben", "error");
+  if (!files.length) return ui.toast(t("git.noFilesSelected"), "error");
+  if (!git.message.trim()) return ui.toast(t("git.enterMessage"), "error");
   await saveAll();
-  git.busy = "Commit …";
+  git.busy = t("git.busy.commit");
   try {
     // Commit exactly the ticked files (like PyCharm): reset the index, stage the selection.
     await run(["reset", "-q"]);
     const paths = files.flatMap((c) => (c.orig ? [c.orig, c.path] : [c.path]));
-    if (!(await runOk(["add", "-A", "--", ...paths], "Hinzufügen"))) return;
-    if (!(await runOk(["commit", "-q", "-m", git.message.trim()], "Commit"))) return;
-    ui.toast(`${files.length} ${files.length === 1 ? "Datei" : "Dateien"} committet`);
+    if (!(await runOk(["add", "-A", "--", ...paths], "git.op.add"))) return;
+    if (!(await runOk(["commit", "-q", "-m", git.message.trim()], "git.op.commit"))) return;
+    ui.toast(t(files.length === 1 ? "git.committedOne" : "git.committedMany", { n: files.length }));
     git.message = "";
     git.excluded = [];
     git.headVersion++;
@@ -120,11 +121,11 @@ export async function commit(andPush: boolean) {
 
 export async function push() {
   if (!git.repo) return;
-  git.busy = "Push …";
+  git.busy = t("git.busy.push");
   try {
     const args = git.upstream ? ["push"] : ["push", "-u", "origin", git.branch];
-    const r = await runOk(args, "Push");
-    if (r) ui.toast(`Gepusht nach ${git.upstream ?? "origin/" + git.branch}`);
+    const r = await runOk(args, "git.op.push");
+    if (r) ui.toast(t("git.pushedTo", { ref: git.upstream ?? "origin/" + git.branch }));
   } finally {
     git.busy = "";
     await refresh();
@@ -134,11 +135,11 @@ export async function push() {
 export async function pull() {
   if (!git.repo) return;
   await saveAll();
-  git.busy = "Pull …";
+  git.busy = t("git.busy.pull");
   try {
-    const r = await runOk(["pull", "--autostash", "--no-edit"], "Pull");
+    const r = await runOk(["pull", "--autostash", "--no-edit"], "git.op.pull");
     if (r) {
-      const msg = /Already up to date/.test(r.stdout) ? "Bereits aktuell" : "Aktualisiert";
+      const msg = /Already up to date/.test(r.stdout) ? t("git.upToDate") : t("git.updated");
       ui.toast(msg);
       git.headVersion++;
       await reloadOpenFiles();
@@ -157,14 +158,14 @@ const reloadOpenFiles = () => syncFromDisk();
 export async function rollback(c: Change) {
   const k = kind(c);
   if (k === "new") {
-    const ok = await ui.confirm(`„${c.path}“ löschen?`, "Die Datei ist neu und nicht in Git – Zurücksetzen bedeutet Löschen.", "Löschen", true);
+    const ok = await ui.confirm(t("git.deleteNewTitle", { path: c.path }), t("git.deleteNewBody"), t("common.delete"), true);
     if (!ok) return;
     await run(["rm", "-q", "--cached", "--ignore-unmatch", "--", c.path]);
     await fsApi.remove(absPath(c.path)).catch(() => {});
   } else {
-    const ok = await ui.confirm(`Änderungen an „${c.path}“ verwerfen?`, "Die Datei wird auf den Stand des letzten Commits zurückgesetzt.", "Verwerfen", true);
+    const ok = await ui.confirm(t("git.discardTitle", { path: c.path }), t("git.discardBody"), t("git.discard"), true);
     if (!ok) return;
-    await runOk(["restore", "--staged", "--worktree", "--source=HEAD", "--", ...(c.orig ? [c.orig, c.path] : [c.path])], "Zurücksetzen");
+    await runOk(["restore", "--staged", "--worktree", "--source=HEAD", "--", ...(c.orig ? [c.orig, c.path] : [c.path])], "git.op.revert");
   }
   app.treeVersion++;
   await reloadOpenFiles();
@@ -183,11 +184,11 @@ export async function branches(): Promise<{ local: string[]; remote: string[] }>
 
 export async function switchBranch(name: string, remote = false) {
   await saveAll();
-  git.busy = "Wechsle Branch …";
+  git.busy = t("git.busy.switch");
   try {
     const args = remote ? ["switch", "--track", name] : ["switch", name];
-    if (await runOk(args, "Branch wechseln")) {
-      ui.toast(`Branch: ${remote ? name.slice(7) : name}`);
+    if (await runOk(args, "git.op.switchBranch")) {
+      ui.toast(t("git.branchToast", { name: remote ? name.slice(7) : name }));
       git.headVersion++;
       app.treeVersion++;
       await reloadOpenFiles();
@@ -199,9 +200,9 @@ export async function switchBranch(name: string, remote = false) {
 }
 
 export async function newBranch() {
-  const name = await ui.prompt("Neuer Branch", "", "feature/mein-thema");
+  const name = await ui.prompt(t("git.newBranch"), "", t("git.newBranchPlaceholder"));
   if (!name) return;
-  if (await runOk(["switch", "-c", name.replace(/\s+/g, "-")], "Branch anlegen")) ui.toast(`Branch „${name}“ angelegt`);
+  if (await runOk(["switch", "-c", name.replace(/\s+/g, "-")], "git.op.createBranch")) ui.toast(t("git.branchCreated", { name }));
   await refresh();
 }
 
@@ -209,7 +210,7 @@ export async function newBranch() {
 
 export async function initRepo() {
   if (!app.root) return;
-  if (await runOk(["init", "-q"], "Git init")) ui.toast("Git-Repository erstellt");
+  if (await runOk(["init", "-q"], "git.op.init")) ui.toast(t("git.repoCreated"));
   await refresh();
 }
 
@@ -217,7 +218,7 @@ export async function initRepo() {
 export async function cloneInto(url: string, dest: string): Promise<string | null> {
   const parent = dest.replace(/\/[^/]+$/, "") || "/";
   const r = await invoke<Out>("git", { root: parent, args: ["clone", url, dest] });
-  if (r.code !== 0) return (r.stderr || r.stdout).trim().split("\n").filter((l) => !l.startsWith("Cloning")).pop() ?? "Klonen fehlgeschlagen";
+  if (r.code !== 0) return (r.stderr || r.stdout).trim().split("\n").filter((l) => !l.startsWith("Cloning")).pop() ?? t("git.cloneFailed");
   setRoot(dest);
   for (const f of ["README.md", "readme.md", "main.py", "src/main.rs", "src/main.py", "index.js"]) {
     if (await fsApi.exists(joinPath(dest, f))) {
@@ -225,12 +226,12 @@ export async function cloneInto(url: string, dest: string): Promise<string | nul
       break;
     }
   }
-  ui.toast(`Geklont: ${dest.split("/").pop()}`);
+  ui.toast(t("git.cloned", { name: dest.split("/").pop() ?? dest }));
   await refresh();
   return null;
 }
 
-/** Project menu / command: opens the new-project dialog on its "Aus Git klonen" tab. */
+/** Project menu / command: opens the new-project dialog on its "Clone from Git" tab. */
 export async function cloneRepo() {
   const { runner } = await import("../code/runner.svelte");
   cloneTabRequested.value = true;
@@ -241,28 +242,28 @@ export const cloneTabRequested = $state({ value: false });
 /** Connects (or changes) the "origin" remote, e.g. an empty repository created on GitLab/GitHub. */
 export async function connectRemote() {
   if (!git.repo) await initRepo();
-  const url = await ui.prompt(git.remoteUrl ? "Remote ändern" : "Remote verbinden", git.remoteUrl ?? "", "git@gitlab.com:user/repo.git oder https://github.com/user/repo.git");
+  const url = await ui.prompt(git.remoteUrl ? t("git.changeRemote") : t("git.connectRemote"), git.remoteUrl ?? "", t("git.remotePlaceholder"));
   if (!url || url === git.remoteUrl) return;
-  const r = git.remoteUrl ? await runOk(["remote", "set-url", "origin", url], "Remote ändern") : await runOk(["remote", "add", "origin", url], "Remote verbinden");
+  const r = git.remoteUrl ? await runOk(["remote", "set-url", "origin", url], "git.op.changeRemote") : await runOk(["remote", "add", "origin", url], "git.op.connectRemote");
   if (!r) return;
-  ui.toast(`Verbunden mit ${url}`);
+  ui.toast(t("git.connectedTo", { url }));
   await refresh();
   if (!git.hasCommits) {
-    ui.toast("Mach zuerst einen Commit – danach kannst du pushen.");
+    ui.toast(t("git.commitFirst"));
     return;
   }
-  const doPush = await ui.confirm("Jetzt pushen?", `Den Branch „${git.branch}“ zu origin hochladen und verfolgen?`, "Pushen");
+  const doPush = await ui.confirm(t("git.pushNowTitle"), t("git.pushNowBody", { branch: git.branch }), t("git.pushAction"));
   if (doPush) await push();
 }
 
 export async function publishGitHub() {
   if (!app.root) return;
-  const name = await ui.prompt("Auf GitHub veröffentlichen", app.root.split("/").pop() ?? "", "Repository-Name");
+  const name = await ui.prompt(t("git.publishGitHub"), app.root.split("/").pop() ?? "", t("git.repoName"));
   if (!name) return;
-  const vis = await ui.choose("Sichtbarkeit", "Wer soll das Repository sehen können?", [
-    { label: "Abbrechen", value: "cancel" },
-    { label: "Öffentlich", value: "public" },
-    { label: "Privat", value: "private", primary: true },
+  const vis = await ui.choose(t("git.visibility"), t("git.visibilityQuestion"), [
+    { label: t("common.cancel"), value: "cancel" },
+    { label: t("git.public"), value: "public" },
+    { label: t("git.private"), value: "private", primary: true },
   ]);
   if (vis !== "public" && vis !== "private") return;
   if (!git.repo) await initRepo();
@@ -272,11 +273,11 @@ export async function publishGitHub() {
     await run(["add", "-A"]);
     await run(["commit", "-q", "-m", "Initial commit"]);
   }
-  git.busy = "Veröffentliche …";
+  git.busy = t("git.busy.publish");
   try {
     const r = await invoke<Out>("run_capture", { cmd: "gh", args: ["repo", "create", name, `--${vis}`, "--source", ".", "--remote", "origin", "--push"], cwd: git.top || app.root });
-    if (r.code !== 0) ui.toast(`Veröffentlichen fehlgeschlagen: ${(r.stderr || r.stdout).trim().split("\n").pop()}`, "error");
-    else ui.toast(`Veröffentlicht: ${r.stdout.trim().split("\n").pop()}`);
+    if (r.code !== 0) ui.toast(t("git.publishFailed", { msg: (r.stderr || r.stdout).trim().split("\n").pop() ?? "" }), "error");
+    else ui.toast(t("git.published", { url: r.stdout.trim().split("\n").pop() ?? "" }));
   } finally {
     git.busy = "";
     await refresh();

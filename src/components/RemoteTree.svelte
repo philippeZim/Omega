@@ -43,7 +43,7 @@
 <style>
   .row { width: 100%; display: flex; align-items: center; gap: 6px; height: 30px; padding-right: 10px; border-radius: 10px; text-align: left; font-size: 13px; }
   .row:hover { background: var(--fill-hover); }
-  .row.active { background: rgba(255, 255, 255, 0.1); }
+  .row.active { background: rgba(var(--fg-rgb), 0.1); }
   .chev { flex-shrink: 0; color: var(--label-2); transition: transform 0.15s; }
   .chev.open { transform: rotate(90deg); }
   .sp { width: 10px; flex-shrink: 0; }

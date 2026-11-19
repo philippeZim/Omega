@@ -10,11 +10,12 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import * as latexCtl from "./latex/controller.svelte";
 import { setLspHooks } from "./code/lspExtension";
 import { allClients, fileUri } from "./code/lsp.svelte";
+import { t } from "./i18n/index.svelte";
 
 setLspHooks({
   workspace: () => app.root,
   askInstall: (_kind, name) =>
-    ui.confirm("Language Server installieren?", `${name} fehlt. Jetzt installieren? (Completion, Fehler-Marker, Hover, Gehe zu Definition)`, "Installieren"),
+    ui.confirm(t("app.lspInstallTitle"), t("app.lspInstallMessage", { name }), t("app.install")),
   navigate: async (path, line, ch) => {
     await openFile(path);
     const view = ed.getView();
@@ -30,9 +31,9 @@ setLinkHandler(async (href, fromPath) => {
   if (/^[a-z][a-z0-9+.-]*:/i.test(href)) return openUrl(href).catch((e) => ui.toast(String(e), "error"));
   if (href.startsWith("#")) return;
   let p = resolvePath(href, fromPath);
-  if (!p) return ui.toast("Relativer Link: Datei zuerst speichern", "error");
+  if (!p) return ui.toast(t("app.relativeLinkUnsaved"), "error");
   if (!(await fsApi.exists(p)) && (await fsApi.exists(p + ".md"))) p += ".md";
-  if (!(await fsApi.exists(p))) return ui.toast(`Datei nicht gefunden: ${p}`, "error");
+  if (!(await fsApi.exists(p))) return ui.toast(t("app.fileNotFound", { path: p }), "error");
   openFile(p);
 });
 
@@ -55,7 +56,7 @@ export const app = $state({
   sidebarView: "files" as "files" | "changes" | "outline",
   cursor: { line: 1, col: 1, selected: 0 },
   treeVersion: 0,
-  spellEnabled: localStorage.getItem("spellEnabled") !== "false",
+  spellEnabled: localStorage.getItem("spellEnabled") === "true",
   spellDefault: (localStorage.getItem("spellDefault") as SpellLang) || "de",
 });
 
@@ -223,7 +224,7 @@ export async function openFile(path: string) {
   try {
     content = await fsApi.readFile(path);
   } catch (e) {
-    ui.toast(`Kann Datei nicht öffnen: ${e}`, "error");
+    ui.toast(t("app.cannotOpenFile", { error: String(e) }), "error");
     return;
   }
   const id = uid();
@@ -260,13 +261,13 @@ export function openVirtual(path: string, name: string, content: string): string
 export function newFile() {
   const id = uid();
   ed.createDoc(id, "");
-  app.tabs.push({ id, path: null, name: `Unbenannt ${untitledCounter++}`, dirty: false });
+  app.tabs.push({ id, path: null, name: t("app.untitled", { n: untitledCounter++ }), dirty: false });
   activate(id);
 }
 
 const closedPaths: string[] = [];
 
-/** Strg+⇧+T: reopens the most recently closed file. */
+/** Ctrl+⇧+T: reopens the most recently closed file. */
 export async function reopenClosedTab() {
   while (closedPaths.length) {
     const p = closedPaths.pop()!;
@@ -282,12 +283,12 @@ export async function closeTab(id: string, force = false) {
   if (tab.dirty && tab.path) await autosave(id);
   if (tab.dirty && !force && !isRemotePath(tab.path)) {
     const choice = await ui.choose(
-      `„${tab.name}“ hat ungespeicherte Änderungen.`,
-      "Möchtest du die Änderungen speichern, bevor du den Tab schließt?",
+      t("app.unsavedTitle", { name: tab.name }),
+      t("app.unsavedMessage"),
       [
-        { label: "Abbrechen", value: "cancel" },
-        { label: "Verwerfen", value: "discard", danger: true },
-        { label: "Speichern", value: "save", primary: true },
+        { label: t("common.cancel"), value: "cancel" },
+        { label: t("app.discard"), value: "discard", danger: true },
+        { label: t("common.save"), value: "save", primary: true },
       ],
     );
     if (choice === "cancel" || choice === null) return;
@@ -327,7 +328,7 @@ export async function save(id = app.activeId, forceDialog = false): Promise<bool
   try {
     await fsApi.writeFile(path, snapshot.toString());
   } catch (e) {
-    ui.toast(`Speichern fehlgeschlagen: ${e}`, "error");
+    ui.toast(t("app.saveFailed", { error: String(e) }), "error");
     return false;
   }
   ed.markSaved(tab.id, snapshot);

@@ -1,7 +1,8 @@
 <script lang="ts">
-  import { find, gotoHit, type Hit } from "../lib/search/search.svelte";
+  import { find, gotoHit, matchSummary, type Hit } from "../lib/search/search.svelte";
   import { app } from "../lib/state.svelte";
   import { basename } from "../lib/api";
+  import { t } from "../lib/i18n/index.svelte";
 
   let collapsed = $state<Record<string, boolean>>({});
   const groups = $derived.by(() => {
@@ -33,7 +34,7 @@
 <div class="dock">
   {#if find.docked}
     <div class="head">
-      „<b>{find.docked.query}</b>“ — {find.docked.total} Treffer in {find.docked.files} Dateien
+      {t("git.search.qOpen")}<b>{find.docked.query}</b>{t("git.search.qClose")} — {matchSummary(find.docked.total, find.docked.files)}
     </div>
     <div class="list">
       {#each groups as [file, hits] (file)}
@@ -58,11 +59,11 @@
 
 <style>
   .dock { position: absolute; inset: 0; display: flex; flex-direction: column; }
-  .head { padding: 8px 16px; font-size: 12px; color: var(--label-2); border-bottom: 1px solid rgba(255, 255, 255, 0.05); }
+  .head { padding: 8px 16px; font-size: 12px; color: var(--label-2); border-bottom: 1px solid rgba(var(--fg-rgb), 0.05); }
   .head b { color: var(--label); font-family: var(--mono); font-weight: 500; }
   .list { flex: 1; overflow: auto; padding: 4px 8px 10px; }
   .file { width: 100%; display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 8px; text-align: left; font-size: 12.5px; }
-  .file:hover, .hit:hover { background: rgba(255, 255, 255, 0.06); }
+  .file:hover, .hit:hover { background: rgba(var(--fg-rgb), 0.06); }
   .chev { width: 10px; color: var(--label-3); transition: transform 0.12s; }
   .chev.open { transform: rotate(90deg); }
   .fname { font-weight: 600; }

@@ -2,6 +2,7 @@
   import { tick } from "svelte";
   import { dbg } from "../lib/debug/store.svelte";
   import { replEval } from "../lib/debug/debugger.svelte";
+  import { t } from "../lib/i18n/index.svelte";
 
   let input = $state("");
   let list: HTMLDivElement | undefined = $state();
@@ -36,12 +37,12 @@
     {#each dbg.console as l, i (i)}
       <div class="line {l.kind}">{l.text}</div>
     {:else}
-      <div class="line info">Debug-Ausgaben und Ergebnisse erscheinen hier. Während das Programm angehalten ist, kannst du unten Ausdrücke auswerten.</div>
+      <div class="line info">{t("code.dc.empty")}</div>
     {/each}
   </div>
   <div class="prompt" class:disabled={dbg.status !== "stopped"}>
     <span>›</span>
-    <input bind:value={input} onkeydown={onKey} spellcheck="false" placeholder={dbg.status === "stopped" ? "Ausdruck auswerten (Enter)" : "Nur verfügbar, wenn das Programm angehalten ist"} disabled={dbg.status !== "stopped"} />
+    <input bind:value={input} onkeydown={onKey} spellcheck="false" placeholder={dbg.status === "stopped" ? t("code.dc.evalPlaceholder") : t("code.dc.onlyStopped")} disabled={dbg.status !== "stopped"} />
   </div>
 </div>
 
@@ -54,7 +55,7 @@
   .line.build { color: var(--teal); }
   .line.input { color: var(--accent); }
   .line.result { color: var(--label); padding-left: 12px; }
-  .prompt { display: flex; align-items: center; gap: 8px; padding: 6px 12px 10px; border-top: 1px solid rgba(255, 255, 255, 0.05); }
+  .prompt { display: flex; align-items: center; gap: 8px; padding: 6px 12px 10px; border-top: 1px solid rgba(var(--fg-rgb), 0.05); }
   .prompt span { color: var(--accent); font-family: var(--mono); }
   .prompt input { flex: 1; font-family: var(--mono); font-size: 12.5px; background: transparent; box-shadow: none; padding: 4px 0; border-radius: 0; }
   .prompt.disabled { opacity: 0.5; }

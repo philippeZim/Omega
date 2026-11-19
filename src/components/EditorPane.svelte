@@ -11,6 +11,7 @@
   import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
   import { selectAll } from "@codemirror/commands";
   import { runner } from "../lib/code/runner.svelte";
+  import { t } from "../lib/i18n/index.svelte";
 
   let host: HTMLDivElement;
   onMount(() => ed.mount(host));
@@ -31,26 +32,27 @@
       if (sugg.length)
         for (const s of sugg)
           items.push({ label: s, action: () => view.dispatch({ changes: { from: hit.from, to: hit.to, insert: s }, selection: { anchor: hit.from + s.length } }) });
-      else items.push({ label: "Keine Vorschläge", action: () => {} });
+      else items.push({ label: t("code.ed.noSuggestions"), action: () => {} });
       items.push(
         { separator: true, label: "" },
-        { label: `„${hit.word}“ zum Wörterbuch hinzufügen`, action: () => { addToDictionary(lang, hit.word); refreshSpell(view); } },
-        { label: "Ignorieren", action: () => { ignoreWord(hit.word); refreshSpell(view); } },
+        { label: t("code.ed.addToDict", { word: hit.word }), action: () => { addToDictionary(lang, hit.word); refreshSpell(view); } },
+        { label: t("code.ed.ignore"), action: () => { ignoreWord(hit.word); refreshSpell(view); } },
         { separator: true, label: "" },
       );
     }
     const s = view.state.selection.main;
     const hasSel = !s.empty;
+    const ctrl = t("code.key.ctrl");
     items.push(
       ...(hasSel
         ? [
-            { label: "Ausschneiden", shortcut: "Strg X", action: async () => { await writeText(view.state.sliceDoc(s.from, s.to)); view.dispatch(view.state.replaceSelection("")); } },
-            { label: "Kopieren", shortcut: "Strg C", action: () => writeText(view.state.sliceDoc(s.from, s.to)) },
+            { label: t("code.ed.cut"), shortcut: `${ctrl} X`, action: async () => { await writeText(view.state.sliceDoc(s.from, s.to)); view.dispatch(view.state.replaceSelection("")); } },
+            { label: t("code.ed.copy"), shortcut: `${ctrl} C`, action: () => writeText(view.state.sliceDoc(s.from, s.to)) },
           ]
         : []),
-      { label: "Einfügen", shortcut: "Strg V", action: async () => { const t = await readText(); if (t) view.dispatch(view.state.replaceSelection(t)); view.focus(); } },
+      { label: t("code.ed.paste"), shortcut: `${ctrl} V`, action: async () => { const text = await readText(); if (text) view.dispatch(view.state.replaceSelection(text)); view.focus(); } },
       { separator: true, label: "" },
-      { label: "Alles auswählen", shortcut: "Strg A", action: () => { selectAll(view); view.focus(); } },
+      { label: t("code.ed.selectAll"), shortcut: `${ctrl} A`, action: () => { selectAll(view); view.focus(); } },
     );
     ui.menu = { x: e.clientX, y: e.clientY, items };
   }
@@ -64,11 +66,11 @@
     <div class="welcome">
       <h1>{modeLabel}</h1>
       <div class="actions">
-        <button class="btn" onclick={newFile}>Neue Datei <kbd>Strg N</kbd></button>
-        <button class="btn" onclick={openFolder}>Ordner öffnen <kbd>Strg O</kbd></button>
-        {#if app.mode === "code"}<button class="btn primary" onclick={() => (runner.newProject = true)}>Neues Projekt</button>{/if}
+        <button class="btn" onclick={newFile}>{t("code.ed.newFile")} <kbd>{t("code.key.ctrl")} N</kbd></button>
+        <button class="btn" onclick={openFolder}>{t("code.ed.openFolder")} <kbd>{t("code.key.ctrl")} O</kbd></button>
+        {#if app.mode === "code"}<button class="btn primary" onclick={() => (runner.newProject = true)}>{t("code.np.newProject")}</button>{/if}
       </div>
-      <p class="hint">Modus wechseln mit Strg 1 – 4 · Cheat Sheet mit F1</p>
+      <p class="hint">{t("code.ed.hint")}</p>
     </div>
   {/if}
 </div>

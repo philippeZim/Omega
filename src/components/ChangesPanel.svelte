@@ -6,13 +6,14 @@
   import { basename } from "../lib/api";
   import { formatKey } from "../lib/keys";
   import { keysFor } from "../lib/commands.svelte";
+  import { t } from "../lib/i18n/index.svelte";
 
   let textarea: HTMLTextAreaElement | undefined = $state();
   export function focusMessage() {
     textarea?.focus();
   }
 
-  const LABEL = { new: "Neu", modified: "Geändert", deleted: "Gelöscht", renamed: "Umbenannt", conflict: "Konflikt" };
+  const LABEL = { new: "git.status.new", modified: "git.status.modified", deleted: "git.status.deleted", renamed: "git.status.renamed", conflict: "git.status.conflict" } as const;
   const allOn = $derived(git.changes.length > 0 && git.excluded.length === 0);
   const selectedCount = $derived(git.changes.length - git.excluded.length);
 
@@ -28,10 +29,10 @@
 
   function menu(e: MouseEvent, c: Change) {
     ui.openMenu(e, [
-      { label: "Unterschiede anzeigen", action: () => openDiff(absPath(c.path)) },
-      ...(kind(c) !== "deleted" ? [{ label: "Datei öffnen", action: () => openFile(absPath(c.path)) }] : []),
+      { label: t("git.showDiff"), action: () => openDiff(absPath(c.path)) },
+      ...(kind(c) !== "deleted" ? [{ label: t("git.openFile"), action: () => openFile(absPath(c.path)) }] : []),
       { separator: true, label: "" },
-      { label: kind(c) === "new" ? "Löschen…" : "Änderungen verwerfen…", danger: true, action: () => rollback(c) },
+      { label: kind(c) === "new" ? t("git.deleteEllipsis") : t("git.discardChangesEllipsis"), danger: true, action: () => rollback(c) },
     ]);
   }
 
@@ -56,22 +57,22 @@
 
 <div class="changes">
   {#if !app.root}
-    <p class="hint">Öffne einen Ordner, um Git zu nutzen.</p>
+    <p class="hint">{t("git.openFolderHint")}</p>
   {:else if !git.repo}
     <div class="empty">
-      <p>Dieser Ordner ist kein Git-Repository.</p>
-      <button class="btn primary" onclick={initRepo}>Git-Repository erstellen</button>
-      <button class="btn" onclick={publishGitHub}>Auf GitHub veröffentlichen…</button>
-      <button class="btn" onclick={cloneRepo}>Repository klonen…</button>
+      <p>{t("git.notRepo")}</p>
+      <button class="btn primary" onclick={initRepo}>{t("git.createRepo")}</button>
+      <button class="btn" onclick={publishGitHub}>{t("git.publishGitHubEllipsis")}</button>
+      <button class="btn" onclick={cloneRepo}>{t("git.cloneRepoEllipsis")}</button>
     </div>
   {:else}
     <div class="branchbar">
-      <span class="branch" title={git.upstream ? `Verfolgt ${git.upstream}` : "Kein Upstream – beim ersten Push wird origin verwendet"}>
+      <span class="branch" title={git.upstream ? t("git.tracks", { upstream: git.upstream }) : t("git.noUpstream")}>
         <svg width="12" height="12" viewBox="0 0 16 16"><circle cx="4" cy="3.5" r="1.8" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="4" cy="12.5" r="1.8" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="12" cy="5" r="1.8" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M4 5.3v5.4M12 6.8c0 3-4 2.5-7.2 4.4" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>
         {git.branch || "—"}
       </span>
       <span class="spacer"></span>
-      <button class="sync" title="Pull / Aktualisieren ({formatKey(keysFor('git.pull')[0] ?? '')})" onclick={pull} disabled={!!git.busy}>
+      <button class="sync" title={t("git.pullTitle", { key: formatKey(keysFor("git.pull")[0] ?? "") })} onclick={pull} disabled={!!git.busy}>
         ↓{#if git.behind}<b>{git.behind}</b>{/if}
       </button>
       <button class="sync" title="Push ({formatKey(keysFor('git.push')[0] ?? '')})" onclick={push} disabled={!!git.busy}>
@@ -81,37 +82,37 @@
 
     {#if !git.remoteUrl}
       <div class="noremote">
-        <span>Kein Remote verbunden – Commits bleiben lokal.</span>
+        <span>{t("git.noRemote")}</span>
         <div class="nr-buttons">
-          <button class="btn small" onclick={connectRemote}>Remote verbinden…</button>
-          <button class="btn small" onclick={publishGitHub}>Auf GitHub veröffentlichen…</button>
+          <button class="btn small" onclick={connectRemote}>{t("git.connectRemoteEllipsis")}</button>
+          <button class="btn small" onclick={publishGitHub}>{t("git.publishGitHubEllipsis")}</button>
         </div>
       </div>
     {/if}
 
     <div class="listhead">
-      <button class="check" class:on={allOn} class:partial={!allOn && selectedCount > 0} onclick={toggleAll} aria-label="Alle auswählen"></button>
-      <span>{git.changes.length ? `${git.changes.length} Änderungen` : "Keine Änderungen"}</span>
+      <button class="check" class:on={allOn} class:partial={!allOn && selectedCount > 0} onclick={toggleAll} aria-label={t("git.selectAll")}></button>
+      <span>{git.changes.length ? t(git.changes.length === 1 ? "git.changesOne" : "git.changesMany", { n: git.changes.length }) : t("git.noChanges")}</span>
     </div>
 
     <div class="list">
       {#each git.changes as c (c.path)}
         {@const k = kind(c)}
-        <div class="row" role="button" tabindex="-1" ondblclick={() => openDiff(absPath(c.path))} oncontextmenu={(e) => menu(e, c)} onkeydown={() => {}} title="{LABEL[k]}: {c.path} – Doppelklick zeigt Unterschiede">
-          <button class="check" class:on={!git.excluded.includes(c.path)} onclick={() => toggle(c)} aria-label="Auswählen"></button>
+        <div class="row" role="button" tabindex="-1" ondblclick={() => openDiff(absPath(c.path))} oncontextmenu={(e) => menu(e, c)} onkeydown={() => {}} title={t("git.rowTitle", { status: t(LABEL[k]), path: c.path })}>
+          <button class="check" class:on={!git.excluded.includes(c.path)} onclick={() => toggle(c)} aria-label={t("git.select")}></button>
           <span class="name {k}">{basename(c.path)}</span>
           <span class="dir">{c.path.includes("/") ? c.path.slice(0, c.path.lastIndexOf("/")) : ""}</span>
           <span class="badge {k}">{k === "new" ? "N" : k === "modified" ? "M" : k === "deleted" ? "D" : k === "renamed" ? "R" : "!"}</span>
-          <button class="undo" title={k === "new" ? "Löschen" : "Verwerfen"} onclick={(e) => { e.stopPropagation(); rollback(c); }} aria-label="Zurücksetzen">↺</button>
+          <button class="undo" title={k === "new" ? t("common.delete") : t("git.discard")} onclick={(e) => { e.stopPropagation(); rollback(c); }} aria-label={t("git.revert")}>↺</button>
         </div>
       {/each}
     </div>
 
     <div class="commit">
-      <textarea bind:this={textarea} bind:value={git.message} onkeydown={onKey} oninput={grow} rows="2" placeholder="Commit-Nachricht" spellcheck="true"></textarea>
+      <textarea bind:this={textarea} bind:value={git.message} onkeydown={onKey} oninput={grow} rows="2" placeholder={t("git.commitMessage")} spellcheck="true"></textarea>
       <div class="buttons">
-        <button class="btn primary" onclick={() => commit(false)} disabled={!!git.busy || !selectedCount} title="Strg+Enter">Commit</button>
-        <button class="btn" onclick={() => commit(true)} disabled={!!git.busy || !selectedCount} title="Strg+⇧+Enter">Commit & Push</button>
+        <button class="btn primary" onclick={() => commit(false)} disabled={!!git.busy || !selectedCount} title={formatKey("Mod-Enter")}>Commit</button>
+        <button class="btn" onclick={() => commit(true)} disabled={!!git.busy || !selectedCount} title={formatKey("Mod-Shift-Enter")}>Commit & Push</button>
       </div>
       {#if git.busy}<p class="busy">{git.busy}</p>{/if}
     </div>
@@ -127,8 +128,8 @@
   .branch { display: flex; align-items: center; gap: 6px; font-weight: 600; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .branch svg { color: var(--label-3); flex-shrink: 0; }
   .spacer { flex: 1; }
-  .sync { height: 26px; min-width: 30px; padding: 0 8px; border-radius: 999px; font-size: 13px; color: var(--label-2); background: rgba(255, 255, 255, 0.05); }
-  .sync:hover:not(:disabled) { background: rgba(255, 255, 255, 0.12); color: var(--label); }
+  .sync { height: 26px; min-width: 30px; padding: 0 8px; border-radius: 999px; font-size: 13px; color: var(--label-2); background: rgba(var(--fg-rgb), 0.05); }
+  .sync:hover:not(:disabled) { background: rgba(var(--fg-rgb), 0.12); color: var(--label); }
   .sync b { margin-left: 3px; font-size: 11px; color: var(--accent); }
   .sync:disabled { opacity: 0.5; }
   .noremote { margin: 0 2px 8px; padding: 10px 12px; border-radius: 14px; background: rgba(214, 163, 95, 0.08); box-shadow: inset 0 0 0 1px rgba(214, 163, 95, 0.18); font-size: 12px; color: var(--label-2); }
@@ -155,7 +156,7 @@
   .undo { width: 20px; height: 20px; border-radius: 50%; color: var(--label-3); opacity: 0; transition: opacity 0.12s; }
   .row:hover .undo { opacity: 1; }
   .undo:hover { background: var(--fill-2); color: var(--label); }
-  .commit { padding-top: 8px; border-top: 1px solid rgba(255, 255, 255, 0.06); }
+  .commit { padding-top: 8px; border-top: 1px solid rgba(var(--fg-rgb), 0.06); }
   textarea {
     display: block;
     width: 100%;
@@ -181,9 +182,9 @@
   }
   textarea::placeholder { color: var(--label-3); }
   textarea::-webkit-scrollbar { width: 8px; height: 0; }
-  textarea::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.12); border-radius: 8px; border: 2px solid transparent; background-clip: content-box; }
+  textarea::-webkit-scrollbar-thumb { background: rgba(var(--fg-rgb), 0.12); border-radius: 8px; border: 2px solid transparent; background-clip: content-box; }
   textarea::-webkit-resizer { display: none; }
-  textarea:focus { box-shadow: var(--recess-shadow), 0 0 0 1px rgba(255, 255, 255, 0.14); }
+  textarea:focus { box-shadow: var(--recess-shadow), 0 0 0 1px rgba(var(--fg-rgb), 0.14); }
   .buttons { display: flex; gap: 6px; margin-top: 8px; }
   .buttons .btn { flex: 1; min-width: 0; padding: 8px 10px; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .buttons .btn:last-child { flex: 1.35; }

@@ -1,4 +1,14 @@
 :root {
+  /* Channel triplets: --fg-rgb tints toward the foreground (white in dark, black in light),
+     --hl-rgb is the glass top-edge highlight (white in both). */
+  --fg-rgb: 255, 255, 255;
+  --hl-rgb: 255, 255, 255;
+  /* Selected item in a segmented control / tray (raised glass pill). */
+  --raised-bg: rgba(255, 255, 255, 0.15);
+  --raised-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14), 0 2px 8px rgba(0, 0, 0, 0.3);
+  /* Dimmed backdrop behind modal sheets, and sunken content areas (code blocks, previews). */
+  --scrim: rgba(0, 0, 0, 0.55);
+  --well: rgba(0, 0, 0, 0.25);
   /* iOS-style dark palette */
   --bg: #030304;
   --bg-elevated: #151518;
@@ -7,11 +17,11 @@
   /* Glass material (visionOS-like, but much darker) */
   --glass: rgba(22, 22, 26, 0.78);
   --glass-strong: rgba(34, 34, 40, 0.86);
-  --glass-border: rgba(255, 255, 255, 0.07);
-  --glass-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.06), inset 0 0 0 1px rgba(255, 255, 255, 0.025);
+  --glass-border: rgba(var(--fg-rgb), 0.07);
+  --glass-highlight: inset 0 1px 0 rgba(var(--hl-rgb), 0.06), inset 0 0 0 1px rgba(var(--fg-rgb), 0.025);
   --glass-shadow: 0 18px 50px rgba(0, 0, 0, 0.55), 0 2px 8px rgba(0, 0, 0, 0.35);
   --recess: rgba(0, 0, 0, 0.42);
-  --recess-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.6), inset 0 -1px 0 rgba(255, 255, 255, 0.04);
+  --recess-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.6), inset 0 -1px 0 rgba(var(--fg-rgb), 0.04);
   --radius-panel: 22px;
   --gap: 8px;
   --fill: rgba(120, 120, 128, 0.24);
@@ -41,6 +51,48 @@
 
   --blur: saturate(180%) blur(24px);
   color-scheme: dark;
+}
+
+/* iOS-style light palette (frosted white glass on a soft grey canvas). */
+:root[data-theme="light"] {
+  --fg-rgb: 0, 0, 0;
+  --raised-bg: #ffffff;
+  --raised-shadow: 0 1px 3px rgba(0, 0, 0, 0.12), 0 0 0 0.5px rgba(0, 0, 0, 0.06);
+  --scrim: rgba(0, 0, 0, 0.22);
+  --well: rgba(0, 0, 0, 0.04);
+  --bg: #e9e9ef;
+  --bg-elevated: #ffffff;
+  --bg-elevated-2: #f2f2f7;
+  --bg-elevated-3: #e5e5ea;
+  --glass: rgba(255, 255, 255, 0.7);
+  --glass-strong: rgba(250, 250, 252, 0.88);
+  --glass-shadow: 0 18px 50px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.06);
+  --recess: rgba(118, 118, 128, 0.12);
+  --recess-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.08), inset 0 -1px 0 rgba(255, 255, 255, 0.6);
+  --fill: rgba(120, 120, 128, 0.16);
+  --fill-2: rgba(120, 120, 128, 0.24);
+  --fill-hover: rgba(120, 120, 128, 0.1);
+  --separator: rgba(60, 60, 67, 0.22);
+  --label: #1d1d1f;
+  --label-2: rgba(60, 60, 67, 0.68);
+  --label-3: rgba(60, 60, 67, 0.38);
+  --accent: #3478f6;
+  --accent-soft: rgba(52, 120, 246, 0.16);
+  --green: #2f9e55;
+  --red: #d9443a;
+  --orange: #c77c12;
+  --yellow: #a68a00;
+  --purple: #8c5cd1;
+  --pink: #c94f7c;
+  --teal: #2b8fae;
+  --indigo: #5856d6;
+  color-scheme: light;
+}
+:root[data-theme="light"] body {
+  background:
+    radial-gradient(1200px 700px at 15% -10%, rgba(140, 160, 220, 0.18), transparent 60%),
+    radial-gradient(900px 600px at 110% 120%, rgba(200, 170, 220, 0.14), transparent 60%),
+    var(--bg);
 }
 
 * { box-sizing: border-box; }
@@ -86,7 +138,7 @@ input {
   padding: 7px 14px;
   outline: none;
 }
-input:focus { box-shadow: var(--recess-shadow), 0 0 0 1px rgba(255, 255, 255, 0.14); }
+input:focus { box-shadow: var(--recess-shadow), 0 0 0 1px rgba(var(--fg-rgb), 0.14); }
 
 /* Floating glass panel */
 .glass {
@@ -99,23 +151,23 @@ input:focus { box-shadow: var(--recess-shadow), 0 0 0 1px rgba(255, 255, 255, 0.
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.14);
+  background: rgba(var(--fg-rgb), 0.14);
   border-radius: 10px;
   border: 3px solid transparent;
   background-clip: content-box;
 }
-::-webkit-scrollbar-thumb:hover { background-color: rgba(255, 255, 255, 0.26); }
+::-webkit-scrollbar-thumb:hover { background-color: rgba(var(--fg-rgb), 0.26); }
 ::-webkit-scrollbar-corner { background: transparent; }
 
 .btn {
   padding: 8px 18px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.08);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07);
+  background: rgba(var(--fg-rgb), 0.08);
+  box-shadow: inset 0 1px 0 rgba(var(--hl-rgb), 0.07);
   font-weight: 600;
   transition: background 0.12s;
 }
-.btn:hover { background: rgba(255, 255, 255, 0.13); }
+.btn:hover { background: rgba(var(--fg-rgb), 0.13); }
 .btn.primary { background: var(--accent); color: white; }
 .btn.primary:hover { filter: brightness(1.1); }
 .btn.danger { color: var(--red); }
@@ -129,17 +181,17 @@ input:focus { box-shadow: var(--recess-shadow), 0 0 0 1px rgba(255, 255, 255, 0.
   gap: 2px;
   padding: 3px;
   border-radius: 999px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.075), rgba(255, 255, 255, 0.03));
+  background: linear-gradient(180deg, rgba(var(--fg-rgb), 0.075), rgba(var(--fg-rgb), 0.03));
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.09),
+    inset 0 1px 0 rgba(var(--hl-rgb), 0.09),
     inset 0 -1px 0 rgba(0, 0, 0, 0.25),
-    0 0 0 1px rgba(255, 255, 255, 0.045),
+    0 0 0 1px rgba(var(--fg-rgb), 0.045),
     0 6px 18px rgba(0, 0, 0, 0.35);
   backdrop-filter: var(--blur);
 }
 
 .gbtn {
-  --tint: 255, 255, 255;
+  --tint: var(--fg-rgb);
   position: relative;
   display: inline-flex;
   align-items: center;
@@ -150,7 +202,7 @@ input:focus { box-shadow: var(--recess-shadow), 0 0 0 1px rgba(255, 255, 255, 0.
   font-size: 12.5px;
   font-weight: 600;
   letter-spacing: 0.005em;
-  color: rgba(255, 255, 255, 0.88);
+  color: rgba(var(--fg-rgb), 0.88);
   overflow: hidden;
   isolation: isolate;
   transition:
@@ -182,22 +234,22 @@ input:focus { box-shadow: var(--recess-shadow), 0 0 0 1px rgba(255, 255, 255, 0.
   left: -60%;
   width: 45%;
   z-index: -1;
-  background: linear-gradient(100deg, transparent, rgba(255, 255, 255, 0.16), transparent);
+  background: linear-gradient(100deg, transparent, rgba(var(--fg-rgb), 0.16), transparent);
   transform: skewX(-18deg);
   opacity: 0;
 }
 .gbtn:hover:not(:disabled) {
-  color: #fff;
-  background: rgba(255, 255, 255, 0.07);
+  color: var(--label);
+  background: rgba(var(--fg-rgb), 0.07);
   transform: translateY(-1px);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), 0 4px 12px rgba(0, 0, 0, 0.3);
+  box-shadow: inset 0 1px 0 rgba(var(--hl-rgb), 0.1), 0 4px 12px rgba(0, 0, 0, 0.3);
 }
 .gbtn:hover:not(:disabled)::before { opacity: 1; }
 .gbtn:hover:not(:disabled)::after { animation: gsweep 0.75s ease forwards; }
 .gbtn:active:not(:disabled) { transform: scale(0.93); transition-duration: 0.12s; }
-.gbtn:disabled { color: rgba(255, 255, 255, 0.28); }
+.gbtn:disabled { color: rgba(var(--fg-rgb), 0.28); }
 .gbtn:disabled svg { filter: grayscale(1) opacity(0.5); }
-.gbtn.on { background: rgba(255, 255, 255, 0.11); color: #fff; box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12); }
+.gbtn.on { background: var(--raised-bg); color: var(--label); box-shadow: var(--raised-shadow); }
 
 .gbtn .ico { color: rgb(var(--tint)); }
 
@@ -211,7 +263,7 @@ input:focus { box-shadow: var(--recess-shadow), 0 0 0 1px rgba(255, 255, 255, 0.
 .gbtn.neutral { --tint: 107, 155, 224; }
 
 /* Active/running indicator: soft breathing ring */
-.gbtn.live { color: #fff; background: rgba(var(--tint), 0.1); }
+.gbtn.live { color: var(--label); background: rgba(var(--tint), 0.1); }
 .gbtn.live::before { opacity: 1; animation: gbreath 1.8s ease-in-out infinite; }
 
 /* Buttons that only exist in some states pop in with a spring */
@@ -221,7 +273,7 @@ input:focus { box-shadow: var(--recess-shadow), 0 0 0 1px rgba(255, 255, 255, 0.
   to { opacity: 1; transform: scale(1); width: 30px; }
 }
 
-.gsep { width: 1px; height: 16px; margin: 0 3px; background: rgba(255, 255, 255, 0.09); }
+.gsep { width: 1px; height: 16px; margin: 0 3px; background: rgba(var(--fg-rgb), 0.09); }
 
 .gchip {
   height: 22px;
@@ -256,4 +308,9 @@ input:focus { box-shadow: var(--recess-shadow), 0 0 0 1px rgba(255, 255, 255, 0.
 @media (prefers-reduced-motion: reduce) {
   .gbtn, .gbtn svg { transition: none; }
   .gbtn::after, .gbtn.live::before, .gbtn:hover svg { animation: none !important; }
+}
+
+/* Text selection in inputs and UI text (WebKitGTK's default is a barely visible dark blue). */
+::selection {
+  background: rgba(107, 155, 224, 0.55);
 }

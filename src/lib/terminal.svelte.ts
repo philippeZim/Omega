@@ -6,6 +6,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import "@xterm/xterm/css/xterm.css";
+import { t } from "./i18n/index.svelte";
 
 /** Set by the command registry: true if the key is an app shortcut that should bypass the shell. */
 let terminalKeyFilter: (e: KeyboardEvent) => boolean = () => false;
@@ -52,7 +53,7 @@ listen<{ id: string; data: string }>("pty-data", (e) => {
 listen<string>("pty-exit", (e) => {
   const tab = terms.tabs.find((t) => t.id === e.payload);
   if (tab) tab.exited = true;
-  instances.get(e.payload)?.term.write("\r\n\x1b[90m[Prozess beendet]\x1b[0m\r\n");
+  instances.get(e.payload)?.term.write(`\r\n\x1b[90m${t("code.term.exited")}\x1b[0m\r\n`);
 });
 
 const theme = {
@@ -70,9 +71,16 @@ const theme = {
 const ANSI_KEYS = ["black", "red", "green", "yellow", "blue", "magenta", "cyan", "white",
   "brightBlack", "brightRed", "brightGreen", "brightYellow", "brightBlue", "brightMagenta", "brightCyan", "brightWhite"] as const;
 
-/** Applies a 16-colour palette (from the syntax theme) to all current and future terminals. */
-export function setTerminalPalette(ansi: string[]) {
-  const t: Record<string, string> = { ...theme };
+/** Applies a 16-colour palette (from the syntax theme) and the appearance's base colours to all current and future terminals. */
+export function setTerminalPalette(ansi: string[], appearance: "dark" | "light" = "dark") {
+  const light = appearance === "light";
+  const t: Record<string, string> = {
+    ...theme,
+    foreground: light ? "#1d1d1f" : "#e8e8ed",
+    cursor: light ? "#3478f6" : "#6b9be0",
+    cursorAccent: light ? "#ffffff" : "#000000",
+    selectionBackground: light ? "rgba(52, 120, 246, 0.25)" : "rgba(107, 155, 224,0.35)",
+  };
   ANSI_KEYS.forEach((k, i) => (t[k] = ansi[i]));
   Object.assign(theme, t);
   for (const inst of instances.values()) inst.term.options.theme = { ...theme };
@@ -131,7 +139,7 @@ export function newTerminal(cwd: string | null, kind: "shell" | "run" = "shell",
   // Lowest free number, so a fresh panel starts again at "Terminal 1".
   let n = 1;
   while (terms.tabs.some((t) => t.title === `Terminal ${n}`)) n++;
-  terms.tabs.push({ id, title: title ?? (kind === "run" ? "Ausführen" : `Terminal ${n}`), kind, exited: false });
+  terms.tabs.push({ id, title: title ?? (kind === "run" ? t("common.run") : `Terminal ${n}`), kind, exited: false });
   counter++;
   terms.active = id;
   terms.visible = true;
@@ -185,8 +193,8 @@ export function closeTerminal(id: string) {
   if (!terms.tabs.length && terms.visible) toggleTerminal();
 }
 
-/** Runs a command in the shared "Ausführen" terminal (created on demand) so programs stay interactive. */
-export function runCommand(cmd: string, cwd: string | null, title = "Ausführen", focus = true) {
+/** Runs a command in the shared "Run" terminal (created on demand) so programs stay interactive. */
+export function runCommand(cmd: string, cwd: string | null, title = t("common.run"), focus = true) {
   let tab = terms.tabs.find((t) => t.kind === "run" && !t.exited);
   if (!tab) {
     const id = newTerminal(cwd, "run", title);

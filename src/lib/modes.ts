@@ -16,11 +16,12 @@ import { langFor, indentFor } from "./code/languages";
 import { lspExtension } from "./code/lspExtension";
 import { debugExtension } from "./debug/editorExt";
 import { gitGutter } from "./git/gutter";
+import { t } from "./i18n/index.svelte";
 
 export type Mode = "text" | "markdown" | "latex" | "code";
 
 export const MODES: { id: Mode; label: string }[] = [
-  { id: "text", label: "Text" },
+  { id: "text", get label() { return t("app.mode.text"); } },
   { id: "markdown", label: "Markdown" },
   { id: "latex", label: "LaTeX" },
   { id: "code", label: "Code" },

@@ -3,6 +3,7 @@ import { RangeSet, StateEffect, StateField, type Extension, type EditorState } f
 import { Decoration, EditorView, GutterMarker, gutter, hoverTooltip, type DecorationSet } from "@codemirror/view";
 import { viewActions } from "../editorActions";
 import { dbg, dbgHooks, setBreakpointLines } from "./store.svelte";
+import { t } from "../i18n/index.svelte";
 
 /** While stopped: hovering an identifier (incl. a.b.c chains) shows its current value. */
 const valueHover = hoverTooltip(async (view, pos) => {
@@ -43,7 +44,7 @@ class BpMarker extends GutterMarker {
   toDOM() {
     const el = document.createElement("div");
     el.className = "cm-bp" + (this.condition ? " cond" : "") + (this.verified === false ? " unverified" : "");
-    if (this.condition) el.title = `Bedingung: ${this.condition}`;
+    if (this.condition) el.title = t("code.bp.condition", { cond: this.condition });
     return el;
   }
 }

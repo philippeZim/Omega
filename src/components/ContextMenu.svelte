@@ -55,11 +55,11 @@
     text-align: left;
     font-size: 13px;
   }
-  button:hover { background: rgba(255, 255, 255, 0.12); }
+  button:hover { background: rgba(var(--fg-rgb), 0.12); }
   button.danger { color: var(--red); }
   button.danger:hover { background: var(--red); color: white; }
   .sc { color: var(--label-3); }
 
-  .sep { height: 1px; margin: 5px 10px; background: rgba(255, 255, 255, 0.07); }
+  .sep { height: 1px; margin: 5px 10px; background: rgba(var(--fg-rgb), 0.07); }
   @keyframes pop { from { opacity: 0; transform: scale(0.97); } }
 </style>

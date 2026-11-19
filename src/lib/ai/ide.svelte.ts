@@ -10,6 +10,7 @@ import { app, activeTab, openFile, save, syncFromDisk } from "../state.svelte";
 import * as ed from "../editor";
 import { allClients, fileUri, uriPath } from "../code/lsp.svelte";
 import { ui } from "../ui.svelte";
+import { t } from "../i18n/index.svelte";
 
 import { newTerminalWith, terms, focusTerm } from "../terminal.svelte";
 import { basename } from "../api";
@@ -288,7 +289,7 @@ setInterval(pollSelection, 200);
 /** Sends the current selection to the agent: @-mention (Claude Code, OpenCode) or a typed reference (Codex). */
 export function mentionSelection() {
   const s = currentSelection();
-  if (!s) return ui.toast("Keine Datei aktiv", "error");
+  if (!s) return ui.toast(t("ai.noActiveFile"), "error");
   const live = (id: string) => terms.tabs.some((t) => t.id === id && !t.exited);
   // Prefer the visible agent terminal, else any agent terminal.
   let tid = terms.active && agentTabs.has(terms.active) && live(terms.active) ? terms.active : [...agentTabs.keys()].find(live) ?? null;
@@ -299,7 +300,7 @@ export function mentionSelection() {
     invoke("pty_write", { id: tid, data: `${relPath(s.filePath)}${range} ` });
   } else if (ideLink.clients.length) {
     invoke("ide_notify", { method: "at_mentioned", params: { filePath: s.filePath, lineStart: s.selection.start.line, lineEnd: end } });
-  } else return ui.toast("Kein KI-Agent verbunden – starte Claude Code, Codex oder OpenCode (Einstellungen → KI)", "error");
+  } else return ui.toast(t("ai.noAgent"), "error");
   if (tid) terms.active = tid;
   terms.visible = true;
   setTimeout(() => tid && focusTerm(tid), 50);
@@ -314,11 +315,11 @@ listen<string[]>("ide-clients", (e) => {
     lastKey = "";
     const name = ideLink.clients[ideLink.clients.length - 1];
     const a = AGENTS.find((x) => x.wsName && name.toLowerCase().includes(x.wsName));
-    ui.toast(`${a?.label ?? name} verbunden`);
+    ui.toast(t("ai.agentConnected", { name: a?.label ?? name }));
   }
 });
 listen("codex-ide-request", () => {
-  if (!ideLink.codexLastRequest) ui.toast("Codex verbunden");
+  if (!ideLink.codexLastRequest) ui.toast(t("ai.agentConnected", { name: "Codex" }));
   ideLink.codexLastRequest = Date.now();
 });
 

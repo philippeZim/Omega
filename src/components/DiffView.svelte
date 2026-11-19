@@ -14,11 +14,12 @@
   import * as ed from "../lib/editor";
   import { langFor } from "../lib/code/languages";
   import { baseTheme, codeHighlight } from "../lib/theme";
+  import { t } from "../lib/i18n/index.svelte";
 
   let host: HTMLDivElement | undefined = $state();
   let view: MergeView | null = null;
   let writeTimer: number | undefined;
-  let info = $state("");
+  let info = $state<"git.diff.deleted" | "git.diff.newFile" | null>(null);
   const file = diffState.file!;
   const rel = git.top && file.startsWith(git.top + "/") ? file.slice(git.top.length + 1) : file;
 
@@ -35,9 +36,9 @@
     try {
       current = tab ? ed.getText(tab.id) : await fsApi.readFile(file);
     } catch {
-      info = "Datei wurde gelöscht";
+      info = "git.diff.deleted";
     }
-    if (!head) info = "Neue Datei – noch nicht im letzten Commit";
+    if (!head) info = "git.diff.newFile";
     const lang = langFor(file);
     const common = [lineNumbers(), lang ? lang.ext() : [], syntaxHighlighting(codeHighlight), baseTheme, EditorView.editorAttributes.of({ class: "mode-code" })];
     view = new MergeView({
@@ -85,19 +86,19 @@
     <header>
       <span class="title">{basename(file)}</span>
       <span class="path">{rel}</span>
-      {#if info}<span class="info">{info}</span>{/if}
+      {#if info}<span class="info">{t(info)}</span>{/if}
       <span class="spacer"></span>
-      <button class="close" onclick={close} aria-label="Schließen">
+      <button class="close" onclick={close} aria-label={t("common.close")}>
         <svg width="10" height="10" viewBox="0 0 10 10"><path d="M1.5 1.5l7 7M8.5 1.5l-7 7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
       </button>
     </header>
-    <div class="labels"><span>Letzter Commit (HEAD)</span><span>Aktuell – editierbar, Pfeile setzen Blöcke zurück</span></div>
+    <div class="labels"><span>{t("git.diff.head")}</span><span>{t("git.diff.current")}</span></div>
     <div class="merge" bind:this={host}></div>
   </div>
 </div>
 
 <style>
-  .backdrop { position: fixed; inset: 0; z-index: 86; display: grid; place-items: center; background: rgba(0, 0, 0, 0.45); animation: fade 0.15s ease-out; }
+  .backdrop { position: fixed; inset: 0; z-index: 86; display: grid; place-items: center; background: var(--scrim); animation: fade 0.15s ease-out; }
   .sheet { width: 94vw; height: 90vh; display: flex; flex-direction: column; border-radius: 24px; background: var(--glass-strong); backdrop-filter: var(--blur); box-shadow: var(--glass-highlight), 0 30px 90px rgba(0, 0, 0, 0.7); overflow: hidden; outline: none; animation: pop 0.28s cubic-bezier(0.22, 1.2, 0.36, 1); }
   header { display: flex; align-items: baseline; gap: 12px; padding: 16px 16px 8px 22px; }
   .title { font-weight: 700; font-size: 15px; }
@@ -107,14 +108,14 @@
   .close { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 50%; color: var(--label-2); align-self: center; }
   .close:hover { background: var(--fill-hover); color: var(--label); }
   .labels { display: grid; grid-template-columns: 1fr 1fr; padding: 0 22px 6px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--label-3); }
-  .merge { flex: 1; min-height: 0; overflow: auto; background: rgba(0, 0, 0, 0.22); }
+  .merge { flex: 1; min-height: 0; overflow: auto; background: var(--well); }
   .merge :global(.cm-mergeView) { height: 100%; }
   .merge :global(.cm-mergeViewEditors) { min-height: 100%; }
   .merge :global(.cm-changedLine) { background: rgba(107, 155, 224, 0.1) !important; }
   .merge :global(.cm-deletedChunk), .merge :global(.cm-merge-a .cm-changedLine) { background: rgba(223, 112, 103, 0.12) !important; }
   .merge :global(.cm-merge-b .cm-changedLine) { background: rgba(123, 191, 142, 0.12) !important; }
-  .merge :global(.cm-changedText) { background: rgba(255, 255, 255, 0.12) !important; }
-  .merge :global(.cm-merge-revert button) { color: var(--label-2); background: rgba(255, 255, 255, 0.08); border: none; border-radius: 6px; cursor: pointer; }
+  .merge :global(.cm-changedText) { background: rgba(var(--fg-rgb), 0.12) !important; }
+  .merge :global(.cm-merge-revert button) { color: var(--label-2); background: rgba(var(--fg-rgb), 0.08); border: none; border-radius: 6px; cursor: pointer; }
   .merge :global(.cm-merge-revert) { background: transparent; }
   @keyframes fade { from { opacity: 0; } }
   @keyframes pop { from { opacity: 0; transform: scale(0.98); } }

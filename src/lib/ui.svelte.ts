@@ -1,3 +1,5 @@
+import { t } from "./i18n/index.svelte";
+
 export interface ChoiceOption {
   label: string;
   value: string;
@@ -44,8 +46,8 @@ export const ui = $state({
       ui.dialog = {
         title,
         options: [
-          { label: "Abbrechen", value: "cancel" },
-          { label: "OK", value: "ok", primary: true },
+          { label: t("common.cancel"), value: "cancel" },
+          { label: t("common.ok"), value: "ok", primary: true },
         ],
         input: { value, placeholder, selectUntil },
         resolve: (v, input) => resolve(v === "ok" && input?.trim() ? input.trim() : null),
@@ -53,9 +55,9 @@ export const ui = $state({
     });
   },
 
-  async confirm(title: string, message: string, confirmLabel = "OK", danger = false) {
+  async confirm(title: string, message: string, confirmLabel = t("common.ok"), danger = false) {
     const r = await ui.choose(title, message, [
-      { label: "Abbrechen", value: "cancel" },
+      { label: t("common.cancel"), value: "cancel" },
       { label: confirmLabel, value: "ok", primary: !danger, danger },
     ]);
     return r === "ok";

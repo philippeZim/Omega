@@ -11,13 +11,14 @@
   import { allClients, uriPath } from "../lib/code/lsp.svelte";
   import { openFind, find, nextSearchId } from "../lib/search/search.svelte";
   import * as ed from "../lib/editor";
+  import { t, type Key } from "../lib/i18n/index.svelte";
 
-  const TABS: { id: PaletteTab; label: string }[] = [
-    { id: "all", label: "Alle" },
-    { id: "files", label: "Dateien" },
-    { id: "symbols", label: "Symbole" },
-    { id: "actions", label: "Aktionen" },
-    { id: "text", label: "Text" },
+  const TABS: { id: PaletteTab; label: Key }[] = [
+    { id: "all", label: "commands.palette.all" },
+    { id: "files", label: "commands.palette.files" },
+    { id: "symbols", label: "commands.palette.symbols" },
+    { id: "actions", label: "commands.palette.actions" },
+    { id: "text", label: "commands.palette.text" },
   ];
 
   let query = $state("");
@@ -45,7 +46,7 @@
   }
 
   const rel = (p: string) => (app.root && p.startsWith(app.root + "/") ? p.slice(app.root.length + 1) : p);
-  const SYMBOL_KIND: Record<number, string> = { 5: "Klasse", 6: "Methode", 9: "Konstruktor", 10: "Enum", 11: "Interface", 12: "Funktion", 13: "Variable", 14: "Konstante", 23: "Struct", 26: "Typ" };
+  const SYMBOL_KIND: Record<number, string> = { 5: "class", 6: "method", 9: "constructor", 10: "enum", 11: "interface", 12: "function", 13: "variable", 14: "constant", 23: "struct", 26: "type" };
 
   // ------------------------------------------------------------ sources
 
@@ -111,7 +112,7 @@
           const m = fuzzy(q, s.name) ?? { score: 0, positions: [] };
           out.push({
             kind: "symbol", key: `${path}:${s.name}:${loc.range?.start?.line}`, label: s.name,
-            detail: `${SYMBOL_KIND[s.kind] ?? "Symbol"}${s.containerName ? " · " + s.containerName : ""} — ${rel(path)}`,
+            detail: `${t(`commands.palette.kind.${SYMBOL_KIND[s.kind] ?? "symbol"}` as Key)}${s.containerName ? " · " + s.containerName : ""} — ${rel(path)}`,
             positions: m.positions, score: m.score, path, line: (loc.range?.start?.line ?? 0) + 1, col: (loc.range?.start?.character ?? 0) + 1,
           });
         }
@@ -156,10 +157,10 @@
       case "text": return [{ title: "", items: textHits }];
       default:
         return [
-          { title: q ? "Dateien" : "Zuletzt geöffnet", items: fileItems(q).slice(0, q ? 8 : 12) },
-          { title: "Symbole", items: symbols.slice(0, 6) },
-          { title: "Aktionen", items: q ? actionItems(q).slice(0, 6) : [] },
-          { title: "Text", items: textHits.slice(0, 8) },
+          { title: t(q ? "commands.palette.files" : "commands.palette.recent"), items: fileItems(q).slice(0, q ? 8 : 12) },
+          { title: t("commands.palette.symbols"), items: symbols.slice(0, 6) },
+          { title: t("commands.palette.actions"), items: q ? actionItems(q).slice(0, 6) : [] },
+          { title: t("commands.palette.text"), items: textHits.slice(0, 8) },
         ].filter((s) => s.items.length);
     }
   });
@@ -187,7 +188,7 @@
   function onKey(e: KeyboardEvent) {
     if (e.key === "Escape") return (e.preventDefault(), close());
     if (e.key === "Tab") {
-      const i = TABS.findIndex((t) => t.id === palette.tab);
+      const i = TABS.findIndex((x) => x.id === palette.tab);
       palette.tab = TABS[(i + (e.shiftKey ? TABS.length - 1 : 1)) % TABS.length].id;
     } else if (e.key === "ArrowDown") selected = Math.min(flat.length - 1, selected + 1);
     else if (e.key === "ArrowUp") selected = Math.max(0, selected - 1);
@@ -202,26 +203,26 @@
     tick().then(() => list?.querySelector(".item.on")?.scrollIntoView({ block: "nearest" }));
   }
 
-  const PLACEHOLDER: Record<PaletteTab, string> = {
-    all: "Überall suchen…",
-    files: "Datei suchen…  (datei.py:42 springt zur Zeile)",
-    symbols: "Klasse, Funktion, Variable…",
-    actions: "Aktion suchen…",
-    text: "Text in Dateien suchen…  (Strg+Enter: großes Suchfenster)",
+  const PLACEHOLDER: Record<PaletteTab, Key> = {
+    all: "commands.palette.phAll",
+    files: "commands.palette.phFiles",
+    symbols: "commands.palette.phSymbols",
+    actions: "commands.palette.phActions",
+    text: "commands.palette.phText",
   };
 </script>
 
 <div class="backdrop" role="presentation" onclick={close}>
   <div class="palette" role="dialog" tabindex="-1" onclick={(e) => e.stopPropagation()} onkeydown={() => {}}>
     <nav class="tabs">
-      {#each TABS as t (t.id)}
-        <button class:on={palette.tab === t.id} onclick={() => { palette.tab = t.id; input?.focus(); }}>{t.label}</button>
+      {#each TABS as tab (tab.id)}
+        <button class:on={palette.tab === tab.id} onclick={() => { palette.tab = tab.id; input?.focus(); }}>{t(tab.label)}</button>
       {/each}
-      <span class="tabhint">Tab wechselt</span>
+      <span class="tabhint">{t("commands.palette.tabHint")}</span>
     </nav>
     <div class="search">
       <svg width="15" height="15" viewBox="0 0 16 16"><circle cx="7" cy="7" r="5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M11 11l3.5 3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-      <input bind:this={input} bind:value={query} onkeydown={onKey} spellcheck="false" placeholder={PLACEHOLDER[palette.tab]} />
+      <input bind:this={input} bind:value={query} onkeydown={onKey} spellcheck="false" placeholder={t(PLACEHOLDER[palette.tab])} />
     </div>
     <div class="list" bind:this={list}>
       {#each visible as sec (sec.title)}
@@ -229,16 +230,16 @@
         {#each sec.items as it (it.kind + it.key)}
           {@const idx = flat.indexOf(it)}
           <button class="item" class:on={idx === selected} onmouseenter={() => (selected = idx)} onclick={() => choose(it)}>
-            <span class="badge {it.kind}">{it.kind === "file" ? "D" : it.kind === "cmd" ? "›" : it.kind === "symbol" ? "S" : "T"}</span>
+            <span class="badge {it.kind}">{it.kind === "file" ? t("commands.palette.badgeFile") : it.kind === "cmd" ? "›" : it.kind === "symbol" ? "S" : "T"}</span>
             <span class="name" class:mono={it.kind === "text" || it.kind === "symbol"}>{#each highlight(it.label, it.positions) as seg, k (k)}<span class:m={seg.m}>{seg.t}</span>{/each}</span>
             <span class="detail" class:right={it.kind === "cmd" || it.kind === "text"}>{it.detail}{it.kind === "file" && it.line ? `  :${it.line}` : ""}</span>
           </button>
         {/each}
       {:else}
         <p class="empty">
-          {#if !app.root && (palette.tab === "files" || palette.tab === "text")}Öffne zuerst einen Ordner.
-          {:else if palette.tab === "symbols" && !allClients().length}Symbole kommen vom Language Server – öffne eine Code-Datei.
-          {:else if query}Keine Treffer{:else}Tippe zum Suchen{/if}
+          {#if !app.root && (palette.tab === "files" || palette.tab === "text")}{t("commands.palette.openFolderFirst")}
+          {:else if palette.tab === "symbols" && !allClients().length}{t("commands.palette.symbolsNeedLsp")}
+          {:else if query}{t("common.noResults")}{:else}{t("commands.palette.typeToSearch")}{/if}
         </p>
       {/each}
     </div>
@@ -246,20 +247,20 @@
 </div>
 
 <style>
-  .backdrop { position: fixed; inset: 0; z-index: 95; display: flex; justify-content: center; padding-top: 11vh; background: rgba(0, 0, 0, 0.35); animation: fade 0.15s ease-out; }
+  .backdrop { position: fixed; inset: 0; z-index: 95; display: flex; justify-content: center; padding-top: 11vh; background: var(--scrim); animation: fade 0.15s ease-out; }
   .palette { width: min(720px, 92vw); max-height: 66vh; display: flex; flex-direction: column; border-radius: 22px; background: var(--glass-strong); backdrop-filter: var(--blur); box-shadow: var(--glass-highlight), 0 30px 80px rgba(0, 0, 0, 0.65); overflow: hidden; outline: none; animation: drop 0.25s cubic-bezier(0.22, 1.2, 0.36, 1); }
   .tabs { display: flex; align-items: center; gap: 4px; padding: 10px 12px 0; }
   .tabs button { height: 28px; padding: 0 13px; border-radius: 999px; font-size: 12.5px; font-weight: 600; color: var(--label-2); transition: background 0.2s, color 0.2s; }
-  .tabs button:hover { color: var(--label); background: rgba(255, 255, 255, 0.07); }
-  .tabs button.on { color: #fff; background: rgba(255, 255, 255, 0.15); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12); }
+  .tabs button:hover { color: var(--label); background: rgba(var(--fg-rgb), 0.07); }
+  .tabs button.on { color: var(--label); background: var(--raised-bg); box-shadow: var(--raised-shadow); }
   .tabhint { margin-left: auto; font-size: 11px; color: var(--label-3); padding-right: 6px; }
-  .search { display: flex; align-items: center; gap: 10px; padding: 12px 18px; border-bottom: 1px solid rgba(255, 255, 255, 0.06); color: var(--label-2); }
+  .search { display: flex; align-items: center; gap: 10px; padding: 12px 18px; border-bottom: 1px solid rgba(var(--fg-rgb), 0.06); color: var(--label-2); }
   .search input { flex: 1; background: transparent; box-shadow: none !important; padding: 4px 0; font-size: 15px; border-radius: 0; }
   .list { overflow: auto; padding: 6px; }
   .sec { padding: 10px 12px 4px; font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--label-3); }
   .item { width: 100%; display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 12px; text-align: left; }
-  .item.on { background: rgba(255, 255, 255, 0.1); }
-  .badge { width: 20px; height: 20px; flex-shrink: 0; display: grid; place-items: center; border-radius: 6px; font-size: 10.5px; font-weight: 700; background: rgba(255, 255, 255, 0.07); color: var(--label-2); }
+  .item.on { background: rgba(var(--fg-rgb), 0.1); }
+  .badge { width: 20px; height: 20px; flex-shrink: 0; display: grid; place-items: center; border-radius: 6px; font-size: 10.5px; font-weight: 700; background: rgba(var(--fg-rgb), 0.07); color: var(--label-2); }
   .badge.symbol { color: var(--purple); }
   .badge.file { color: var(--teal); }
   .badge.text { color: var(--yellow); }

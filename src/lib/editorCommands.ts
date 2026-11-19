@@ -13,10 +13,15 @@ import { toggleWrap, insertLink } from "./markdown/livePreview";
 import { runViewAction } from "./editorActions";
 import type { Mode } from "./modes";
 
+/** Command group ids; the shown label is `commands.group.<id>`. */
+export type CommandGroup =
+  | "general" | "search" | "files" | "git" | "collab" | "ai" | "terminal" | "run" | "latex"
+  | "selection" | "lines" | "edit" | "navigation" | "code" | "debugger" | "markdown";
+
+/** The label is looked up as `commands.cmd.<id>`. */
 export interface EditorCommand {
   id: string;
-  label: string;
-  group: string;
+  group: CommandGroup;
   keys: string[];
   run: Command;
   /** Only active in these modes (default: all). */
@@ -94,61 +99,61 @@ const sc = (c: StateCommand): Command => (view: EditorView) => c(view);
 
 export const EDITOR_COMMANDS: EditorCommand[] = [
   // Multi-cursor & selection
-  { id: "editor.selectNextOccurrence", label: "Nächstes Vorkommen mit auswählen (Multi-Cursor)", group: "Multi-Cursor & Auswahl", keys: ["Mod-d"], run: sc(selectNextOccurrence) },
-  { id: "editor.selectAllOccurrences", label: "Alle Vorkommen auswählen", group: "Multi-Cursor & Auswahl", keys: ["Mod-Shift-l"], run: sc(selectSelectionMatches) },
-  { id: "editor.addCursorAbove", label: "Cursor oberhalb hinzufügen", group: "Multi-Cursor & Auswahl", keys: ["Mod-Alt-ArrowUp"], run: addCursorAbove },
-  { id: "editor.addCursorBelow", label: "Cursor unterhalb hinzufügen", group: "Multi-Cursor & Auswahl", keys: ["Mod-Alt-ArrowDown"], run: addCursorBelow },
-  { id: "editor.cursorsAtLineEnds", label: "Cursor an jedes Zeilenende der Auswahl", group: "Multi-Cursor & Auswahl", keys: ["Shift-Alt-i"], run: cursorsAtLineEnds },
-  { id: "editor.undoSelection", label: "Letzten Cursor/Auswahlschritt zurück", group: "Multi-Cursor & Auswahl", keys: ["Mod-u"], run: undoSelection },
-  { id: "editor.expandSelection", label: "Auswahl erweitern (Syntax-Block)", group: "Multi-Cursor & Auswahl", keys: ["Shift-Alt-ArrowRight"], run: selectParentSyntax },
-  { id: "editor.selectLine", label: "Zeile auswählen", group: "Multi-Cursor & Auswahl", keys: ["Mod-l"], run: selectLine },
-  { id: "editor.selectAll", label: "Alles auswählen", group: "Multi-Cursor & Auswahl", keys: ["Mod-a"], run: selectAll },
+  { id: "editor.selectNextOccurrence", group: "selection", keys: ["Mod-d"], run: sc(selectNextOccurrence) },
+  { id: "editor.selectAllOccurrences", group: "selection", keys: ["Mod-Shift-l"], run: sc(selectSelectionMatches) },
+  { id: "editor.addCursorAbove", group: "selection", keys: ["Mod-Alt-ArrowUp"], run: addCursorAbove },
+  { id: "editor.addCursorBelow", group: "selection", keys: ["Mod-Alt-ArrowDown"], run: addCursorBelow },
+  { id: "editor.cursorsAtLineEnds", group: "selection", keys: ["Shift-Alt-i"], run: cursorsAtLineEnds },
+  { id: "editor.undoSelection", group: "selection", keys: ["Mod-u"], run: undoSelection },
+  { id: "editor.expandSelection", group: "selection", keys: ["Shift-Alt-ArrowRight"], run: selectParentSyntax },
+  { id: "editor.selectLine", group: "selection", keys: ["Mod-l"], run: selectLine },
+  { id: "editor.selectAll", group: "selection", keys: ["Mod-a"], run: selectAll },
 
   // Lines
-  { id: "editor.moveLineUp", label: "Zeile nach oben verschieben", group: "Zeilen", keys: ["Alt-ArrowUp"], run: moveLineUp },
-  { id: "editor.moveLineDown", label: "Zeile nach unten verschieben", group: "Zeilen", keys: ["Alt-ArrowDown"], run: moveLineDown },
-  { id: "editor.copyLineUp", label: "Zeile nach oben duplizieren", group: "Zeilen", keys: ["Shift-Alt-ArrowUp"], run: copyLineUp },
-  { id: "editor.copyLineDown", label: "Zeile nach unten duplizieren", group: "Zeilen", keys: ["Shift-Alt-ArrowDown"], run: copyLineDown },
-  { id: "editor.duplicate", label: "Auswahl/Zeile duplizieren", group: "Zeilen", keys: ["Mod-Shift-d"], run: duplicate },
-  { id: "editor.deleteLine", label: "Zeile löschen", group: "Zeilen", keys: ["Mod-Shift-k"], run: deleteLine },
-  { id: "editor.insertLineBelow", label: "Neue Zeile darunter", group: "Zeilen", keys: ["Mod-Enter"], run: insertBlankLine },
-  { id: "editor.insertLineAbove", label: "Neue Zeile darüber", group: "Zeilen", keys: ["Mod-Shift-Enter"], run: insertLineAbove },
-  { id: "editor.joinLines", label: "Zeilen zusammenfügen", group: "Zeilen", keys: ["Mod-Shift-j"], run: joinLines },
-  { id: "editor.sortLines", label: "Ausgewählte Zeilen sortieren", group: "Zeilen", keys: ["F6"], run: sortLines },
-  { id: "editor.indentMore", label: "Einrücken", group: "Zeilen", keys: ["Mod-BracketRight"], run: indentMore },
-  { id: "editor.indentLess", label: "Ausrücken", group: "Zeilen", keys: ["Mod-BracketLeft"], run: indentLess },
+  { id: "editor.moveLineUp", group: "lines", keys: ["Alt-ArrowUp"], run: moveLineUp },
+  { id: "editor.moveLineDown", group: "lines", keys: ["Alt-ArrowDown"], run: moveLineDown },
+  { id: "editor.copyLineUp", group: "lines", keys: ["Shift-Alt-ArrowUp"], run: copyLineUp },
+  { id: "editor.copyLineDown", group: "lines", keys: ["Shift-Alt-ArrowDown"], run: copyLineDown },
+  { id: "editor.duplicate", group: "lines", keys: ["Mod-Shift-d"], run: duplicate },
+  { id: "editor.deleteLine", group: "lines", keys: ["Mod-Shift-k"], run: deleteLine },
+  { id: "editor.insertLineBelow", group: "lines", keys: ["Mod-Enter"], run: insertBlankLine },
+  { id: "editor.insertLineAbove", group: "lines", keys: ["Mod-Shift-Enter"], run: insertLineAbove },
+  { id: "editor.joinLines", group: "lines", keys: ["Mod-Shift-j"], run: joinLines },
+  { id: "editor.sortLines", group: "lines", keys: ["F6"], run: sortLines },
+  { id: "editor.indentMore", group: "lines", keys: ["Mod-BracketRight"], run: indentMore },
+  { id: "editor.indentLess", group: "lines", keys: ["Mod-BracketLeft"], run: indentLess },
 
   // Editing
   // In shared files undo only your own changes (Yjs undo manager), never the others'.
-  { id: "editor.undo", label: "Rückgängig", group: "Bearbeiten", keys: ["Mod-z"], run: (v) => runViewAction(v, "collab.undo") || undo(v) },
-  { id: "editor.redo", label: "Wiederholen", group: "Bearbeiten", keys: ["Mod-y", "Mod-Shift-z"], run: (v) => runViewAction(v, "collab.redo") || redo(v) },
-  { id: "editor.toggleComment", label: "Zeile (aus)kommentieren", group: "Bearbeiten", keys: ["Mod-/", "Mod-Backslash"], run: toggleComment },
-  { id: "editor.toggleBlockComment", label: "Block-Kommentar", group: "Bearbeiten", keys: ["Shift-Alt-a"], run: toggleBlockComment },
-  { id: "editor.upperCase", label: "In GROSSBUCHSTABEN", group: "Bearbeiten", keys: ["Mod-Shift-u"], run: changeCase(true) },
-  { id: "editor.lowerCase", label: "In kleinbuchstaben", group: "Bearbeiten", keys: ["Mod-Alt-u"], run: changeCase(false) },
-  { id: "editor.complete", label: "Vervollständigung öffnen", group: "Bearbeiten", keys: ["Mod-Space"], run: startCompletion },
+  { id: "editor.undo", group: "edit", keys: ["Mod-z"], run: (v) => runViewAction(v, "collab.undo") || undo(v) },
+  { id: "editor.redo", group: "edit", keys: ["Mod-y", "Mod-Shift-z"], run: (v) => runViewAction(v, "collab.redo") || redo(v) },
+  { id: "editor.toggleComment", group: "edit", keys: ["Mod-/", "Mod-Backslash"], run: toggleComment },
+  { id: "editor.toggleBlockComment", group: "edit", keys: ["Shift-Alt-a"], run: toggleBlockComment },
+  { id: "editor.upperCase", group: "edit", keys: ["Mod-Shift-u"], run: changeCase(true) },
+  { id: "editor.lowerCase", group: "edit", keys: ["Mod-Alt-u"], run: changeCase(false) },
+  { id: "editor.complete", group: "edit", keys: ["Mod-Space"], run: startCompletion },
 
   // Navigation
-  { id: "editor.find", label: "Suchen / Ersetzen", group: "Navigation", keys: ["Mod-f", "Mod-h"], run: openSearchPanel },
-  { id: "editor.gotoLine", label: "Gehe zu Zeile", group: "Navigation", keys: ["Mod-g"], run: gotoLine },
-  { id: "editor.matchingBracket", label: "Zur passenden Klammer springen", group: "Navigation", keys: ["Mod-Shift-Backslash", "Mod-m"], run: cursorMatchingBracket },
-  { id: "editor.fold", label: "Block einklappen", group: "Navigation", keys: ["Mod-Shift-BracketLeft"], run: foldCode },
-  { id: "editor.unfold", label: "Block ausklappen", group: "Navigation", keys: ["Mod-Shift-BracketRight"], run: unfoldCode },
-  { id: "editor.foldAll", label: "Alles einklappen", group: "Navigation", keys: ["Mod-Alt-BracketLeft"], run: foldAll },
-  { id: "editor.unfoldAll", label: "Alles ausklappen", group: "Navigation", keys: ["Mod-Alt-BracketRight"], run: unfoldAll },
+  { id: "editor.find", group: "navigation", keys: ["Mod-f", "Mod-h"], run: openSearchPanel },
+  { id: "editor.gotoLine", group: "navigation", keys: ["Mod-g"], run: gotoLine },
+  { id: "editor.matchingBracket", group: "navigation", keys: ["Mod-Shift-Backslash", "Mod-m"], run: cursorMatchingBracket },
+  { id: "editor.fold", group: "navigation", keys: ["Mod-Shift-BracketLeft"], run: foldCode },
+  { id: "editor.unfold", group: "navigation", keys: ["Mod-Shift-BracketRight"], run: unfoldCode },
+  { id: "editor.foldAll", group: "navigation", keys: ["Mod-Alt-BracketLeft"], run: foldAll },
+  { id: "editor.unfoldAll", group: "navigation", keys: ["Mod-Alt-BracketRight"], run: unfoldAll },
 
   // Code (contributed by LSP / debugger extensions of the active view)
-  { id: "lsp.gotoDefinition", label: "Gehe zu Definition", group: "Code", keys: ["F12"], run: (v) => runViewAction(v, "lsp.gotoDefinition"), modes: ["code"] },
-  { id: "lsp.format", label: "Dokument formatieren", group: "Code", keys: ["Shift-Alt-f", "Mod-Alt-l"], run: (v) => runViewAction(v, "lsp.format"), modes: ["code"] },
-  { id: "debug.toggleBreakpoint", label: "Breakpoint setzen/entfernen", group: "Debugger", keys: ["Mod-F8"], run: (v) => runViewAction(v, "debug.toggleBreakpoint"), modes: ["code"] },
+  { id: "lsp.gotoDefinition", group: "code", keys: ["F12"], run: (v) => runViewAction(v, "lsp.gotoDefinition"), modes: ["code"] },
+  { id: "lsp.format", group: "code", keys: ["Shift-Alt-f", "Mod-Alt-l"], run: (v) => runViewAction(v, "lsp.format"), modes: ["code"] },
+  { id: "debug.toggleBreakpoint", group: "debugger", keys: ["Mod-F8"], run: (v) => runViewAction(v, "debug.toggleBreakpoint"), modes: ["code"] },
 
   // Markdown
-  { id: "md.bold", label: "Fett", group: "Markdown", keys: ["Mod-b"], run: toggleWrap("**"), modes: ["markdown"] },
-  { id: "md.italic", label: "Kursiv", group: "Markdown", keys: ["Mod-i"], run: toggleWrap("*"), modes: ["markdown"] },
-  { id: "md.code", label: "Inline-Code", group: "Markdown", keys: ["Mod-e"], run: toggleWrap("`"), modes: ["markdown"] },
-  { id: "md.strike", label: "Durchgestrichen", group: "Markdown", keys: ["Mod-Shift-x"], run: toggleWrap("~~"), modes: ["markdown"] },
-  { id: "md.highlight", label: "Markieren", group: "Markdown", keys: ["Mod-Shift-h"], run: toggleWrap("=="), modes: ["markdown"] },
-  { id: "md.link", label: "Link einfügen", group: "Markdown", keys: ["Mod-k"], run: insertLink, modes: ["markdown"] },
+  { id: "md.bold", group: "markdown", keys: ["Mod-b"], run: toggleWrap("**"), modes: ["markdown"] },
+  { id: "md.italic", group: "markdown", keys: ["Mod-i"], run: toggleWrap("*"), modes: ["markdown"] },
+  { id: "md.code", group: "markdown", keys: ["Mod-e"], run: toggleWrap("`"), modes: ["markdown"] },
+  { id: "md.strike", group: "markdown", keys: ["Mod-Shift-x"], run: toggleWrap("~~"), modes: ["markdown"] },
+  { id: "md.highlight", group: "markdown", keys: ["Mod-Shift-h"], run: toggleWrap("=="), modes: ["markdown"] },
+  { id: "md.link", group: "markdown", keys: ["Mod-k"], run: insertLink, modes: ["markdown"] },
 ];
 
 /** The underlying CodeMirror functions, so the default keymaps can drop their own bindings for them. */

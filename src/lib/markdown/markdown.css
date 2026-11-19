@@ -99,7 +99,7 @@
   font-family: var(--mono);
   font-size: 0.84em;
   line-height: 1.6;
-  background: rgba(0, 0, 0, 0.32);
+  background: var(--well);
   padding-left: 18px;
   padding-right: 18px;
 }
@@ -145,7 +145,7 @@
   border-collapse: separate;
   border-spacing: 0;
   font-size: 0.94em;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(var(--fg-rgb), 0.08);
   border-radius: 14px;
   overflow: hidden;
   min-width: 40%;
@@ -160,7 +160,7 @@
   text-align: left;
   vertical-align: top;
 }
-.md-table-wrap th { background: rgba(255, 255, 255, 0.04); font-weight: 600; }
+.md-table-wrap th { background: rgba(var(--fg-rgb), 0.04); font-weight: 600; }
 .md-table-wrap tr > :last-child { border-right: none; }
 .md-table-wrap tbody tr:last-child td { border-bottom: none; }
 .md-table-wrap th:focus,

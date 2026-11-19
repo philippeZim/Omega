@@ -1,6 +1,7 @@
 import { WidgetType, type EditorView } from "@codemirror/view";
 import katex from "katex";
 import "katex/dist/katex.min.css";
+import { t } from "../i18n/index.svelte";
 
 const mathCache = new Map<string, string>();
 
@@ -122,13 +123,13 @@ export class CodeHeaderWidget extends WidgetType {
     const label = document.createElement("span");
     label.textContent = this.lang;
     const copy = document.createElement("button");
-    copy.textContent = "Kopieren";
+    copy.textContent = t("commands.md.copy");
     copy.addEventListener("mousedown", (e) => {
       e.preventDefault();
       e.stopPropagation();
       navigator.clipboard.writeText(this.code);
-      copy.textContent = "Kopiert";
-      setTimeout(() => (copy.textContent = "Kopieren"), 1200);
+      copy.textContent = t("commands.md.copied");
+      setTimeout(() => (copy.textContent = t("commands.md.copy")), 1200);
     });
     el.append(label, copy);
     return el;

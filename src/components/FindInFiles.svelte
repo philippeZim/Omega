@@ -5,13 +5,14 @@
   import { EditorView, Decoration, lineNumbers, highlightActiveLine, keymap, drawSelection, ViewPlugin, type DecorationSet } from "@codemirror/view";
   import { history, historyKeymap, defaultKeymap } from "@codemirror/commands";
   import { syntaxHighlighting } from "@codemirror/language";
-  import { find, runSearch, gotoHit, dockResults, replaceInFile, replaceAll, buildRegex, persistOptions, type Hit } from "../lib/search/search.svelte";
+  import { find, runSearch, gotoHit, dockResults, replaceInFile, replaceAll, buildRegex, persistOptions, matchSummary, type Hit } from "../lib/search/search.svelte";
   import { app } from "../lib/state.svelte";
   import { fsApi, basename } from "../lib/api";
   import * as ed from "../lib/editor";
   import { langFor, indentFor } from "../lib/code/languages";
   import { baseTheme, codeHighlight } from "../lib/theme";
   import { formatKey } from "../lib/keys";
+  import { t } from "../lib/i18n/index.svelte";
 
   let input: HTMLInputElement | undefined = $state();
   let list: HTMLDivElement | undefined = $state();
@@ -209,17 +210,17 @@
 <div class="backdrop" role="presentation" onclick={() => !find.pinned && close()}>
   <div class="popup" role="dialog" tabindex="-1" onclick={(e) => e.stopPropagation()} onkeydown={() => {}}>
     <header>
-      <span class="title">{find.replace ? "In Dateien ersetzen" : "In Dateien suchen"}</span>
+      <span class="title">{find.replace ? t("git.search.replaceTitle") : t("git.search.findTitle")}</span>
       <span class="count">
         {#if find.error}<span class="err">{find.error}</span>
-        {:else if find.query}{find.total}{find.truncated ? "+" : ""} Treffer in {find.files} {find.files === 1 ? "Datei" : "Dateien"}{find.running ? " …" : ""}{/if}
+        {:else if find.query}{matchSummary(find.total, find.files, find.truncated ? "+" : "")}{find.running ? " …" : ""}{/if}
       </span>
       <span class="spacer"></span>
-      <input class="mask" placeholder="Dateimaske, z.B. *.py,!test*" bind:value={find.mask} oninput={() => runSearch()} spellcheck="false" title="Mehrere Muster mit Komma, ! schließt aus" />
-      <button class="icon" class:on={find.pinned} title="Fenster offen halten (Pin)" onclick={() => { find.pinned = !find.pinned; persistOptions(); }} aria-label="Pin">
+      <input class="mask" placeholder={t("git.search.maskPlaceholder")} bind:value={find.mask} oninput={() => runSearch()} spellcheck="false" title={t("git.search.maskTitle")} />
+      <button class="icon" class:on={find.pinned} title={t("git.search.pin")} onclick={() => { find.pinned = !find.pinned; persistOptions(); }} aria-label="Pin">
         <svg width="14" height="14" viewBox="0 0 16 16"><path d="M9.5 1.5l5 5-2 .5-2.5 2.5.5 3-1.5 1.5-3-3-3.5 3.5M5 8L2.5 5.5 4 4l3 .5L9.5 2z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>
       </button>
-      <button class="icon" title="Schließen (Esc)" onclick={close} aria-label="Schließen">
+      <button class="icon" title={t("git.search.closeEsc")} onclick={close} aria-label={t("common.close")}>
         <svg width="10" height="10" viewBox="0 0 10 10"><path d="M1.5 1.5l7 7M8.5 1.5l-7 7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
       </button>
     </header>
@@ -227,24 +228,24 @@
     <div class="fields">
       <div class="field">
         <svg width="14" height="14" viewBox="0 0 16 16"><circle cx="7" cy="7" r="5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M11 11l3.5 3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-        <input bind:this={input} bind:value={find.query} oninput={() => runSearch()} onkeydown={onKey} placeholder="Suchen" spellcheck="false" />
-        <button class="opt" class:on={find.caseSensitive} title="Groß-/Kleinschreibung (Alt+C)" onclick={() => toggle("caseSensitive")}>Aa</button>
-        <button class="opt" class:on={find.wholeWord} title="Ganze Wörter (Alt+W)" onclick={() => toggle("wholeWord")}>W</button>
-        <button class="opt" class:on={find.regex} title="Regulärer Ausdruck (Alt+X)" onclick={() => toggle("regex")}>.*</button>
+        <input bind:this={input} bind:value={find.query} oninput={() => runSearch()} onkeydown={onKey} placeholder={t("git.search.placeholder")} spellcheck="false" />
+        <button class="opt" class:on={find.caseSensitive} title={t("git.search.matchCase")} onclick={() => toggle("caseSensitive")}>Aa</button>
+        <button class="opt" class:on={find.wholeWord} title={t("git.search.wholeWord")} onclick={() => toggle("wholeWord")}>W</button>
+        <button class="opt" class:on={find.regex} title={t("git.search.regex")} onclick={() => toggle("regex")}>.*</button>
       </div>
       {#if find.replace}
         <div class="field">
           <svg width="14" height="14" viewBox="0 0 16 16"><path d="M2 5h9l-2.5-2.5M14 11H5l2.5 2.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
-          <input bind:value={find.replacement} onkeydown={onKey} placeholder={find.regex ? "Ersetzen ($1, $& für Gruppen)" : "Ersetzen durch"} spellcheck="false" />
+          <input bind:value={find.replacement} onkeydown={onKey} placeholder={find.regex ? t("git.search.replaceRegexPlaceholder") : t("git.search.replacePlaceholder")} spellcheck="false" />
         </div>
       {/if}
       <div class="scopes">
-        <button class:on={find.scope === "project"} onclick={() => setScope("project")}>Projekt</button>
+        <button class:on={find.scope === "project"} onclick={() => setScope("project")}>{t("git.search.scopeProject")}</button>
         <button class:on={find.scope === "folder"} onclick={() => (find.folder ? setScope("folder") : chooseFolder())} title={find.folder ?? ""}>
-          Ordner{#if find.scope === "folder" && find.folder}: <b>{basename(find.folder)}</b>{/if}
+          {t("git.search.scopeFolder")}{#if find.scope === "folder" && find.folder}: <b>{basename(find.folder)}</b>{/if}
         </button>
-        {#if find.scope === "folder"}<button class="pick" onclick={chooseFolder} title="Anderen Ordner wählen">…</button>{/if}
-        <button class:on={find.scope === "open"} onclick={() => setScope("open")}>Offene Dateien</button>
+        {#if find.scope === "folder"}<button class="pick" onclick={chooseFolder} title={t("git.search.chooseFolder")}>…</button>{/if}
+        <button class:on={find.scope === "open"} onclick={() => setScope("open")}>{t("git.search.scopeOpen")}</button>
       </div>
     </div>
 
@@ -255,34 +256,34 @@
           <span class="loc">{basename(h.file)} <b>{h.line}</b></span>
         </button>
       {:else}
-        <p class="empty">{find.query ? (find.running ? "Suche …" : "Keine Treffer") : "Suchbegriff eingeben – die Ergebnisse erscheinen live."}</p>
+        <p class="empty">{find.query ? (find.running ? t("git.search.searching") : t("common.noResults")) : t("git.search.enterQuery")}</p>
       {/each}
     </div>
 
     <div class="preview-head">
       {#if hit}
         <span class="pfile">{rel(hit.file)}</span>
-        <span class="phint">Direkt editierbar – Änderungen werden automatisch gespeichert</span>
+        <span class="phint">{t("git.search.previewHint")}</span>
       {/if}
     </div>
     <div class="preview" bind:this={previewHost}></div>
 
     <footer>
-      <span class="keys">↑↓ Auswahl · Enter {find.replace ? "ersetzen" : "öffnen"} · Doppelklick öffnen · {formatKey("Mod-Enter")} unten anheften</span>
+      <span class="keys">{t("git.search.footerKeys", { action: find.replace ? t("git.search.actionReplace") : t("git.search.actionOpen"), key: formatKey("Mod-Enter") })}</span>
       <span class="spacer"></span>
-      <button class="btn" onclick={dockResults} disabled={!find.hits.length}>Unten anheften</button>
+      <button class="btn" onclick={dockResults} disabled={!find.hits.length}>{t("git.search.dock")}</button>
       {#if find.replace}
-        <button class="btn" onclick={replaceCurrent} disabled={!hit}>Ersetzen</button>
-        <button class="btn primary" onclick={replaceAll} disabled={!find.hits.length}>Alle ersetzen</button>
+        <button class="btn" onclick={replaceCurrent} disabled={!hit}>{t("git.search.replace")}</button>
+        <button class="btn primary" onclick={replaceAll} disabled={!find.hits.length}>{t("git.search.replaceAll")}</button>
       {:else if hit}
-        <button class="btn primary" onclick={() => hit && gotoHit(hit)}>Öffnen</button>
+        <button class="btn primary" onclick={() => hit && gotoHit(hit)}>{t("common.open")}</button>
       {/if}
     </footer>
   </div>
 </div>
 
 <style>
-  .backdrop { position: fixed; inset: 0; z-index: 85; display: grid; place-items: center; background: rgba(0, 0, 0, 0.4); animation: fade 0.15s ease-out; }
+  .backdrop { position: fixed; inset: 0; z-index: 85; display: grid; place-items: center; background: var(--scrim); animation: fade 0.15s ease-out; }
   .popup {
     width: min(1100px, 92vw);
     height: min(860px, 88vh);
@@ -304,34 +305,34 @@
   .mask { width: 220px; padding: 5px 12px; font-family: var(--mono); font-size: 12px; }
   .icon { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 50%; color: var(--label-2); }
   .icon:hover { background: var(--fill-hover); color: var(--label); }
-  .icon.on { background: rgba(255, 255, 255, 0.14); color: var(--label); }
+  .icon.on { background: rgba(var(--fg-rgb), 0.14); color: var(--label); }
   .fields { display: flex; flex-direction: column; gap: 8px; padding: 0 16px 10px; }
   .field { display: flex; align-items: center; gap: 8px; padding: 0 6px 0 14px; height: 40px; border-radius: 14px; background: var(--recess); box-shadow: var(--recess-shadow); color: var(--label-3); }
   .field input { flex: 1; background: transparent; box-shadow: none !important; padding: 0; font-family: var(--mono); font-size: 13.5px; border-radius: 0; }
   .opt { height: 28px; min-width: 32px; padding: 0 8px; border-radius: 8px; font-family: var(--mono); font-size: 12px; color: var(--label-2); }
   .opt:hover { background: var(--fill-hover); }
-  .opt.on { background: rgba(255, 255, 255, 0.16); color: var(--label); }
+  .opt.on { background: rgba(var(--fg-rgb), 0.16); color: var(--label); }
   .scopes { display: flex; gap: 4px; }
-  .scopes button { height: 26px; padding: 0 12px; border-radius: 999px; font-size: 12px; color: var(--label-2); background: rgba(255, 255, 255, 0.04); }
-  .scopes button:hover { background: rgba(255, 255, 255, 0.09); color: var(--label); }
-  .scopes button.on { background: rgba(255, 255, 255, 0.15); color: var(--label); }
+  .scopes button { height: 26px; padding: 0 12px; border-radius: 999px; font-size: 12px; color: var(--label-2); background: rgba(var(--fg-rgb), 0.04); }
+  .scopes button:hover { background: rgba(var(--fg-rgb), 0.09); color: var(--label); }
+  .scopes button.on { color: var(--label); background: var(--raised-bg); box-shadow: var(--raised-shadow); }
   .scopes .pick { padding: 0 9px; }
-  .results { flex: 0 0 34%; overflow: auto; padding: 4px 8px; border-top: 1px solid rgba(255, 255, 255, 0.05); }
+  .results { flex: 0 0 34%; overflow: auto; padding: 4px 8px; border-top: 1px solid rgba(var(--fg-rgb), 0.05); }
   .hit { width: 100%; display: flex; align-items: center; gap: 16px; padding: 4px 10px; border-radius: 8px; text-align: left; font-family: var(--mono); font-size: 12.5px; }
-  .hit:hover { background: rgba(255, 255, 255, 0.05); }
-  .hit.on { background: rgba(255, 255, 255, 0.12); }
+  .hit:hover { background: rgba(var(--fg-rgb), 0.05); }
+  .hit.on { background: rgba(var(--fg-rgb), 0.12); }
   .text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: pre; color: var(--label-2); }
   .m { color: var(--label); background: rgba(216, 194, 122, 0.28); border-radius: 3px; }
   .loc { flex-shrink: 0; font-family: var(--font); font-size: 11.5px; color: var(--label-3); }
   .loc b { color: var(--label-2); font-weight: 500; }
   .empty { color: var(--label-3); padding: 12px; margin: 0; font-family: var(--font); font-size: 13px; }
-  .preview-head { display: flex; align-items: baseline; gap: 12px; min-height: 30px; padding: 7px 20px 4px; border-top: 1px solid rgba(255, 255, 255, 0.06); }
+  .preview-head { display: flex; align-items: baseline; gap: 12px; min-height: 30px; padding: 7px 20px 4px; border-top: 1px solid rgba(var(--fg-rgb), 0.06); }
   .pfile { font-family: var(--mono); font-size: 12px; color: var(--label-2); }
   .phint { font-size: 11px; color: var(--label-3); }
-  .preview { flex: 1; min-height: 0; position: relative; background: rgba(0, 0, 0, 0.22); }
+  .preview { flex: 1; min-height: 0; position: relative; background: var(--well); }
   .preview :global(.cm-editor) { position: absolute; inset: 0; }
   .preview :global(.find-match) { background: rgba(216, 194, 122, 0.3); border-radius: 2px; }
-  footer { display: flex; align-items: center; gap: 8px; padding: 10px 14px 12px 20px; border-top: 1px solid rgba(255, 255, 255, 0.05); }
+  footer { display: flex; align-items: center; gap: 8px; padding: 10px 14px 12px 20px; border-top: 1px solid rgba(var(--fg-rgb), 0.05); }
   .keys { font-size: 11.5px; color: var(--label-3); }
   .btn:disabled { opacity: 0.4; }
   @keyframes fade { from { opacity: 0; } }

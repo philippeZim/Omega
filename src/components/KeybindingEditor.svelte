@@ -2,6 +2,7 @@
   import { COMMANDS, keysFor, setKeys, keymapState, conflicts, resetAllKeys, recording } from "../lib/commands.svelte";
   import { bindingFromEvent, formatKey, normalize } from "../lib/keys";
   import { ui } from "../lib/ui.svelte";
+  import { t } from "../lib/i18n/index.svelte";
 
   let filter = $state("");
   let recordingId = $state<string | null>(null);
@@ -43,9 +44,9 @@
     const clash = conflicts(id, key);
     if (clash.length) {
       const ok = await ui.confirm(
-        `${formatKey(key)} ist schon belegt`,
-        `Verwendet von: ${clash.map((c) => c.label).join(", ")}. Dort entfernen und hier zuweisen?`,
-        "Umhängen",
+        t("commands.kb.inUse", { key: formatKey(key) }),
+        t("commands.kb.usedBy", { cmds: clash.map((c) => c.label).join(", ") }),
+        t("commands.kb.reassign"),
       );
       if (!ok) return;
       for (const c of clash) setKeys(c.id, keysFor(c.id).filter((k) => k !== key));
@@ -58,15 +59,15 @@
   }
 
   async function resetAll() {
-    if (await ui.confirm("Alle Tastenkürzel zurücksetzen?", "Eigene Belegungen gehen verloren.", "Zurücksetzen", true)) resetAllKeys();
+    if (await ui.confirm(t("commands.kb.resetAllConfirm"), t("commands.kb.resetAllDetail"), t("commands.kb.reset"), true)) resetAllKeys();
   }
 </script>
 
 <svelte:window onkeydowncapture={onKey} />
 
 <div class="bar">
-  <input placeholder="Befehl oder Taste suchen…" bind:value={filter} spellcheck="false" />
-  <button class="btn" onclick={resetAll}>Alle zurücksetzen</button>
+  <input placeholder={t("commands.kb.search")} bind:value={filter} spellcheck="false" />
+  <button class="btn" onclick={resetAll}>{t("commands.kb.resetAll")}</button>
 </div>
 
 {#each groups as [group, cmds] (group)}
@@ -78,15 +79,15 @@
         <span class="label">{c.label}{#if c.modes}<span class="mode">{c.modes.join(", ")}</span>{/if}</span>
         <span class="keys">
           {#each keys as k (k)}
-            <span class="chip">{formatKey(k)}<button class="x" onclick={() => removeKey(c.id, k)} aria-label="Entfernen">×</button></span>
+            <span class="chip">{formatKey(k)}<button class="x" onclick={() => removeKey(c.id, k)} aria-label={t("commands.kb.remove")}>×</button></span>
           {/each}
           {#if recordingId === c.id}
-            <span class="chip rec">Tasten drücken… <small>Esc bricht ab</small></span>
+            <span class="chip rec">{t("commands.kb.pressKeys")} <small>{t("commands.kb.escCancels")}</small></span>
           {:else}
-            <button class="add" title="Tastenkürzel hinzufügen" onclick={() => startRecording(c.id)}>+</button>
+            <button class="add" title={t("commands.kb.add")} onclick={() => startRecording(c.id)}>+</button>
           {/if}
           {#if c.id in keymapState.overrides}
-            <button class="reset" title="Standard wiederherstellen" onclick={() => setKeys(c.id, null)}>↺</button>
+            <button class="reset" title={t("commands.kb.restore")} onclick={() => setKeys(c.id, null)}>↺</button>
           {/if}
         </span>
       </div>
@@ -98,12 +99,12 @@
   .bar { display: flex; gap: 10px; margin: 6px 0 4px; }
   .bar input { flex: 1; }
   h3 { margin: 22px 2px 8px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--label-2); }
-  .box { border-radius: 18px; background: rgba(255, 255, 255, 0.035); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04); padding: 4px; }
+  .box { border-radius: 18px; background: rgba(var(--fg-rgb), 0.035); box-shadow: inset 0 1px 0 rgba(var(--hl-rgb), 0.04); padding: 4px; }
   .row { display: grid; grid-template-columns: minmax(0, 340px) 1fr; align-items: center; gap: 20px; min-height: 40px; padding: 4px 10px 4px 14px; border-radius: 12px; }
-  .row:hover { background: rgba(255, 255, 255, 0.07); }
-  .row + .row { border-top: 1px solid rgba(255, 255, 255, 0.035); }
+  .row:hover { background: rgba(var(--fg-rgb), 0.07); }
+  .row + .row { border-top: 1px solid rgba(var(--fg-rgb), 0.035); }
   .label { font-size: 13px; }
-  .row.custom .label { color: #fff; font-weight: 550; }
+  .row.custom .label { color: var(--label); font-weight: 550; }
   .mode { margin-left: 8px; font-size: 10.5px; color: var(--label-3); text-transform: capitalize; }
   .keys { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-start; }
   .chip {
@@ -124,8 +125,8 @@
   .x { width: 16px; height: 16px; border-radius: 50%; font-size: 12px; line-height: 1; color: var(--label-3); opacity: 0; transition: opacity 0.15s; }
   .chip:hover .x { opacity: 1; }
   .x:hover { color: var(--label); background: var(--fill-2); }
-  .add, .reset { width: 26px; height: 26px; border-radius: 8px; color: var(--label-2); background: rgba(255, 255, 255, 0.05); transition: background 0.15s, transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1); }
-  .add:hover, .reset:hover { background: rgba(255, 255, 255, 0.12); color: var(--label); }
+  .add, .reset { width: 26px; height: 26px; border-radius: 8px; color: var(--label-2); background: rgba(var(--fg-rgb), 0.05); transition: background 0.15s, transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1); }
+  .add:hover, .reset:hover { background: rgba(var(--fg-rgb), 0.12); color: var(--label); }
   .add:active, .reset:active { transform: scale(0.9); }
   @keyframes pulse { 50% { opacity: 0.55; } }
 </style>

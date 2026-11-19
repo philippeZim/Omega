@@ -4,6 +4,7 @@
   import DebugConsole from "./DebugConsole.svelte";
   import SearchDock from "./SearchDock.svelte";
   import { find } from "../lib/search/search.svelte";
+  import { t } from "../lib/i18n/index.svelte";
 
   // Docking search results shows the panel on their tab.
   $effect(() => {
@@ -58,30 +59,30 @@
 <section class="terminal glass" style="height: {terms.height}px" class:hidden={!terms.visible}>
   <div class="resizer" role="separator" onpointerdown={startResize}></div>
   <div class="head">
-    {#each terms.tabs as t (t.id)}
-      <div class="tab" class:active={t.id === terms.active} class:exited={t.exited} role="tab" tabindex="0" aria-selected={t.id === terms.active}
-        onclick={() => { terms.active = t.id; focusTerm(t.id); }} onkeydown={(e) => e.key === "Enter" && (terms.active = t.id)}>
-        <span class="dot" class:run={t.kind === "run"}></span>
-        <span>{t.title}</span>
-        <button class="x" onclick={(e) => { e.stopPropagation(); closeTerminal(t.id); }} aria-label="Schließen">×</button>
+    {#each terms.tabs as tab (tab.id)}
+      <div class="tab" class:active={tab.id === terms.active} class:exited={tab.exited} role="tab" tabindex="0" aria-selected={tab.id === terms.active}
+        onclick={() => { terms.active = tab.id; focusTerm(tab.id); }} onkeydown={(e) => e.key === "Enter" && (terms.active = tab.id)}>
+        <span class="dot" class:run={tab.kind === "run"}></span>
+        <span>{tab.title}</span>
+        <button class="x" onclick={(e) => { e.stopPropagation(); closeTerminal(tab.id); }} aria-label={t("common.close")}>×</button>
       </div>
     {/each}
     {#if showConsole}
       <div class="tab" class:active={terms.active === "console"} role="tab" tabindex="0" aria-selected={terms.active === "console"}
         onclick={() => (terms.active = "console")} onkeydown={(e) => e.key === "Enter" && (terms.active = "console")}>
-        <span class="dot dbg"></span><span>Debug-Konsole</span>
+        <span class="dot dbg"></span><span>{t("code.term.debugConsole")}</span>
       </div>
     {/if}
     {#if find.docked}
       <div class="tab" class:active={terms.active === "search"} role="tab" tabindex="0" aria-selected={terms.active === "search"}
         onclick={() => (terms.active = "search")} onkeydown={(e) => e.key === "Enter" && (terms.active = "search")}>
-        <span class="dot srch"></span><span>Suche: {find.docked.query}</span>
-        <button class="x" onclick={(e) => { e.stopPropagation(); find.docked = null; if (terms.active === "search") terms.active = terms.tabs[0]?.id ?? null; }} aria-label="Schließen">×</button>
+        <span class="dot srch"></span><span>{t("code.term.search", { query: find.docked.query })}</span>
+        <button class="x" onclick={(e) => { e.stopPropagation(); find.docked = null; if (terms.active === "search") terms.active = terms.tabs[0]?.id ?? null; }} aria-label={t("common.close")}>×</button>
       </div>
     {/if}
-    <button class="add" title="Neues Terminal" onclick={() => newTerminal(app.root)}>+</button>
+    <button class="add" title={t("code.term.new")} onclick={() => newTerminal(app.root)}>+</button>
     <span class="spacer"></span>
-    <button class="add" title="Terminal ausblenden (Strg+^)" onclick={toggleTerminal}>⌄</button>
+    <button class="add" title={t("code.term.hide")} onclick={toggleTerminal}>⌄</button>
   </div>
   <div class="body" class:console-on={terms.active === "console" || terms.active === "search"} bind:this={body} role="presentation" onclick={() => terms.active !== "console" && focusTerm()}></div>
   {#if terms.active === "console"}
@@ -95,10 +96,10 @@
   .terminal { position: relative; flex-shrink: 0; display: flex; flex-direction: column; overflow: hidden; }
   .terminal.hidden { display: none; }
   .resizer { position: absolute; top: -6px; left: 0; right: 0; height: 10px; cursor: row-resize; z-index: 5; }
-  .head { height: 42px; flex-shrink: 0; display: flex; align-items: center; gap: 4px; padding: 0 10px; border-bottom: 1px solid rgba(255, 255, 255, 0.05); }
+  .head { height: 42px; flex-shrink: 0; display: flex; align-items: center; gap: 4px; padding: 0 10px; border-bottom: 1px solid rgba(var(--fg-rgb), 0.05); }
   .tab { height: 28px; display: flex; align-items: center; gap: 7px; padding: 0 6px 0 12px; border-radius: 999px; color: var(--label-2); font-size: 12px; }
   .tab:hover { background: var(--fill-hover); color: var(--label); }
-  .tab.active { background: rgba(255, 255, 255, 0.1); color: var(--label); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08); }
+  .tab.active { background: rgba(var(--fg-rgb), 0.1); color: var(--label); box-shadow: inset 0 1px 0 rgba(var(--hl-rgb), 0.08); }
   .tab.exited { opacity: 0.55; }
   .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--label-3); }
   .dot.run { background: var(--green); }
@@ -115,5 +116,5 @@
   .body :global(.term-host) { position: absolute; inset: 8px 6px 4px 14px; }
   .body :global(.xterm) { height: 100%; }
   .body :global(.xterm-viewport) { background: transparent !important; }
-  .body :global(.xterm-viewport::-webkit-scrollbar-thumb) { background: rgba(255, 255, 255, 0.14); }
+  .body :global(.xterm-viewport::-webkit-scrollbar-thumb) { background: rgba(var(--fg-rgb), 0.14); }
 </style>

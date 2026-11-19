@@ -16,6 +16,7 @@ import * as ed from "../editor";
 import { fsApi, joinPath, basename } from "../api";
 import { viewActions } from "../editorActions";
 import { ui } from "../ui.svelte";
+import { t } from "../i18n/index.svelte";
 
 export const REMOTE = "collab:";
 export const isRemote = (p: string | null | undefined) => !!p && p.startsWith(REMOTE);
@@ -269,7 +270,7 @@ onCollabMessage(async (peer, msg) => {
   if (collab.role === "host") {
     if (msg.t === "doc.open") {
       const d = await hostDoc(String(msg.path));
-      if (!d) return send(peer, { t: "doc.error", path: msg.path, error: "Datei nicht verfügbar" });
+      if (!d) return send(peer, { t: "doc.error", path: msg.path, error: "unavailable" });
       d.subscribers.add(peer);
       send(peer, { t: "doc.state", path: d.rel, update: b64(Y.encodeStateAsUpdate(d.ydoc)) });
       const states = [...d.awareness.getStates().keys()];
@@ -299,7 +300,7 @@ onCollabMessage(async (peer, msg) => {
       broadcast({ ...msg, peer }, peer);
       if (share.following === peer) applyFollow();
     } else if (msg.t === "hello-ready") {
-      send(peer, { t: "root", name: app.root ? basename(app.root) : "Projekt" });
+      send(peer, { t: "root", name: app.root ? basename(app.root) : t("ai.collab.project") });
       lastPresence = "";
       publishPresence();
     }
@@ -320,7 +321,7 @@ onCollabMessage(async (peer, msg) => {
     const d = docs.get(msg.path);
     if (d) applyAwarenessUpdate(d.awareness, unb64(msg.update), "remote");
   } else if (msg.t === "doc.error") {
-    ui.toast(`${msg.path}: ${msg.error}`, "error");
+    ui.toast(`${msg.path}: ${msg.error === "unavailable" ? t("ai.collab.fileUnavailable") : msg.error}`, "error");
   } else if (msg.t === "fs.list.res") {
     listWaiters.get(msg.req)?.(msg.entries);
     listWaiters.delete(msg.req);

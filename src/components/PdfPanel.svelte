@@ -6,6 +6,7 @@
   import { latex, setDark, reverseSync, forwardSync } from "../lib/latex/controller.svelte";
   import { app, activeTab, openFile } from "../lib/state.svelte";
   import * as ed from "../lib/editor";
+  import { t } from "../lib/i18n/index.svelte";
 
   pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
 
@@ -80,13 +81,13 @@
 
   // Forward sync: scroll to and flash the target box.
   $effect(() => {
-    const t = latex.target;
-    if (!t || !pageSizes[t.page - 1]) return;
-    const pageEl = pagesEl.querySelector<HTMLElement>(`[data-page="${t.page}"]`);
+    const tg = latex.target;
+    if (!tg || !pageSizes[tg.page - 1]) return;
+    const pageEl = pagesEl.querySelector<HTMLElement>(`[data-page="${tg.page}"]`);
     if (!pageEl) return;
-    const s = pageEl.clientWidth / pageSizes[t.page - 1].w;
-    scroller.scrollTo({ top: pageEl.offsetTop + t.y * s - scroller.clientHeight / 3, behavior: "smooth" });
-    flash = { page: t.page, x: t.x * s, y: t.y * s, w: t.w * s, h: t.h * s };
+    const s = pageEl.clientWidth / pageSizes[tg.page - 1].w;
+    scroller.scrollTo({ top: pageEl.offsetTop + tg.y * s - scroller.clientHeight / 3, behavior: "smooth" });
+    flash = { page: tg.page, x: tg.x * s, y: tg.y * s, w: tg.w * s, h: tg.h * s };
     setTimeout(() => (flash = null), 1400);
   });
 
@@ -140,40 +141,40 @@
 <aside class="pdf glass" style="width: {width}px">
   <div class="resizer" role="separator" onpointerdown={startResize}></div>
   <div class="toolbar">
-    <button class="status {latex.status}" onclick={() => (showLog = !showLog)} title="Log / Fehler anzeigen">
+    <button class="status {latex.status}" onclick={() => (showLog = !showLog)} title={t("code.pdf.showLog")}>
       {#if latex.available === false}
-        Tectonic fehlt
+        {t("code.pdf.tectonicMissing")}
       {:else if latex.status === "compiling"}
-        <span class="spinner"></span> Kompiliere…
+        <span class="spinner"></span> {t("code.pdf.compiling")}
       {:else if latex.status === "error"}
-        {errors.length || 1} Fehler
+        {errors.length > 1 ? t("code.pdf.errors", { n: errors.length }) : t("code.pdf.error1")}
       {:else if latex.status === "ok"}
-        ✓ {(latex.millis / 1000).toFixed(1)} s{warnings.length ? ` · ${warnings.length} Warnungen` : ""}
+        ✓ {(latex.millis / 1000).toFixed(1)} s{warnings.length ? ` · ${warnings.length > 1 ? t("code.pdf.warnings", { n: warnings.length }) : t("code.pdf.warning1")}` : ""}
       {:else}
         PDF
       {/if}
     </button>
     <span class="spacer"></span>
-    <button class="tool" title="Zur Cursor-Position im PDF (Strg+J)" onclick={syncFromEditor}>⇥</button>
+    <button class="tool" title={t("code.pdf.syncToCursor")} onclick={syncFromEditor}>⇥</button>
     <div class="zoom">
-      <button class="tool" title="Verkleinern" onclick={() => (zoom = Math.max(0.4, (zoom || 1.2) - 0.15))}>−</button>
-      <button class="tool fit" class:on={zoom === 0} title="Seitenbreite" onclick={() => (zoom = 0)}>Breite</button>
-      <button class="tool" title="Vergrößern" onclick={() => (zoom = Math.min(4, (zoom || 1.2) + 0.15))}>+</button>
+      <button class="tool" title={t("code.pdf.zoomOut")} onclick={() => (zoom = Math.max(0.4, (zoom || 1.2) - 0.15))}>−</button>
+      <button class="tool fit" class:on={zoom === 0} title={t("code.pdf.fitWidth")} onclick={() => (zoom = 0)}>{t("code.pdf.width")}</button>
+      <button class="tool" title={t("code.pdf.zoomIn")} onclick={() => (zoom = Math.min(4, (zoom || 1.2) + 0.15))}>+</button>
     </div>
-    <button class="tool mode" class:on={latex.dark} title="Dunkles PDF ein/aus" onclick={() => setDark(!latex.dark)}>
-      {latex.dark ? "Dunkel" : "Hell"}
+    <button class="tool mode" class:on={latex.dark} title={t("code.pdf.toggleDark")} onclick={() => setDark(!latex.dark)}>
+      {latex.dark ? t("code.pdf.dark") : t("code.pdf.light")}
     </button>
   </div>
 
   <div class="scroller" bind:this={scroller} ondblclick={onDblClick} role="document">
     {#if latex.available === false}
       <div class="empty">
-        <h3>Tectonic ist nicht installiert</h3>
-        <p>Führe im Terminal aus:</p>
+        <h3>{t("code.pdf.notInstalled")}</h3>
+        <p>{t("code.pdf.runInTerminal")}</p>
         <code>sudo pacman -S tectonic</code>
       </div>
     {:else if !latex.pdf}
-      <div class="empty"><p>{latex.status === "compiling" ? "Erstes Kompilieren… (Pakete werden beim ersten Mal geladen)" : "Noch kein PDF"}</p></div>
+      <div class="empty"><p>{latex.status === "compiling" ? t("code.pdf.firstCompile") : t("code.pdf.noPdf")}</p></div>
     {/if}
     <div class="pages" class:dark={latex.dark} bind:this={pagesEl}></div>
     {#if flash}
@@ -187,7 +188,7 @@
   {#if showLog}
     <div class="log">
       <div class="log-head">
-        <span>Fehler & Warnungen</span>
+        <span>{t("code.pdf.problems")}</span>
         <button class="tool" onclick={() => (showLog = false)}>×</button>
       </div>
       <div class="log-list">
@@ -195,13 +196,13 @@
           <button class="diag {d.severity}" onclick={async () => { if (d.file && d.file !== activeTab()?.path && !d.file.endsWith("untitled.tex")) await openFile(d.file); gotoLine(d.line); }}>
             <span class="sev"></span>
             <span class="msg">{d.message}</span>
-            {#if d.line}<span class="ln">Z. {d.line}</span>{/if}
+            {#if d.line}<span class="ln">{t("code.pdf.line", { n: d.line })}</span>{/if}
           </button>
         {:else}
-          <p class="none">Keine Meldungen.</p>
+          <p class="none">{t("code.pdf.noMessages")}</p>
         {/each}
         <details>
-          <summary>Vollständiges Log</summary>
+          <summary>{t("code.pdf.fullLog")}</summary>
           <pre>{latex.log}</pre>
         </details>
       </div>
@@ -225,7 +226,7 @@
     align-items: center;
     gap: 6px;
     padding: 0 10px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    border-bottom: 1px solid rgba(var(--fg-rgb), 0.05);
   }
   .spacer { flex: 1; }
   .status {
@@ -261,7 +262,7 @@
     font-size: 13px;
   }
   .tool:hover { background: var(--fill-hover); color: var(--label); }
-  .tool.on { color: var(--label); background: rgba(255, 255, 255, 0.1); }
+  .tool.on { color: var(--label); background: rgba(var(--fg-rgb), 0.1); }
   .zoom { display: flex; align-items: center; border-radius: 999px; background: var(--recess); box-shadow: var(--recess-shadow); }
   .fit { font-size: 11.5px; }
   .mode { font-size: 11.5px; }
@@ -283,7 +284,7 @@
   .empty { text-align: center; color: var(--label-2); padding-top: 80px; }
   .empty h3 { color: var(--label); margin: 0 0 8px; }
   .empty code { display: inline-block; margin-top: 6px; padding: 6px 14px; border-radius: 999px; background: var(--recess); font-family: var(--mono); color: var(--teal); user-select: text; }
-  .log { max-height: 45%; display: flex; flex-direction: column; border-top: 1px solid rgba(255, 255, 255, 0.06); background: rgba(0, 0, 0, 0.25); }
+  .log { max-height: 45%; display: flex; flex-direction: column; border-top: 1px solid rgba(var(--fg-rgb), 0.06); background: var(--well); }
   .log-head { display: flex; justify-content: space-between; align-items: center; padding: 6px 8px 6px 16px; font-weight: 600; font-size: 12px; color: var(--label-2); }
   .log-list { overflow: auto; padding: 0 8px 10px; user-select: text; }
   .diag { width: 100%; display: flex; gap: 10px; align-items: baseline; padding: 6px 8px; border-radius: 10px; text-align: left; font-size: 12px; }

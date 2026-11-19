@@ -6,10 +6,11 @@
   import { app } from "../lib/state.svelte";
   import { fsApi, dirname, joinPath } from "../lib/api";
   import { cloneInto, cloneTabRequested } from "../lib/git/git.svelte";
+  import { t } from "../lib/i18n/index.svelte";
 
   let tab = $state<"new" | "clone">("new");
   let template = $state(TEMPLATES[0].id);
-  let name = $state("mein_projekt");
+  let name = $state(t("code.np.defaultName"));
   let parent = $state("");
 
   // Clone ("Get from VCS")
@@ -67,7 +68,7 @@
     if (!validClone) return;
     const dest = joinPath(parent, dirName.trim());
     if (await fsApi.exists(dest)) {
-      cloneError = `„${dirName}“ existiert dort bereits.`;
+      cloneError = t("code.existsAlready", { name: dirName }) + ".";
       return;
     }
     cloning = true;
@@ -90,75 +91,75 @@
   <div class="backdrop" role="presentation" onclick={close}>
     <div class="sheet" role="dialog" tabindex="-1" onclick={(e) => e.stopPropagation()} onkeydown={(e) => { if (e.key === "Escape") close(); if (e.key === "Enter" && !(e.target as HTMLElement).closest(".repos")) submit(); }}>
       <div class="seg">
-        <button class:on={tab === "new"} onclick={() => (tab = "new")}>Neues Projekt</button>
-        <button class:on={tab === "clone"} onclick={() => (tab = "clone")}>Aus Git klonen</button>
+        <button class:on={tab === "new"} onclick={() => (tab = "new")}>{t("code.np.newProject")}</button>
+        <button class:on={tab === "clone"} onclick={() => (tab = "clone")}>{t("code.np.cloneFromGit")}</button>
       </div>
 
       {#if tab === "new"}
         <div class="grid">
-          {#each TEMPLATES as t (t.id)}
-            <button class="tpl" class:on={template === t.id} onclick={() => (template = t.id)}>
-              <span class="name">{t.label}</span>
-              <span class="tool">{t.tool}</span>
+          {#each TEMPLATES as tpl (tpl.id)}
+            <button class="tpl" class:on={template === tpl.id} onclick={() => (template = tpl.id)}>
+              <span class="name">{tpl.label}</span>
+              <span class="tool">{tpl.tool}</span>
             </button>
           {/each}
         </div>
         <label>
-          <span>Name</span>
+          <span>{t("code.np.name")}</span>
           <input bind:value={name} spellcheck="false" />
         </label>
       {:else}
         <label>
-          <span>Repository-URL</span>
-          <input bind:value={url} spellcheck="false" placeholder="https://github.com/user/repo.git  oder  git@gitlab.com:user/repo.git" />
+          <span>{t("code.np.repoUrl")}</span>
+          <input bind:value={url} spellcheck="false" placeholder={t("code.np.urlPlaceholder")} />
         </label>
         {#if repos === null || repos.length}
           <div class="repos-head">
-            <span>Deine GitHub-Repositories</span>
-            <input class="filter" bind:value={repoFilter} placeholder="Filtern" spellcheck="false" />
+            <span>{t("code.np.yourRepos")}</span>
+            <input class="filter" bind:value={repoFilter} placeholder={t("common.filter")} spellcheck="false" />
           </div>
           <div class="repos">
             {#if repos === null}
-              <p class="muted">Lade …</p>
+              <p class="muted">{t("common.loading")}</p>
             {:else}
               {#each filteredRepos as r (r.url)}
                 <button class="repo" class:on={url === r.url + ".git" || url === r.url} onclick={() => (url = r.url + ".git")} ondblclick={() => { url = r.url + ".git"; submit(); }}>
                   <span class="rname">{r.nameWithOwner}</span>
-                  {#if r.isPrivate}<span class="priv">privat</span>{/if}
+                  {#if r.isPrivate}<span class="priv">{t("code.np.private")}</span>{/if}
                   <span class="rdesc">{r.description ?? ""}</span>
                 </button>
               {:else}
-                <p class="muted">Keine Treffer</p>
+                <p class="muted">{t("common.noResults")}</p>
               {/each}
             {/if}
           </div>
         {/if}
         <label>
-          <span>Ordnername</span>
+          <span>{t("code.np.folderName")}</span>
           <input bind:value={dirName} oninput={() => (dirTouched = true)} spellcheck="false" />
         </label>
       {/if}
 
       <label>
-        <span>Ort</span>
+        <span>{t("code.np.location")}</span>
         <div class="row">
           <input value={parent} readonly />
-          <button class="btn" onclick={choose}>Wählen…</button>
+          <button class="btn" onclick={choose}>{t("common.choose")}</button>
         </div>
       </label>
 
       {#if tab === "new"}
-        <p class="hint">Wird erstellt in <code>{parent}/{name}</code> – die Ausgabe erscheint im Terminal.</p>
+        <p class="hint">{t("code.np.willCreate")} <code>{parent}/{name}</code>{template === "empty" ? "." : t("code.np.outputInTerminal")}</p>
       {:else}
-        <p class="hint" class:err={!!cloneError}>{cloneError || (cloning ? "Klone … (das kann bei großen Repositories dauern)" : `Wird geklont nach ${parent}/${dirName || "…"}`)}</p>
+        <p class="hint" class:err={!!cloneError}>{cloneError || (cloning ? t("code.np.cloning") : t("code.np.cloneInto", { path: `${parent}/${dirName || "…"}` }))}</p>
       {/if}
 
       <div class="buttons">
-        <button class="btn" onclick={close} disabled={cloning}>Abbrechen</button>
+        <button class="btn" onclick={close} disabled={cloning}>{t("common.cancel")}</button>
         {#if tab === "new"}
-          <button class="btn primary" disabled={!validNew} onclick={submit}>Erstellen</button>
+          <button class="btn primary" disabled={!validNew} onclick={submit}>{t("code.np.create")}</button>
         {:else}
-          <button class="btn primary" disabled={!validClone} onclick={submit}>{cloning ? "Klone …" : "Klonen"}</button>
+          <button class="btn primary" disabled={!validClone} onclick={submit}>{cloning ? t("code.np.cloningBtn") : t("code.np.clone")}</button>
         {/if}
       </div>
     </div>
@@ -166,7 +167,7 @@
 {/if}
 
 <style>
-  .backdrop { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; background: rgba(0, 0, 0, 0.55); }
+  .backdrop { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; background: var(--scrim); }
   .sheet {
     width: 560px;
     padding: 22px 24px 24px;
@@ -178,14 +179,24 @@
   }
   .seg { display: grid; grid-template-columns: 1fr 1fr; padding: 3px; margin-bottom: 18px; border-radius: 999px; background: var(--recess); box-shadow: var(--recess-shadow); }
   .seg button { height: 32px; border-radius: 999px; font-size: 13px; font-weight: 600; color: var(--label-2); transition: background 0.2s, color 0.2s; }
-  .seg button.on { color: #fff; background: rgba(255, 255, 255, 0.15); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14); }
-  .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 18px; }
-  .tpl { display: flex; flex-direction: column; gap: 3px; padding: 12px 10px; border-radius: 16px; background: rgba(255, 255, 255, 0.05); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04); text-align: left; }
-  .tpl:hover { background: rgba(255, 255, 255, 0.09); }
-  .tpl.on { background: var(--accent); }
-  .tpl .name { font-weight: 600; }
-  .tpl .tool { font-size: 11px; color: var(--label-2); }
-  .tpl.on .tool { color: rgba(255, 255, 255, 0.8); }
+  .seg button.on { color: var(--label); background: var(--raised-bg); box-shadow: var(--raised-shadow); }
+  /* Recessed tray like the segmented control; the selection is a raised glass pill. */
+  .grid {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 2px;
+    padding: 3px; margin-bottom: 18px; border-radius: 18px;
+    background: var(--recess); box-shadow: var(--recess-shadow);
+  }
+  .tpl {
+    display: flex; flex-direction: column; gap: 1px;
+    padding: 8px 12px; border-radius: 15px; text-align: left;
+    transition: background 0.2s, box-shadow 0.2s;
+  }
+  .tpl:hover:not(.on) { background: rgba(var(--fg-rgb), 0.05); }
+  .tpl.on { background: var(--raised-bg); box-shadow: var(--raised-shadow); }
+  .tpl .name { font-size: 13px; font-weight: 600; color: var(--label-2); transition: color 0.2s; }
+  .tpl .tool { font-size: 11px; color: var(--label-3); }
+  .tpl.on .name { color: var(--label); }
+  .tpl.on .tool { color: var(--label-2); }
   label { display: block; margin-bottom: 12px; }
   label > span, .repos-head > span { display: block; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--label-2); margin: 0 0 6px 4px; }
   label input { width: 100%; }
@@ -193,12 +204,12 @@
   .repos-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
   .repos-head > span { margin: 0 0 0 4px; }
   .filter { width: 160px; padding: 4px 12px; font-size: 12px; }
-  .repos { max-height: 200px; overflow: auto; margin: 8px 0 14px; padding: 4px; border-radius: 16px; background: rgba(0, 0, 0, 0.2); }
+  .repos { max-height: 200px; overflow: auto; margin: 8px 0 14px; padding: 4px; border-radius: 16px; background: var(--well); }
   .repo { width: 100%; display: flex; align-items: baseline; gap: 8px; padding: 6px 10px; border-radius: 10px; text-align: left; font-size: 12.5px; }
-  .repo:hover { background: rgba(255, 255, 255, 0.06); }
-  .repo.on { background: rgba(255, 255, 255, 0.13); }
+  .repo:hover { background: rgba(var(--fg-rgb), 0.06); }
+  .repo.on { background: rgba(var(--fg-rgb), 0.13); }
   .rname { font-weight: 600; white-space: nowrap; }
-  .priv { font-size: 10px; padding: 0 6px; border-radius: 999px; background: rgba(255, 255, 255, 0.1); color: var(--label-2); }
+  .priv { font-size: 10px; padding: 0 6px; border-radius: 999px; background: rgba(var(--fg-rgb), 0.1); color: var(--label-2); }
   .rdesc { color: var(--label-3); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .muted { color: var(--label-3); font-size: 12px; margin: 6px 8px; }
   .hint { font-size: 12px; color: var(--label-3); margin: 4px 4px 18px; }

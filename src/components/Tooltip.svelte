@@ -102,7 +102,7 @@
     color: var(--label);
     background: rgba(44, 44, 50, 0.9);
     backdrop-filter: var(--blur);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), 0 0 0 1px rgba(255, 255, 255, 0.05), 0 10px 28px rgba(0, 0, 0, 0.5);
+    box-shadow: inset 0 1px 0 rgba(var(--hl-rgb), 0.1), 0 0 0 1px rgba(var(--fg-rgb), 0.05), 0 10px 28px rgba(0, 0, 0, 0.5);
     pointer-events: none;
     white-space: normal;
     overflow-wrap: anywhere;

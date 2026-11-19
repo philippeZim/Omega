@@ -1,6 +1,7 @@
 /** Minimal LSP client: one server process per (server kind, project root), full-text document sync. */
 import { invoke } from "@tauri-apps/api/core";
 import { onRpc } from "../rpc";
+import { t } from "../i18n/index.svelte";
 import { ui } from "../ui.svelte";
 import { fsApi, dirname, joinPath } from "../api";
 import type { LangInfo } from "./languages";
@@ -45,7 +46,7 @@ export class LspClient {
         lspState.status[this.key] = "stopped";
         lspState.message[this.key] = tail.join("\n");
         clients.delete(this.key);
-        if (!this.stopping) ui.toast(`Language Server (${this.kind}) wurde beendet${tail.length ? ": " + tail[tail.length - 1] : ""}`, "error");
+        if (!this.stopping) ui.toast(t("code.lsp.exited", { kind: this.kind, tail: tail.length ? ": " + tail[tail.length - 1] : "" }), "error");
       },
     });
     this.ready = this.start(cmd, args);
@@ -129,7 +130,7 @@ export class LspClient {
     if (msg.id !== undefined && msg.method) {
       // Requests from the server.
       let result: Json = null;
-      if (msg.method === "workspace/configuration") result = (msg.params?.items ?? []).map(() => null);
+      if (msg.method === "workspace/configuration") result = (msg.params?.items ?? []).map((it: Json) => serverSetting(this.kind, it.section));
       else if (msg.method === "workspace/workspaceFolders") result = [{ uri: fileUri(this.root), name: this.root }];
       else if (msg.method === "workspace/applyEdit") result = { applied: false };
       this.send({ id: msg.id, result });
@@ -221,6 +222,28 @@ export async function javaDebugBundles(): Promise<string[]> {
   }
 }
 
+/** Strict Python type checking (basedpyright's "recommended" mode); off by default. */
+export const lspSettings = $state({ strictPython: localStorage.getItem("strictPython") === "true" });
+
+/**
+ * Answers for `workspace/configuration`. basedpyright requests the "python" and "basedpyright"
+ * sections and reads `analysis.typeCheckingMode`. Its default "recommended" mode flags every
+ * unannotated parameter, so unless strict checking is on we use pyright's "standard" mode.
+ * A project's own pyrightconfig.json / [tool.basedpyright] still takes precedence.
+ */
+function serverSetting(kind: ServerKind, section?: string): Json {
+  if (kind === "python" && (section === "basedpyright" || section === "python"))
+    return { analysis: { typeCheckingMode: lspSettings.strictPython ? "recommended" : "standard" } };
+  return null;
+}
+
+export function setStrictPython(on: boolean) {
+  lspSettings.strictPython = on;
+  localStorage.setItem("strictPython", String(on));
+  // Running servers re-pull their configuration and re-check open files.
+  for (const c of clients.values()) if (c.kind === "python") c.notify("workspace/didChangeConfiguration", { settings: null });
+}
+
 async function resolveCommand(kind: ServerKind, root: string): Promise<{ cmd: string; args: string[]; init?: Json } | null> {
   const tools = await toolsDir();
   const which = (c: string) => invoke<string | null>("which_cmd", { cmd: c });
@@ -262,7 +285,9 @@ export const INSTALLABLE: Partial<Record<ServerKind, string>> = {
   python: "basedpyright (Python)",
   typescript: "typescript-language-server (JS/TS)",
   java: "Eclipse JDT Language Server (Java)",
-  rust: "rust-analyzer (über rustup)",
+  get rust() {
+    return t("code.lsp.rustAnalyzer");
+  },
 };
 
 /**
@@ -300,7 +325,7 @@ export async function clientFor(
       } catch (e) {
         lspState.status[key] = "error";
         lspState.message[key] = String(e);
-        ui.toast(`Installation fehlgeschlagen: ${e}`, "error");
+        ui.toast(t("code.lsp.installFailed", { err: String(e) }), "error");
         return null;
       }
       cmd = await resolveCommand(kind, root);
@@ -315,7 +340,7 @@ export async function clientFor(
       lspState.status[key] = "error";
       lspState.message[key] = String(e);
       clients.delete(key);
-      ui.toast(`Language Server (${kind}) konnte nicht starten: ${e}`, "error");
+      ui.toast(t("code.lsp.startFailed", { kind, err: String(e) }), "error");
       return null;
     }
   })();

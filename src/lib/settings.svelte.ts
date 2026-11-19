@@ -1,4 +1,4 @@
-/** User settings (persisted). Currently: syntax colour theme (editor + terminal). */
+/** User settings (persisted): appearance (dark/light), syntax colour theme per appearance, text sizes. */
 import { themeById, themeVars } from "./syntaxThemes";
 import { setTerminalPalette, setTerminalFontSize } from "./terminal.svelte";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -6,8 +6,14 @@ import * as ed from "./editor";
 
 const num = (k: string, d: number) => Number(localStorage.getItem(k)) || d;
 
+export type Appearance = "dark" | "light";
+
 export const settings = $state({
-  syntaxTheme: localStorage.getItem("syntaxTheme") || "xcode",
+  appearance: (localStorage.getItem("appearance") === "light" ? "light" : "dark") as Appearance,
+  /** Chosen syntax theme per appearance; `syntaxTheme` is the one currently applied. */
+  syntaxThemeDark: localStorage.getItem("syntaxThemeDark") || localStorage.getItem("syntaxTheme") || "xcode",
+  syntaxThemeLight: localStorage.getItem("syntaxThemeLight") || "xcode-light",
+  syntaxTheme: "",
   codeFontSize: num("codeFontSize", 14),
   proseFontSize: num("proseFontSize", 16),
   terminalFontSize: num("terminalFontSize", 13),
@@ -44,14 +50,25 @@ export function setSize(key: "codeFontSize" | "proseFontSize" | "terminalFontSiz
 
 let styleEl: HTMLStyleElement | null = null;
 
+/** Applies a syntax theme and remembers it for the appearance it belongs to. */
 export function applySyntaxTheme(id: string) {
   const t = themeById(id);
   settings.syntaxTheme = t.id;
-  localStorage.setItem("syntaxTheme", t.id);
+  if (t.light) settings.syntaxThemeLight = t.id;
+  else settings.syntaxThemeDark = t.id;
+  localStorage.setItem(t.light ? "syntaxThemeLight" : "syntaxThemeDark", t.id);
   styleEl ??= document.head.appendChild(document.createElement("style"));
   styleEl.textContent = `:root { ${themeVars(t)} }`;
-  setTerminalPalette(t.ansi);
+  setTerminalPalette(t.ansi, settings.appearance);
 }
 
-applySyntaxTheme(settings.syntaxTheme);
+/** Switches the whole UI between dark and light, together with that appearance's syntax theme. */
+export function setAppearance(a: Appearance) {
+  settings.appearance = a;
+  localStorage.setItem("appearance", a);
+  document.documentElement.dataset.theme = a;
+  applySyntaxTheme(a === "light" ? settings.syntaxThemeLight : settings.syntaxThemeDark);
+}
+
+setAppearance(settings.appearance);
 applySizes();

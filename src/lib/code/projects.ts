@@ -2,13 +2,14 @@
 import { fsApi, basename, dirname, joinPath } from "../api";
 import { shellQuote as q } from "../terminal.svelte";
 import { langFor, type LangId } from "./languages";
+import { t, type Key } from "../i18n/index.svelte";
 
 export type ProjectKind = "cargo" | "uv" | "pnpm" | "cmake" | "gradle" | "file";
 
 export interface Action {
   id: string;
   label: string;
-  /** Shell command run in the "Ausführen" terminal (cwd = project root). */
+  /** Shell command run in the "Run" terminal (cwd = project root). */
   cmd?: string;
   /** Needs a user-provided argument (e.g. package name); `{}` is replaced. */
   ask?: string;
@@ -98,7 +99,14 @@ async function packageScripts(root: string): Promise<string[]> {
   }
 }
 
-const RUN = "Shift+F10", BUILD = "Strg+F9";
+const RUN = "Shift+F10", BUILD = "Ctrl+F9";
+
+/** Action whose label and argument prompt follow the UI language (getters re-read the locale). */
+function act(id: string, label: Key, cmd: string, opts: { shortcut?: string; ask?: () => string } = {}): Action {
+  return { id, cmd, shortcut: opts.shortcut, get label() { return t(label); }, get ask() { return opts.ask?.(); } };
+}
+const askPkg = (example: string) => () => t("code.act.askPackage", { example });
+const askPkgPlain = () => t("code.act.askPackagePlain");
 
 export async function detectProject(file: string | null, workspace: string | null): Promise<Project | null> {
   const p = await findProject(file, workspace);
@@ -108,15 +116,15 @@ export async function detectProject(file: string | null, workspace: string | nul
     return {
       ...p,
       label: "cargo",
-      run: { id: "run", label: "Ausführen", cmd: "cargo run", shortcut: RUN },
-      build: { id: "build", label: "Bauen", cmd: "cargo build", shortcut: BUILD },
-      test: { id: "test", label: "Testen", cmd: "cargo test" },
+      run: act("run", "common.run", "cargo run", { shortcut: RUN }),
+      build: act("build", "code.act.build", "cargo build", { shortcut: BUILD }),
+      test: act("test", "code.act.test", "cargo test"),
       more: [
         { id: "check", label: "cargo check", cmd: "cargo check" },
-        { id: "clippy", label: "cargo clippy (Linter)", cmd: "cargo clippy" },
-        { id: "fmt", label: "cargo fmt (Formatieren)", cmd: "cargo fmt" },
-        { id: "release", label: "Release bauen", cmd: "cargo build --release" },
-        { id: "add", label: "Abhängigkeit hinzufügen…", ask: "Crate-Name (z.B. serde)", cmd: "cargo add {}" },
+        act("clippy", "code.act.clippy", "cargo clippy"),
+        act("fmt", "code.act.cargoFmt", "cargo fmt"),
+        act("release", "code.act.buildRelease", "cargo build --release"),
+        act("add", "code.act.addDep", "cargo add {}", { ask: () => t("code.act.askCrate") }),
         { id: "update", label: "cargo update", cmd: "cargo update" },
         { id: "clean", label: "cargo clean", cmd: "cargo clean" },
       ],
@@ -128,16 +136,16 @@ export async function detectProject(file: string | null, workspace: string | nul
     return {
       ...p,
       label: "uv",
-      run: { id: "run", label: "Ausführen", cmd: `uv run ${target}`, shortcut: RUN },
-      build: { id: "build", label: "Paket bauen", cmd: "uv build", shortcut: BUILD },
-      test: { id: "test", label: "Testen", cmd: "uv run pytest" },
+      run: act("run", "common.run", `uv run ${target}`, { shortcut: RUN }),
+      build: act("build", "code.act.buildPackage", "uv build", { shortcut: BUILD }),
+      test: act("test", "code.act.test", "uv run pytest"),
       more: [
-        { id: "sync", label: "uv sync (Umgebung aktualisieren)", cmd: "uv sync" },
-        { id: "add", label: "Abhängigkeit hinzufügen…", ask: "Paket (z.B. requests)", cmd: "uv add {}" },
-        { id: "adddev", label: "Dev-Abhängigkeit hinzufügen…", ask: "Paket (z.B. pytest)", cmd: "uv add --dev {}" },
-        { id: "remove", label: "Abhängigkeit entfernen…", ask: "Paket", cmd: "uv remove {}" },
-        { id: "fmt", label: "ruff format (Formatieren)", cmd: "uvx ruff format" },
-        { id: "lint", label: "ruff check (Linter)", cmd: "uvx ruff check" },
+        act("sync", "code.act.uvSync", "uv sync"),
+        act("add", "code.act.addDep", "uv add {}", { ask: askPkg("requests") }),
+        act("adddev", "code.act.addDevDep", "uv add --dev {}", { ask: askPkg("pytest") }),
+        act("remove", "code.act.removeDep", "uv remove {}", { ask: askPkgPlain }),
+        act("fmt", "code.act.ruffFmt", "uvx ruff format"),
+        act("lint", "code.act.ruffLint", "uvx ruff check"),
         { id: "lock", label: "uv lock", cmd: "uv lock" },
       ],
     };
@@ -152,18 +160,18 @@ export async function detectProject(file: string | null, workspace: string | nul
       ...p,
       label: "pnpm",
       run: fileRun
-        ? { id: "run", label: "Ausführen", cmd: fileRun, shortcut: RUN }
+        ? act("run", "common.run", fileRun, { shortcut: RUN })
         : runScript
           ? { id: "run", label: `pnpm ${runScript}`, cmd: `pnpm run ${runScript}`, shortcut: RUN }
           : null,
-      build: scripts.includes("build") ? { id: "build", label: "Bauen", cmd: "pnpm run build", shortcut: BUILD } : { id: "build", label: "Typprüfung", cmd: "pnpm exec tsc --noEmit", shortcut: BUILD },
-      test: scripts.includes("test") ? { id: "test", label: "Testen", cmd: "pnpm test" } : null,
+      build: scripts.includes("build") ? act("build", "code.act.build", "pnpm run build", { shortcut: BUILD }) : act("build", "code.act.typecheck", "pnpm exec tsc --noEmit", { shortcut: BUILD }),
+      test: scripts.includes("test") ? act("test", "code.act.test", "pnpm test") : null,
       more: [
         ...scripts.map((s) => ({ id: `script:${s}`, label: `pnpm run ${s}`, cmd: `pnpm run ${s}` })),
         { id: "install", label: "pnpm install", cmd: "pnpm install" },
-        { id: "add", label: "Abhängigkeit hinzufügen…", ask: "Paket (z.B. zod)", cmd: "pnpm add {}" },
-        { id: "adddev", label: "Dev-Abhängigkeit hinzufügen…", ask: "Paket (z.B. vitest)", cmd: "pnpm add -D {}" },
-        { id: "remove", label: "Abhängigkeit entfernen…", ask: "Paket", cmd: "pnpm remove {}" },
+        act("add", "code.act.addDep", "pnpm add {}", { ask: askPkg("zod") }),
+        act("adddev", "code.act.addDevDep", "pnpm add -D {}", { ask: askPkg("vitest") }),
+        act("remove", "code.act.removeDep", "pnpm remove {}", { ask: askPkgPlain }),
       ],
     };
   }
@@ -175,14 +183,14 @@ export async function detectProject(file: string | null, workspace: string | nul
     return {
       ...p,
       label: "CMake",
-      run: { id: "run", label: "Ausführen", cmd: `${ensure} && cmake --build build && ./build/${target}`, shortcut: RUN },
-      build: { id: "build", label: "Bauen", cmd: `${ensure} && cmake --build build`, shortcut: BUILD },
-      test: { id: "test", label: "Testen", cmd: `${ensure} && cmake --build build && ctest --test-dir build --output-on-failure` },
+      run: act("run", "common.run", `${ensure} && cmake --build build && ./build/${target}`, { shortcut: RUN }),
+      build: act("build", "code.act.build", `${ensure} && cmake --build build`, { shortcut: BUILD }),
+      test: act("test", "code.act.test", `${ensure} && cmake --build build && ctest --test-dir build --output-on-failure`),
       more: [
-        { id: "configure", label: "Konfigurieren (Debug)", cmd: configure },
-        { id: "release", label: "Release bauen", cmd: "cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release && cmake --build build-release" },
-        { id: "clean", label: "Clean", cmd: "cmake --build build --target clean" },
-        { id: "reset", label: "Build-Ordner löschen", cmd: "rm -rf build" },
+        act("configure", "code.act.configure", configure),
+        act("release", "code.act.buildRelease", "cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release && cmake --build build-release"),
+        act("clean", "code.act.clean", "cmake --build build --target clean"),
+        act("reset", "code.act.resetBuild", "rm -rf build"),
       ],
     };
   }
@@ -192,14 +200,14 @@ export async function detectProject(file: string | null, workspace: string | nul
     return {
       ...p,
       label: "Gradle",
-      run: { id: "run", label: "Ausführen", cmd: `${g} run --console=plain`, shortcut: RUN },
-      build: { id: "build", label: "Bauen", cmd: `${g} build`, shortcut: BUILD },
-      test: { id: "test", label: "Testen", cmd: `${g} test` },
+      run: act("run", "common.run", `${g} run --console=plain`, { shortcut: RUN }),
+      build: act("build", "code.act.build", `${g} build`, { shortcut: BUILD }),
+      test: act("test", "code.act.test", `${g} test`),
       more: [
         { id: "clean", label: "gradle clean", cmd: `${g} clean` },
-        { id: "deps", label: "Abhängigkeiten anzeigen", cmd: `${g} dependencies --configuration runtimeClasspath` },
-        { id: "wrapper", label: "Gradle-Wrapper erzeugen", cmd: "gradle wrapper" },
-        { id: "jar", label: "JAR bauen", cmd: `${g} jar` },
+        act("deps", "code.act.showDeps", `${g} dependencies --configuration runtimeClasspath`),
+        act("wrapper", "code.act.gradleWrapper", "gradle wrapper"),
+        act("jar", "code.act.jar", `${g} jar`),
       ],
     };
   }
@@ -212,8 +220,8 @@ export async function detectProject(file: string | null, workspace: string | nul
   return {
     kind: "file",
     root: dirname(file),
-    label: "Datei",
-    run: { id: "run", label: "Ausführen", cmd, shortcut: RUN },
+    get label() { return t("code.project.file"); },
+    run: act("run", "common.run", cmd, { shortcut: RUN }),
     build: null,
     test: null,
     more: [],
@@ -259,6 +267,8 @@ const cmakeFiles = (name: string, cxx: boolean) => {
 };
 
 export const TEMPLATES: Template[] = [
+  // Plain folder, no tooling: created directly via the fs API (see createProject), the shell command is unused.
+  { id: "empty", get label() { return t("code.tpl.empty"); }, get tool() { return t("code.tpl.folderOnly"); }, marker: "", open: [], create: (p, n) => ["", joinPath(p, n)] },
   { id: "rust", label: "Rust", tool: "cargo new", marker: "Cargo.toml", open: ["src/main.rs"], create: (p, n) => [`cd ${q(p)} && cargo new ${q(n)} && cd ${q(n)}`, joinPath(joinPath(p, n), "src/main.rs")] },
   { id: "python", label: "Python", tool: "uv init", marker: "pyproject.toml", open: ["main.py", "src/{name}/__init__.py", "hello.py"], create: (p, n) => [`cd ${q(p)} && uv init --app --no-package ${q(n)} && cd ${q(n)} && uv sync`, joinPath(joinPath(p, n), "main.py")] },
   {

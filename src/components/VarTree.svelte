@@ -3,19 +3,20 @@
   import type { VarNode } from "../lib/debug/store.svelte";
   import { toggleNode, setVariable, addWatch } from "../lib/debug/debugger.svelte";
   import { ui } from "../lib/ui.svelte";
+  import { t } from "../lib/i18n/index.svelte";
 
   let { nodes, depth = 0 }: { nodes: VarNode[]; depth?: number } = $props();
 
   async function edit(n: VarNode) {
-    const v = await ui.prompt(`${n.name} setzen`, n.value);
+    const v = await ui.prompt(t("code.var.set", { name: n.name }), n.value);
     if (v !== null) setVariable(n, v);
   }
 
   function menu(e: MouseEvent, n: VarNode) {
     ui.openMenu(e, [
-      { label: "Wert ändern…", action: () => edit(n) },
-      { label: "Als Watch hinzufügen", action: () => addWatch(n.evaluateName ?? n.name) },
-      { label: "Wert kopieren", action: () => navigator.clipboard.writeText(n.value) },
+      { label: t("code.var.changeValue"), action: () => edit(n) },
+      { label: t("code.var.addWatch"), action: () => addWatch(n.evaluateName ?? n.name) },
+      { label: t("code.var.copyValue"), action: () => navigator.clipboard.writeText(n.value) },
     ]);
   }
 </script>
@@ -41,7 +42,7 @@
     {#if n.children.length}
       <VarTree nodes={n.children} depth={depth + 1} />
     {:else}
-      <div class="row empty" style="padding-left: {26 + depth * 14}px">leer</div>
+      <div class="row empty" style="padding-left: {26 + depth * 14}px">{t("code.var.empty")}</div>
     {/if}
   {/if}
 {/each}

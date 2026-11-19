@@ -5,6 +5,7 @@ import { app, openFile } from "../state.svelte";
 import * as ed from "../editor";
 import { fsApi, dirname } from "../api";
 import { ui } from "../ui.svelte";
+import { t } from "../i18n/index.svelte";
 
 export interface Hit {
   file: string;
@@ -193,13 +194,23 @@ export async function replaceInFile(file: string, onlyLine?: number): Promise<nu
   return result.count;
 }
 
+/** "12 matches in 3 files" (localized); `suffix` is appended to the match count, e.g. "+" when truncated. */
+export function matchSummary(total: number, files: number, suffix = ""): string {
+  return t("git.search.summary", {
+    matches: t(total === 1 && !suffix ? "git.search.matchOne" : "git.search.matchMany", { n: total + suffix }),
+    files: filesLabel(files),
+  });
+}
+
+const filesLabel = (n: number) => t(n === 1 ? "git.search.fileOne" : "git.search.fileMany", { n });
+
 export async function replaceAll() {
   const files = [...new Set(find.hits.map((h) => h.file))];
   if (!files.length) return;
-  const ok = await ui.confirm("Alle ersetzen?", `${find.total} Treffer in ${files.length} Dateien durch „${find.replacement}“ ersetzen?`, "Alle ersetzen", true);
+  const ok = await ui.confirm(t("git.search.replaceAllTitle"), t("git.search.replaceAllBody", { summary: matchSummary(find.total, files.length), text: find.replacement }), t("git.search.replaceAll"), true);
   if (!ok) return;
   let n = 0;
   for (const f of files) n += await replaceInFile(f);
-  ui.toast(`${n} Ersetzungen in ${files.length} Dateien`);
+  ui.toast(t("git.search.replaced", { n, files: filesLabel(files.length) }));
   runSearch(0);
 }

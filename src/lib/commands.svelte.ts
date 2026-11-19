@@ -1,11 +1,12 @@
 /**
  * Central command registry. Every shortcut in the app is a command with default keys that the
- * user can override (Einstellungen → Tastenkürzel). Used by the global key handler, the editor,
+ * user can override (Settings → Keyboard Shortcuts). Used by the global key handler, the editor,
  * the command palette and the Shortcuts cheat sheet.
  */
 import type { EditorView } from "@codemirror/view";
 import { candidates, normalize } from "./keys";
-import { EDITOR_COMMANDS } from "./editorCommands";
+import { EDITOR_COMMANDS, type CommandGroup } from "./editorCommands";
+import { t, type Key } from "./i18n/index.svelte";
 import * as ed from "./editor";
 import { app, newFile, save, openFolder, closeTab, setMode, cycleTab, toggleSpell, reopenClosedTab } from "./state.svelte";
 import { ui } from "./ui.svelte";
@@ -23,8 +24,10 @@ import type { Mode } from "./modes";
 
 export interface Command {
   id: string;
-  label: string;
-  group: string;
+  /** Localized (getter, follows the UI language). */
+  readonly label: string;
+  /** Localized group name (getter). */
+  readonly group: string;
   keys: string[];
   /** "app" commands run anywhere; "editor" commands need the editor focused. */
   scope: "app" | "editor";
@@ -40,81 +43,83 @@ const debugging = () => dbg.status === "running" || dbg.status === "stopped" || 
 export type PaletteTab = "all" | "files" | "symbols" | "actions" | "text";
 export const palette = $state({ open: false, tab: "all" as PaletteTab });
 
-const APP_COMMANDS: Omit<Command, "scope">[] = [
-  { id: "mode.text", label: "Modus: Text", group: "Allgemein", keys: ["Mod-1"], run: () => setMode("text"), inTerminal: true },
-  { id: "mode.markdown", label: "Modus: Markdown", group: "Allgemein", keys: ["Mod-2"], run: () => setMode("markdown"), inTerminal: true },
-  { id: "mode.latex", label: "Modus: LaTeX", group: "Allgemein", keys: ["Mod-3"], run: () => setMode("latex"), inTerminal: true },
-  { id: "mode.code", label: "Modus: Code", group: "Allgemein", keys: ["Mod-4"], run: () => setMode("code"), inTerminal: true },
-  { id: "search.everywhere", label: "Überall suchen", group: "Suchen", keys: ["Shift-Shift"], run: () => openPalette("all"), inTerminal: true },
-  { id: "search.files", label: "Datei öffnen (nach Name)", group: "Suchen", keys: ["Mod-Shift-n", "Mod-p"], run: () => openPalette("files"), inTerminal: true },
-  { id: "search.symbols", label: "Symbol suchen (Klassen, Funktionen)", group: "Suchen", keys: ["Mod-Alt-Shift-n"], run: () => openPalette("symbols"), inTerminal: true },
-  { id: "search.actions", label: "Aktion / Befehl suchen", group: "Suchen", keys: ["Mod-Shift-a", "Mod-Shift-p"], run: () => openPalette("actions"), inTerminal: true },
-  { id: "search.inFiles", label: "In Dateien suchen", group: "Suchen", keys: ["Mod-Shift-f"], run: () => openFind(false), inTerminal: true },
-  { id: "search.replaceInFiles", label: "In Dateien ersetzen", group: "Suchen", keys: ["Mod-Shift-r"], run: () => openFind(true), inTerminal: true },
-  { id: "app.help", label: "Hilfe / Cheat Sheets", group: "Allgemein", keys: ["F1"], run: () => (ui.help = !ui.help) },
-  { id: "app.settings", label: "Einstellungen", group: "Allgemein", keys: ["Mod-Comma"], run: () => (settings.open = !settings.open) },
-  { id: "app.zoomIn", label: "Oberfläche vergrößern", group: "Allgemein", keys: ["Mod-Plus", "Mod-="], run: () => setSize("uiScale", Math.min(1.5, +(settings.uiScale + 0.05).toFixed(2))), inTerminal: true },
-  { id: "app.zoomOut", label: "Oberfläche verkleinern", group: "Allgemein", keys: ["Mod-Hyphen"], run: () => setSize("uiScale", Math.max(0.75, +(settings.uiScale - 0.05).toFixed(2))), inTerminal: true },
-  { id: "app.zoomReset", label: "Oberfläche: Originalgröße", group: "Allgemein", keys: ["Mod-0"], run: () => setSize("uiScale", 1), inTerminal: true },
-  { id: "app.sidebar", label: "Seitenleiste ein/aus", group: "Allgemein", keys: ["Mod-b"], run: () => (app.sidebar = !app.sidebar) },
-  { id: "app.spell", label: "Rechtschreibprüfung ein/aus", group: "Allgemein", keys: ["F7"], run: toggleSpell, when: () => !debugging() },
+type CommandDef = Omit<Command, "scope" | "label" | "group"> & { group: CommandGroup };
 
-  { id: "file.new", label: "Neue Datei", group: "Dateien & Tabs", keys: ["Mod-n"], run: newFile },
-  { id: "file.openFolder", label: "Ordner öffnen", group: "Dateien & Tabs", keys: ["Mod-o"], run: openFolder },
-  { id: "file.save", label: "Speichern (passiert automatisch)", group: "Dateien & Tabs", keys: ["Mod-s"], run: () => save() },
-  { id: "file.saveAs", label: "Speichern unter", group: "Dateien & Tabs", keys: ["Mod-Shift-s"], run: () => save(app.activeId, true) },
-  { id: "project.new", label: "Neues Projekt", group: "Dateien & Tabs", keys: [], run: () => (runner.newProject = true) },
-  { id: "tab.close", label: "Tab schließen", group: "Dateien & Tabs", keys: ["Mod-w"], run: () => app.activeId && closeTab(app.activeId) },
-  { id: "tab.reopen", label: "Geschlossenen Tab wieder öffnen", group: "Dateien & Tabs", keys: ["Mod-Shift-t"], run: reopenClosedTab },
-  { id: "tab.next", label: "Nächster Tab", group: "Dateien & Tabs", keys: ["Mod-Tab"], run: () => cycleTab(1), inTerminal: true },
-  { id: "tab.prev", label: "Vorheriger Tab", group: "Dateien & Tabs", keys: ["Mod-Shift-Tab"], run: () => cycleTab(-1), inTerminal: true },
+const APP_COMMANDS: CommandDef[] = [
+  { id: "mode.text", group: "general", keys: ["Mod-1"], run: () => setMode("text"), inTerminal: true },
+  { id: "mode.markdown", group: "general", keys: ["Mod-2"], run: () => setMode("markdown"), inTerminal: true },
+  { id: "mode.latex", group: "general", keys: ["Mod-3"], run: () => setMode("latex"), inTerminal: true },
+  { id: "mode.code", group: "general", keys: ["Mod-4"], run: () => setMode("code"), inTerminal: true },
+  { id: "search.everywhere", group: "search", keys: ["Shift-Shift"], run: () => openPalette("all"), inTerminal: true },
+  { id: "search.files", group: "search", keys: ["Mod-Shift-n", "Mod-p"], run: () => openPalette("files"), inTerminal: true },
+  { id: "search.symbols", group: "search", keys: ["Mod-Alt-Shift-n"], run: () => openPalette("symbols"), inTerminal: true },
+  { id: "search.actions", group: "search", keys: ["Mod-Shift-a", "Mod-Shift-p"], run: () => openPalette("actions"), inTerminal: true },
+  { id: "search.inFiles", group: "search", keys: ["Mod-Shift-f"], run: () => openFind(false), inTerminal: true },
+  { id: "search.replaceInFiles", group: "search", keys: ["Mod-Shift-r"], run: () => openFind(true), inTerminal: true },
+  { id: "app.help", group: "general", keys: ["F1"], run: () => (ui.help = !ui.help) },
+  { id: "app.settings", group: "general", keys: ["Mod-Comma"], run: () => (settings.open = !settings.open) },
+  { id: "app.zoomIn", group: "general", keys: ["Mod-Plus", "Mod-="], run: () => setSize("uiScale", Math.min(1.5, +(settings.uiScale + 0.05).toFixed(2))), inTerminal: true },
+  { id: "app.zoomOut", group: "general", keys: ["Mod-Hyphen"], run: () => setSize("uiScale", Math.max(0.75, +(settings.uiScale - 0.05).toFixed(2))), inTerminal: true },
+  { id: "app.zoomReset", group: "general", keys: ["Mod-0"], run: () => setSize("uiScale", 1), inTerminal: true },
+  { id: "app.sidebar", group: "general", keys: ["Mod-b"], run: () => (app.sidebar = !app.sidebar) },
+  { id: "app.spell", group: "general", keys: ["F7"], run: toggleSpell, when: () => !debugging() },
 
-  { id: "git.commit", label: "Git: Commit (Änderungen)", group: "Git", keys: ["Mod-k"], run: () => {
+  { id: "file.new", group: "files", keys: ["Mod-n"], run: newFile },
+  { id: "file.openFolder", group: "files", keys: ["Mod-o"], run: openFolder },
+  { id: "file.save", group: "files", keys: ["Mod-s"], run: () => save() },
+  { id: "file.saveAs", group: "files", keys: ["Mod-Shift-s"], run: () => save(app.activeId, true) },
+  { id: "project.new", group: "files", keys: [], run: () => (runner.newProject = true) },
+  { id: "tab.close", group: "files", keys: ["Mod-w"], run: () => app.activeId && closeTab(app.activeId) },
+  { id: "tab.reopen", group: "files", keys: ["Mod-Shift-t"], run: reopenClosedTab },
+  { id: "tab.next", group: "files", keys: ["Mod-Tab"], run: () => cycleTab(1), inTerminal: true },
+  { id: "tab.prev", group: "files", keys: ["Mod-Shift-Tab"], run: () => cycleTab(-1), inTerminal: true },
+
+  { id: "git.commit", group: "git", keys: ["Mod-k"], run: () => {
     app.sidebar = true;
     app.sidebarView = "changes";
     gitRefresh();
     requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>(".changes textarea")?.focus());
   } },
-  { id: "git.push", label: "Git: Push", group: "Git", keys: ["Mod-Shift-k"], run: () => gitPush() },
-  { id: "git.pull", label: "Git: Pull / Aktualisieren", group: "Git", keys: ["Mod-t"], run: () => gitPull() },
-  { id: "git.branch", label: "Git: Neuer Branch", group: "Git", keys: [], run: () => newBranch() },
-  { id: "git.clone", label: "Git: Repository klonen", group: "Git", keys: [], run: () => cloneRepo() },
-  { id: "git.remote", label: "Git: Remote verbinden / ändern", group: "Git", keys: [], run: () => connectRemote() },
-  { id: "git.init", label: "Git: Repository erstellen", group: "Git", keys: [], run: () => initRepo() },
-  { id: "git.publish", label: "Git: Auf GitHub veröffentlichen", group: "Git", keys: [], run: () => publishGitHub() },
-  { id: "collab.open", label: "Zusammen coden (Session)", group: "Zusammen coden", keys: ["Mod-Shift-c"], run: () => (collab.open = !collab.open), inTerminal: false },
-  { id: "collab.host", label: "Zusammen coden: Session starten", group: "Zusammen coden", keys: [], run: () => { collab.open = true; startHosting(); } },
-  { id: "collab.join", label: "Zusammen coden: Beitreten (Code aus Zwischenablage)", group: "Zusammen coden", keys: [], run: () => joinFromClipboard() },
-  { id: "collab.approve", label: "Zusammen coden: Anfrage zulassen", group: "Zusammen coden", keys: [], run: () => approveNext(), when: () => collab.requests.length > 0 },
-  { id: "ai.claude", label: "Claude Code im Terminal starten", group: "KI", keys: [], run: async () => (await import("./ai/ide.svelte")).startAgent("claude") },
-  { id: "ai.codex", label: "Codex im Terminal starten", group: "KI", keys: [], run: async () => (await import("./ai/ide.svelte")).startAgent("codex") },
-  { id: "ai.opencode", label: "OpenCode im Terminal starten", group: "KI", keys: [], run: async () => (await import("./ai/ide.svelte")).startAgent("opencode") },
-  { id: "ai.mention", label: "Auswahl an KI-Agent senden", group: "KI", keys: ["Mod-Alt-k"], run: async () => (await import("./ai/ide.svelte")).mentionSelection() },
-  { id: "ai.control", label: "Steuerungs-MCP ein/aus", group: "KI", keys: [], run: async () => {
+  { id: "git.push", group: "git", keys: ["Mod-Shift-k"], run: () => gitPush() },
+  { id: "git.pull", group: "git", keys: ["Mod-t"], run: () => gitPull() },
+  { id: "git.branch", group: "git", keys: [], run: () => newBranch() },
+  { id: "git.clone", group: "git", keys: [], run: () => cloneRepo() },
+  { id: "git.remote", group: "git", keys: [], run: () => connectRemote() },
+  { id: "git.init", group: "git", keys: [], run: () => initRepo() },
+  { id: "git.publish", group: "git", keys: [], run: () => publishGitHub() },
+  { id: "collab.open", group: "collab", keys: ["Mod-Shift-c"], run: () => (collab.open = !collab.open), inTerminal: false },
+  { id: "collab.host", group: "collab", keys: [], run: () => { collab.open = true; startHosting(); } },
+  { id: "collab.join", group: "collab", keys: [], run: () => joinFromClipboard() },
+  { id: "collab.approve", group: "collab", keys: [], run: () => approveNext(), when: () => collab.requests.length > 0 },
+  { id: "ai.claude", group: "ai", keys: [], run: async () => (await import("./ai/ide.svelte")).startAgent("claude") },
+  { id: "ai.codex", group: "ai", keys: [], run: async () => (await import("./ai/ide.svelte")).startAgent("codex") },
+  { id: "ai.opencode", group: "ai", keys: [], run: async () => (await import("./ai/ide.svelte")).startAgent("opencode") },
+  { id: "ai.mention", group: "ai", keys: ["Mod-Alt-k"], run: async () => (await import("./ai/ide.svelte")).mentionSelection() },
+  { id: "ai.control", group: "ai", keys: [], run: async () => {
     const c = await import("./ai/control.svelte");
     await c.setControlEnabled(!c.control.enabled);
-    ui.toast(c.control.enabled ? (c.control.running ? `Steuerungs-MCP läuft auf Port ${c.control.port}` : `Steuerungs-MCP: ${c.control.error}`) : "Steuerungs-MCP aus");
+    ui.toast(c.control.enabled ? (c.control.running ? t("commands.controlRunning", { port: c.control.port }) : t("commands.controlError", { error: String(c.control.error) })) : t("commands.controlOff"));
   } },
-  { id: "collab.follow", label: "Zusammen coden: Folgen (Host bzw. ersten Gast)", group: "Zusammen coden", keys: [], when: () => !!collab.role, run: async () => {
+  { id: "collab.follow", group: "collab", keys: [], when: () => !!collab.role, run: async () => {
     const { follow } = await import("./collab/share.svelte");
     const target = collab.role === "guest" ? "host" : collab.participants.find((p) => p.peer !== "self")?.peer;
     if (target) follow(target);
   } },
-  { id: "collab.leave", label: "Zusammen coden: Session verlassen / beenden", group: "Zusammen coden", keys: [], run: () => leaveCollab(), when: () => !!collab.role },
-  { id: "terminal.toggle", label: "Terminal öffnen / schließen", group: "Terminal", keys: ["Mod-Backquote"], run: terminalToggle, inTerminal: true },
+  { id: "collab.leave", group: "collab", keys: [], run: () => leaveCollab(), when: () => !!collab.role },
+  { id: "terminal.toggle", group: "terminal", keys: ["Mod-Backquote"], run: terminalToggle, inTerminal: true },
 
-  { id: "run.run", label: "Ausführen", group: "Ausführen & Debuggen", keys: ["Shift-F10"], run: () => runAction(runner.project?.run), modes: ["code"] },
-  { id: "run.build", label: "Bauen", group: "Ausführen & Debuggen", keys: ["Mod-F9"], run: () => runAction(runner.project?.build), modes: ["code"] },
-  { id: "run.test", label: "Tests ausführen", group: "Ausführen & Debuggen", keys: [], run: () => runAction(runner.project?.test), modes: ["code"] },
-  { id: "run.stop", label: "Stopp (Programm / Debugger)", group: "Ausführen & Debuggen", keys: ["Mod-F2"], run: () => (debugging() ? debug.stopDebugging() : stopRun()), inTerminal: true },
-  { id: "debug.start", label: "Debuggen starten", group: "Ausführen & Debuggen", keys: ["Shift-F9"], run: debug.startDebugging, inTerminal: true },
-  { id: "debug.continue", label: "Fortsetzen", group: "Ausführen & Debuggen", keys: ["F9"], run: debug.continueRun, when: debugging, inTerminal: true },
-  { id: "debug.stepOver", label: "Step Over", group: "Ausführen & Debuggen", keys: ["F8"], run: debug.stepOver, when: debugging, inTerminal: true },
-  { id: "debug.stepInto", label: "Step Into", group: "Ausführen & Debuggen", keys: ["F7"], run: debug.stepInto, when: debugging, inTerminal: true },
-  { id: "debug.stepOut", label: "Step Out", group: "Ausführen & Debuggen", keys: ["Shift-F8"], run: debug.stepOut, when: debugging, inTerminal: true },
-  { id: "debug.panel", label: "Debug-Panel auf-/zuklappen", group: "Ausführen & Debuggen", keys: [], run: () => (dbg.panel = !dbg.panel), when: debugging },
+  { id: "run.run", group: "run", keys: ["Shift-F10"], run: () => runAction(runner.project?.run), modes: ["code"] },
+  { id: "run.build", group: "run", keys: ["Mod-F9"], run: () => runAction(runner.project?.build), modes: ["code"] },
+  { id: "run.test", group: "run", keys: [], run: () => runAction(runner.project?.test), modes: ["code"] },
+  { id: "run.stop", group: "run", keys: ["Mod-F2"], run: () => (debugging() ? debug.stopDebugging() : stopRun()), inTerminal: true },
+  { id: "debug.start", group: "run", keys: ["Shift-F9"], run: debug.startDebugging, inTerminal: true },
+  { id: "debug.continue", group: "run", keys: ["F9"], run: debug.continueRun, when: debugging, inTerminal: true },
+  { id: "debug.stepOver", group: "run", keys: ["F8"], run: debug.stepOver, when: debugging, inTerminal: true },
+  { id: "debug.stepInto", group: "run", keys: ["F7"], run: debug.stepInto, when: debugging, inTerminal: true },
+  { id: "debug.stepOut", group: "run", keys: ["Shift-F8"], run: debug.stepOut, when: debugging, inTerminal: true },
+  { id: "debug.panel", group: "run", keys: [], run: () => (dbg.panel = !dbg.panel), when: debugging },
 
-  { id: "latex.sync", label: "Cursor-Stelle im PDF zeigen", group: "LaTeX", keys: ["Mod-j"], modes: ["latex"], run: () => {
+  { id: "latex.sync", group: "latex", keys: ["Mod-j"], modes: ["latex"], run: () => {
     const v = ed.getView();
     if (v) forwardSync(activeTab()?.path ?? null, v.state.doc.lineAt(v.state.selection.main.head).number);
   } },
@@ -133,9 +138,18 @@ function terminalToggle(e?: unknown) {
   void e;
 }
 
+/** Adds `label` / `group` getters so every consumer sees the current UI language. */
+function localized(c: Omit<Command, "label" | "group"> & { group: CommandGroup }): Command {
+  const { group, ...rest } = c;
+  return Object.defineProperties(rest, {
+    label: { get: () => t(`commands.cmd.${c.id}` as Key), enumerable: true },
+    group: { get: () => t(`commands.group.${group}` as Key), enumerable: true },
+  }) as Command;
+}
+
 export const COMMANDS: Command[] = [
-  ...APP_COMMANDS.map((c) => ({ ...c, scope: "app" as const })),
-  ...EDITOR_COMMANDS.map((c) => ({ ...c, scope: "editor" as const, run: (v?: EditorView) => (v ? c.run(v) : false) })),
+  ...APP_COMMANDS.map((c) => localized({ ...c, scope: "app" })),
+  ...EDITOR_COMMANDS.map((c) => localized({ ...c, scope: "editor", run: (v?: EditorView) => (v ? c.run(v) : false) })),
 ];
 
 // ------------------------------------------------------------------ user overrides

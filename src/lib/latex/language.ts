@@ -7,78 +7,85 @@ import { lintGutter } from "@codemirror/lint";
 import { codeHighlight } from "../theme";
 import { renderMath } from "../markdown/widgets";
 import { fsApi } from "../api";
+import { t, type Key } from "../i18n/index.svelte";
 
 export const latexLanguage = StreamLanguage.define(stex);
 
 // ------------------------------------------------------------------ completion data
+// Details are dictionary keys ("tex.*" → "commands.tex.*") or literal symbols/names.
 
 const COMMANDS: [string, string][] = [
   // structure
-  ["section{#{}}", "Abschnitt"], ["subsection{#{}}", "Unterabschnitt"], ["subsubsection{#{}}", "Unter-Unterabschnitt"],
-  ["chapter{#{}}", "Kapitel"], ["part{#{}}", "Teil"], ["paragraph{#{}}", "Paragraph"], ["section*{#{}}", "Abschnitt ohne Nummer"],
-  ["title{#{}}", "Titel"], ["author{#{}}", "Autor"], ["date{#{}}", "Datum"], ["maketitle", "Titel setzen"],
-  ["tableofcontents", "Inhaltsverzeichnis"], ["listoffigures", "Abbildungsverzeichnis"], ["listoftables", "Tabellenverzeichnis"],
-  ["appendix", "Anhang"], ["newpage", "Neue Seite"], ["clearpage", "Seite leeren"], ["documentclass{#{article}}", "Dokumentklasse"],
-  ["usepackage{#{}}", "Paket laden"], ["usepackage[#{}]{#{}}", "Paket mit Optionen"], ["input{#{}}", "Datei einbinden"], ["include{#{}}", "Datei einbinden (neue Seite)"],
+  ["section{#{}}", "tex.section"], ["subsection{#{}}", "tex.subsection"], ["subsubsection{#{}}", "tex.subsubsection"],
+  ["chapter{#{}}", "tex.chapter"], ["part{#{}}", "tex.part"], ["paragraph{#{}}", "tex.paragraph"], ["section*{#{}}", "tex.sectionStar"],
+  ["title{#{}}", "tex.title"], ["author{#{}}", "tex.author"], ["date{#{}}", "tex.date"], ["maketitle", "tex.maketitle"],
+  ["tableofcontents", "tex.tableofcontents"], ["listoffigures", "tex.listoffigures"], ["listoftables", "tex.listoftables"],
+  ["appendix", "tex.appendix"], ["newpage", "tex.newpage"], ["clearpage", "tex.clearpage"], ["documentclass{#{article}}", "tex.documentclass"],
+  ["usepackage{#{}}", "tex.usepackage"], ["usepackage[#{}]{#{}}", "tex.usepackageOpt"], ["input{#{}}", "tex.input"], ["include{#{}}", "tex.include"],
   // text
-  ["textbf{#{}}", "Fett"], ["textit{#{}}", "Kursiv"], ["emph{#{}}", "Hervorheben"], ["underline{#{}}", "Unterstrichen"],
-  ["texttt{#{}}", "Schreibmaschine"], ["textsc{#{}}", "Kapitälchen"], ["textsf{#{}}", "Serifenlos"], ["textrm{#{}}", "Serif"],
-  ["footnote{#{}}", "Fußnote"], ["url{#{}}", "URL"], ["href{#{}}{#{}}", "Link"], ["label{#{}}", "Label"],
-  ["ref{#{}}", "Verweis"], ["eqref{#{}}", "Gleichungsverweis"], ["pageref{#{}}", "Seitenverweis"], ["autoref{#{}}", "Auto-Verweis"], ["cref{#{}}", "Cleveref"],
-  ["cite{#{}}", "Zitat"], ["citep{#{}}", "Zitat (Klammer)"], ["citet{#{}}", "Zitat (Text)"], ["caption{#{}}", "Beschriftung"],
-  ["includegraphics[width=#{\\linewidth}]{#{}}", "Bild"], ["centering", "Zentrieren"], ["item ", "Listenpunkt"],
-  ["tiny", "Größe"], ["small", "Größe"], ["normalsize", "Größe"], ["large", "Größe"], ["Large", "Größe"], ["LARGE", "Größe"], ["huge", "Größe"],
-  ["hspace{#{}}", "Horizontaler Abstand"], ["vspace{#{}}", "Vertikaler Abstand"], ["noindent", "Kein Einzug"], ["linebreak", "Zeilenumbruch"],
-  ["hline", "Tabellenlinie"], ["toprule", "booktabs oben"], ["midrule", "booktabs Mitte"], ["bottomrule", "booktabs unten"], ["multicolumn{#{}}{#{}}{#{}}", "Mehrspaltig"],
-  ["bibliography{#{}}", "Literatur (BibTeX)"], ["bibliographystyle{#{plain}}", "Literaturstil"], ["addbibresource{#{}}", "Literatur (biblatex)"], ["printbibliography", "Literatur ausgeben"],
-  ["newcommand{\\#{name}}[#{1}]{#{}}", "Neuer Befehl"], ["renewcommand{\\#{name}}{#{}}", "Befehl ersetzen"],
-  ["textwidth", "Textbreite"], ["linewidth", "Zeilenbreite"], ["today", "Heutiges Datum"], ["LaTeX", "LaTeX-Logo"],
+  ["textbf{#{}}", "tex.bold"], ["textit{#{}}", "tex.italic"], ["emph{#{}}", "tex.emph"], ["underline{#{}}", "tex.underline"],
+  ["texttt{#{}}", "tex.texttt"], ["textsc{#{}}", "tex.textsc"], ["textsf{#{}}", "tex.textsf"], ["textrm{#{}}", "tex.textrm"],
+  ["footnote{#{}}", "tex.footnote"], ["url{#{}}", "URL"], ["href{#{}}{#{}}", "tex.link"], ["label{#{}}", "tex.label"],
+  ["ref{#{}}", "tex.ref"], ["eqref{#{}}", "tex.eqref"], ["pageref{#{}}", "tex.pageref"], ["autoref{#{}}", "tex.autoref"], ["cref{#{}}", "Cleveref"],
+  ["cite{#{}}", "tex.cite"], ["citep{#{}}", "tex.citep"], ["citet{#{}}", "tex.citet"], ["caption{#{}}", "tex.caption"],
+  ["includegraphics[width=#{\\linewidth}]{#{}}", "tex.image"], ["centering", "tex.centering"], ["item ", "tex.item"],
+  ["tiny", "tex.size"], ["small", "tex.size"], ["normalsize", "tex.size"], ["large", "tex.size"], ["Large", "tex.size"], ["LARGE", "tex.size"], ["huge", "tex.size"],
+  ["hspace{#{}}", "tex.hspace"], ["vspace{#{}}", "tex.vspace"], ["noindent", "tex.noindent"], ["linebreak", "tex.linebreak"],
+  ["hline", "tex.hline"], ["toprule", "tex.toprule"], ["midrule", "tex.midrule"], ["bottomrule", "tex.bottomrule"], ["multicolumn{#{}}{#{}}{#{}}", "tex.multicolumn"],
+  ["bibliography{#{}}", "tex.bibliography"], ["bibliographystyle{#{plain}}", "tex.bibliographystyle"], ["addbibresource{#{}}", "tex.addbibresource"], ["printbibliography", "tex.printbibliography"],
+  ["newcommand{\\#{name}}[#{1}]{#{}}", "tex.newcommand"], ["renewcommand{\\#{name}}{#{}}", "tex.renewcommand"],
+  ["textwidth", "tex.textwidth"], ["linewidth", "tex.linewidth"], ["today", "tex.today"], ["LaTeX", "tex.latexLogo"],
   // math
-  ["frac{#{}}{#{}}", "Bruch"], ["dfrac{#{}}{#{}}", "Bruch (groß)"], ["sqrt{#{}}", "Wurzel"], ["sqrt[#{n}]{#{}}", "n-te Wurzel"],
-  ["sum_{#{i=1}}^{#{n}}", "Summe"], ["prod_{#{i=1}}^{#{n}}", "Produkt"], ["int_{#{a}}^{#{b}}", "Integral"], ["iint", "Doppelintegral"], ["oint", "Kurvenintegral"],
-  ["lim_{#{x \\to \\infty}}", "Limes"], ["infty", "Unendlich"], ["partial", "Partiell"], ["nabla", "Nabla"], ["cdot", "Mal-Punkt"], ["times", "Kreuz"],
+  ["frac{#{}}{#{}}", "tex.frac"], ["dfrac{#{}}{#{}}", "tex.dfrac"], ["sqrt{#{}}", "tex.sqrt"], ["sqrt[#{n}]{#{}}", "tex.nthroot"],
+  ["sum_{#{i=1}}^{#{n}}", "tex.sum"], ["prod_{#{i=1}}^{#{n}}", "tex.prod"], ["int_{#{a}}^{#{b}}", "tex.int"], ["iint", "tex.iint"], ["oint", "tex.oint"],
+  ["lim_{#{x \\to \\infty}}", "tex.lim"], ["infty", "tex.infty"], ["partial", "tex.partial"], ["nabla", "Nabla"], ["cdot", "tex.cdot"], ["times", "tex.times"],
   ["leq", "≤"], ["geq", "≥"], ["neq", "≠"], ["approx", "≈"], ["equiv", "≡"], ["sim", "∼"], ["pm", "±"], ["mp", "∓"],
   ["in", "∈"], ["notin", "∉"], ["subset", "⊂"], ["subseteq", "⊆"], ["cup", "∪"], ["cap", "∩"], ["emptyset", "∅"], ["forall", "∀"], ["exists", "∃"],
   ["rightarrow", "→"], ["leftarrow", "←"], ["Rightarrow", "⇒"], ["Leftrightarrow", "⇔"], ["mapsto", "↦"], ["to", "→"],
-  ["mathbb{#{R}}", "Doppelstrich"], ["mathcal{#{}}", "Kalligraphisch"], ["mathbf{#{}}", "Fett (Mathe)"], ["mathrm{#{}}", "Aufrecht (Mathe)"], ["text{#{}}", "Text in Mathe"],
-  ["vec{#{}}", "Vektor"], ["hat{#{}}", "Hut"], ["bar{#{}}", "Strich"], ["dot{#{}}", "Punkt"], ["overline{#{}}", "Überstrich"], ["underbrace{#{}}_{#{}}", "Unterklammer"],
-  ["left( #{} \\right)", "Klammern (skaliert)"], ["left[ #{} \\right]", "Eckige Klammern (skaliert)"], ["left\\{ #{} \\right\\}", "Geschweifte (skaliert)"],
+  ["mathbb{#{R}}", "tex.mathbb"], ["mathcal{#{}}", "tex.mathcal"], ["mathbf{#{}}", "tex.mathbf"], ["mathrm{#{}}", "tex.mathrm"], ["text{#{}}", "tex.text"],
+  ["vec{#{}}", "tex.vec"], ["hat{#{}}", "tex.hat"], ["bar{#{}}", "tex.bar"], ["dot{#{}}", "tex.dot"], ["overline{#{}}", "tex.overline"], ["underbrace{#{}}_{#{}}", "tex.underbrace"],
+  ["left( #{} \\right)", "tex.leftParen"], ["left[ #{} \\right]", "tex.leftBracket"], ["left\\{ #{} \\right\\}", "tex.leftBrace"],
   ["alpha", "α"], ["beta", "β"], ["gamma", "γ"], ["delta", "δ"], ["epsilon", "ε"], ["varepsilon", "ε"], ["zeta", "ζ"], ["eta", "η"], ["theta", "θ"],
   ["lambda", "λ"], ["mu", "μ"], ["nu", "ν"], ["xi", "ξ"], ["pi", "π"], ["rho", "ρ"], ["sigma", "σ"], ["tau", "τ"], ["phi", "φ"], ["varphi", "φ"],
   ["chi", "χ"], ["psi", "ψ"], ["omega", "ω"], ["Gamma", "Γ"], ["Delta", "Δ"], ["Theta", "Θ"], ["Lambda", "Λ"], ["Sigma", "Σ"], ["Phi", "Φ"], ["Omega", "Ω"],
-  ["sin", "Sinus"], ["cos", "Kosinus"], ["tan", "Tangens"], ["log", "Logarithmus"], ["ln", "Ln"], ["exp", "Exp"], ["max", "Max"], ["min", "Min"],
-  ["quad", "Abstand"], ["qquad", "Doppelabstand"], ["ldots", "…"], ["cdots", "⋯"], ["binom{#{n}}{#{k}}", "Binomialkoeffizient"],
+  ["sin", "tex.sin"], ["cos", "tex.cos"], ["tan", "tex.tan"], ["log", "tex.log"], ["ln", "Ln"], ["exp", "Exp"], ["max", "Max"], ["min", "Min"],
+  ["quad", "tex.quad"], ["qquad", "tex.qquad"], ["ldots", "…"], ["cdots", "⋯"], ["binom{#{n}}{#{k}}", "tex.binom"],
 ];
 
 const ENVIRONMENTS: [string, string, string][] = [
-  ["itemize", "\\item #{}", "Aufzählung"], ["enumerate", "\\item #{}", "Nummerierte Liste"], ["description", "\\item[#{}] #{}", "Beschreibungsliste"],
-  ["equation", "#{}", "Gleichung (nummeriert)"], ["equation*", "#{}", "Gleichung"], ["align", "#{} &= #{}", "Ausgerichtete Gleichungen"], ["align*", "#{} &= #{}", "Ausgerichtet ohne Nummer"],
-  ["gather", "#{}", "Zentrierte Gleichungen"], ["cases", "#{} & #{}", "Fallunterscheidung"],
-  ["matrix", "#{}", "Matrix"], ["pmatrix", "#{a} & #{b} \\\\\\\\ #{c} & #{d}", "Matrix (runde Klammern)"], ["bmatrix", "#{}", "Matrix (eckige Klammern)"],
-  ["figure", "\\centering\n\t\\includegraphics[width=\\linewidth]{#{}}\n\t\\caption{#{}}\n\t\\label{fig:#{}}", "Abbildung"],
-  ["table", "\\centering\n\t\\begin{tabular}{#{lll}}\n\t\t#{}\n\t\\end{tabular}\n\t\\caption{#{}}", "Tabelle"],
-  ["tabular", "#{}", "Tabelle (tabular)"], ["center", "#{}", "Zentriert"], ["minipage", "#{}", "Minipage"],
-  ["abstract", "#{}", "Zusammenfassung"], ["quote", "#{}", "Zitat"], ["verbatim", "#{}", "Wörtlich"], ["lstlisting", "#{}", "Code-Listing"],
-  ["theorem", "#{}", "Satz"], ["proof", "#{}", "Beweis"], ["lemma", "#{}", "Lemma"], ["definition", "#{}", "Definition"], ["document", "#{}", "Dokument"],
-  ["frame", "\\frametitle{#{}}\n\t#{}", "Beamer-Folie"], ["tikzpicture", "#{}", "TikZ-Grafik"],
+  ["itemize", "\\item #{}", "tex.env.itemize"], ["enumerate", "\\item #{}", "tex.env.enumerate"], ["description", "\\item[#{}] #{}", "tex.env.description"],
+  ["equation", "#{}", "tex.env.equation"], ["equation*", "#{}", "tex.env.equationStar"], ["align", "#{} &= #{}", "tex.env.align"], ["align*", "#{} &= #{}", "tex.env.alignStar"],
+  ["gather", "#{}", "tex.env.gather"], ["cases", "#{} & #{}", "tex.env.cases"],
+  ["matrix", "#{}", "tex.env.matrix"], ["pmatrix", "#{a} & #{b} \\\\\\\\ #{c} & #{d}", "tex.env.pmatrix"], ["bmatrix", "#{}", "tex.env.bmatrix"],
+  ["figure", "\\centering\n\t\\includegraphics[width=\\linewidth]{#{}}\n\t\\caption{#{}}\n\t\\label{fig:#{}}", "tex.env.figure"],
+  ["table", "\\centering\n\t\\begin{tabular}{#{lll}}\n\t\t#{}\n\t\\end{tabular}\n\t\\caption{#{}}", "tex.env.table"],
+  ["tabular", "#{}", "tex.env.tabular"], ["center", "#{}", "tex.env.center"], ["minipage", "#{}", "Minipage"],
+  ["abstract", "#{}", "tex.env.abstract"], ["quote", "#{}", "tex.env.quote"], ["verbatim", "#{}", "tex.env.verbatim"], ["lstlisting", "#{}", "tex.env.lstlisting"],
+  ["theorem", "#{}", "tex.env.theorem"], ["proof", "#{}", "tex.env.proof"], ["lemma", "#{}", "tex.env.lemma"], ["definition", "#{}", "tex.env.definition"], ["document", "#{}", "tex.env.document"],
+  ["frame", "\\frametitle{#{}}\n\t#{}", "tex.env.frame"], ["tikzpicture", "#{}", "tex.env.tikzpicture"],
 ];
 
-const commandCompletions: Completion[] = COMMANDS.map(([tpl, info]) =>
-  snippetCompletion("\\" + tpl, { label: "\\" + tpl.replace(/#\{[^}]*\}/g, "").replace(/[{[].*$/, ""), detail: info, type: "keyword" }),
-);
-const envCompletions: Completion[] = ENVIRONMENTS.map(([name, body, info]) =>
-  snippetCompletion(`\\begin{${name}}\n\t${body}\n\\end{${name}}`, { label: `\\begin{${name}}`, detail: info, type: "class", boost: 2 }),
-);
+const detail = (d: string) => (d.startsWith("tex.") ? t(`commands.${d}` as Key) : d);
+
+// Built per request so the details follow the UI language.
+const commandCompletions = (): Completion[] =>
+  COMMANDS.map(([tpl, info]) =>
+    snippetCompletion("\\" + tpl, { label: "\\" + tpl.replace(/#\{[^}]*\}/g, "").replace(/[{[].*$/, ""), detail: detail(info), type: "keyword" }),
+  );
+const envCompletions = (): Completion[] =>
+  ENVIRONMENTS.map(([name, body, info]) =>
+    snippetCompletion(`\\begin{${name}}\n\t${body}\n\\end{${name}}`, { label: `\\begin{${name}}`, detail: detail(info), type: "class", boost: 2 }),
+  );
 const envNameCompletions = (closing: boolean): Completion[] =>
   ENVIRONMENTS.map(([name, body, info]) =>
-    closing ? { label: name, detail: info, type: "class" } : snippetCompletion(`${name}}\n\t${body}\n\\end{${name}}`, { label: name, detail: info, type: "class" }),
+    closing ? { label: name, detail: detail(info), type: "class" } : snippetCompletion(`${name}}\n\t${body}\n\\end{${name}}`, { label: name, detail: detail(info), type: "class" }),
   );
 
 // ------------------------------------------------------------------ labels & citations
 
 function labels(state: EditorState): Completion[] {
   const out = new Map<string, Completion>();
-  for (const m of state.doc.toString().matchAll(/\\label\{([^}]+)\}/g)) out.set(m[1], { label: m[1], type: "variable", detail: "Label" });
+  for (const m of state.doc.toString().matchAll(/\\label\{([^}]+)\}/g)) out.set(m[1], { label: m[1], type: "variable", detail: t("commands.tex.label") });
   return [...out.values()];
 }
 
@@ -120,7 +127,7 @@ function latexCompletions(path: string | null) {
 
     const cmd = ctx.matchBefore(/\\[a-zA-Z]*/);
     if (cmd && (cmd.from < cmd.to || ctx.explicit)) {
-      return { from: cmd.from, options: [...envCompletions, ...commandCompletions], validFor: /^\\[a-zA-Z]*$/ };
+      return { from: cmd.from, options: [...envCompletions(), ...commandCompletions()], validFor: /^\\[a-zA-Z]*$/ };
     }
     return null;
   };
@@ -191,7 +198,7 @@ export function outline(text: string): OutlineItem[] {
   const re = /^[^%\n]*?\\(part|chapter|section|subsection|subsubsection|paragraph)\*?(?:\[[^\]]*\])?\{([^}]*)\}/gm;
   for (let m; (m = re.exec(text)); ) {
     const pos = m.index + m[0].indexOf("\\" + m[1]);
-    out.push({ level: LEVELS[m[1]], title: m[2].trim() || "(leer)", line: text.slice(0, pos).split("\n").length, pos });
+    out.push({ level: LEVELS[m[1]], title: m[2].trim() || t("commands.tex.empty"), line: text.slice(0, pos).split("\n").length, pos });
   }
   return out;
 }

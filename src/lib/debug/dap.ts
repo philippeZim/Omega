@@ -1,6 +1,7 @@
 /** Debug Adapter Protocol session over a proc.rs connection (stdio or TCP). */
 import { invoke } from "@tauri-apps/api/core";
 import { onRpc } from "../rpc";
+import { t } from "../i18n/index.svelte";
 
 type Json = any;
 
@@ -28,7 +29,7 @@ export class DapSession {
       message: (m) => this.handle(m),
       exit: () => {
         this.alive = false;
-        for (const p of this.pending.values()) p.reject(new Error("Debug-Adapter beendet"));
+        for (const p of this.pending.values()) p.reject(new Error(t("code.dap.exited")));
         this.pending.clear();
         this.off();
         this.handlers.exit(this);
@@ -52,7 +53,7 @@ export class DapSession {
   request<T = Json>(command: string, args?: Json, timeoutMs = 30000): Promise<T> {
     const seq = this.seq++;
     return new Promise<T>((resolve, reject) => {
-      if (!this.alive) return reject(new Error("Sitzung beendet"));
+      if (!this.alive) return reject(new Error(t("code.dap.sessionEnded")));
       this.pending.set(seq, { resolve, reject, command });
       this.send({ seq, type: "request", command, arguments: args }).catch((e) => {
         this.pending.delete(seq);
@@ -60,7 +61,7 @@ export class DapSession {
       });
       if (timeoutMs > 0)
         setTimeout(() => {
-          if (this.pending.delete(seq)) reject(new Error(`${command}: keine Antwort`));
+          if (this.pending.delete(seq)) reject(new Error(t("code.dap.noResponse", { command })));
         }, timeoutMs);
     });
   }

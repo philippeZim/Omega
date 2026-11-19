@@ -2,38 +2,39 @@
   import { app, activate, closeTab, newFile } from "../lib/state.svelte";
   import { ui } from "../lib/ui.svelte";
   import RunBar from "./RunBar.svelte";
+  import { t } from "../lib/i18n/index.svelte";
 
   function menu(e: MouseEvent, id: string, path: string | null) {
     ui.openMenu(e, [
-      { label: "Schließen", shortcut: "Strg+W", action: () => closeTab(id) },
-      { label: "Andere schließen", action: () => app.tabs.filter((t) => t.id !== id).forEach((t) => closeTab(t.id)) },
-      ...(path ? [{ separator: true, label: "" }, { label: "Pfad kopieren", action: () => navigator.clipboard.writeText(path) }] : []),
+      { label: t("common.close"), shortcut: `${t("app.ctrl")}+W`, action: () => closeTab(id) },
+      { label: t("app.closeOthers"), action: () => app.tabs.filter((x) => x.id !== id).forEach((x) => closeTab(x.id)) },
+      ...(path ? [{ separator: true, label: "" }, { label: t("app.copyPath"), action: () => navigator.clipboard.writeText(path) }] : []),
     ]);
   }
 </script>
 
 {#if app.tabs.length || app.mode === "code"}
   <div class="tabs">
-    {#each app.tabs as t (t.id)}
+    {#each app.tabs as tab (tab.id)}
       <div
         class="tab"
-        class:active={t.id === app.activeId}
+        class:active={tab.id === app.activeId}
         role="tab"
         tabindex="0"
-        aria-selected={t.id === app.activeId}
-        onclick={() => activate(t.id)}
-        onkeydown={(e) => e.key === "Enter" && activate(t.id)}
-        onauxclick={(e) => e.button === 1 && closeTab(t.id)}
-        oncontextmenu={(e) => menu(e, t.id, t.path)}
-        title={t.path ?? t.name}
+        aria-selected={tab.id === app.activeId}
+        onclick={() => activate(tab.id)}
+        onkeydown={(e) => e.key === "Enter" && activate(tab.id)}
+        onauxclick={(e) => e.button === 1 && closeTab(tab.id)}
+        oncontextmenu={(e) => menu(e, tab.id, tab.path)}
+        title={tab.path ?? tab.name}
       >
-        <span class="name">{t.name}</span>
-        <button class="close" class:dirty={t.dirty} onclick={(e) => { e.stopPropagation(); closeTab(t.id); }} aria-label="Schließen">
+        <span class="name">{tab.name}</span>
+        <button class="close" class:dirty={tab.dirty} onclick={(e) => { e.stopPropagation(); closeTab(tab.id); }} aria-label={t("common.close")}>
           <span class="x">×</span><span class="d"></span>
         </button>
       </div>
     {/each}
-    <button class="add" onclick={newFile} title="Neue Datei (Strg+N)" aria-label="Neue Datei">+</button>
+    <button class="add" onclick={newFile} title="{t('app.newFile')} ({t('app.ctrl')}+N)" aria-label={t("app.newFile")}>+</button>
     {#if app.mode === "code"}<RunBar />{/if}
   </div>
 {/if}
@@ -47,7 +48,7 @@
     gap: 4px;
     padding: 0 10px;
     overflow-x: auto;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    border-bottom: 1px solid rgba(var(--fg-rgb), 0.05);
   }
   .tabs::-webkit-scrollbar { height: 0; }
   .tab {
@@ -63,7 +64,7 @@
     transition: background 0.12s, color 0.12s;
   }
   .tab:hover { background: var(--fill-hover); color: var(--label); }
-  .tab.active { background: rgba(255, 255, 255, 0.1); color: var(--label); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08); }
+  .tab.active { background: rgba(var(--fg-rgb), 0.1); color: var(--label); box-shadow: inset 0 1px 0 rgba(var(--hl-rgb), 0.08); }
   .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .close {
     width: 18px;

@@ -4,6 +4,7 @@ import { runCommand, interruptRun } from "../terminal.svelte";
 import { app, activeTab, save, setRoot, openFile, setMode } from "../state.svelte";
 import { ui } from "../ui.svelte";
 import { fsApi, joinPath } from "../api";
+import { t } from "../i18n/index.svelte";
 
 export const runner = $state({
   project: null as Project | null,
@@ -39,21 +40,29 @@ export async function runAction(a: Action | null | undefined) {
 export const stopRun = interruptRun;
 
 export async function createProject(templateId: string, parent: string, name: string) {
-  const t = TEMPLATES.find((x) => x.id === templateId);
-  if (!t) return;
-  const [cmd] = t.create(parent, name);
+  const tpl = TEMPLATES.find((x) => x.id === templateId);
+  if (!tpl) return;
+  const [cmd] = tpl.create(parent, name);
   const dir = joinPath(parent, name);
+  if (tpl.id === "empty") {
+    if (await fsApi.exists(dir)) return ui.toast(t("code.existsAlready", { name }), "error");
+    await fsApi.createDir(dir);
+    runner.newProject = false;
+    setRoot(dir);
+    refreshProject();
+    return;
+  }
   runner.newProject = false;
   setMode("code");
-  runCommand(cmd, null, `Neues Projekt: ${name}`);
+  runCommand(cmd, null, t("code.newProjectTitle", { name }));
   // Open the folder as soon as the project file exists (tools differ in which source files they create).
   for (let i = 0; i < 240; i++) {
     await new Promise((r) => setTimeout(r, 500));
-    if (!(await fsApi.exists(joinPath(dir, t.marker)))) continue;
+    if (!(await fsApi.exists(joinPath(dir, tpl.marker)))) continue;
     setRoot(dir);
     // Give the tool a moment to write its source files, then open the best candidate.
     for (let j = 0; j < 20; j++) {
-      for (const rel of t.open) {
+      for (const rel of tpl.open) {
         const f = joinPath(dir, rel.replace("{name}", name.replace(/-/g, "_")));
         if (await fsApi.exists(f)) {
           await openFile(f);
@@ -66,5 +75,5 @@ export async function createProject(templateId: string, parent: string, name: st
     refreshProject();
     return;
   }
-  ui.toast("Projekt wurde nicht erstellt – siehe Terminal", "error");
+  ui.toast(t("code.projectNotCreated"), "error");
 }

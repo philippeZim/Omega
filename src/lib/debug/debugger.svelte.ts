@@ -8,6 +8,7 @@ import { ui } from "../ui.svelte";
 import * as ed from "../editor";
 import { invoke } from "@tauri-apps/api/core";
 import { runCommand, shellQuote } from "../terminal.svelte";
+import { t, i18n, type Key } from "../i18n/index.svelte";
 
 type Json = any;
 
@@ -68,7 +69,7 @@ async function initialize(s: DapSession, adapterID: string) {
     supportsRunInTerminalRequest: true,
     supportsStartDebuggingRequest: true,
     supportsProgressReporting: false,
-    locale: "de",
+    locale: i18n.locale,
   });
 }
 
@@ -112,14 +113,14 @@ async function launchSession(s: DapSession, request: "launch" | "attach", args: 
 
 export async function startDebugging() {
   const tab = activeTab();
-  if (!tab?.path) return ui.toast("Datei zuerst speichern, um sie zu debuggen", "error");
+  if (!tab?.path) return ui.toast(t("code.dbg.saveFirst"), "error");
   if (dbg.status !== "idle" && dbg.status !== "terminated") await stopDebugging();
   for (const t of app.tabs) if (t.dirty && t.path) await save(t.id);
   setMode("code");
   dbg.panel = true;
   dbg.console = [];
   dbg.status = "starting";
-  dbg.label = "Vorbereiten …";
+  dbg.label = t("code.dbg.preparing");
   resetPause();
   lastPlan = { file: tab.path };
 
@@ -129,17 +130,17 @@ export async function startDebugging() {
       file: tab.path,
       workspace: app.root,
       log,
-      askInstall: (name) => ui.confirm("Debugger installieren?", `${name} fehlt. Jetzt in den App-Ordner installieren?`, "Installieren"),
+      askInstall: (name) => ui.confirm(t("code.dbg.installTitle"), t("code.dbg.installMsg", { name }), t("code.install")),
     });
   } catch (e) {
     log(String(e instanceof Error ? e.message : e), "error");
     dbg.status = "terminated";
-    dbg.label = "Start fehlgeschlagen";
+    dbg.label = t("code.dbg.startFailed");
     return;
   }
 
   dbg.label = plan.label;
-  log(`Starte ${plan.label}`);
+  log(t("code.dbg.starting", { label: plan.label }));
   const s = newSession(plan.label);
   root = active = s;
   try {
@@ -156,7 +157,7 @@ export async function startDebugging() {
     dbg.status = "running";
     await launchSession(s, "launch", plan.launch);
   } catch (e) {
-    log(`Debug-Start fehlgeschlagen: ${e instanceof Error ? e.message : e}`, "error");
+    log(t("code.dbg.debugStartFailed", { err: String(e instanceof Error ? e.message : e) }), "error");
     await stopDebugging();
   }
 }
@@ -247,11 +248,11 @@ function onEvent(s: DapSession, ev: Json) {
       }
       break;
     case "exited":
-      log(`Prozess beendet (Exit-Code ${b.exitCode})`, "info");
+      log(t("code.dbg.processExited", { code: b.exitCode }), "info");
       break;
     case "terminated":
       if (s === root || !s.parent) {
-        log("Debug-Sitzung beendet.");
+        log(t("code.dbg.sessionEnded"));
         stopDebugging();
       }
       break;
@@ -280,20 +281,20 @@ async function onReverse(s: DapSession, req: Json): Promise<Json> {
   }
   if (req.command === "startDebugging") {
     // js-debug: child sessions connect to the same adapter port.
-    if (!tcpPort) throw new Error("startDebugging ohne TCP-Adapter");
-    const child = newSession(a.configuration?.name ?? "Kind");
+    if (!tcpPort) throw new Error("startDebugging without a TCP adapter");
+    const child = newSession(a.configuration?.name ?? "child");
     child.parent = s;
     await child.connect(tcpPort);
     launchSession(child, a.request ?? "launch", a.configuration).catch((e) => log(String(e), "error"));
     return {};
   }
-  throw new Error(`Nicht unterstützt: ${req.command}`);
+  throw new Error(`Unsupported: ${req.command}`);
 }
 
 function onExit(s: DapSession) {
   sessions = sessions.filter((x) => x !== s);
   if (s === root) {
-    if (dbg.status !== "terminated") log("Debug-Adapter beendet.");
+    if (dbg.status !== "terminated") log(t("code.dbg.adapterExited"));
     if (serverProcId) invoke("proc_kill", { id: serverProcId });
     cleanup();
   }
@@ -301,21 +302,26 @@ function onExit(s: DapSession) {
 
 // ------------------------------------------------------------------ stopped state
 
-const REASONS: Record<string, string> = {
-  breakpoint: "Breakpoint",
-  step: "Schritt",
-  pause: "Pausiert",
-  exception: "Ausnahme",
-  entry: "Programmstart",
-  "function breakpoint": "Funktions-Breakpoint",
-  "data breakpoint": "Daten-Breakpoint",
-  goto: "Sprung",
+const REASONS: Record<string, Key> = {
+  breakpoint: "code.dbg.reason.breakpoint",
+  step: "code.dbg.reason.step",
+  pause: "code.dbg.reason.pause",
+  exception: "code.dbg.reason.exception",
+  entry: "code.dbg.reason.entry",
+  "function breakpoint": "code.dbg.reason.functionBreakpoint",
+  "data breakpoint": "code.dbg.reason.dataBreakpoint",
+  goto: "code.dbg.reason.goto",
 };
+
+/** Display text for `dbg.stopReason` (which keeps the raw DAP reason). */
+export function stopReasonLabel(reason: string) {
+  return REASONS[reason] ? t(REASONS[reason]) : reason;
+}
 
 async function onStopped(s: DapSession, b: Json) {
   dbg.status = "stopped";
-  dbg.stopReason = REASONS[b.reason] ?? b.reason ?? "";
-  if (b.reason === "exception" && b.text) log(`Ausnahme: ${b.text}`, "error");
+  dbg.stopReason = b.reason ?? "";
+  if (b.reason === "exception" && b.text) log(t("code.dbg.exception", { text: b.text }), "error");
   try {
     dbg.threads = (await s.request("threads")).threads ?? [];
   } catch {
@@ -423,7 +429,7 @@ export async function toggleNode(n: VarNode) {
 }
 
 export async function setVariable(n: VarNode, value: string) {
-  if (!active?.capabilities.supportsSetVariable) return ui.toast("Der Debugger unterstützt kein Ändern von Variablen", "error");
+  if (!active?.capabilities.supportsSetVariable) return ui.toast(t("code.dbg.noSetVariable"), "error");
   try {
     const r = await active.request("setVariable", { variablesReference: n.parentRef, name: n.name, value });
     n.value = r.value;
@@ -437,7 +443,7 @@ export async function setVariable(n: VarNode, value: string) {
 // ------------------------------------------------------------------ watches & console
 
 export async function evaluate(expression: string, context: "watch" | "repl" | "hover") {
-  if (!active) throw new Error("Keine Debug-Sitzung");
+  if (!active) throw new Error(t("code.dbg.noSession"));
   return active.request("evaluate", { expression, frameId: dbg.frameId ?? undefined, context });
 }
 

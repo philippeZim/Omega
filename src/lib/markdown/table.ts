@@ -1,6 +1,7 @@
 /** Obsidian-1.5-style table editor: the table is rendered, cells are edited in place, the doc stays plain Markdown. */
 import { WidgetType, type EditorView } from "@codemirror/view";
 import { Annotation } from "@codemirror/state";
+import { t as tr } from "../i18n/index.svelte";
 
 type Align = "left" | "center" | "right" | null;
 interface Table {
@@ -132,7 +133,7 @@ export class TableWidget extends WidgetType {
     const addRow = document.createElement("button");
     addRow.className = "md-table-add row";
     addRow.textContent = "+";
-    addRow.title = "Zeile hinzufügen";
+    addRow.title = tr("commands.md.addRow");
     addRow.onmousedown = (e) => {
       e.preventDefault();
       const cur = parseTable(wrap._text!);
@@ -142,7 +143,7 @@ export class TableWidget extends WidgetType {
     const addCol = document.createElement("button");
     addCol.className = "md-table-add col";
     addCol.textContent = "+";
-    addCol.title = "Spalte hinzufügen";
+    addCol.title = tr("commands.md.addCol");
     addCol.onmousedown = (e) => {
       e.preventDefault();
       const cur = parseTable(wrap._text!);

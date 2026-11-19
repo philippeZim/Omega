@@ -11,6 +11,7 @@
   import { app, openFile, pathMoved, activeTab } from "../lib/state.svelte";
   import { ui } from "../lib/ui.svelte";
   import { git, kind } from "../lib/git/git.svelte";
+  import { t } from "../lib/i18n/index.svelte";
 
   const gitKind = $derived.by(() => {
     if (!git.repo || !git.top || !path.startsWith(git.top + "/")) return null;
@@ -49,7 +50,7 @@
   }
 
   async function create(dir: boolean) {
-    const name = await ui.prompt(dir ? "Neuer Ordner" : "Neue Datei", "", dir ? "ordnername" : "datei.txt");
+    const name = await ui.prompt(dir ? t("app.newFolder") : t("app.newFile"), "", dir ? t("app.folderNamePlaceholder") : t("app.fileNamePlaceholder"));
     if (!name) return;
     const p = joinPath(path, name);
     try {
@@ -67,7 +68,7 @@
   async function rename() {
     const name = basename(path);
     const dot = name.lastIndexOf(".");
-    const next = await ui.prompt("Umbenennen", name, "", dot > 0 ? dot : undefined);
+    const next = await ui.prompt(t("common.rename"), name, "", dot > 0 ? dot : undefined);
     if (!next || next === name) return;
     const to = joinPath(dirname(path), next);
     try {
@@ -79,7 +80,7 @@
   }
 
   async function remove() {
-    const ok = await ui.confirm(`„${basename(path)}“ löschen?`, "Dies kann nicht rückgängig gemacht werden.", "Löschen", true);
+    const ok = await ui.confirm(t("app.deleteConfirm", { name: basename(path) }), t("app.cannotUndo"), t("common.delete"), true);
     if (!ok) return;
     try {
       await fsApi.remove(path);
@@ -94,15 +95,15 @@
     ui.openMenu(e, [
       ...(isDir
         ? [
-            { label: "Neue Datei", action: () => create(false) },
-            { label: "Neuer Ordner", action: () => create(true) },
+            { label: t("app.newFile"), action: () => create(false) },
+            { label: t("app.newFolder"), action: () => create(true) },
             { separator: true, label: "" },
           ]
-        : [{ label: "Öffnen", action: () => openFile(path) }, { separator: true, label: "" }]),
-      { label: "Umbenennen", action: rename },
-      { label: "Pfad kopieren", action: () => navigator.clipboard.writeText(path) },
+        : [{ label: t("common.open"), action: () => openFile(path) }, { separator: true, label: "" }]),
+      { label: t("common.rename"), action: rename },
+      { label: t("app.copyPath"), action: () => navigator.clipboard.writeText(path) },
       { separator: true, label: "" },
-      { label: "Löschen", action: remove, danger: true },
+      { label: t("common.delete"), action: remove, danger: true },
     ]);
   }
 </script>
@@ -138,7 +139,7 @@
     font-size: 13px;
   }
   .row:hover { background: var(--fill-hover); }
-  .row.active { background: rgba(255, 255, 255, 0.1); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06); }
+  .row.active { background: rgba(var(--fg-rgb), 0.1); box-shadow: inset 0 1px 0 rgba(var(--hl-rgb), 0.06); }
   .chev { flex-shrink: 0; color: var(--label-2); transition: transform 0.15s; }
   .chev.open { transform: rotate(90deg); }
   .dot { width: 10px; flex-shrink: 0; }

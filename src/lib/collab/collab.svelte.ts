@@ -1,10 +1,11 @@
 /**
- * "Zusammen coden": session state and protocol on top of the iroh pipe (collab.rs).
+ * "Code together": session state and protocol on top of the iroh pipe (collab.rs).
  * Host = the person whose project is shared; guests join with an invite code and need approval.
  */
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { ui } from "../ui.svelte";
+import { t } from "../i18n/index.svelte";
 import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
 
 export const PEER_COLORS = ["#6b9be0", "#7bbf8e", "#d6a35f", "#cf8fb4", "#86b9cc", "#a996cf", "#df7067", "#c8b77e"];
@@ -57,9 +58,9 @@ async function defaultName() {
   if (collab.me.name) return;
   try {
     const r = await invoke<{ code: number; stdout: string }>("git", { root: "/", args: ["config", "--global", "user.name"] });
-    collab.me.name = r.stdout.trim() || "Ich";
+    collab.me.name = r.stdout.trim() || t("ai.collab.me");
   } catch {
-    collab.me.name = "Ich";
+    collab.me.name = t("ai.collab.me");
   }
 }
 
@@ -82,7 +83,7 @@ export async function startHosting() {
     collab.ticket = await invoke<string>("collab_host");
     collab.status = "hosting";
     // Like PyCharm: the invite is ready to paste right away.
-    writeText(collab.ticket).then(() => ui.toast("Einladungscode kopiert – einfach im Chat einfügen")).catch(() => {});
+    writeText(collab.ticket).then(() => ui.toast(t("ai.collab.ticketCopied"))).catch(() => {});
     collab.participants = [{ peer: "self", name: collab.me.name, color: collab.me.color, role: "host" }];
   } catch (e) {
     collab.status = "error";
@@ -101,7 +102,7 @@ export function approve(req: JoinRequest) {
   collab.participants.push(p);
   send(req.peer, { t: "welcome", you: { name: p.name, color: p.color }, participants: collab.participants.map(publicInfo) });
   broadcast({ t: "participants", participants: collab.participants.map(publicInfo) });
-  ui.toast(`${req.name} ist beigetreten`);
+  ui.toast(t("ai.collab.joined", { name: req.name }));
 }
 
 /** Approves the oldest pending request (command palette). */
@@ -112,8 +113,8 @@ export function approveNext() {
 /** Reads an invite code from the clipboard, if there is one. */
 export async function clipboardTicket(): Promise<string | null> {
   try {
-    const t = (await readText())?.trim() ?? "";
-    return t.startsWith("studio-") ? t : null;
+    const s = (await readText())?.trim() ?? "";
+    return s.startsWith("studio-") ? s : null;
   } catch {
     return null;
   }
@@ -121,10 +122,10 @@ export async function clipboardTicket(): Promise<string | null> {
 
 /** Joins with the code from the clipboard (command palette). */
 export async function joinFromClipboard() {
-  const t = await clipboardTicket();
-  if (!t) return ui.toast("Kein Einladungscode in der Zwischenablage", "error");
+  const ticket = await clipboardTicket();
+  if (!ticket) return ui.toast(t("ai.collab.noTicket"), "error");
   collab.open = true;
-  await join(t);
+  await join(ticket);
 }
 
 export function deny(req: JoinRequest) {
@@ -189,7 +190,7 @@ listen<{ peer: string; msg: string }>("collab-msg", (e) => {
     if (msg.t === "hello") {
       // Unknown peers must be approved first (the code alone is not enough).
       if (!collab.requests.some((r) => r.peer === peer) && !collab.participants.some((p) => p.peer === peer))
-        collab.requests.push({ peer, name: String(msg.name || "Gast").slice(0, 40) });
+        collab.requests.push({ peer, name: String(msg.name || t("ai.collab.guest")).slice(0, 40) });
       collab.open = true;
       return;
     }
@@ -200,14 +201,14 @@ listen<{ peer: string; msg: string }>("collab-msg", (e) => {
       collab.status = "connected";
       collab.me.color = msg.you.color;
       collab.participants = msg.participants;
-      ui.toast("Verbunden – du bist in der Session");
+      ui.toast(t("ai.collab.connected"));
     } else if (msg.t === "participants") collab.participants = msg.participants;
     else if (msg.t === "denied") {
-      ui.toast("Der Host hat den Beitritt abgelehnt", "error");
+      ui.toast(t("ai.collab.denied"), "error");
       leave();
       return;
     } else if (msg.t === "kicked" || msg.t === "ended") {
-      ui.toast(msg.t === "kicked" ? "Du wurdest aus der Session entfernt" : "Der Host hat die Session beendet");
+      ui.toast(t(msg.t === "kicked" ? "ai.collab.kicked" : "ai.collab.ended"));
       leave();
       return;
     }
@@ -222,11 +223,11 @@ listen<{ peer: string; reason: string }>("collab-closed", (e) => {
     collab.participants = collab.participants.filter((x) => x.peer !== peer);
     collab.requests = collab.requests.filter((x) => x.peer !== peer);
     if (p) {
-      ui.toast(`${p.name} hat die Session verlassen`);
+      ui.toast(t("ai.collab.left", { name: p.name }));
       broadcast({ t: "participants", participants: collab.participants.map(publicInfo) });
     }
   } else if (collab.role === "guest" && peer === collab.hostPeer && collab.status !== "idle") {
-    ui.toast("Verbindung zum Host getrennt", "error");
+    ui.toast(t("ai.collab.disconnected"), "error");
     leave();
   }
 });

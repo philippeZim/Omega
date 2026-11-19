@@ -5,6 +5,8 @@
  * is the key left of 1 (^ on German layouts).
  */
 
+import { pick, type Locale } from "./i18n/index.svelte";
+
 const MODIFIER_KEYS = new Set(["Control", "Shift", "Alt", "Meta", "AltGraph", "CapsLock", "OS"]);
 
 function mods(e: KeyboardEvent, withShift = true) {
@@ -54,21 +56,39 @@ export function normalize(binding: string): string {
   return [...ms, key.length === 1 ? key.toLowerCase() : key].join("-");
 }
 
-const LABELS: Record<string, string> = {
-  Mod: "Strg", Shift: "⇧", Alt: "Alt",
-  ArrowUp: "↑", ArrowDown: "↓", ArrowLeft: "←", ArrowRight: "→",
-  Enter: "Enter", Escape: "Esc", Backspace: "⌫", Delete: "Entf", Tab: "Tab", Space: "Leertaste",
-  Home: "Pos1", End: "Ende", PageUp: "Bild↑", PageDown: "Bild↓",
-  Backquote: "^", BracketLeft: "Ü", BracketRight: "+", Backslash: "#", Minus: "ß", Equal: "´",
-  Semicolon: "Ö", Quote: "Ä", Comma: ",", Period: ".", Slash: "-", Hyphen: "-", Plus: "+",
+const COMMON: Record<string, string> = {
+  Shift: "⇧", Alt: "Alt", ArrowUp: "↑", ArrowDown: "↓", ArrowLeft: "←", ArrowRight: "→",
+  Backspace: "⌫", Tab: "Tab", Comma: ",", Period: ".", Hyphen: "-", Plus: "+",
 };
 
-/** Human readable label, e.g. "Strg ⇧ L". */
+// Key names per UI language; physical keys are labelled as on that language's usual layout (US / QWERTZ / AZERTY).
+const LABELS: Record<Locale, Record<string, string>> = {
+  en: {
+    ...COMMON, Mod: "Ctrl", Enter: "Enter", Escape: "Esc", Delete: "Del", Space: "Space",
+    Home: "Home", End: "End", PageUp: "PgUp", PageDown: "PgDn",
+    Backquote: "`", BracketLeft: "[", BracketRight: "]", Backslash: "\\", Minus: "-", Equal: "=",
+    Semicolon: ";", Quote: "'", Slash: "/",
+  },
+  de: {
+    ...COMMON, Mod: "Strg", Enter: "Enter", Escape: "Esc", Delete: "Entf", Space: "Leertaste",
+    Home: "Pos1", End: "Ende", PageUp: "Bild↑", PageDown: "Bild↓",
+    Backquote: "^", BracketLeft: "Ü", BracketRight: "+", Backslash: "#", Minus: "ß", Equal: "´",
+    Semicolon: "Ö", Quote: "Ä", Slash: "-",
+  },
+  fr: {
+    ...COMMON, Mod: "Ctrl", Enter: "Entrée", Escape: "Échap", Delete: "Suppr", Space: "Espace",
+    Home: "Début", End: "Fin", PageUp: "PgPréc", PageDown: "PgSuiv",
+    Backquote: "²", BracketLeft: "^", BracketRight: "$", Backslash: "*", Minus: ")", Equal: "=",
+    Semicolon: "M", Quote: "ù", Slash: "!",
+  },
+};
+
+/** Human readable label in the UI language, e.g. "Ctrl ⇧ L". */
 export function formatKey(binding: string): string {
   return binding
     .split("-")
     .map((p, i, arr) => (p === "" && arr[i + 1] === "" ? "-" : p))
     .filter((p) => p !== "")
-    .map((p) => LABELS[p] ?? (p.length === 1 ? p.toUpperCase() : p))
+    .map((p) => pick(LABELS)[p] ?? (p.length === 1 ? p.toUpperCase() : p))
     .join(" ");
 }
