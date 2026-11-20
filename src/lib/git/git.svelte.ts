@@ -87,6 +87,9 @@ export async function refresh() {
   } finally {
     refreshing = false;
   }
+  // Refresh runs on open, focus and every few seconds while focused: the natural place to fetch
+  // when the last fetch of this repo is older than FETCH_INTERVAL.
+  void autoFetch();
 }
 
 /** Display status of a change: new / modified / deleted / renamed / conflict. */
@@ -158,6 +161,48 @@ export async function pull() {
     git.busy = "";
     await refresh();
   }
+}
+
+// ------------------------------------------------------------------ fetch
+
+/** Automatic fetches run at most this often (and only while the window has focus). */
+export const FETCH_INTERVAL = 5 * 60_000;
+let lastFetch = { top: "", at: 0 };
+let fetching = false;
+
+/** Plain `git fetch`: the current branch's upstream remote (origin without one). `manual` toasts errors. */
+async function fetchRun(manual: boolean): Promise<Out | null> {
+  fetching = true;
+  lastFetch = { top: git.top, at: Date.now() };
+  try {
+    return manual ? await runOk(["fetch", "--quiet"], "git.op.fetch") : await run(["fetch", "--quiet"]);
+  } finally {
+    fetching = false;
+  }
+}
+
+/** Background fetch so the behind count (↓) sees new remote commits. Silent: no toast on failure. */
+export async function autoFetch() {
+  if (!git.repo || !git.upstream || git.busy || fetching || !document.hasFocus()) return;
+  if (lastFetch.top === git.top && Date.now() - lastFetch.at < FETCH_INTERVAL) return;
+  const r = await fetchRun(false).catch(() => null);
+  if (r?.code === 0) await refresh();
+}
+
+/** Branch menu "Fetch": like the automatic one, but reports the result. */
+export async function fetchNow() {
+  if (!git.repo || fetching) return;
+  git.busy = t("git.busy.fetch");
+  let r: Out | null;
+  try {
+    r = await fetchRun(true);
+  } finally {
+    git.busy = "";
+    await refresh();
+  }
+  if (!r) return;
+  const ref = git.upstream ?? "origin";
+  ui.toast(git.behind === 0 ? t("git.fetchedNothing") : t(git.behind === 1 ? "git.fetchedOne" : "git.fetchedMany", { n: git.behind, ref }));
 }
 
 /** After pull/checkout files on disk changed: reload unmodified open tabs. */
