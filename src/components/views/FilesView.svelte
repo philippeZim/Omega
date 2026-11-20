@@ -8,6 +8,7 @@
   import { collab } from "../../lib/collab/collab.svelte";
   import { share } from "../../lib/collab/share.svelte";
   import { fileDrag } from "../../lib/fileDrag.svelte";
+  import { shortcutLabel } from "../../lib/commands.svelte";
 
   const guestView = $derived(collab.role === "guest" && collab.status === "connected");
 
@@ -61,7 +62,7 @@
     <div class="empty">
       <p>{t("app.noFolderOpen")}</p>
       <button class="btn primary" onclick={openFolder}>{t("app.openFolder")}</button>
-      <span class="hint">{t("app.ctrl")}+O</span>
+      {#if shortcutLabel("file.openFolder")}<span class="hint">{shortcutLabel("file.openFolder")}</span>{/if}
     </div>
   {/if}
 </div>
