@@ -80,6 +80,14 @@ describe("pythonDeps", () => {
     files["/p/pyproject.toml"] = `[project]\ndependencies = ['requests>=2', 'my-lib @ file:///x#frag', "httpx"]\n`;
     expect((await pythonDeps("/p")).map((d) => d.name)).toEqual(["requests", "my-lib", "httpx"]);
   });
+
+  test("unterminated array with comments doesn't hang (#95)", async () => {
+    const comments = Array.from({ length: 6 }, (_, i) => `  # comment number ${i}\n`).join("");
+    files["/p/pyproject.toml"] = `[project]\ndependencies = ["a"]\n\n[dependency-groups]\ndev = [\n  "b",\n${comments}`;
+    const t0 = performance.now();
+    expect((await pythonDeps("/p")).map((d) => d.name)).toEqual(["a"]);
+    expect(performance.now() - t0).toBeLessThan(1000);
+  });
 });
 
 describe("pythonRemoveArg", () => {

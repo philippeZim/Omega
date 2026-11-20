@@ -166,6 +166,20 @@ function arrayStrings(body: string): string[] {
   return out;
 }
 
+/** Index of the `]` closing an array body that starts at `from`, skipping strings and comments; -1 if none. */
+function arrayEnd(text: string, from: number): number {
+  for (let i = from; i < text.length; i++) {
+    const c = text[i];
+    if (c === "]") return i;
+    if (c === "#") {
+      while (i < text.length && text[i] !== "\n") i++;
+    } else if (c === '"' || c === "'") {
+      for (i++; i < text.length && text[i] !== c; i++) if (c === '"' && text[i] === "\\") i++;
+    }
+  }
+  return -1;
+}
+
 /** Dependency names declared in pyproject.toml, with the group they belong to ("" = main). */
 export async function pythonDeps(root: string): Promise<{ name: string; group: string }[]> {
   let text: string;
@@ -178,17 +192,22 @@ export async function pythonDeps(root: string): Promise<{ name: string; group: s
   const names = (arr: string) =>
     arrayStrings(arr).map((v) => v.match(/^\s*([A-Za-z0-9][A-Za-z0-9._-]*)/)?.[1]).filter((x): x is string => !!x);
   let section = "";
-  // Arrays may span lines: walk "key = [ ... ]" blocks per section.
-  const re = /^\s*\[([^\]]+)\]\s*$|^\s*([A-Za-z0-9_.-]+|"[^"]+")\s*=\s*\[((?:"[^"]*"|'[^']*'|#[^\n]*|[^\]"'#])*)\]/gm;
-  for (const m of text.matchAll(re)) {
+  // Arrays may span lines: find "key = [" by regex, then scan for the closing `]`
+  // (a backtracking regex over the body hangs on unterminated arrays with comments).
+  const re = /^\s*\[([^\]]+)\]\s*$|^\s*([A-Za-z0-9_.-]+|"[^"]+")\s*=\s*\[/gm;
+  for (let m: RegExpExecArray | null; (m = re.exec(text)); ) {
     if (m[1]) {
       section = m[1].trim();
       continue;
     }
+    const end = arrayEnd(text, re.lastIndex);
+    if (end < 0) continue; // unterminated (e.g. while typing): not a dependency list
+    const body = text.slice(re.lastIndex, end);
+    re.lastIndex = end + 1;
     const key = m[2].replace(/"/g, "");
-    if (section === "project" && key === "dependencies") for (const n of names(m[3])) out.push({ name: n, group: "" });
-    else if (section === "dependency-groups") for (const n of names(m[3])) out.push({ name: n, group: key });
-    else if (section === "tool.uv" && key === "dev-dependencies") for (const n of names(m[3])) out.push({ name: n, group: "dev" });
+    if (section === "project" && key === "dependencies") for (const n of names(body)) out.push({ name: n, group: "" });
+    else if (section === "dependency-groups") for (const n of names(body)) out.push({ name: n, group: key });
+    else if (section === "tool.uv" && key === "dev-dependencies") for (const n of names(body)) out.push({ name: n, group: "dev" });
   }
   return out;
 }
