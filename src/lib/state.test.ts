@@ -372,9 +372,9 @@ describe("save()", () => {
     expect(fs.files.get("/p/e.txt")).toBe("emoji �Y� x");
   });
 
-  // bug: after saving a buffer with a lone surrogate, the saved snapshot keeps the surrogate while
-  // the disk holds U+FFFD, so the next save (or focus sync) sees an "external change" and asks.
-  test.fails("next save after a lone-surrogate save does not report a false conflict", async () => {
+  // After saving a buffer with a lone surrogate, the saved snapshot keeps the surrogate while
+  // the disk holds U+FFFD; the next save (or focus sync) must not see an "external change".
+  test("next save after a lone-surrogate save does not report a false conflict (#21)", async () => {
     await setup({ "/p/e.txt": "emoji 😀 x" });
     const tab = await open("/p/e.txt");
     ed.type(tab.id, "emoji \uD83DY\uDE00 x");
@@ -383,6 +383,19 @@ describe("save()", () => {
     ui.nextChoice = null; // a dialog, if shown, is dismissed
     expect(await st.save(tab.id)).toBe(true);
     expect(ui.choose).not.toHaveBeenCalled();
+    expect(fs.files.get("/p/e.txt")).toBe("emoji �Y� x!");
+  });
+
+  test("focus sync on a dirty tab after a lone-surrogate save asks nothing (#21)", async () => {
+    await setup({ "/p/e.txt": "emoji 😀 x" });
+    const tab = await open("/p/e.txt");
+    ed.type(tab.id, "emoji \uD83DY\uDE00 x");
+    expect(await st.save(tab.id)).toBe(true);
+    ed.type(tab.id, "emoji \uD83DY\uDE00 x!");
+    await st.syncFromDisk();
+    await flush();
+    expect(ui.choose).not.toHaveBeenCalled();
+    expect(ed.getText(tab.id)).toBe("emoji \uD83DY\uDE00 x!");
   });
 
   test("autosave writes shortly after typing stops", async () => {
