@@ -209,7 +209,8 @@ export class LspClient {
       .catch(() => {})
       .finally(() => {
         this.notify("exit", null);
-        setTimeout(() => invoke("proc_kill", { id: this.id }), 300);
+        // The process may be gone already, or the IPC with it (app or test teardown).
+        setTimeout(() => invoke("proc_kill", { id: this.id }).catch(() => {}), 300);
       });
   }
 }

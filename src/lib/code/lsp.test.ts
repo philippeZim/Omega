@@ -243,6 +243,27 @@ describe("LspClient", () => {
     expect(srv.sent.map((m) => m.method)).toEqual(["shutdown", "exit"]);
     expect(c.stopping).toBe(true);
   });
+
+  // The kill runs 300 ms after stop(), when the IPC may be gone already (app teardown, or the end
+  // of a test file): a failing proc_kill must not become an unhandled rejection.
+  test("stop: a failing late kill is swallowed", async () => {
+    const c = await readyClient();
+    vi.useFakeTimers();
+    c.stop();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(srv.sent.at(-1).method).toBe("exit");
+    (window as any).__TAURI_INTERNALS__.invoke = undefined; // what clearMocks() leaves behind
+    const unhandled = vi.fn();
+    process.on("unhandledRejection", unhandled);
+    try {
+      await vi.advanceTimersByTimeAsync(300);
+      vi.useRealTimers();
+      await new Promise((r) => setTimeout(r, 10));
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      process.off("unhandledRejection", unhandled);
+    }
+  });
 });
 
 // ---------------------------------------------------------------- findRoot
