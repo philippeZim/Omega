@@ -85,20 +85,51 @@ export async function pyprojectScripts(root: string): Promise<{ name: string; ta
   }
 }
 
+const MAIN_GUARD = /if\s+__name__\s*==\s*["']__main__["']/;
+const PY_SKIP = new Set(["__pycache__", "node_modules", "venv", "build", "dist", "tests", "test"]);
+
+/**
+ * Entry file of a Python project when no file says what to run: main.py in the root, else the
+ * first .py file with a __main__ guard (breadth-first, at most 3 levels deep; main.py and
+ * __main__.py first in each folder; hidden folders, venvs and tests are skipped).
+ */
+export async function findPythonMain(root: string): Promise<string | null> {
+  if (await fsApi.exists(joinPath(root, "main.py"))) return joinPath(root, "main.py");
+  const rank = (n: string) => (n === "main.py" ? 0 : n === "__main__.py" ? 1 : 2);
+  let level = [root];
+  let reads = 0;
+  for (let depth = 0; depth < 3 && level.length; depth++) {
+    const next: string[] = [];
+    for (const dir of level) {
+      const entries = (await fsApi.listDir(dir).catch(() => null)) ?? [];
+      const py = entries.filter((e) => !e.is_dir && e.name.endsWith(".py") && !/^test_|_test\.py$|^conftest\.py$/.test(e.name));
+      for (const e of py.sort((a, b) => rank(a.name) - rank(b.name) || a.name.localeCompare(b.name))) {
+        if (++reads > 50) return null;
+        if (MAIN_GUARD.test(await fsApi.readFile(e.path).catch(() => ""))) return e.path;
+      }
+      next.push(...entries.filter((e) => e.is_dir && !e.name.startsWith(".") && !PY_SKIP.has(e.name)).map((e) => e.path));
+    }
+    level = next;
+  }
+  return null;
+}
+
 /**
  * What "run this" means for Python: a file with a __main__ guard runs as a script; otherwise a
- * package project's [project.scripts] entry point (uv 0.13 package layout); otherwise the file.
+ * package project's [project.scripts] entry point (uv 0.13 package layout); otherwise the file;
+ * without a Python file, the project's entry file (see findPythonMain).
  */
 export async function pythonEntry(file: string | null, root: string): Promise<{ kind: "file"; file: string } | { kind: "script"; name: string; target: string } | { kind: "none" }> {
   const isPy = file && langFor(file)?.id === "python";
   if (isPy) {
     const text = await fsApi.readFile(file).catch(() => "");
-    if (/if\s+__name__\s*==\s*["']__main__["']/.test(text)) return { kind: "file", file };
+    if (MAIN_GUARD.test(text)) return { kind: "file", file };
   }
   const scripts = await pyprojectScripts(root);
   if (scripts.length) return { kind: "script", ...scripts[0] };
   if (isPy) return { kind: "file", file };
-  return { kind: "none" };
+  const main = await findPythonMain(root);
+  return main ? { kind: "file", file: main } : { kind: "none" };
 }
 
 /** Removes `#` line comments and `#[[ … ]]` bracket comments, leaving quoted strings alone. */
@@ -188,12 +219,12 @@ export async function detectProject(file: string | null, workspace: string | nul
 
   if (p?.kind === "uv") {
     const entry = await pythonEntry(file, p.root);
-    const target = entry.kind === "script" ? q(entry.name) : entry.kind === "file" ? q(rel(entry.file, p.root)) : "main.py";
+    const target = entry.kind === "script" ? q(entry.name) : entry.kind === "file" ? q(rel(entry.file, p.root)) : null;
     return {
       ...p,
       label: "uv",
       needs: ["uv"],
-      run: act("run", "common.run", `uv run ${target}`, { shortcut: RUN }),
+      run: target ? act("run", "common.run", `uv run ${target}`, { shortcut: RUN }) : null,
       build: act("build", "code.act.buildPackage", "uv build", { shortcut: BUILD }),
       test: act("test", "code.act.test", "uv run pytest"),
       more: [

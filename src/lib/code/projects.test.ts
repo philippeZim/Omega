@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, test } from "vitest";
 import { mockIPC } from "@tauri-apps/api/mocks";
-import { cmakeExecutable, detectProject, pyprojectScripts, pythonEntry } from "./projects";
+import { cmakeExecutable, detectProject, findPythonMain, pyprojectScripts, pythonEntry } from "./projects";
 
 let files: Record<string, string> = {};
 beforeEach(() => {
@@ -13,6 +13,16 @@ beforeEach(() => {
         throw new Error("not found");
       case "path_exists":
         return path in files;
+      case "list_dir": {
+        // Direct children of `path`, derived from the file map.
+        const names = new Map<string, boolean>();
+        for (const f of Object.keys(files)) {
+          if (!f.startsWith(path + "/")) continue;
+          const [name, ...more] = f.slice(path.length + 1).split("/");
+          names.set(name, more.length > 0 || !!names.get(name));
+        }
+        return [...names].map(([name, is_dir]) => ({ name, path: `${path}/${name}`, is_dir }));
+      }
       case "platform_info":
         return { os: "linux", arch: "x86_64", home: "/home/me", tmp: "/tmp/", tools: "/tools" };
       default:
@@ -53,6 +63,31 @@ describe("pythonEntry", () => {
     files["/p/pyproject.toml"] = `[project]\n`;
     expect(await pythonEntry("/p/lib.py", "/p")).toEqual({ kind: "file", file: "/p/lib.py" });
     expect(await pythonEntry(null, "/p")).toEqual({ kind: "none" });
+  });
+});
+
+describe("findPythonMain (#78)", () => {
+  test("root main.py, else the first file with a __main__ guard", async () => {
+    const guard = `if __name__ == "__main__":\n    main()\n`;
+    files["/p/pyproject.toml"] = `[project]\n`;
+    files["/p/test_main.py"] = guard;
+    files["/p/.venv/lib/x.py"] = guard;
+    files["/p/src/app/util.py"] = "def f(): pass\n";
+    files["/p/src/app/main.py"] = guard;
+    expect(await findPythonMain("/p")).toBe("/p/src/app/main.py");
+    files["/p/main.py"] = "print(1)\n";
+    expect(await findPythonMain("/p")).toBe("/p/main.py");
+  });
+  test("nothing runnable: null, and Run is disabled instead of 'uv run main.py'", async () => {
+    files["/p/pyproject.toml"] = `[project]\n`;
+    files["/p/src/lib.py"] = "def f(): pass\n";
+    expect(await findPythonMain("/p")).toBeNull();
+    expect((await detectProject(null, "/p"))?.run).toBeNull();
+  });
+  test("uv project without an open file runs the found entry", async () => {
+    files["/p/pyproject.toml"] = `[project]\n`;
+    files["/p/src/app/main.py"] = `if __name__ == '__main__':\n    pass\n`;
+    expect((await detectProject(null, "/p"))?.run?.cmd).toBe("uv run src/app/main.py");
   });
 });
 
