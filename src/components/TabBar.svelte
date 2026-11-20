@@ -5,6 +5,7 @@
   import RunBar from "./RunBar.svelte";
   import { t } from "../lib/i18n/index.svelte";
   import { tabHints } from "../lib/tabHints";
+  import { tick } from "svelte";
 
   function menu(e: MouseEvent, id: string, path: string | null) {
     ui.openMenu(e, [
@@ -20,11 +21,19 @@
   let width = $state(1000);
   // Parent folders that tell tabs with the same file name apart (#38).
   const hints = $derived(tabHints(app.tabs));
+
+  // Keep the active tab visible when the tabs overflow (#117).
+  let tabsEl = $state<HTMLElement | null>(null);
+  $effect(() => {
+    void app.activeId;
+    void app.tabs.length;
+    tick().then(() => tabsEl?.querySelector<HTMLElement>(".tab.active")?.scrollIntoView({ block: "nearest", inline: "nearest" }));
+  });
 </script>
 
 {#if app.tabs.length || app.mode === "code"}
   <div class="tabbar" bind:clientWidth={width}>
-  <div class="tabs">
+  <div class="tabs" bind:this={tabsEl}>
     {#each app.tabs as tab, i (tab.id)}
       {@const foreign = foreignProject(tab)}
       <div
