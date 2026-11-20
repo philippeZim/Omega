@@ -55,6 +55,8 @@ export const en = {
   "code.np.create": "Create",
   "code.np.cloningBtn": "Cloning…",
   "code.np.clone": "Clone",
+  "code.np.invalidName": "Use only letters, digits, _ and -, starting with a letter or _ (no spaces or umlauts).",
+  "code.np.invalidFolderName": "Enter a folder name without / \\ : * ? \" < > | and without leading or trailing spaces.",
 
   // Run bar
   "code.rb.debugging": "Debugging – restart (⇧F9)",
@@ -290,6 +292,8 @@ export const de: Record<keyof typeof en, string> = {
   "code.np.create": "Erstellen",
   "code.np.cloningBtn": "Klone …",
   "code.np.clone": "Klonen",
+  "code.np.invalidName": "Nur Buchstaben, Ziffern, _ und -, am Anfang ein Buchstabe oder _ (keine Leerzeichen oder Umlaute).",
+  "code.np.invalidFolderName": "Einen Ordnernamen ohne / \\ : * ? \" < > | und ohne Leerzeichen am Anfang oder Ende eingeben.",
 
   "code.rb.debugging": "Debuggt gerade – neu starten (⇧F9)",
   "code.rb.stopDebugging": "Debuggen beenden",
@@ -517,6 +521,8 @@ export const fr: Record<keyof typeof en, string> = {
   "code.np.create": "Créer",
   "code.np.cloningBtn": "Clonage…",
   "code.np.clone": "Cloner",
+  "code.np.invalidName": "Uniquement des lettres, chiffres, _ et -, en commençant par une lettre ou _ (sans espaces ni accents).",
+  "code.np.invalidFolderName": "Saisissez un nom de dossier sans / \\ : * ? \" < > | ni espace au début ou à la fin.",
 
   "code.rb.debugging": "Débogage en cours – redémarrer (⇧F9)",
   "code.rb.stopDebugging": "Arrêter le débogage",

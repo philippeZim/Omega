@@ -52,7 +52,9 @@
   });
 
   const filteredRepos = $derived((repos ?? []).filter((r) => !repoFilter || r.nameWithOwner.toLowerCase().includes(repoFilter.toLowerCase())));
-  const validNew = $derived(/^[A-Za-z_][\w-]*$/.test(name) && !!parent);
+  // Tools (cargo, uv, pnpm, CMake, Gradle) need an identifier-like name; a plain folder only a valid file name.
+  const nameOk = $derived(template === "empty" ? /^[^/\\:*?"<>|]+$/.test(name) && name.trim() === name && name !== "." && name !== ".." : /^[A-Za-z_][\w-]*$/.test(name));
+  const validNew = $derived(nameOk && !!parent);
   const validClone = $derived(!!url.trim() && !!dirName.trim() && !!parent && !cloning);
 
   async function choose() {
@@ -158,7 +160,11 @@
       </label>
 
       {#if tab === "new"}
-        <p class="hint">{t("code.np.willCreate")} <code>{parent}/{name}</code>{template === "empty" ? "." : t("code.np.outputInTerminal")}</p>
+        {#if nameOk}
+          <p class="hint">{t("code.np.willCreate")} <code>{parent}/{name}</code>{template === "empty" ? "." : t("code.np.outputInTerminal")}</p>
+        {:else}
+          <p class="hint err">{t(template === "empty" ? "code.np.invalidFolderName" : "code.np.invalidName")}</p>
+        {/if}
       {:else}
         <p class="hint" class:err={!!cloneError}>{cloneError || (cloning ? t("code.np.cloning") : t("code.np.cloneInto", { path: `${parent}/${dirName || "…"}` }))}</p>
       {/if}
