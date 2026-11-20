@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { open as openDialog } from "@tauri-apps/plugin-dialog";
+  import { openDialog } from "../lib/native";
   import { invoke } from "@tauri-apps/api/core";
   import { runner, createProject } from "../lib/code/runner.svelte";
   import { TEMPLATES } from "../lib/code/projects";

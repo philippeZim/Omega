@@ -189,7 +189,11 @@ export function audit(opts: { checks?: Check[]; selector?: string; minContrast?:
   }
 
   if (checks.has("covered")) {
+    // With a modal open, everything behind it is covered on purpose: only check the modal.
+    const modals = [...document.querySelectorAll("[role=dialog], [aria-modal=true], dialog[open], .modal, .overlay")].filter(shown);
+    const top = modals[modals.length - 1];
     for (const el of controls) {
+      if (top && !top.contains(el)) continue;
       const r = el.getBoundingClientRect();
       const cx = r.x + r.width / 2;
       const cy = r.y + r.height / 2;

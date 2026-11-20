@@ -11,11 +11,18 @@ findings. You do **not** fix code. The orchestrator turns verified findings into
    the user's own Omega, never `pkill`. Stop it at the end: `node dev/omega-mcp.mjs stop <your-instance>`.
 2. **Only fixture copies.** Get a workspace with `dev/qa/fixture.sh <name> <scratch-dir>`; never
    open the repo itself or anything in `$HOME` as the workspace.
-3. **Forbidden actions:** installing LSP servers/debug adapters (install dialogs: screenshot them,
-   then cancel), the Report/Feedback button (opens the browser), "Check for updates"/updater,
+3. **Native windows are sandboxed in instances:** file dialogs (Open Folder, Save As, …) appear
+   as an in-app prompt titled "Native dialog (…)": type an absolute path (several: separated by `|`)
+   and press Enter.
+   Opening URLs or revealing files only logs `[instance] would open: …` (console + toast).
+   If any other window still appears outside workspace 5, close it immediately
+   (`hyprctl dispatch 'hl.dsp.window.close({ window = "address:0x…" })'`) and report it as a tooling problem.
+4. **Forbidden actions:** installing LSP servers/debug adapters (install dialogs: screenshot them,
+   then cancel), the Report/Feedback button and report commands (they overwrite the user's real
+   clipboard and write folders into ~/Downloads), "Check for updates"/updater,
    logging in to Codex/Claude/OpenCode, collab with external tickets, `git push`, editing files
    in the repo (`src/`, `src-tauri/`, …).
-4. Don't trigger `alert/confirm` browser dialogs; in-app dialogs are fine.
+5. Don't trigger `alert/confirm` browser dialogs; in-app dialogs are fine.
 
 ## Driving the app (shell)
 
@@ -24,17 +31,24 @@ Q() { node dev/omega-mcp.mjs call -i <your-instance> "$@"; }
 Q get_state                                   # mode, tabs, overlays, dialog, terminal, toasts
 Q query_ui '{"text":"Open Folder"}'           # find controls (label, rect)
 Q click '{"text":"New File"}'                 # by text / aria-label / tooltip / selector
+Q click '{"text":"a.txt","right":true}'       # right-click → context menu (then click its item)
 Q type_text '{"text":"hello"}' ; Q press_key '{"key":"s","ctrl":true}'
 Q run_command '{"id":"…"}' ; Q list_commands '{"filter":"terminal"}'
 Q screenshot '{}' -o <run-dir>/shots/017-after-save.png   # then look at it with Read
 Q ui_audit '{}'                               # overflow, offscreen, covered, contrast, unlabeled, i18n
-Q set_viewport '{"width":800,"height":600}'   # emulate a small window; '{}' resets
+Q set_viewport '{"width":800}'                # emulate a narrow window (height follows the wide monitor ratio);
+                                              # '{"height":600}' for a low one; '{}' resets
 Q get_console '{"level":"error"}'
 Q read_file '{"path":"…"}' ; Q get_editor_text '{}'
 Q terminal_run '{"command":"ls"}' ; Q terminal_read '{}'
 ```
 
-`list_commands` shows every command id; `query_ui` without arguments lists all visible controls.
+`node dev/omega-mcp.mjs tools <your-instance>` lists all tools with their arguments; `list_commands`
+shows every command id; `query_ui` without arguments lists all visible controls. Screenshots
+default to scale 1 — don't judge visuals from scaled-down shots (they show artifacts).
+`press_key` dispatches synthetic keydown events (good for shortcuts, not a real keyboard).
+Screenshots that may be published must not show paths outside the fixture: prefer element
+screenshots (`{"selector":…}`) over menus that list absolute paths.
 
 ## How to test
 
@@ -48,7 +62,7 @@ Q terminal_run '{"command":"ls"}' ; Q terminal_read '{}'
   - the UI still reacts (no hang: a tool call that times out is a finding).
 - **Visual pass** per screen/state: screenshot + look at it (cut-off text, misaligned or
   overlapping elements, inconsistent spacing, broken glass theme, empty or black panels, wrong
-  icons) and `ui_audit`. Repeat key screens at `set_viewport` 800×600 and 1280×800, and once with
+  icons) and `ui_audit`. Repeat key screens at `set_viewport` width 800 and 1280, and once with
   the UI language set to Deutsch and Français (Settings), since untranslated text is a bug.
 - Logical bugs count as much as visual ones: wrong results, lost data, wrong file written,
   state that doesn't survive a reload, commands available where they make no sense.

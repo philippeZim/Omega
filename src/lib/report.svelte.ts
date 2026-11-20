@@ -4,7 +4,7 @@
  * URL can't carry images: a single screenshot goes to the clipboard (Ctrl+V in the form uploads it),
  * several are saved to a folder that we open, so they can be dragged into the form together.
  */
-import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
+import { openUrl, revealItemInDir } from "./native";
 import { downloadDir } from "@tauri-apps/api/path";
 import { writeImage } from "@tauri-apps/plugin-clipboard-manager";
 import { getVersion } from "@tauri-apps/api/app";
