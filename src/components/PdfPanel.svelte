@@ -172,9 +172,14 @@
     await openAt(hit.file, hit.line);
   }
 
+  /** A diagnostic from another file than the active one (e.g. an \input chapter). */
+  const otherFile = (file: string) => !!file && file !== activeTab()?.path && !file.endsWith("untitled.tex");
+  /** Path relative to the project folder, else the file name. */
+  const shortName = (file: string) => (app.root && file.startsWith(app.root + "/") ? file.slice(app.root.length + 1) : file.split("/").pop());
+
   /** Opens `file` (if it isn't the active tab) and jumps to `line` there; nothing if it failed to open. */
   async function openAt(file: string, line: number) {
-    if (file && file !== activeTab()?.path && !file.endsWith("untitled.tex")) {
+    if (otherFile(file)) {
       await openFile(file);
       if (activeTab()?.path !== file) return;
     }
@@ -299,6 +304,7 @@
           <button class="diag {d.severity}" onclick={() => openAt(d.file, d.line)}>
             <span class="sev"></span>
             <span class="msg">{d.message}</span>
+            {#if otherFile(d.file)}<span class="ln file" title={d.file}>{shortName(d.file)}</span>{/if}
             {#if d.line}<span class="ln">{t("code.pdf.line", { n: d.line })}</span>{/if}
           </button>
         {:else}
@@ -424,6 +430,7 @@
   .diag.warning .sev { background: var(--orange); }
   .msg { flex: 1; }
   .ln { color: var(--label-3); font-family: var(--mono); font-size: 11px; }
+  .ln.file { max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .none { color: var(--label-3); font-size: 12px; padding: 4px 8px; }
   details { margin: 8px; color: var(--label-2); font-size: 12px; }
   pre { font-family: var(--mono); font-size: 11px; white-space: pre-wrap; color: var(--label-3); max-height: 300px; overflow: auto; }

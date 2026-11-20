@@ -7,7 +7,7 @@ vi.mock("../lib/fsWatch.svelte", () => ({ onFilesChanged: vi.fn() }));
 vi.mock("../lib/tools.svelte", () => ({ ensureTools: vi.fn() }));
 vi.mock("../lib/native", () => ({ openUrl: vi.fn() }));
 const st = vi.hoisted(() => ({ active: null as string | null, view: null as unknown, openFile: async (_p: string) => {} }));
-vi.mock("../lib/state.svelte", () => ({ app: {}, activeTab: () => (st.active ? { path: st.active } : null), openFile: (p: string) => st.openFile(p) }));
+vi.mock("../lib/state.svelte", () => ({ app: { root: "/p" }, activeTab: () => (st.active ? { path: st.active } : null), openFile: (p: string) => st.openFile(p) }));
 vi.mock("../lib/editor", () => ({ getView: () => st.view, getText: () => "" }));
 vi.mock("pdfjs-dist/build/pdf.worker.min.mjs?url", () => ({ default: "" }));
 
@@ -68,6 +68,24 @@ describe("PdfPanel", () => {
     st.active = null;
     st.view = null;
     st.openFile = async () => {};
+  });
+
+  test("diagnostics from other files show the file name (#142)", async () => {
+    st.active = "/p/main.tex";
+    const { target, c } = setup();
+    latex.diagnostics = [
+      { file: "/p/main.tex", line: 4, message: "A", severity: "error" },
+      { file: "/p/chapters/broken.tex", line: 2, message: "B", severity: "error" },
+      { file: "/elsewhere/x.sty", line: 1, message: "C", severity: "warning" },
+      { file: "", line: 0, message: "D", severity: "error" },
+    ];
+    await settle();
+    target.querySelector<HTMLButtonElement>("button.status")!.click();
+    await settle();
+    const files = [...target.querySelectorAll("button.diag")].map((b) => b.querySelector(".file")?.textContent ?? null);
+    expect(files).toEqual([null, "chapters/broken.tex", "x.sty", null]);
+    latex.diagnostics = [];
+    unmount(c);
   });
 
   test("a diagnostic whose file fails to open doesn't jump in the current file (#141)", async () => {
