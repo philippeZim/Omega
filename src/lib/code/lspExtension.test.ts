@@ -110,6 +110,7 @@ function fakeClient(over: Record<string, any> = {}) {
     capabilities: {},
     diagnostics: new Map<string, any[]>(),
     diagnosticListeners: new Set<(u: string) => void>(),
+    exitListeners: new Set<() => void>(),
     open: vi.fn(),
     change: vi.fn(),
     request: vi.fn(async () => null),
@@ -244,5 +245,22 @@ describe("lspExtension diagnostics", () => {
     v.destroy();
     expect(c.change).toHaveBeenLastCalledWith(URI, "abcd");
     expect(c.diagnosticListeners.size).toBe(0);
+    expect(c.exitListeners.size).toBe(0);
+  });
+
+  // #111: after a server crash the editor kept the dead client (and its diagnostics) until the tab was switched.
+  test("server exit clears stale diagnostics and reconnects to the restarted server", async () => {
+    const c = fakeClient();
+    c.diagnostics.set(URI, [{ range: range(0, 0, 0, 1), severity: 1, message: "old" }]);
+    const v = await mountWith(c, "a = 1\n");
+    await vi.waitFor(() => expect(diagsOf(v).map((d) => d.message)).toEqual(["old"]));
+    const next = fakeClient();
+    m.client = next;
+    for (const l of [...c.exitListeners]) l();
+    expect(diagsOf(v)).toEqual([]);
+    expect(c.diagnosticListeners.size).toBe(0);
+    await vi.waitFor(() => expect(next.open).toHaveBeenCalledWith(URI, "python", "a = 1\n"), { timeout: 3000 });
+    expect(next.diagnosticListeners.size).toBe(1);
+    expect(next.exitListeners.size).toBe(1);
   });
 });

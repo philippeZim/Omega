@@ -209,8 +209,11 @@ describe("LspClient", () => {
 
   test("proc-exit marks the client stopped and keeps the stderr tail", async () => {
     const c = await readyClient();
+    const onExit = vi.fn();
+    c.exitListeners.add(onExit);
     await emit("proc-stderr", { id: c.id, msg: "panic: something" });
     await emit("proc-exit", c.id);
+    expect(onExit).toHaveBeenCalledTimes(1); // editors reconnect (#111)
     expect(c.alive).toBe(false);
     expect(L.lspState.status[c.key]).toBe("stopped");
     expect(L.lspState.message[c.key]).toBe("panic: something");

@@ -40,6 +40,8 @@ export class LspClient {
   docs = new Map<string, { version: number; text: string }>();
   diagnostics = new Map<string, Json[]>();
   diagnosticListeners = new Set<(uri: string) => void>();
+  /** Called once the process exited (crash or stop), so editors can reconnect. */
+  exitListeners = new Set<() => void>();
   alive = true;
   stopping = false;
 
@@ -67,6 +69,7 @@ export class LspClient {
           lspState.message[this.key] = tail.join("\n");
           clients.delete(this.key);
         }
+        for (const l of this.exitListeners) l();
         if (!this.stopping) ui.toast(t("code.lsp.exited", { kind: this.kind, tail: tail.length ? ": " + tail[tail.length - 1] : "" }), "error");
       },
     });
