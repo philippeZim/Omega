@@ -1,5 +1,5 @@
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
-import { basename, dirname, extname, fsApi, normPath } from "./api";
+import { basename, dirname, extname, fsApi, joinPath, normPath } from "./api";
 import * as ed from "./editor";
 import { modeForExtension, type Mode } from "./modes";
 import { ui } from "./ui.svelte";
@@ -329,6 +329,24 @@ export async function openFile(path: string) {
   }
   activate(id);
   collabHooks.tabOpened(id, path);
+}
+
+/**
+ * Explorer "New File / New Folder": creates `name` inside `dir` and opens a new file. Uses
+ * create_file, which never truncates an existing file (#6). Returns false on failure (toast shown).
+ */
+export async function createEntry(dir: string, name: string, isDir: boolean): Promise<boolean> {
+  const p = joinPath(dir, name);
+  try {
+    if (isDir) await fsApi.createDir(p);
+    else await fsApi.createFile(p);
+  } catch (e) {
+    ui.toast(!isDir && (await fsApi.exists(p)) ? t("code.existsAlready", { name }) : String(e), "error");
+    return false;
+  }
+  app.treeVersion++;
+  if (!isDir) openFile(p);
+  return true;
 }
 
 /** Opens a tab whose content doesn't come from disk (shared files of a collab session). */

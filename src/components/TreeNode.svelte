@@ -9,7 +9,7 @@
   import TreeNode from "./TreeNode.svelte";
   import { untrack } from "svelte";
   import { fsApi, joinPath, dirname, basename, type Entry } from "../lib/api";
-  import { app, openFile, pathMoved, activeTab, inRoot } from "../lib/state.svelte";
+  import { app, openFile, pathMoved, activeTab, inRoot, createEntry } from "../lib/state.svelte";
   import { ui } from "../lib/ui.svelte";
   import { git, kind } from "../lib/git/git.svelte";
   import { t } from "../lib/i18n/index.svelte";
@@ -76,16 +76,9 @@
   async function create(dir: boolean) {
     const name = await ui.prompt(dir ? t("app.newFolder") : t("app.newFile"), "", dir ? t("app.folderNamePlaceholder") : t("app.fileNamePlaceholder"));
     if (!name) return;
-    const p = joinPath(path, name);
-    try {
-      if (dir) await fsApi.createDir(p);
-      else await fsApi.createFile(p);
+    if (await createEntry(path, name, dir)) {
       expanded.add(path);
       persist();
-      app.treeVersion++;
-      if (!dir) openFile(p);
-    } catch (e) {
-      ui.toast(!dir && (await fsApi.exists(p)) ? t("code.existsAlready", { name }) : String(e), "error");
     }
   }
 

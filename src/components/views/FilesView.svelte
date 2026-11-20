@@ -1,9 +1,9 @@
 <script lang="ts">
   import TreeNode from "../TreeNode.svelte";
   import RemoteTree from "../RemoteTree.svelte";
-  import { app, openFolder, setRoot, openFile } from "../../lib/state.svelte";
+  import { app, openFolder, setRoot, createEntry } from "../../lib/state.svelte";
   import { ui } from "../../lib/ui.svelte";
-  import { fsApi, joinPath, basename } from "../../lib/api";
+  import { basename } from "../../lib/api";
   import { t } from "../../lib/i18n/index.svelte";
   import { collab } from "../../lib/collab/collab.svelte";
   import { share } from "../../lib/collab/share.svelte";
@@ -15,15 +15,7 @@
     if (!app.root) return;
     const name = await ui.prompt(dir ? t("app.newFolder") : t("app.newFile"), "", dir ? t("app.folderNamePlaceholder") : t("app.fileNamePlaceholder"));
     if (!name) return;
-    const p = joinPath(app.root, name);
-    try {
-      if (dir) await fsApi.createDir(p);
-      else await fsApi.createFile(p);
-      app.treeVersion++;
-      if (!dir) openFile(p);
-    } catch (e) {
-      ui.toast(!dir && (await fsApi.exists(p)) ? t("code.existsAlready", { name }) : String(e), "error");
-    }
+    await createEntry(app.root, name, dir);
   }
 
   function rootMenu(e: MouseEvent) {
