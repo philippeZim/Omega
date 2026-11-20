@@ -90,6 +90,22 @@ describe("toggleWrap", () => {
     expect(wrap("a *[b]* c", "**")).toBe("a ***[b]*** c");
     expect(wrap("a ***[b]*** c", "**")).toBe("a *[b]* c");
   });
+
+  // #94: selecting *b* with its markers and pressing Italic gave **b**.
+  test("markers inside the selection are unwrapped", () => {
+    expect(wrap("a [*b*] c", "*")).toBe("a [b] c");
+    expect(wrap("a [**b**] c", "**")).toBe("a [b] c");
+    expect(wrap("a [***b***] c", "*")).toBe("a [**b**] c");
+    expect(wrap("a [**b**] c", "*")).toBe("a *[**b**]* c");
+    expect(wrap("a [**] c", "*")).toBe("a *[**]* c");
+  });
+
+  // #94: "_" inside a word is not emphasis, so it must not be removed.
+  test("underscores inside a word are left alone", () => {
+    expect(wrap("snake_[case]_x", "_")).toBe("snake__[case]__x");
+    expect(wrap("snake[_case_]x", "_")).toBe("snake_[_case_]_x");
+    expect(wrap("a _[b]_ c", "_")).toBe("a [b] c");
+  });
 });
 
 // ------------------------------------------------------------ rendered links

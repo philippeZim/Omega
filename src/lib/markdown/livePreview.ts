@@ -433,19 +433,39 @@ export function toggleWrap(marker: string) {
     const len = marker.length;
     view.dispatch(
       state.changeByRange((r) => {
-        // Length of the run of marker characters right before / after the selection: with "*" a run of
-        // two is bold only (`**x**`), so italic must add its own marker instead of eating half of it.
-        const run = (pos: number, dir: -1 | 1) => {
+        const ch = marker[0];
+        const uniform = [...marker].every((c) => c === ch);
+        // Length of the run of marker characters from `pos` in direction `dir`, not passing `limit`.
+        const run = (pos: number, dir: -1 | 1, limit: number) => {
           let n = 0;
-          while (state.sliceDoc(pos + (dir < 0 ? -n - 1 : n), pos + (dir < 0 ? -n : n + 1)) === marker[0]) n++;
+          while (dir < 0 ? pos - n - 1 >= limit : pos + n + 1 <= limit) {
+            const at = dir < 0 ? pos - n - 1 : pos + n;
+            if (state.sliceDoc(at, at + 1) !== ch) break;
+            n++;
+          }
           return n;
         };
-        const n = marker.split("").every((c) => c === marker[0]) ? Math.min(run(r.from, -1), run(r.to, 1)) : 0;
-        const wrapped = len === 1 && (marker === "*" || marker === "_") ? n === 1 || n >= 3 : n >= len;
-        if (wrapped)
+        // With "*" a run of two is bold only (`**x**`), so italic must add its own marker instead of eating half of it.
+        const isWrap = (n: number) => (len === 1 && (ch === "*" || ch === "_") ? n === 1 || n >= 3 : n >= len);
+        // "_" between letters (`snake_case_x`) is part of a word, never emphasis.
+        const word = (pos: number) => /[\p{L}\p{N}]/u.test(state.sliceDoc(pos, pos + 1));
+        const intraword = (from: number, to: number) => ch === "_" && (word(from - 1) || word(to));
+
+        // Markers around the selection: a*[b]*c
+        const out = uniform
+          ? Math.min(run(r.from, -1, 0), run(r.to, 1, state.doc.length))
+          : state.sliceDoc(r.from - len, r.from) === marker && state.sliceDoc(r.to, r.to + len) === marker ? len : 0;
+        if (isWrap(out) && !intraword(r.from - out, r.to + out))
           return {
             changes: [{ from: r.from - len, to: r.from }, { from: r.to, to: r.to + len }],
             range: EditorSelection.range(r.from - len, r.to - len),
+          };
+        // Markers selected along with the text: a[*b*]c
+        const inner = uniform ? Math.min(run(r.from, 1, r.to), run(r.to, -1, r.from)) : 0;
+        if (r.to - r.from > 2 * inner && isWrap(inner) && !intraword(r.from, r.to))
+          return {
+            changes: [{ from: r.from, to: r.from + len }, { from: r.to - len, to: r.to }],
+            range: EditorSelection.range(r.from, r.to - 2 * len),
           };
         return {
           changes: [{ from: r.from, insert: marker }, { from: r.to, insert: marker }],
