@@ -12,7 +12,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { ChangeSet, type ChangeSpec } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { collab, send, broadcast, onCollabMessage } from "./collab.svelte";
-import { app, openFile, activeTab, activate, collabHooks, setMode, type Tab } from "../state.svelte";
+import { app, openFile, activeTab, activate, collabHooks, setMode, pathMoved, type Tab } from "../state.svelte";
 import type { Mode } from "../modes";
 import { onFilesChanged } from "../fsWatch.svelte";
 import * as ed from "../editor";
@@ -382,6 +382,92 @@ export function listRemote(rel: string): Promise<{ name: string; rel: string; is
   });
 }
 
+// ------------------------------------------------------------------ file operations (guest → host)
+
+type FsOp = "create" | "mkdir" | "rename" | "delete";
+
+/** A relative path inside the project: no empty parts, ".", ".." or backslashes. */
+const safeRel = (rel: unknown): rel is string =>
+  typeof rel === "string" && rel !== "" && !rel.includes("\\") && !rel.split("/").some((seg) => seg === "" || seg === "." || seg === "..");
+
+/**
+ * Host: creates, renames or deletes a file for a guest (#133). Returns null, or an error: "invalid",
+ * "exists", "unavailable" (codes the guest translates) or the file system's message.
+ */
+async function hostFsOp(peer: string, op: FsOp, rel: unknown, toRel: unknown): Promise<string | null> {
+  if (!app.root) return "unavailable";
+  if (!safeRel(rel) || (op === "rename" && !safeRel(toRel))) return "invalid";
+  // Also through symlinks, nothing outside the shared folder (#138).
+  if (!(await guestPathOk(rel)) || (op === "rename" && !(await guestPathOk(toRel as string)))) return "invalid";
+  const abs = joinPath(app.root, rel);
+  const to = op === "rename" ? joinPath(app.root, toRel as string) : null;
+  const who = collab.participants.find((p) => p.peer === peer)?.name ?? t("ai.collab.guest");
+  try {
+    if ((op === "create" || op === "mkdir" || op === "rename") && (await fsApi.exists(to ?? abs))) return "exists";
+    if (op === "create") await fsApi.createFile(abs);
+    else if (op === "mkdir") await fsApi.createDir(abs);
+    else if (op === "rename") {
+      await fsApi.rename(abs, to!);
+      pathMoved(abs, to); // host tabs and shared docs follow
+      ui.toast(t("ai.collab.guestRenamed", { name: who, file: rel, to: toRel as string }));
+    } else {
+      await fsApi.remove(abs);
+      pathMoved(abs, null);
+      ui.toast(t("ai.collab.guestDeleted", { name: who, file: rel }));
+    }
+  } catch (e) {
+    return String(e);
+  }
+  return null;
+}
+
+const opWaiters = new Map<number, (error: string | null) => void>();
+
+/** Guest: asks the host to change its project files; resolves to null or an error text. */
+export function remoteFsOp(op: FsOp, rel: string, to?: string): Promise<string | null> {
+  const req = ++reqSeq;
+  return new Promise((resolve) => {
+    opWaiters.set(req, resolve);
+    send(collab.hostPeer!, { t: "fs.op", op, path: rel, to, req });
+    setTimeout(() => opWaiters.delete(req) && resolve(t("ai.collab.fileOpTimeout")), 10000);
+  });
+}
+
+const opErrorText = (e: string, name: string) =>
+  e === "invalid" ? t("app.invalidEntryName", { name }) : e === "exists" ? t("code.existsAlready", { name }) : e === "unavailable" ? t("ai.collab.fileUnavailable") : e;
+
+/** Guest: new file or folder in the host's project (`dir`: relative folder, "" = project root). */
+export async function remoteCreate(dir: string, isDir: boolean) {
+  const name = await ui.prompt(isDir ? t("app.newFolder") : t("app.newFile"), "", isDir ? t("app.folderNamePlaceholder") : t("app.fileNamePlaceholder"));
+  if (!name) return;
+  const rel = dir ? `${dir}/${name}` : name;
+  const err = await remoteFsOp(isDir ? "mkdir" : "create", rel);
+  if (err) return ui.toast(opErrorText(err, name), "error");
+  share.treeGen++;
+  if (!isDir) await openRemote(rel);
+}
+
+/** Guest: renames a file or folder of the host's project. */
+export async function remoteRename(rel: string) {
+  const name = basename(rel);
+  const dot = name.lastIndexOf(".");
+  const next = await ui.prompt(t("common.rename"), name, "", dot > 0 ? dot : undefined);
+  if (!next || next === name) return;
+  if (/[\\/]/.test(next)) return ui.toast(t("app.invalidRenameName", { name: next }), "error");
+  const to = rel.includes("/") ? `${rel.slice(0, rel.lastIndexOf("/"))}/${next}` : next;
+  const err = await remoteFsOp("rename", rel, to);
+  if (err) return ui.toast(opErrorText(err, next), "error");
+  share.treeGen++;
+}
+
+/** Guest: deletes a file or folder of the host's project (after asking). */
+export async function remoteDelete(rel: string) {
+  if (!(await ui.confirm(t("app.deleteConfirm", { name: basename(rel) }), t("app.cannotUndo"), t("common.delete"), true))) return;
+  const err = await remoteFsOp("delete", rel);
+  if (err) return ui.toast(opErrorText(err, basename(rel)), "error");
+  share.treeGen++;
+}
+
 // ------------------------------------------------------------------ presence & follow
 
 let lastPresence = "";
@@ -442,6 +528,9 @@ onCollabMessage(async (peer, msg) => {
       if (d) applyAwarenessUpdate(d.awareness, unb64(msg.update), peer);
     } else if (msg.t === "doc.close") {
       hostDocAt(msg.path)?.subscribers.delete(peer);
+    } else if (msg.t === "fs.op") {
+      const error = await hostFsOp(peer, msg.op, msg.path, msg.to);
+      send(peer, { t: "fs.op.res", req: msg.req, error });
     } else if (msg.t === "fs.list") {
       const rel = String(msg.path || "");
       let entries: { name: string; rel: string; is_dir: boolean }[] = [];
@@ -512,6 +601,9 @@ onCollabMessage(async (peer, msg) => {
     if (d) applyAwarenessUpdate(d.awareness, unb64(msg.update), "remote");
   } else if (msg.t === "doc.error") {
     ui.toast(`${msg.path}: ${msg.error === "unavailable" ? t("ai.collab.fileUnavailable") : msg.error}`, "error");
+  } else if (msg.t === "fs.op.res") {
+    opWaiters.get(msg.req)?.(msg.error ?? null);
+    opWaiters.delete(msg.req);
   } else if (msg.t === "fs.list.res") {
     listWaiters.get(msg.req)?.(msg.entries);
     listWaiters.delete(msg.req);

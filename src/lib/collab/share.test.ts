@@ -26,6 +26,8 @@ vi.mock("../state.svelte", () => ({
   collabHooks,
   closeTab,
   openFile: vi.fn(),
+  // Like state.svelte.ts: open tabs follow, then the collab layer is told.
+  pathMoved: (from: string, to: string | null) => collabHooks.pathMoved(from, to),
   activeTab: () => app.tabs.find((t) => t.id === app.activeId) ?? null,
   activate: vi.fn(),
   setMode: vi.fn(),
@@ -321,4 +323,77 @@ test("host refuses guest requests that leave the shared folder through a symlink
   // Inside the folder everything still works.
   await receive("g1", { t: "doc.open", path: "a.txt" });
   expect(guestCopy("a.txt")).toBe("a\n");
+});
+
+test("host carries out a guest's create, rename and delete in its project (#133)", async () => {
+  const fs = hostFs({ "/p/src/a.rs": "a\n" });
+  const inside = fs.other;
+  fs.other = (cmd, args) => {
+    if (cmd === "collab_path_inside") return inside(cmd, args);
+    if (cmd === "rename_path") {
+      fs.files.set(args.to, fs.files.get(args.from)!);
+      fs.files.delete(args.from);
+    } else if (cmd === "delete_path") fs.files.delete(args.path);
+    return null;
+  };
+  collab.participants = [{ peer: "g1", name: "Gast", color: "#333333", role: "guest" }];
+  const op = async (msg: Msg) => {
+    sent.length = 0;
+    await receive("g1", { t: "fs.op", req: 7, ...msg });
+    return sent.find((s) => s.msg.t === "fs.op.res")!;
+  };
+
+  expect(await op({ op: "create", path: "src/new.rs" })).toEqual({ peer: "g1", msg: { t: "fs.op.res", req: 7, error: null } });
+  expect(fs.files.get("/p/src/new.rs")).toBe("");
+  expect((await op({ op: "create", path: "src/a.rs" })).msg.error).toBe("exists");
+
+  // A guest that has the file open follows the rename.
+  await receive("g1", { t: "doc.open", path: "src/a.rs" });
+  expect((await op({ op: "rename", path: "src/a.rs", to: "src/b.rs" })).msg.error).toBeNull();
+  expect(fs.files.get("/p/src/b.rs")).toBe("a\n");
+  expect(sent.some((s) => s.msg.t === "doc.moved" && s.msg.to === "src/b.rs")).toBe(true);
+
+  expect((await op({ op: "delete", path: "src/b.rs" })).msg.error).toBeNull();
+  expect(fs.files.has("/p/src/b.rs")).toBe(false);
+  expect(ui.toasts.map((x) => x.text)).toEqual(["Gast renamed src/a.rs to src/b.rs", "Gast deleted src/b.rs"]);
+  collab.participants = [];
+});
+
+test("host refuses guest file operations outside the project (#133)", async () => {
+  const fs = hostFs({ "/etc/passwd": "root" });
+  for (const msg of [
+    { op: "delete", path: "../etc/passwd" },
+    { op: "create", path: "/etc/x" },
+    { op: "rename", path: "a.txt", to: "../../x" },
+    { op: "mkdir", path: "a/./b" },
+    { op: "create", path: "ext/evil.sh" },
+    { op: "delete", path: "ext/passwd" },
+    { op: "rename", path: "a.txt", to: "ext/a.txt" },
+  ]) {
+    sent.length = 0;
+    await receive("g1", { t: "fs.op", req: 1, ...msg });
+    expect(sent[0].msg).toEqual({ t: "fs.op.res", req: 1, error: "invalid" });
+  }
+  expect(fs.calls.filter((c) => c.cmd !== "path_exists" && c.cmd !== "collab_path_inside")).toEqual([]);
+});
+
+test("guest: New File in the shared tree creates it on the host and opens it (#133)", async () => {
+  collab.role = "guest";
+  ui.prompt.mockResolvedValueOnce("x.rs");
+  const done = share.remoteCreate("src", false);
+  await vi.waitFor(() => expect(sent.find((s) => s.msg.t === "fs.op")).toBeTruthy());
+  const req = sent.find((s) => s.msg.t === "fs.op")!;
+  expect(req).toMatchObject({ peer: "host-peer", msg: { op: "create", path: "src/x.rs" } });
+  await receive("host-peer", { t: "fs.op.res", req: req.msg.req, error: null });
+  await done;
+  expect(sent.some((s) => s.msg.t === "doc.open" && s.msg.path === "src/x.rs")).toBe(true);
+
+  // Errors come back as codes and are shown in the guest's language.
+  ui.prompt.mockResolvedValueOnce("x.rs");
+  sent.length = 0;
+  const again = share.remoteCreate("src", false);
+  await vi.waitFor(() => expect(sent.find((s) => s.msg.t === "fs.op")).toBeTruthy());
+  await receive("host-peer", { t: "fs.op.res", req: sent.find((s) => s.msg.t === "fs.op")!.msg.req, error: "exists" });
+  await again;
+  expect(ui.toasts.at(-1)).toEqual({ text: '"x.rs" already exists there', kind: "error" });
 });

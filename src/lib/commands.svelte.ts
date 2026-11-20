@@ -76,7 +76,14 @@ const APP_COMMANDS: CommandDef[] = [
   { id: "app.sidebar", group: "window", keys: ["Mod-b"], run: () => toggleZone("left"), inTerminal: true },
   { id: "app.spell", group: "general", keys: ["F7"], run: toggleSpell, when: () => !debugging() },
 
-  { id: "file.new", group: "files", keys: ["Mod-n"], run: newFile },
+  // A guest's new file goes into the host's project, so it's shared and saved there (#133).
+  { id: "file.new", group: "files", keys: ["Mod-n"], run: async () => {
+    if (collab.role === "guest") {
+      const { share, remoteCreate } = await import("./collab/share.svelte");
+      if (share.hostHasRoot) return remoteCreate("", false);
+    }
+    newFile();
+  } },
   { id: "file.openFolder", group: "files", keys: ["Mod-o"], run: openFolder },
   { id: "file.save", group: "files", keys: ["Mod-s"], run: () => save() },
   { id: "file.saveAs", group: "files", keys: ["Mod-Shift-s"], run: () => save(app.activeId, true) },
