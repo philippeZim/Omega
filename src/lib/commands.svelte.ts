@@ -4,7 +4,7 @@
  * the command palette and the Shortcuts cheat sheet.
  */
 import type { EditorView } from "@codemirror/view";
-import { candidates, normalize } from "./keys";
+import { candidates, formatKey, normalize } from "./keys";
 import { EDITOR_COMMANDS, type CommandGroup } from "./editorCommands";
 import { KEYMAPS, type KeymapId } from "./keymaps";
 import { t, type Key } from "./i18n/index.svelte";
@@ -221,6 +221,17 @@ export function keysFor(id: string): string[] {
 function saveOverrides() {
   if (Object.keys(keymapState.overrides).length) localStorage.setItem("keybindings", JSON.stringify(keymapState.overrides));
   else localStorage.removeItem("keybindings");
+}
+
+/** Current shortcut(s) of a command for menus and tooltips, e.g. "Ctrl 1 / Ctrl 2"; "" when unbound. */
+export function shortcutLabel(id: string): string {
+  return keysFor(id).map(formatKey).join(" / ");
+}
+
+/** Tooltip text with the current shortcut appended, e.g. "Sidebar (Ctrl B)". */
+export function withShortcut(text: string, id: string): string {
+  const s = shortcutLabel(id);
+  return s ? `${text} (${s})` : text;
 }
 
 export function setKeys(id: string, keys: string[] | null) {

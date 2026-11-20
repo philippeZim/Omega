@@ -8,13 +8,12 @@
   async function branchMenu(e: MouseEvent) {
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
     const b = await branches();
-    const ctrl = t("app.ctrl");
     ui.openMenu(new MouseEvent("contextmenu", { clientX: r.left, clientY: r.bottom + 8 }), [
       { label: t("app.newBranch"), action: newBranch },
-      { label: t("app.pull") + (git.behind ? t("app.behind", { n: git.behind }) : ""), shortcut: `${ctrl} T`, action: pull },
+      { label: t("app.pull") + (git.behind ? t("app.behind", { n: git.behind }) : ""), shortcut: shortcutLabel("git.pull"), action: pull },
       { label: t("app.fetch"), action: fetchNow },
-      { label: "Push" + (git.ahead ? aheadLabel(git.ahead) : ""), shortcut: `${ctrl} ⇧ K`, action: push },
-      { label: t("app.showChanges"), shortcut: `${ctrl} K`, action: () => showView("changes") },
+      { label: "Push" + (git.ahead ? aheadLabel(git.ahead) : ""), shortcut: shortcutLabel("git.push"), action: push },
+      { label: t("app.showChanges"), shortcut: shortcutLabel("git.commit"), action: () => showView("changes") },
       { label: git.remoteUrl ? t("app.remoteChange", { url: git.remoteUrl.replace(/^https?:\/\/|^git@/, "").replace(/\.git$/, "") }) : t("app.connectRemote"), action: connectRemote },
       { separator: true, label: "" },
       ...b.local.map((n) => ({ label: (n === git.branch ? "✓  " : "     ") + n, action: () => n !== git.branch && switchBranch(n) })),
@@ -28,7 +27,7 @@
     const pretty = (p: string) => (home && p.startsWith(home) ? "~" + p.slice(home.length) : p);
     const recents = recentFolders.filter((f) => f !== app.root).slice(0, 8);
     ui.openMenu(new MouseEvent("contextmenu", { clientX: r.left, clientY: r.bottom + 8 }), [
-      { label: t("app.openFolder") + "…", shortcut: `${t("app.ctrl")} O`, action: openFolder },
+      { label: t("app.openFolder") + "…", shortcut: shortcutLabel("file.openFolder"), action: openFolder },
       { label: t("app.newProject") + "…", action: () => (runner.newProject = true) },
       { label: t("app.cloneRepo"), action: cloneRepo },
       ...(app.root && !git.repo ? [{ label: t("app.initRepo"), action: initRepo }] : []),
@@ -41,6 +40,7 @@
   import { ui } from "../lib/ui.svelte";
   import { report } from "../lib/report.svelte";
   import { MODES } from "../lib/modes";
+  import { shortcutLabel, withShortcut } from "../lib/commands.svelte";
   import { basename } from "../lib/api";
   import { runner } from "../lib/code/runner.svelte";
   import { settings } from "../lib/settings.svelte";
@@ -63,9 +63,9 @@
 
   // Narrow window: the mode switcher becomes a pill with a menu …
   function modeMenu(e: MouseEvent) {
-    ui.openMenu(below(e), MODES.map((m, i) => ({
+    ui.openMenu(below(e), MODES.map((m) => ({
       label: (m.id === app.mode ? "✓  " : "     ") + m.label,
-      shortcut: `${t("app.ctrl")} ${i + 1}`,
+      shortcut: shortcutLabel(`mode.${m.id}`),
       action: () => setMode(m.id),
     })));
   }
@@ -73,10 +73,10 @@
   // … and the round buttons on the right move into a "more" menu (settings stays).
   function moreMenu(e: MouseEvent) {
     ui.openMenu(below(e, true), [
-      { label: t("commands.group.terminal"), shortcut: `${t("app.ctrl")} ^`, action: toggleTerminalPanel },
+      { label: t("commands.group.terminal"), shortcut: shortcutLabel("terminal.toggle"), action: toggleTerminalPanel },
       { label: t("app.collab"), action: () => (collab.open = !collab.open) },
       { label: t("app.report.button"), action: () => (report.open = true) },
-      { label: t("app.help"), shortcut: "F1", action: () => (ui.help = !ui.help) },
+      { label: t("app.help"), shortcut: shortcutLabel("app.help"), action: () => (ui.help = !ui.help) },
       { label: t("app.settings"), action: () => (settings.open = !settings.open) },
     ]);
   }
@@ -84,7 +84,7 @@
 
 <header class="topbar">
   <div class="left">
-    <button class="ghost" title="{t('app.sidebar')} ({t('app.ctrl')}+B)" class:on={zoneShown("left")} onclick={() => toggleZone("left")} aria-label={t("app.sidebar")}>
+    <button class="ghost" title={withShortcut(t("app.sidebar"), "app.sidebar")} class:on={zoneShown("left")} onclick={() => toggleZone("left")} aria-label={t("app.sidebar")}>
       <svg width="16" height="16" viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.3"/><line x1="6" y1="2.5" x2="6" y2="13.5" stroke="currentColor" stroke-width="1.3"/></svg>
     </button>
     <button class="title" onclick={projectMenu} title={app.root ?? t("app.openFolder")}>
@@ -101,7 +101,7 @@
       </button>
     {/if}
     <span class="divider extra"></span>
-    <button class="ghost extra" title="{t('app.openFolder')} ({t('app.ctrl')}+O)" onclick={openFolder} aria-label={t("app.openFolder")}>
+    <button class="ghost extra" title={withShortcut(t("app.openFolder"), "file.openFolder")} onclick={openFolder} aria-label={t("app.openFolder")}>
       <svg width="15" height="14" viewBox="0 0 15 14"><path d="M1.5 3.5a1 1 0 0 1 1-1h3l1.3 1.5h5.7a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1h-10a1 1 0 0 1-1-1z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>
     </button>
     <button class="ghost extra" title={t("app.newProject")} onclick={() => (runner.newProject = true)} aria-label={t("app.newProject")}>
@@ -109,14 +109,14 @@
     </button>
   </div>
 
-  <button class="mode-pill" onclick={modeMenu} title={t("app.ctrl") + "+1 – " + MODES.length}>
+  <button class="mode-pill" onclick={modeMenu} title={MODES.map((m) => withShortcut(m.label, `mode.${m.id}`)).join(" · ")}>
     <span>{MODES[activeIndex]?.label}</span>
     <svg width="9" height="9" viewBox="0 0 10 10"><path d="M2.5 3.8L5 6.3l2.5-2.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
   </button>
   <div class="segmented" role="tablist" style="--count: {MODES.length}">
     <div class="thumb" style="--index: {activeIndex}"></div>
-    {#each MODES as m, i (m.id)}
-      <button role="tab" aria-selected={app.mode === m.id} class:active={app.mode === m.id} title="{m.label} ({t('app.ctrl')}+{i + 1})" onclick={() => setMode(m.id)}>
+    {#each MODES as m (m.id)}
+      <button role="tab" aria-selected={app.mode === m.id} class:active={app.mode === m.id} title={withShortcut(m.label, `mode.${m.id}`)} onclick={() => setMode(m.id)}>
         {m.label}
       </button>
     {/each}
