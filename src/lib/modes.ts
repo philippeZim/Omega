@@ -17,16 +17,9 @@ import { lspExtension } from "./code/lspExtension";
 import { debugExtension } from "./debug/editorExt";
 import { gitGutter } from "./git/gutter";
 import { gitBlame } from "./git/blame.svelte";
-import { t } from "./i18n/index.svelte";
 
-export type Mode = "text" | "markdown" | "latex" | "code";
-
-export const MODES: { id: Mode; label: string }[] = [
-  { id: "text", get label() { return t("app.mode.text"); } },
-  { id: "markdown", label: "Markdown" },
-  { id: "latex", label: "LaTeX" },
-  { id: "code", label: "Code" },
-];
+export { MODES, type Mode } from "./modeList";
+import type { Mode } from "./modeList";
 
 const CODE_EXT = new Set(["py", "c", "h", "cpp", "cc", "cxx", "hpp", "hh", "java", "js", "mjs", "cjs", "jsx", "ts", "tsx", "mts", "rs", "toml", "json"]);
 

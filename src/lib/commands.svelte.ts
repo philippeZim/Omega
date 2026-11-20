@@ -25,7 +25,7 @@ import { collab, startHosting, joinFromClipboard, approveNext, leave as leaveCol
 import { git, push as gitPush, pull as gitPull, newBranch, cloneRepo, publishGitHub, refresh as gitRefresh, connectRemote, initRepo } from "./git/git.svelte";
 import { activeTab } from "./state.svelte";
 import { blameSettings, setGitBlame } from "./git/blame.svelte";
-import type { Mode } from "./modes";
+import { MODES, type Mode } from "./modeList";
 
 export interface Command {
   id: string;
@@ -205,6 +205,11 @@ function presetBase(id: KeymapId): Record<string, string[]> {
 }
 
 /** Keys of a command in the active preset, ignoring the user's own changes. */
+/** Display names of the modes a command is limited to ("LaTeX", not the raw id "latex"). */
+export function modeNames(modes: Mode[] | undefined): string {
+  return (modes ?? []).map((m) => MODES.find((x) => x.id === m)?.label ?? m).join(", ");
+}
+
 export function defaultKeysFor(id: string): string[] {
   return presetBase(keymapState.preset)[id] ?? [];
 }

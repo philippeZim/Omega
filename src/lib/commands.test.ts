@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 import { KEYMAPS } from "./keymaps";
 import { normalize } from "./keys";
 import { dictionaries } from "./i18n/strings";
-import { COMMANDS, applyKeymap, conflicts, defaultKeysFor, handleGlobalKey, keymapState, keysFor, resetAllKeys, setKeys } from "./commands.svelte";
+import { COMMANDS, applyKeymap, conflicts, defaultKeysFor, handleGlobalKey, keymapState, keysFor, modeNames, resetAllKeys, setKeys } from "./commands.svelte";
 import { toggleZone } from "./layout.svelte";
 import { settings } from "./settings.svelte";
 const { stub } = vi.hoisted(() => {
@@ -163,5 +163,13 @@ describe("handleGlobalKey", () => {
     const e = new KeyboardEvent("keydown", { key: "F5", code: "F5", cancelable: true });
     handleGlobalKey(e);
     expect(e.defaultPrevented).toBe(true);
+  });
+});
+
+describe("modeNames", () => {
+  test("shows mode display names, not raw ids", () => {
+    expect(modeNames(["latex"])).toBe("LaTeX");
+    expect(modeNames(["code", "markdown"])).toBe("Code, Markdown");
+    expect(modeNames(undefined)).toBe("");
   });
 });
