@@ -83,9 +83,8 @@ describe("DapSession", () => {
     await expect(p2).rejects.toThrow("nope");
   });
 
-  // bug: the fallback error text is hard-coded German (dap.ts `${p.command} fehlgeschlagen`)
-  // instead of going through t(), so English/French users see "threads fehlgeschlagen".
-  test.fails("failed response without message has a localized fallback text", async () => {
+  // regression (#25): the fallback error text was hard-coded German instead of going through t().
+  test("failed response without message has a localized fallback text", async () => {
     const { s } = session();
     const p = s.request("threads");
     await settle();

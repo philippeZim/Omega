@@ -72,7 +72,7 @@ export class DapSession {
       if (!p) return;
       this.pending.delete(msg.request_seq);
       if (msg.success) p.resolve(msg.body ?? {});
-      else p.reject(new Error(msg.body?.error?.format ?? msg.message ?? `${p.command} fehlgeschlagen`));
+      else p.reject(new Error(msg.body?.error?.format ?? msg.message ?? t("code.dap.requestFailed", { command: p.command })));
     } else if (msg.type === "event") {
       this.handlers.event(this, msg);
     } else if (msg.type === "request") {
