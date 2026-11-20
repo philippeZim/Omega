@@ -180,3 +180,26 @@ pub fn mcp_reply(app: AppHandle, call: u64, result: Value) {
         let _ = tx.send(result);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rpc_result_shape() {
+        assert_eq!(rpc_result(&json!(3), json!({ "tools": [] })), json!({ "jsonrpc": "2.0", "id": 3, "result": { "tools": [] } }));
+        let v = rpc_result(&json!("x"), json!(null));
+        assert_eq!(v["id"], "x");
+        assert!(v.as_object().unwrap().contains_key("result"));
+        assert!(v.get("error").is_none());
+    }
+
+    #[test]
+    fn rpc_error_shape() {
+        assert_eq!(
+            rpc_error(&json!(null), -32700, "Parse error"),
+            json!({ "jsonrpc": "2.0", "id": null, "error": { "code": -32700, "message": "Parse error" } })
+        );
+        assert!(rpc_error(&json!(1), -1, "m").get("result").is_none());
+    }
+}

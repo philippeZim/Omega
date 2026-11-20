@@ -51,7 +51,11 @@ fn lock_dir() -> PathBuf {
 
 /// Removes lock files of Omega instances that are no longer running (killed / crashed).
 fn remove_stale_locks() {
-    let Ok(rd) = std::fs::read_dir(lock_dir()) else { return };
+    remove_stale_locks_in(&lock_dir())
+}
+
+fn remove_stale_locks_in(dir: &std::path::Path) {
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
     for e in rd.flatten() {
         let p = e.path();
         if p.extension().and_then(|x| x.to_str()) != Some("lock") { continue }
@@ -65,12 +69,15 @@ fn remove_stale_locks() {
 }
 
 fn write_lock(port: u16, token: &str, folders: &[String]) -> Option<PathBuf> {
-    let dir = lock_dir();
-    std::fs::create_dir_all(&dir).ok()?;
+    write_lock_in(&lock_dir(), port, token, folders)
+}
+
+fn write_lock_in(dir: &std::path::Path, port: u16, token: &str, folders: &[String]) -> Option<PathBuf> {
+    std::fs::create_dir_all(dir).ok()?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+        let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
     }
     let path = dir.join(format!("{port}.lock"));
     let body = json!({
@@ -322,3 +329,84 @@ pub fn ide_info(app: AppHandle) -> Value {
     json!({ "port": PORT.load(Ordering::SeqCst), "clients": client_names(&app) })
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(s: &str) -> Value {
+        serde_json::from_str(s).unwrap()
+    }
+
+    #[test]
+    fn result_shape() {
+        let v = parse(&result(&json!(7), json!({ "ok": true })));
+        assert_eq!(v, json!({ "jsonrpc": "2.0", "id": 7, "result": { "ok": true } }));
+        let v = parse(&result(&json!("abc"), json!(null)));
+        assert_eq!(v["id"], "abc");
+        assert!(v.as_object().unwrap().contains_key("result"));
+        assert!(v.get("error").is_none());
+    }
+
+    #[test]
+    fn error_shape() {
+        let v = parse(&error(&json!(1), -32601, "Method not found"));
+        assert_eq!(v, json!({ "jsonrpc": "2.0", "id": 1, "error": { "code": -32601, "message": "Method not found" } }));
+        assert!(v.get("result").is_none());
+    }
+
+    #[test]
+    fn write_lock_contents_and_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("ide");
+        let folders = vec!["/a".to_string(), "/b c".to_string()];
+        let p = write_lock_in(&dir, 4242, "tok", &folders).unwrap();
+        assert_eq!(p, dir.join("4242.lock"));
+        assert!(!dir.join(".4242.lock.tmp").exists());
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(v["pid"], std::process::id());
+        assert_eq!(v["workspaceFolders"], json!(["/a", "/b c"]));
+        assert_eq!(v["ideName"], "Omega");
+        assert_eq!(v["transport"], "ws");
+        assert_eq!(v["authToken"], "tok");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_lock_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("ide");
+        let p = write_lock_in(&dir, 1, "t", &[]).unwrap();
+        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&dir), 0o700);
+        assert_eq!(mode(&p), 0o600);
+    }
+
+    #[test]
+    fn remove_stale_locks_only_removes_dead_omega_locks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let d = tmp.path();
+        let w = |name: &str, v: Value| std::fs::write(d.join(name), v.to_string()).unwrap();
+        let dead = 999_999_999u32; // above any pid_max
+        w("1.lock", json!({ "pid": dead, "ideName": "Omega" }));
+        w("2.lock", json!({ "pid": std::process::id(), "ideName": "Omega" }));
+        w("3.lock", json!({ "pid": dead, "ideName": "Visual Studio Code" }));
+        w("4.lock", json!({ "ideName": "Omega" })); // no pid → treated as dead
+        w("5.json", json!({ "pid": dead, "ideName": "Omega" })); // not a .lock file
+        std::fs::write(d.join("6.lock"), "garbage").unwrap(); // unparsable → no ideName → kept
+        remove_stale_locks_in(d);
+        assert!(!d.join("1.lock").exists());
+        assert!(d.join("2.lock").exists());
+        assert!(d.join("3.lock").exists());
+        assert!(!d.join("4.lock").exists());
+        assert!(d.join("5.json").exists());
+        assert!(d.join("6.lock").exists());
+    }
+
+    #[test]
+    fn remove_stale_locks_missing_dir_is_noop() {
+        let tmp = tempfile::tempdir().unwrap();
+        remove_stale_locks_in(&tmp.path().join("nope"));
+    }
+}

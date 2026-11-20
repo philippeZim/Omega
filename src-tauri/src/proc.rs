@@ -54,39 +54,42 @@ fn command(cmd: &str, args: &[String], cwd: Option<String>, env: Option<HashMap<
     Ok(c)
 }
 
+/// Reads one `Content-Length` framed message body. `None` on end of stream / read error
+/// (including EOF in the middle of a body). Headers other than `Content-Length` are ignored,
+/// blank lines before the header block are skipped.
+fn read_message<R: BufRead>(reader: &mut R) -> Option<Vec<u8>> {
+    let mut len = None;
+    loop {
+        let mut line = String::new();
+        match reader.read_line(&mut line) {
+            Ok(0) | Err(_) => return None,
+            Ok(_) => {}
+        }
+        let line = line.trim_end();
+        if line.is_empty() {
+            if len.is_some() {
+                break;
+            }
+            continue;
+        }
+        if let Some(v) = line.strip_prefix("Content-Length:") {
+            len = v.trim().parse::<usize>().ok();
+        }
+    }
+    let mut body = vec![0u8; len?];
+    reader.read_exact(&mut body).ok()?;
+    Some(body)
+}
+
 /// Reads `Content-Length` framed messages and emits them as `proc-msg` events.
 fn pump_messages(app: AppHandle, id: String, stream: impl Read + Send + 'static) {
     std::thread::spawn(move || {
         let mut reader = BufReader::new(stream);
-        loop {
-            let mut len = None;
-            loop {
-                let mut line = String::new();
-                match reader.read_line(&mut line) {
-                    Ok(0) | Err(_) => {
-                        app.state::<ProcState>().conns.lock().unwrap().remove(&id);
-                        let _ = app.emit("proc-exit", id.clone());
-                        return;
-                    }
-                    Ok(_) => {}
-                }
-                let line = line.trim_end();
-                if line.is_empty() {
-                    if len.is_some() {
-                        break;
-                    }
-                    continue;
-                }
-                if let Some(v) = line.strip_prefix("Content-Length:") {
-                    len = v.trim().parse::<usize>().ok();
-                }
-            }
-            let mut body = vec![0u8; len.unwrap()];
-            if reader.read_exact(&mut body).is_err() {
-                continue;
-            }
+        while let Some(body) = read_message(&mut reader) {
             let _ = app.emit("proc-msg", Msg { id: id.clone(), msg: String::from_utf8_lossy(&body).into() });
         }
+        app.state::<ProcState>().conns.lock().unwrap().remove(&id);
+        let _ = app.emit("proc-exit", id.clone());
     });
 }
 
@@ -352,4 +355,72 @@ pub async fn install_debugger(app: AppHandle, kind: String) -> Result<String, St
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::read_message;
+    use std::io::Cursor;
+
+    fn read_all(input: &[u8]) -> Vec<Vec<u8>> {
+        let mut r = Cursor::new(input.to_vec());
+        std::iter::from_fn(|| read_message(&mut r)).collect()
+    }
+
+    #[test]
+    fn two_back_to_back_messages_with_extra_headers() {
+        let input = b"Content-Length: 2\r\nContent-Type: application/vscode-jsonrpc; charset=utf-8\r\n\r\n{}\
+Content-Type: x\r\nContent-Length: 7\r\n\r\n{\"a\":1}";
+        assert_eq!(read_all(input), vec![b"{}".to_vec(), b"{\"a\":1}".to_vec()]);
+    }
+
+    #[test]
+    fn blank_lines_before_header_are_skipped() {
+        let input = b"\r\n\r\n\nContent-Length: 3\r\n\r\nabc";
+        assert_eq!(read_all(input), vec![b"abc".to_vec()]);
+    }
+
+    #[test]
+    fn eof_mid_body_returns_none() {
+        let mut r = Cursor::new(b"Content-Length: 10\r\n\r\nabc".to_vec());
+        assert_eq!(read_message(&mut r), None);
+    }
+
+    #[test]
+    fn eof_in_headers_and_empty_stream_return_none() {
+        assert_eq!(read_all(b""), Vec::<Vec<u8>>::new());
+        assert_eq!(read_all(b"Content-Length: 3\r\n"), Vec::<Vec<u8>>::new());
+    }
+
+    #[test]
+    fn missing_or_invalid_content_length_does_not_panic() {
+        // Header block without Content-Length: blank line is skipped, reader keeps scanning and
+        // finds the next valid message.
+        let input = b"Content-Type: x\r\n\r\nContent-Length: 2\r\n\r\nok";
+        assert_eq!(read_all(input), vec![b"ok".to_vec()]);
+        let input = b"Content-Length: abc\r\n\r\n";
+        assert_eq!(read_all(input), Vec::<Vec<u8>>::new());
+    }
+
+    #[test]
+    fn zero_length_body() {
+        assert_eq!(read_all(b"Content-Length: 0\r\n\r\n"), vec![Vec::<u8>::new()]);
+    }
+
+    #[test]
+    fn length_counts_bytes_not_chars() {
+        let body = "{\"t\":\"äöü€😀\"}";
+        let mut input = format!("Content-Length: {}\r\n\r\n", body.len()).into_bytes();
+        input.extend_from_slice(body.as_bytes());
+        input.extend_from_slice(b"Content-Length: 1\r\n\r\nx");
+        let got = read_all(&input);
+        assert_eq!(got.len(), 2);
+        assert_eq!(String::from_utf8(got[0].clone()).unwrap(), body);
+        assert_eq!(got[1], b"x");
+    }
+
+    #[test]
+    fn lf_only_line_endings() {
+        assert_eq!(read_all(b"Content-Length: 2\n\nhi"), vec![b"hi".to_vec()]);
+    }
 }
