@@ -161,10 +161,13 @@
     top: 0;
     bottom: 0;
     z-index: 30;
-    background: var(--glass-strong);
+    /* Opaque (#57): the glass tint over the window background, so editor text can't show through
+       (backdrop-filter blur isn't reliable in every webview). */
+    background: linear-gradient(var(--glass-strong), var(--glass-strong)), var(--bg);
     box-shadow: var(--glass-highlight), 0 24px 70px rgba(0, 0, 0, 0.7), 0 4px 14px rgba(0, 0, 0, 0.45);
     animation: dock-in 0.18s cubic-bezier(0.3, 0.9, 0.3, 1);
   }
+  :global(:root[data-material="liquid"]) .dock.overlay { background: var(--glass-sheen), linear-gradient(var(--glass-strong), var(--glass-strong)), var(--bg); }
   .dock-left.overlay { left: 0; }
   .dock-right.overlay { right: 0; }
   /* Opacity only: WebKitGTK flashes a stale frame when a transform animation ends. */
