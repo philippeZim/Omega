@@ -19,7 +19,7 @@ vi.mock("../tools.svelte", () => ({ ensureTools: async () => true }));
 vi.mock("../native", () => ({ openDialog: async () => null }));
 vi.mock("../i18n/index.svelte", () => ({ t: (k: string, p?: Record<string, unknown>) => (p ? `${k} ${JSON.stringify(p)}` : k) }));
 
-import { abortOperation, commit, git, pull, push, refresh } from "./git.svelte";
+import { abortOperation, branches, commit, git, pull, push, refresh } from "./git.svelte";
 
 // ---------------------------------------------------------------- scripted fake repository
 
@@ -42,6 +42,7 @@ function fakeRepo() {
       Object.assign(repo, { branch: "main", operation: "rebase", changes: [{ path: "c.txt", x: "U", y: "U", orig: null }] });
       return { code: 1, stdout: "", stderr: "Recorded preimage for 'c.txt'\nerror: could not apply afda55c... local c\nhint: Resolve all conflicts manually" };
     }
+    if (a[0] === "branch") return { ...ok, stdout: "(no branch, rebasing main)\nmain\norigin/main\n" };
     if (a[0] === "diff") return { code: 1, stdout: "", stderr: "" }; // something staged
     if (a[0] === "rebase" && a[1] === "--continue") {
       Object.assign(repo, { operation: null, changes: [] });
@@ -120,5 +121,9 @@ describe("pull stopped at a rebase conflict (#67)", () => {
     expect(calls).toContainEqual(["rebase", "--abort"]);
     expect(git.operation).toBe("");
     expect(lastToast()).toEqual(["git.rebaseAborted", undefined]);
+  });
+
+  test("the branch list leaves out the detached '(no branch, rebasing main)' entry", async () => {
+    expect(await branches()).toEqual({ local: ["main"], remote: [] });
   });
 });

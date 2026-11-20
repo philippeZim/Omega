@@ -355,7 +355,8 @@ export async function rollback(c: Change) {
 export async function branches(): Promise<{ local: string[]; remote: string[] }> {
   const r = await run(["branch", "-a", "--format=%(refname:short)"]);
   const all = r.stdout.split("\n").map((s) => s.trim()).filter(Boolean);
-  const local = all.filter((b) => !b.startsWith("origin/") && b !== "origin");
+  // "(no branch, rebasing main)" / "(HEAD detached at …)" are not branches one can switch to.
+  const local = all.filter((b) => !b.startsWith("origin/") && b !== "origin" && !b.startsWith("("));
   const remote = all.filter((b) => b.startsWith("origin/") && b !== "origin/HEAD" && !local.includes(b.slice(7)));
   return { local, remote };
 }
