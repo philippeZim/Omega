@@ -22,6 +22,7 @@ import { settings } from "../settings.svelte";
 import type { Mode } from "../modes";
 import { audit, CHECKS, type Check } from "./uiAudit";
 import { sandboxNative } from "../native";
+import { findElements, labelOf, keyCode, typesIntoEditor } from "./dom";
 import { report } from "../report.svelte";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 
@@ -64,56 +65,6 @@ ui.toast = (text: string, kind: "info" | "error" = "info") => {
 };
 
 // ------------------------------------------------------------------ UI helpers
-
-const INTERACTIVE = "button, a, input, textarea, select, [role=button], [role=tab], [role=menuitem], [role=treeitem], [role=switch], [role=checkbox], [contenteditable=true], .row, .item, .hit, .chip, .tab";
-
-function visible(el: Element) {
-  const r = el.getBoundingClientRect();
-  if (r.width === 0 || r.height === 0) return false;
-  const st = getComputedStyle(el);
-  return st.visibility !== "hidden" && st.display !== "none" && st.opacity !== "0";
-}
-
-/** All names an element goes by. Tooltip.svelte moves `title` into `data-tip` on hover, so
- *  `data-tip` can be stale after a language switch: the live `title` wins. */
-function labelsOf(el: Element): string[] {
-  const h = el as HTMLElement;
-  const norm = (s: string | null | undefined) => (s ?? "").replace(/\s+/g, " ").trim();
-  return [h.getAttribute("aria-label"), h.getAttribute("title"), h.dataset.tip, (h as HTMLInputElement).placeholder, h.innerText || h.textContent]
-    .map(norm)
-    .filter(Boolean);
-}
-
-function labelOf(el: Element): string {
-  return labelsOf(el)[0] ?? "";
-}
-
-/** The topmost open modal, if any: controls behind it aren't reachable for a user either. */
-function topModal(): Element | null {
-  const modals = [...document.querySelectorAll("[role=dialog], [aria-modal=true], dialog[open]")].filter(visible);
-  return modals[modals.length - 1] ?? null;
-}
-
-/** Finds elements by visible text / aria-label / tooltip (case-insensitive) or CSS selector. */
-function findElements(opts: { text?: string; selector?: string; exact?: boolean }): HTMLElement[] {
-  let els: HTMLElement[];
-  if (opts.selector) els = [...document.querySelectorAll<HTMLElement>(opts.selector)];
-  else els = [...document.querySelectorAll<HTMLElement>(INTERACTIVE)];
-  els = els.filter(visible);
-  const modal = topModal();
-  if (modal) els = els.filter((el) => modal.contains(el));
-  if (opts.text) {
-    const q = opts.text.toLowerCase().trim();
-    const exactHit = (el: HTMLElement) => labelsOf(el).some((l) => l.toLowerCase() === q);
-    const match = (el: HTMLElement) => (opts.exact ? exactHit(el) : labelsOf(el).some((l) => l.toLowerCase().includes(q)));
-    els = els.filter(match);
-    // Prefer the innermost matching element (a button inside a matching row, not the row).
-    els = els.filter((el) => !els.some((o) => o !== el && el.contains(o)));
-    // Exact matches first.
-    els.sort((a, b) => Number(exactHit(b)) - Number(exactHit(a)));
-  }
-  return els;
-}
 
 function describe(el: HTMLElement, i: number) {
   const r = el.getBoundingClientRect();
@@ -424,7 +375,7 @@ export const TOOLS: Tool[] = [
       const v = ed.getView();
       const tid = focusedTerminal();
       if (tid) await invoke("pty_write", { id: tid, data: text });
-      else if (v && el && v.dom.contains(el) && !(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) {
+      else if (v && typesIntoEditor(el, v.dom)) {
         const at = v.state.selection.main;
         v.dispatch({ changes: { from: at.from, to: at.to, insert: text }, selection: { anchor: at.from + text.length }, userEvent: "input.type" });
       } else if (el && (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) {
@@ -452,7 +403,7 @@ export const TOOLS: Tool[] = [
     run: async ({ text, selector, gone, timeoutMs }) => {
       const end = Date.now() + (timeoutMs ?? 8000);
       while (Date.now() < end) {
-        const found = findElements({ text, selector }).length > 0;
+        const found = findElements({ text, selector, all: true }).length > 0;
         if (found !== !!gone) return { ok: true, waitedMs: (timeoutMs ?? 8000) - (end - Date.now()) };
         await sleep(100);
       }
@@ -480,7 +431,7 @@ export const TOOLS: Tool[] = [
     description: "Screenshot des App-Inhalts (PNG) – ganzes Fenster oder ein Element per Selektor/Text.",
     inputSchema: obj({ selector: str("CSS-Selektor (optional)"), text: str("Element per Text (optional)"), scale: num("Skalierung, Standard 1 (kleinere Werte können Artefakte zeigen)") }),
     run: async ({ selector, text, scale }) => {
-      const el = selector || text ? findElements({ selector, text })[0] : document.body;
+      const el = selector || text ? findElements({ selector, text, all: true })[0] : document.body;
       if (!el) throw new Error("Element nicht gefunden");
       const base = { pixelRatio: scale ?? 1, backgroundColor: "#030304", filter: (n: Node) => !(n instanceof HTMLElement && (n.classList.contains("tip") || n.classList.contains("cm-widgetBuffer"))) };
       // A resource that fails to load (font/image) rejects with a bare Event → retry without them.
@@ -625,14 +576,8 @@ function focusedTerminal(): string | null {
   return host?.dataset.tid ?? null;
 }
 
-/** `code` values of a US layout for punctuation keys (synthetic events need both key and code). */
-const PUNCT_CODES: Record<string, string> = {
-  ",": "Comma", ".": "Period", "/": "Slash", ";": "Semicolon", "'": "Quote", "[": "BracketLeft", "]": "BracketRight",
-  "\\": "Backslash", "`": "Backquote", "-": "Minus", "=": "Equal", "+": "Equal", " ": "Space", "^": "Backquote",
-};
-
 async function pressKey({ key, ctrl, shift, alt }: Args) {
-  const code = /^[0-9]$/.test(key) ? `Digit${key}` : /^[a-z]$/i.test(key) ? `Key${key.toUpperCase()}` : (PUNCT_CODES[key] ?? key);
+  const code = keyCode(key);
   const init = { key, bubbles: true, cancelable: true, composed: true, ctrlKey: !!ctrl, shiftKey: !!shift, altKey: !!alt, code };
   const label = [ctrl && "Strg", shift && "Umschalt", alt && "Alt", key].filter(Boolean).join("+");
   const tid = focusedTerminal();
