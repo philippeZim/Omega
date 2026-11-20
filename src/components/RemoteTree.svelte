@@ -3,15 +3,20 @@
   import RemoteTree from "./RemoteTree.svelte";
   import { listRemote, openRemote, share } from "../lib/collab/share.svelte";
   import { activeTab } from "../lib/state.svelte";
+  import { t } from "../lib/i18n/index.svelte";
 
   let { rel = "", depth = 0 }: { rel?: string; depth?: number } = $props();
   let entries = $state<{ name: string; rel: string; is_dir: boolean }[] | null>(null);
   let open = $state<Record<string, boolean>>({});
 
+  // Reload when the host's files change (share.treeGen) – keeps the open folders.
   $effect(() => {
-    if (entries === null) listRemote(rel).then((e) => (entries = e));
+    void share.treeGen;
+    if (share.hostHasRoot) listRemote(rel).then((e) => (entries = e));
   });
 
+  // Host tabs that aren't files in its folder ("Untitled", outside files) – or all tabs without a folder.
+  const extraTabs = $derived(depth === 0 ? (share.hostHasRoot ? share.hostTabs.filter((x) => x.key.startsWith("tab:")) : share.hostTabs) : []);
   const activeRel = $derived(activeTab()?.path?.startsWith("collab:") ? activeTab()!.path!.slice(7) : null);
   // Files other participants are in right now (coloured dots).
   const where = $derived.by(() => {
@@ -21,7 +26,19 @@
   });
 </script>
 
-{#if entries === null}
+{#if extraTabs.length}
+  <div class="section">{t("ai.collab.hostTabs")}</div>
+  {#each extraTabs as tab (tab.key)}
+    <button class="row" class:active={activeRel === tab.key} style="padding-left: 8px" onclick={() => openRemote(tab.key)}>
+      <span class="sp"></span>
+      <span class="name">{tab.name}</span>
+      {#each where[tab.key] ?? [] as c, i (i)}<span class="who" style="background: {c}"></span>{/each}
+    </button>
+  {/each}
+{/if}
+{#if !share.hostHasRoot}
+  <!-- nothing else to show -->
+{:else if entries === null}
   <div class="loading" style="padding-left: {12 + depth * 14}px">…</div>
 {:else}
   {#each entries as e (e.rel)}
@@ -51,4 +68,5 @@
   .name.dir { font-weight: 500; }
   .who { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
   .loading { color: var(--label-3); font-size: 12px; height: 26px; }
+  .section { padding: 6px 10px 4px; font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--label-3); }
 </style>

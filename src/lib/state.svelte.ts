@@ -98,7 +98,7 @@ const uid = () => Math.random().toString(36).slice(2, 10);
 export const collabHooks = {
   openRemote: (_path: string) => {},
   tabOpened: (_id: string, _path: string) => {},
-  tabClosed: (_path: string | null) => {},
+  tabClosed: (_path: string | null, _id: string) => {},
 };
 export const isRemotePath = (p: string | null | undefined) => !!p && p.startsWith("collab:");
 
@@ -387,7 +387,7 @@ export async function closeTab(id: string, force = false) {
     if (choice === "save" && !(await save(id))) return;
   }
   app.tabs.splice(idx, 1);
-  collabHooks.tabClosed(tab.path);
+  collabHooks.tabClosed(tab.path, tab.id);
   if (tab.path && !isRemotePath(tab.path)) {
     closedPaths.push(tab.path);
     if (closedPaths.length > 30) closedPaths.shift();

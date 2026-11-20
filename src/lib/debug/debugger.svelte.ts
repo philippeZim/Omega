@@ -12,6 +12,7 @@ import { IS_WIN } from "../platform";
 import { showView } from "../layout.svelte";
 import { normPath } from "../api";
 import { t, i18n, type Key } from "../i18n/index.svelte";
+import { collab } from "../collab/collab.svelte";
 
 type Json = any;
 
@@ -115,6 +116,8 @@ async function launchSession(s: DapSession, request: "launch" | "attach", args: 
 // ------------------------------------------------------------------ start / stop
 
 export async function startDebugging() {
+  // Collab guest: the program lives on the host's machine; remote debugging isn't supported yet.
+  if (collab.role === "guest" && collab.status === "connected") return ui.toast(t("ai.collab.debugHostOnly"), "error");
   const tab = activeTab();
   if (!tab?.path) return ui.toast(t("code.dbg.saveFirst"), "error");
   if (dbg.status !== "idle" && dbg.status !== "terminated") await stopDebugging();

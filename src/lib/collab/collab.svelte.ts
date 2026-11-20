@@ -161,10 +161,14 @@ export async function join(ticket: string) {
 
 // ------------------------------------------------------------------ leave / stop
 
+/** Run after a session ended and the shared docs are gone (`wasGuest`: we were a guest). */
+export const sessionEndHooks: ((wasGuest: boolean) => Promise<void> | void)[] = [];
+
 let leaving = false;
 export async function leave() {
   if (leaving) return;
   leaving = true;
+  const wasGuest = collab.role === "guest";
   if (collab.role === "host") broadcast({ t: "ended" });
   // Mark as idle first so the connection-closed events of our own leave don't show an error.
   collab.status = "idle";
@@ -172,6 +176,13 @@ export async function leave() {
   const { teardownShare } = await import("./share.svelte");
   await teardownShare();
   Object.assign(collab, { role: null, status: "idle", ticket: "", participants: [], requests: [], hostPeer: null, error: "" });
+  for (const h of sessionEndHooks) {
+    try {
+      await h(wasGuest);
+    } catch (e) {
+      console.error("collab end hook", e);
+    }
+  }
   leaving = false;
 }
 
