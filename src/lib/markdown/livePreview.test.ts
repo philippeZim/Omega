@@ -44,8 +44,10 @@ describe("resolvePath", () => {
     expect(resolvePath("a.md", null)).toBeNull();
   });
 
-  // bug: decodeURI throws URIError on a lone "%" (e.g. "100%.md"), so the link handler / image widget throws.
-  test.fails("a literal % that is not an escape does not throw", () => {
+  // #26: decodeURI threw URIError on a lone "%" (e.g. "100%.md"), so the link handler / image widget threw.
+  test("a literal % that is not an escape does not throw", () => {
     expect(resolvePath("100%.md", from)).toBe("/home/me/notes/100%.md");
+    expect(resolvePath("img/50% off.png", from)).toBe("/home/me/notes/img/50% off.png");
+    expect(resolvePath("100%.md#Top", from)).toBe("/home/me/notes/100%.md");
   });
 });

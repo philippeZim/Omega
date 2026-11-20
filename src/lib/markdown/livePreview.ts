@@ -33,10 +33,19 @@ function dirOf(p: string) {
   return p.replace(/\/[^/]*$/, "") || "/";
 }
 
+/** decodeURI that keeps the raw text when it is not a valid escape (a literal "%", e.g. "100%.md"). */
+function safeDecode(s: string) {
+  try {
+    return decodeURI(s);
+  } catch {
+    return s;
+  }
+}
+
 export function resolvePath(href: string, fromPath: string | null): string | null {
   const drive = /^[A-Za-z]:[\\/]/.test(href);
   if (!drive && /^[a-z][a-z0-9+.-]*:/i.test(href)) return null;
-  let p = decodeURI(href.split("#")[0]).replace(/\\/g, "/");
+  let p = safeDecode(href.split("#")[0]).replace(/\\/g, "/");
   if (!p.startsWith("/") && !drive) {
     if (!fromPath) return null;
     p = dirOf(fromPath) + "/" + p;
