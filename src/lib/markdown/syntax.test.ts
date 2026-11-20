@@ -99,5 +99,14 @@ describe("[[wiki links]]", () => {
   });
   test("empty, unclosed or multi-line is not a wiki link", () => {
     expect(nodes("[[]] [[a\nb]] [[c", "WikiLink")).toEqual([]);
+    expect(nodes("[[PDF]](file.pdf) [[1]][r]", "WikiLink")).toEqual([]);
+  });
+  test("[[text]](url) and [[text]][label] are whole links", () => {
+    expect(nodes("[[PDF]](file.pdf) [[1]][r]", "Link", "URL", "LinkLabel")).toEqual([
+      ["Link", "[[PDF]](file.pdf)"],
+      ["URL", "file.pdf"],
+      ["Link", "[[1]][r]"],
+      ["LinkLabel", "[r]"],
+    ]);
   });
 });

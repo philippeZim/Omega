@@ -159,6 +159,11 @@ describe("rendered links", () => {
     expect(links("[[notes/second|the second]]")).toEqual([["the second", "notes/second.md"]]);
     expect(links("[[Note#Part]] [[pic.png]]")).toEqual([["Note#Part", "Note.md#Part"], ["pic.png", "pic.png"]]);
   });
+
+  test("a bracketed link text is not a wiki link", () => {
+    expect(links("[[PDF]](file.pdf)")).toEqual([["[PDF]", "file.pdf"]]);
+    expect(links("[[1]][r]\n\n[r]: u.md")).toEqual([["[1]", "u.md"]]);
+  });
 });
 
 describe("wikiHref", () => {
