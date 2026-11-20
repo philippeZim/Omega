@@ -2,6 +2,7 @@
   import { app, setMode, openFolder, setRoot, recentFolders } from "../lib/state.svelte";
   import { fsApi } from "../lib/api";
   import { t } from "../lib/i18n/index.svelte";
+  import { aheadLabel } from "../lib/git/labels";
   import { git, branches, switchBranch, newBranch, pull, push, cloneRepo, publishGitHub, initRepo, connectRemote } from "../lib/git/git.svelte";
 
   async function branchMenu(e: MouseEvent) {
@@ -11,7 +12,7 @@
     ui.openMenu(new MouseEvent("contextmenu", { clientX: r.left, clientY: r.bottom + 8 }), [
       { label: t("app.newBranch"), action: newBranch },
       { label: t("app.pull") + (git.behind ? t("app.behind", { n: git.behind }) : ""), shortcut: `${ctrl} T`, action: pull },
-      { label: "Push" + (git.ahead ? t("app.ahead", { n: git.ahead }) : ""), shortcut: `${ctrl} ⇧ K`, action: push },
+      { label: "Push" + (git.ahead ? aheadLabel(git.ahead) : ""), shortcut: `${ctrl} ⇧ K`, action: push },
       { label: t("app.showChanges"), shortcut: `${ctrl} K`, action: () => showView("changes") },
       { label: git.remoteUrl ? t("app.remoteChange", { url: git.remoteUrl.replace(/^https?:\/\/|^git@/, "").replace(/\.git$/, "") }) : t("app.connectRemote"), action: connectRemote },
       { separator: true, label: "" },

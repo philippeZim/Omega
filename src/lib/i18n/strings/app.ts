@@ -90,6 +90,7 @@ export const en = {
   "app.help": "Help",
   "app.cheatSheet": "Cheat Sheet (F1)",
   "app.mode.text": "Text",
+  "app.aheadOne": " (1 commit)",
   // Sidebar
   "app.files": "Files",
   "app.changes": "Changes",
@@ -278,6 +279,7 @@ export const de: Record<keyof typeof en, string> = {
   "app.help": "Hilfe",
   "app.cheatSheet": "Cheat Sheet (F1)",
   "app.mode.text": "Text",
+  "app.aheadOne": " (1 Commit)",
   "app.files": "Dateien",
   "app.changes": "Änderungen",
   "app.outline": "Gliederung",
@@ -464,6 +466,7 @@ export const fr: Record<keyof typeof en, string> = {
   "app.help": "Aide",
   "app.cheatSheet": "Aide-mémoire (F1)",
   "app.mode.text": "Texte",
+  "app.aheadOne": " (1 commit)",
   "app.files": "Fichiers",
   "app.changes": "Modifications",
   "app.outline": "Plan",
