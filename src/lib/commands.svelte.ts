@@ -67,7 +67,7 @@ const APP_COMMANDS: CommandDef[] = [
   { id: "search.inFiles", group: "search", keys: ["Mod-Shift-f"], run: () => openFind(false), inTerminal: true },
   { id: "search.replaceInFiles", group: "search", keys: ["Mod-Shift-r"], run: () => openFind(true), inTerminal: true },
   { id: "app.help", group: "general", keys: ["F1"], run: () => (ui.help = !ui.help) },
-  { id: "app.settings", group: "general", keys: ["Mod-Comma"], run: () => (settings.open = !settings.open) },
+  { id: "app.settings", group: "general", keys: ["Mod-,"], run: () => (settings.open = !settings.open) },
   { id: "app.checkUpdates", group: "general", keys: [], run: () => checkForUpdates(true) },
   { id: "app.report", group: "general", keys: [], run: () => (report.open = true), inTerminal: true },
   { id: "app.zoomIn", group: "general", keys: ["Mod-Plus", "Mod-="], run: () => setSize("uiScale", Math.min(1.5, +(settings.uiScale + 0.05).toFixed(2))), inTerminal: true },

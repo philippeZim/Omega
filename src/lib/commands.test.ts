@@ -4,6 +4,7 @@ import { normalize } from "./keys";
 import { dictionaries } from "./i18n/strings";
 import { COMMANDS, applyKeymap, conflicts, defaultKeysFor, handleGlobalKey, keymapState, keysFor, resetAllKeys, setKeys } from "./commands.svelte";
 import { toggleZone } from "./layout.svelte";
+import { settings } from "./settings.svelte";
 const { stub } = vi.hoisted(() => {
   const stub = (extra: Record<string, unknown> = {}) =>
     new Proxy(extra, {
@@ -148,6 +149,13 @@ describe("handleGlobalKey", () => {
     setKeys("app.sidebar", ["Mod-Shift-F12"]);
     handleGlobalKey(new KeyboardEvent("keydown", { key: "b", code: "KeyB", ctrlKey: true, cancelable: true }));
     expect(toggleZone).not.toHaveBeenCalled();
+  });
+
+  test("Ctrl+, opens Settings by the produced character, wherever ',' sits (AZERTY: KeyM)", () => {
+    const e = new KeyboardEvent("keydown", { key: ",", code: "KeyM", ctrlKey: true, cancelable: true });
+    handleGlobalKey(e);
+    expect(e.defaultPrevented).toBe(true);
+    expect((settings as unknown as { open: boolean }).open).toBe(true);
   });
 
   test("blocks reload (F5) when no command matches", () => {
