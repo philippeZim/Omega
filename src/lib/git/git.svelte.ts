@@ -6,6 +6,7 @@ import { app, setRoot, openFile, save, syncFromDisk } from "../state.svelte";
 import { ui } from "../ui.svelte";
 import { joinPath, fsApi } from "../api";
 import { t, type Key } from "../i18n/index.svelte";
+import { gitErrorMessage } from "./errors";
 
 export interface Change {
   path: string;
@@ -48,7 +49,7 @@ export async function run(args: string[], root = git.top || app.root): Promise<O
 async function runOk(args: string[], what: Key): Promise<Out | null> {
   const r = await run(args);
   if (r.code !== 0) {
-    ui.toast(t("git.failed", { what: t(what), msg: (r.stderr || r.stdout).trim().split("\n").slice(-2).join(" ") }), "error");
+    ui.toast(t("git.failed", { what: t(what), msg: gitErrorMessage(r) }), "error");
     return null;
   }
   return r;
