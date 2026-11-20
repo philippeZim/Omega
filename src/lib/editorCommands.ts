@@ -102,7 +102,10 @@ const sortLines: Command = (view) => {
 const changeCase = (upper: boolean): Command => (view) => {
   view.dispatch(view.state.changeByRange((r) => {
     const text = view.state.sliceDoc(r.from, r.to);
-    return { changes: { from: r.from, to: r.to, insert: upper ? text.toUpperCase() : text.toLowerCase() }, range: r };
+    const insert = upper ? text.toUpperCase() : text.toLowerCase();
+    // The text can change length ("ß" → "SS"), so select the whole result, keeping the direction.
+    const end = r.from + insert.length;
+    return { changes: { from: r.from, to: r.to, insert }, range: r.anchor > r.head ? EditorSelection.range(end, r.from) : EditorSelection.range(r.from, end) };
   }));
   return true;
 };
