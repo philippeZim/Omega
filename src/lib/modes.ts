@@ -8,7 +8,7 @@ import { markdown, markdownLanguage, markdownKeymap } from "@codemirror/lang-mar
 import { languages } from "@codemirror/language-data";
 import { Prec } from "@codemirror/state";
 import { lintGutter } from "@codemirror/lint";
-import { Highlight, InlineMath, BlockMath } from "./markdown/syntax";
+import { Highlight, InlineMath, BlockMath, WikiLink } from "./markdown/syntax";
 import { livePreview } from "./markdown/livePreview";
 import { codeHighlight, proseLayout } from "./theme";
 import { latexExtensions } from "./latex/language";
@@ -32,7 +32,7 @@ export function modeForExtension(ext: string): Mode | null {
   return null;
 }
 
-const markdownLang = markdown({ base: markdownLanguage, codeLanguages: languages, extensions: [Highlight, InlineMath, BlockMath] });
+const markdownLang = markdown({ base: markdownLanguage, codeLanguages: languages, extensions: [Highlight, InlineMath, BlockMath, WikiLink] });
 
 export function modeExtensions(mode: Mode, rawPath: string | null): Extension {
   // Shared files of a collab session (guest side): highlighting by extension, but no LSP,

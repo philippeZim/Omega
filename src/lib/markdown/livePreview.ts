@@ -168,6 +168,19 @@ const INLINE: Record<string, string> = {
 };
 const INLINE_MARKS = new Set(["EmphasisMark", "StrikethroughMark", "HighlightMark", "CodeMark"]);
 
+/** Reference labels match case-insensitively, with runs of whitespace collapsed (CommonMark). */
+const refKey = (label: string) => label.trim().replace(/\s+/g, " ").toLowerCase();
+
+/** `[[Note#Heading]]` → "Note.md#Heading"; a name without an extension is a Markdown note. */
+export function wikiHref(target: string) {
+  const hash = target.indexOf("#");
+  const name = (hash < 0 ? target : target.slice(0, hash)).trim();
+  const frag = hash < 0 ? "" : target.slice(hash);
+  if (!name) return frag;
+  // The link handler percent-decodes hrefs; keep a literal "%" in a note name.
+  return name.replace(/%/g, "%25") + (/\.[A-Za-z0-9]+$/.test(name) ? "" : ".md") + frag;
+}
+
 function listDepth(node: SyntaxNode) {
   let d = 0;
   for (let p = node.parent; p; p = p.parent) if (p.name === "BulletList" || p.name === "OrderedList") d++;
@@ -198,6 +211,26 @@ function buildInline(view: EditorView, path: string | null): DecorationSet {
   const callouts = new Set<number>();
   /** Nesting depth of the blockquote on each quoted line (keyed by line start). */
   const quoteDepth = new Map<number, number>();
+  let refs: Map<string, string> | null = null;
+  /** URL of the reference definition `[label]: url` anywhere in the document (collected on first use). */
+  const refUrl = (label: string) => {
+    if (!refs) {
+      const found = new Map<string, string>();
+      syntaxTree(state).iterate({
+        enter(n) {
+          if (n.name === "LinkReference") {
+            const l = n.node.getChild("LinkLabel"), u = n.node.getChild("URL");
+            const key = l && refKey(slice(l.from + 1, l.to - 1));
+            if (key && u && !found.has(key)) found.set(key, linkDest(slice(u.from, u.to)));
+            return false;
+          }
+          if (n.name === "Paragraph" || n.name === "FencedCode" || n.name === "CodeBlock" || n.name === "Table") return false;
+        },
+      });
+      refs = found;
+    }
+    return refs.get(refKey(label));
+  };
   /** The `[!type]` marker of the callout being decorated; nodes inside it (e.g. a Link) are skipped. */
   let skip: [number, number] | null = null;
 
@@ -270,7 +303,15 @@ function buildInline(view: EditorView, path: string | null): DecorationSet {
         if (name === "Link") {
           const marks = node.getChildren("LinkMark");
           const urlNode = node.getChild("URL");
-          const url = urlNode ? linkDest(slice(urlNode.from, urlNode.to)) : "";
+          let url = urlNode ? linkDest(slice(urlNode.from, urlNode.to)) : "";
+          if (!urlNode && marks.length === 2) {
+            // Reference link: [text][label], [label][] or [label]. Without a definition it is plain text.
+            const label = node.getChild("LinkLabel");
+            const key = label && label.to - label.from > 2 ? slice(label.from + 1, label.to - 1) : slice(marks[0].to, marks[1].from);
+            const def = refUrl(key);
+            if (def === undefined) return;
+            url = def;
+          }
           if (marks.length >= 2) {
             const tFrom = marks[0].to, tTo = marks[1].from;
             if (touches(sel, n.from, n.to)) {
@@ -284,6 +325,23 @@ function buildInline(view: EditorView, path: string | null): DecorationSet {
             }
           }
           return;
+        }
+
+        if (name === "WikiLink") {
+          const inner = slice(n.from + 2, n.to - 2);
+          const bar = inner.indexOf("|");
+          const tFrom = bar < 0 ? n.from + 2 : n.from + 3 + bar, tTo = n.to - 2;
+          if (touches(sel, n.from, n.to)) {
+            mark(n.from, tFrom, "md-formatting");
+            mark(tFrom, tTo, "md-link");
+            mark(tTo, n.to, "md-formatting");
+          } else {
+            const target = (bar < 0 ? inner : inner.slice(0, bar)).trim();
+            hide(n.from, tFrom);
+            mark(tFrom, tTo, "md-link", { "data-href": wikiHref(target), title: target });
+            hide(tTo, n.to);
+          }
+          return false;
         }
 
         if (name === "Image") {

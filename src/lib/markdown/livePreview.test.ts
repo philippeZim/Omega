@@ -3,7 +3,8 @@ import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { forceParsing } from "@codemirror/language";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
-import { livePreview, resolvePath, toggleWrap } from "./livePreview";
+import { WikiLink } from "./syntax";
+import { livePreview, resolvePath, toggleWrap, wikiHref } from "./livePreview";
 
 describe("resolvePath", () => {
   const from = "/home/me/notes/index.md";
@@ -110,30 +111,67 @@ describe("toggleWrap", () => {
 
 // ------------------------------------------------------------ rendered links
 
-/** Renders `doc` with the cursor on an extra last line, returns the data-href of every rendered link. */
-function hrefs(doc: string): string[] {
+/** Renders `doc` with the cursor on an extra last line; [text, data-href] of every rendered link. */
+function links(doc: string): [string, string | undefined][] {
   const text = doc + "\n\nend";
   const view = new EditorView({
     state: EditorState.create({
       doc: text,
       selection: { anchor: text.length },
-      extensions: [markdown({ base: markdownLanguage }), livePreview("/n/index.md")],
+      extensions: [markdown({ base: markdownLanguage, extensions: [WikiLink] }), livePreview("/n/index.md")],
     }),
     parent: document.body,
   });
-  const out = [...view.dom.querySelectorAll<HTMLElement>("[data-href]")].map((e) => e.dataset.href!);
+  // The initial parse has a time budget; under load it may stop before the reference definitions.
+  forceParsing(view, text.length, 5000);
+  const out = [...view.dom.querySelectorAll<HTMLElement>(".md-link")].map((e): [string, string | undefined] => [e.textContent!, e.dataset.href]);
   view.destroy();
   return out;
 }
 
 describe("rendered links", () => {
-  test("plain destination", () => {
-    expect(hrefs("[a](notes/a.md)")).toEqual(["notes/a.md"]);
+  test("inline link", () => {
+    expect(links("[a](notes/a.md)")).toEqual([["a", "notes/a.md"]]);
   });
 
   // #43: the <…> brackets of a CommonMark angle destination ended up in the path.
   test("angle-bracket destination drops the brackets", () => {
-    expect(hrefs("[Angle](<notes/with space.md>)")).toEqual(["notes/with space.md"]);
+    expect(links("[Angle](<notes/with space.md>)")).toEqual([["Angle", "notes/with space.md"]]);
+    expect(links("[r][a]\n\n[a]: <notes/with space.md>")).toEqual([["r", "notes/with space.md"]]);
+  });
+
+  // #44: reference links were styled as links but had no target.
+  test("reference links resolve their definition", () => {
+    const defs = "\n\n[a]: notes/second.md\n[Big  Label]: b.md";
+    expect(links("[r][a]" + defs)).toEqual([["r", "notes/second.md"]]);
+    expect(links("[a][]" + defs)).toEqual([["a", "notes/second.md"]]);
+    expect(links("[A]" + defs)).toEqual([["A", "notes/second.md"]]);
+    expect(links("[x][big label]" + defs)).toEqual([["x", "b.md"]]);
+  });
+
+  test("brackets without a definition are plain text", () => {
+    expect(links("see [x] and [y][z]")).toEqual([]);
+  });
+
+  // #44: [[wiki links]] showed as "[Wiki link]" with no target.
+  test("wiki links", () => {
+    expect(links("- [[Wiki link]]")).toEqual([["Wiki link", "Wiki link.md"]]);
+    expect(links("[[notes/second|the second]]")).toEqual([["the second", "notes/second.md"]]);
+    expect(links("[[Note#Part]] [[pic.png]]")).toEqual([["Note#Part", "Note.md#Part"], ["pic.png", "pic.png"]]);
+  });
+
+  test("a bracketed link text is not a wiki link", () => {
+    expect(links("[[PDF]](file.pdf)")).toEqual([["[PDF]", "file.pdf"]]);
+    expect(links("[[1]][r]\n\n[r]: u.md")).toEqual([["[1]", "u.md"]]);
+  });
+});
+
+describe("wikiHref", () => {
+  test("adds .md, keeps the fragment and a literal %", () => {
+    expect(wikiHref("a b")).toBe("a b.md");
+    expect(wikiHref("x.pdf")).toBe("x.pdf");
+    expect(wikiHref("#Top")).toBe("#Top");
+    expect(wikiHref("100%")).toBe("100%25.md");
   });
 });
 
