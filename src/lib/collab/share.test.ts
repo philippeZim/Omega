@@ -220,3 +220,57 @@ test("guest: a file the host deleted stays open as an unsaved tab with its text 
   expect(closeTab).not.toHaveBeenCalled();
   expect(ui.toasts[0]?.kind).toBe("error");
 });
+
+test("host renames a shared file: the doc follows, guest edits go to the new name (#127)", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    const fs = fakeFs({ "/p/a.txt": "original a\n" });
+    await receive("g1", { t: "doc.open", path: "a.txt" });
+    fs.files.set("/p/b.txt", fs.files.get("/p/a.txt")!);
+    fs.files.delete("/p/a.txt");
+    collabHooks.pathMoved("/p/a.txt", "/p/b.txt");
+    expect(sent.find((s) => s.msg.t === "doc.moved")).toEqual({ peer: "g1", msg: { t: "doc.moved", path: "a.txt", to: "b.txt", name: "b.txt" } });
+
+    // One edit still sent under the old name (in flight during the rename), one under the new.
+    const g = await guestInsert("a.txt", 11, "x\n");
+    await guestInsert("b.txt", 13, "guest line after rename\n", g);
+    for (const f of fileListeners) f(["/p/a.txt", "/p/b.txt"]);
+    await vi.advanceTimersByTimeAsync(800);
+    expect(fs.files.has("/p/a.txt")).toBe(false);
+    expect(fs.files.get("/p/b.txt")).toBe("original a\nx\nguest line after rename\n");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("renaming a folder moves the shared docs inside it, moving a file out of the project unshares it (#127)", async () => {
+  fakeFs({ "/p/src/a.rs": "a\n", "/p/src/b.rs": "b\n" });
+  await receive("g1", { t: "doc.open", path: "src/a.rs" });
+  await receive("g1", { t: "doc.open", path: "src/b.rs" });
+  collabHooks.pathMoved("/p/src", "/p/lib");
+  expect(sent.filter((s) => s.msg.t === "doc.moved").map((s) => s.msg.to)).toEqual(["lib/a.rs", "lib/b.rs"]);
+  collabHooks.pathMoved("/p/lib/a.rs", "/elsewhere/a.rs");
+  expect(sent.find((s) => s.msg.t === "doc.gone")?.msg).toEqual({ t: "doc.gone", path: "lib/a.rs", reason: "deleted" });
+});
+
+test("guest: the tab of a file the host renamed follows the new name (#127)", async () => {
+  collab.role = "guest";
+  const h = new Y.Doc();
+  h.getText("content").insert(0, "original a\n");
+  await receive("host-peer", { t: "doc.state", path: "a.txt", name: "a.txt", update: b64(Y.encodeStateAsUpdate(h)) });
+  const tab = await vi.waitFor(() => {
+    const x = app.tabs.find((y) => y.path === "collab:a.txt");
+    if (!x || !bindings.has(x.id)) throw new Error("not open yet");
+    return x;
+  });
+  await receive("host-peer", { t: "doc.moved", path: "a.txt", to: "b.txt", name: "b.txt" });
+  expect(tab).toMatchObject({ path: "collab:b.txt", name: "b.txt" });
+
+  // Typing now goes out under the new name.
+  const { EditorView } = await import("@codemirror/view");
+  const view = new EditorView({ state: EditorState.create({ doc: "original a\n", extensions: bindings.get(tab.id) as any }) });
+  sent.length = 0;
+  view.dispatch({ changes: { from: 11, insert: "guest\n" } });
+  expect(sent.map((s) => [s.peer, s.msg.t, s.msg.path])).toContainEqual(["host-peer", "doc.update", "b.txt"]);
+  view.destroy();
+});
