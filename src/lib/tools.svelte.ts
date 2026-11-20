@@ -34,7 +34,14 @@ export const TOOLS: Record<ToolId, ToolInfo> = {
   gradle: { label: "Gradle", cmds: ["gradle"], mb: 140 },
   rust: { label: "Rust (rustup)", cmds: ["cargo"], mb: 300 },
   git: { label: "Git", cmds: ["git"], mb: 60 },
-  cc: { label: OS === "windows" ? "C/C++ compiler (LLVM-MinGW)" : OS === "macos" ? "Xcode Command Line Tools" : "C/C++ compiler", cmds: CC_CMDS, mb: OS === "windows" ? 170 : 0 },
+  cc: {
+    // A getter so the label follows the UI language (#63).
+    get label() {
+      return OS === "windows" ? t("tools.ccWindows") : OS === "macos" ? "Xcode Command Line Tools" : t("tools.cc");
+    },
+    cmds: CC_CMDS,
+    mb: OS === "windows" ? 170 : 0,
+  },
 };
 
 export const toolState = $state({

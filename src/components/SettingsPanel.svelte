@@ -24,7 +24,7 @@
   import { installs, catalog, refreshInstalls, checkUpdates, updateAvailable, wasChecked, canInstall, manualHint, install, update, remove, type Group } from "../lib/installs.svelte";
 
   const INSTALL_GROUPS: Group[] = ["tool", "lsp", "debug"];
-  const installItems = catalog();
+  const installItems = $derived(catalog());
   $effect(() => {
     if (tab === "installs") refreshInstalls();
   });
