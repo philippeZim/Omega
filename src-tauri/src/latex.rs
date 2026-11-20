@@ -195,12 +195,7 @@ fn compile(app: &AppHandle, path: Option<String>, content: String) -> Result<Com
     log.push_str(&String::from_utf8_lossy(&out.stdout));
     let tex_log = std::fs::read_to_string(build.join(format!("{stem}.log"))).unwrap_or_default();
 
-    let map_file = |f: &str| -> String {
-        let p = Path::new(f);
-        let rel = p.strip_prefix(&build).unwrap_or(p);
-        let rel = rel.strip_prefix("./").unwrap_or(rel);
-        crate::env::norm(if rel.is_absolute() { rel.to_path_buf() } else { root_dir.join(rel) })
-    };
+    let map_file = |f: &str| map_source(f, &build, &root_dir);
 
     let mut diagnostics = parse_tectonic(&log, &map_file);
     if diagnostics.iter().all(|d| d.severity != "error") {
@@ -218,6 +213,24 @@ fn compile(app: &AppHandle, path: Option<String>, content: String) -> Result<Com
         sync,
         millis: started.elapsed().as_millis(),
     })
+}
+
+/// Maps a file name as TeX reports it (relative to the build dir, or a path inside it) back to
+/// the source dir. `\input{chapters/one}` is reported without `.tex`, so that is added when only
+/// the `.tex` file exists.
+fn map_source(f: &str, build: &Path, root_dir: &Path) -> String {
+    let p = Path::new(f);
+    let rel = p.strip_prefix(build).unwrap_or(p);
+    let rel = rel.strip_prefix("./").unwrap_or(rel);
+    let mut path = if rel.is_absolute() { rel.to_path_buf() } else { root_dir.join(rel) };
+    if !path.exists() {
+        let mut tex = path.clone().into_os_string();
+        tex.push(".tex");
+        if Path::new(&tex).is_file() {
+            path = tex.into();
+        }
+    }
+    crate::env::norm(path)
 }
 
 #[derive(Serialize, Clone)]
@@ -501,6 +514,23 @@ mod tests {
         let d = parse_tex_log(log, &id);
         assert_eq!((d[0].line, d[0].message.as_str()), (5, "Reference `a' on page 1 undefined"));
         assert!(parse_tex_log("no warnings here", &id).is_empty());
+    }
+
+    #[test]
+    fn source_without_tex_extension() {
+        let dir = tempfile::tempdir().unwrap();
+        let (src, build) = (dir.path().join("src"), dir.path().join("build"));
+        std::fs::create_dir_all(src.join("chapters")).unwrap();
+        std::fs::write(src.join("chapters/broken.tex"), "").unwrap();
+        std::fs::write(src.join("data"), "").unwrap();
+        std::fs::write(src.join("data.tex"), "").unwrap();
+        let norm = |p: PathBuf| crate::env::norm(p);
+        assert_eq!(map_source("chapters/broken", &build, &src), norm(src.join("chapters/broken.tex")));
+        assert_eq!(map_source("./chapters/broken.tex", &build, &src), norm(src.join("chapters/broken.tex")));
+        assert_eq!(map_source(&build.join("main.tex").to_string_lossy(), &build, &src), norm(src.join("main.tex")));
+        // An existing file without extension is kept; a missing one stays as reported.
+        assert_eq!(map_source("data", &build, &src), norm(src.join("data")));
+        assert_eq!(map_source("missing", &build, &src), norm(src.join("missing")));
     }
 
     #[test]
