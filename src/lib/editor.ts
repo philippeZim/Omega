@@ -200,6 +200,11 @@ export function markSaved(id: string, doc?: Text) {
   d.saved = doc ?? getDoc(id) ?? d.saved;
 }
 
+/** The content last loaded from or written to disk (null for unknown docs). */
+export function savedText(id: string): string | null {
+  return docs.get(id)?.saved.toString() ?? null;
+}
+
 export function isDirty(id: string): boolean {
   const d = docs.get(id);
   const cur = getDoc(id);

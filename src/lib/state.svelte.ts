@@ -11,7 +11,7 @@ import * as latexCtl from "./latex/controller.svelte";
 import { setLspHooks } from "./code/lspExtension";
 import { allClients, fileUri } from "./code/lsp.svelte";
 import { t } from "./i18n/index.svelte";
-import { watchRoot } from "./fsWatch.svelte";
+import { onFilesChanged, watchRoot } from "./fsWatch.svelte";
 import { detectEol, fromDisk, toDisk, type Eol } from "./eol";
 
 setLspHooks({
@@ -149,37 +149,101 @@ export async function flushAutosave() {
 
 window.addEventListener("blur", () => flushAutosave());
 
+/** Tabs Omega is writing right now (watcher events for them are our own). */
+const writing = new Set<string>();
+/** Tabs with a pending "changed on disk" question. */
+const conflicts = new Set<string>();
+let conflictQueue: Promise<unknown> = Promise.resolve();
+
+/** `raw`: the file content as read from disk. */
+function reloadTab(tab: Tab, raw: string) {
+  tab.eol = detectEol(raw);
+  ed.replaceDocText(tab.id, fromDisk(raw));
+  ed.markSaved(tab.id);
+  tab.dirty = false;
+}
+
 /**
- * Reloads open tabs whose file changed on disk (git pull/checkout, other editors), like PyCharm.
- * Tabs with unsaved edits are left alone.
+ * A tab with unsaved edits whose file changed on disk since it was loaded or saved: asks whether
+ * to reload it or overwrite the file. One question at a time; resolves to true once tab and file
+ * agree again.
+ */
+function resolveConflict(tab: Tab): Promise<boolean> {
+  if (conflicts.has(tab.id)) return Promise.resolve(false);
+  conflicts.add(tab.id);
+  const run = conflictQueue.then(() => askConflict(tab)).finally(() => conflicts.delete(tab.id));
+  conflictQueue = run.catch(() => {});
+  return run;
+}
+
+async function askConflict(tab: Tab): Promise<boolean> {
+  if (!tab.path || ed.savedText(tab.id) === null) return false; // closed meanwhile
+  const choice = await ui.choose(t("app.changedOnDiskTitle", { name: tab.name }), t("app.changedOnDiskMessage"), [
+    { label: t("app.keepMine"), value: "keep", danger: true },
+    { label: t("app.reloadFromDisk"), value: "reload", primary: true },
+  ]);
+  if (choice === "keep") return save(tab.id, false, true);
+  if (choice !== "reload" || !tab.path) return false; // dismissed: stays dirty, asked again on the next save
+  try {
+    reloadTab(tab, await fsApi.readFile(tab.path));
+    return true;
+  } catch (e) {
+    ui.toast(t("app.cannotOpenFile", { error: String(e) }), "error");
+    return false;
+  }
+}
+
+/**
+ * Reloads open tabs whose file changed on disk (watcher events, git pull/checkout, other editors,
+ * agents in the terminal), like PyCharm. `paths`: only check these files. Tabs with unsaved edits
+ * are never overwritten silently; the user is asked instead.
  */
 let syncing = false;
-export async function syncFromDisk() {
-  if (syncing) return;
+let syncAgain = false;
+export async function syncFromDisk(paths?: string[]) {
+  if (syncing) {
+    syncAgain = true;
+    return;
+  }
   syncing = true;
   try {
-    for (const t of app.tabs) {
-      if (!t.path || t.dirty || isRemotePath(t.path)) continue;
-      let disk: string;
-      try {
-        disk = await fsApi.readFile(t.path);
-      } catch {
-        continue; // deleted or unreadable: keep the buffer
+    let only = paths ? new Set(paths) : null;
+    do {
+      syncAgain = false;
+      for (const t of app.tabs) {
+        if (!t.path || isRemotePath(t.path) || (only && !only.has(t.path))) continue;
+        if (writing.has(t.id) || conflicts.has(t.id)) continue;
+        const saved = ed.savedText(t.id);
+        let raw: string;
+        try {
+          raw = await fsApi.readFile(t.path);
+        } catch {
+          continue; // deleted or unreadable: keep the buffer
+        }
+        // Skip if Omega saved the tab while we were reading.
+        if (saved === null || writing.has(t.id) || ed.savedText(t.id) !== saved) continue;
+        const disk = fromDisk(raw);
+        // Unchanged since we loaded or wrote it (this also covers events caused by our own saves);
+        // only the line ending may have been converted.
+        if (disk === saved) {
+          t.eol = detectEol(raw);
+          continue;
+        }
+        if (!t.dirty) reloadTab(t, raw);
+        else if (ed.getText(t.id) === disk) {
+          t.eol = detectEol(raw);
+          ed.markSaved(t.id);
+          t.dirty = false;
+        } else void resolveConflict(t);
       }
-      if (t.dirty) continue; // user typed meanwhile
-      const doc = ed.getDoc(t.id);
-      t.eol = detectEol(disk);
-      disk = fromDisk(disk);
-      if (!doc || doc.toString() === disk) continue;
-      ed.replaceDocText(t.id, disk);
-      ed.markSaved(t.id);
-      t.dirty = false;
-    }
+      only = null; // a call came in meanwhile: check every tab
+    } while (syncAgain);
   } finally {
     syncing = false;
   }
 }
 window.addEventListener("focus", () => syncFromDisk());
+onFilesChanged((files) => syncFromDisk(files));
 document.addEventListener("visibilitychange", () => document.hidden && flushAutosave());
 getCurrentWindow()
   .onCloseRequested(async (e) => {
@@ -340,7 +404,8 @@ export async function closeTab(id: string, force = false) {
   }
 }
 
-export async function save(id = app.activeId, forceDialog = false): Promise<boolean> {
+/** `overwrite`: write even if the file changed on disk since it was loaded (the user chose so). */
+export async function save(id = app.activeId, forceDialog = false, overwrite = false): Promise<boolean> {
   const tab = app.tabs.find((t) => t.id === id);
   if (!tab) return false;
   if (isRemotePath(tab.path)) return true; // saved by the host
@@ -350,14 +415,27 @@ export async function save(id = app.activeId, forceDialog = false): Promise<bool
     if (!chosen) return false;
     path = normPath(chosen);
   }
+  if (path === tab.path && !overwrite) {
+    // Never silently overwrite a change made outside Omega (also for files outside the watched folder).
+    if (conflicts.has(tab.id)) return false;
+    let disk: string | null = null;
+    try {
+      disk = fromDisk(await fsApi.readFile(path));
+    } catch {} // missing: nothing to protect
+    const saved = ed.savedText(tab.id);
+    if (disk !== null && saved !== null && disk !== saved && disk !== ed.getText(tab.id)) return resolveConflict(tab);
+  }
   const snapshot = ed.getDoc(tab.id);
   // Never write without a live document (e.g. after an editor reset) – that would empty the file.
   if (!snapshot) return false;
+  writing.add(tab.id);
   try {
     await fsApi.writeFile(path, toDisk(snapshot.toString(), tab.eol));
   } catch (e) {
     ui.toast(t("app.saveFailed", { error: String(e) }), "error");
     return false;
+  } finally {
+    writing.delete(tab.id);
   }
   ed.markSaved(tab.id, snapshot);
   window.dispatchEvent(new CustomEvent("omega:saved", { detail: path }));
