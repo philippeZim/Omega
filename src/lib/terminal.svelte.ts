@@ -29,8 +29,25 @@ export const terms = $state({
   visible: localStorage.getItem("termVisible") !== "false",
 });
 
+export interface ShellInfo {
+  id: string;
+  label: string;
+}
+
+let shellList: Promise<ShellInfo[]> | null = null;
+/** Available shells (first = system default). */
+export const listShells = () => (shellList ??= invoke<ShellInfo[]>("list_shells").catch(() => []));
+
+/** Shell for new terminals ("" = system default); persisted. */
+export const shellPref = $state({ id: localStorage.getItem("terminalShell") ?? "" });
+export function setDefaultShell(id: string) {
+  shellPref.id = id;
+  localStorage.setItem("terminalShell", id);
+}
+
 interface Instance {
   kind: "shell" | "run";
+  shell: string | null;
   term: Terminal;
   fit: FitAddon;
   el: HTMLDivElement;
@@ -100,7 +117,7 @@ export function setTerminalFontSize(px: number) {
 /** Shells left over from a previous page load are ended before the first new one starts. */
 const leftoversKilled = invoke("pty_kill_all").catch(() => {});
 
-export function newTerminal(cwd: string | null, kind: "shell" | "run" = "shell", title?: string): string {
+export function newTerminal(cwd: string | null, kind: "shell" | "run" = "shell", title?: string, shell?: ShellInfo): string {
   const id = `t${Date.now().toString(36)}${counter}`;
   const term = new Terminal({
     fontFamily: '"JetBrains Mono Variable", "JetBrainsMono Nerd Font", monospace',
@@ -146,11 +163,11 @@ export function newTerminal(cwd: string | null, kind: "shell" | "run" = "shell",
   const el = document.createElement("div");
   el.className = "term-host";
   el.dataset.tid = id;
-  instances.set(id, { kind, term, fit, el, spawned: false, cwd, pending: [] });
+  instances.set(id, { kind, shell: shell?.id ?? (shellPref.id || null), term, fit, el, spawned: false, cwd, pending: [] });
   // Lowest free number, so a fresh panel starts again at "Terminal 1".
   let n = 1;
   while (terms.tabs.some((t) => t.title === `Terminal ${n}`)) n++;
-  terms.tabs.push({ id, title: title ?? (kind === "run" ? t("common.run") : `Terminal ${n}`), kind, exited: false });
+  terms.tabs.push({ id, title: title ?? (kind === "run" ? t("common.run") : shell ? shell.label : `Terminal ${n}`), kind, exited: false });
   counter++;
   terms.active = id;
   terms.visible = true;
@@ -170,7 +187,7 @@ export async function attach(id: string, container: HTMLElement, cwdFallback: st
   if (!inst.spawned) {
     inst.spawned = true;
     await leftoversKilled;
-    await invoke("pty_spawn", { id, cwd: inst.cwd ?? cwdFallback, cols: inst.term.cols, rows: inst.term.rows, kind: inst.kind });
+    await invoke("pty_spawn", { id, cwd: inst.cwd ?? cwdFallback, cols: inst.term.cols, rows: inst.term.rows, kind: inst.kind, shell: inst.shell });
     for (const p of inst.pending) await invoke("pty_write", { id, data: p });
     inst.pending = [];
   }

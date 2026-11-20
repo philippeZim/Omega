@@ -144,6 +144,8 @@ export const en = {
   "code.term.debugConsole": "Debug Console",
   "code.term.search": "Search: {query}",
   "code.term.new": "New terminal",
+  "code.term.chooseShell": "Choose shell (e.g. WSL, Git Bash)",
+  "code.term.makeDefault": "Use {name} by default",
   "code.term.hide": "Hide terminal (Ctrl+^)",
   "code.term.exited": "[Process exited]",
 
@@ -328,6 +330,8 @@ export const de: Record<keyof typeof en, string> = {
   "code.term.debugConsole": "Debug-Konsole",
   "code.term.search": "Suche: {query}",
   "code.term.new": "Neues Terminal",
+  "code.term.chooseShell": "Shell wählen (z.B. WSL, Git Bash)",
+  "code.term.makeDefault": "{name} als Standard verwenden",
   "code.term.hide": "Terminal ausblenden (Strg+^)",
   "code.term.exited": "[Prozess beendet]",
 
@@ -509,6 +513,8 @@ export const fr: Record<keyof typeof en, string> = {
   "code.term.debugConsole": "Console de débogage",
   "code.term.search": "Recherche : {query}",
   "code.term.new": "Nouveau terminal",
+  "code.term.chooseShell": "Choisir le shell (p. ex. WSL, Git Bash)",
+  "code.term.makeDefault": "Utiliser {name} par défaut",
   "code.term.hide": "Masquer le terminal (Ctrl+^)",
   "code.term.exited": "[Processus terminé]",
 

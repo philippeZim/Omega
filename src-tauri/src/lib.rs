@@ -42,6 +42,7 @@ pub fn run() {
             env::refresh_path,
             tools::tool_install,
             tools::tool_installable,
+            pty::list_shells,
             fs::list_dir,
             fs::read_file,
             fs::write_file,

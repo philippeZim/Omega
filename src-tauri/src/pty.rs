@@ -24,36 +24,127 @@ struct PtyData {
     data: String,
 }
 
-/// The user's shell. Windows: PowerShell for interactive terminals (pwsh if installed); the "Run"
-/// terminal uses cmd.exe because Studio's run commands use `&&`, which Windows PowerShell 5 lacks.
-fn shell_command(run: bool) -> CommandBuilder {
+#[derive(serde::Serialize)]
+pub struct ShellInfo {
+    id: String,
+    label: String,
+}
+
+/// Shells the user can open a terminal with. The first entry is the system default.
+/// Windows: PowerShell 7, Windows PowerShell, Command Prompt, Git Bash and every WSL distribution;
+/// macOS/Linux: the login shell and the other shells listed in /etc/shells.
+#[tauri::command]
+pub fn list_shells() -> Vec<ShellInfo> {
+    let mut v = Vec::new();
+    let mut add = |id: String, label: String| v.push(ShellInfo { id, label });
     if cfg!(windows) {
-        if run {
-            let mut c = CommandBuilder::new("cmd.exe");
-            c.arg("/Q");
+        if crate::env::which("pwsh").is_some() {
+            add("pwsh".into(), "PowerShell".into());
+        }
+        add("powershell".into(), "Windows PowerShell".into());
+        add("cmd".into(), "Command Prompt".into());
+        if git_bash().is_some() {
+            add("gitbash".into(), "Git Bash".into());
+        }
+        for d in wsl_distros() {
+            add(format!("wsl:{d}"), format!("{d} (WSL)"));
+        }
+    } else {
+        let login = std::env::var("SHELL").unwrap_or_else(|_| if cfg!(target_os = "macos") { "/bin/zsh".into() } else { "/bin/bash".into() });
+        let mut seen = std::collections::HashSet::new();
+        let shells = std::fs::read_to_string("/etc/shells").unwrap_or_default();
+        let others = shells.lines().map(str::trim).filter(|l| l.starts_with('/')).map(String::from);
+        for path in std::iter::once(login).chain(others) {
+            let name = path.rsplit('/').next().unwrap_or(&path).to_string();
+            // Skip duplicates (/bin/bash vs /usr/bin/bash) and non-interactive helpers.
+            if ["nologin", "false", "git-shell", "rbash", "systemd-home-fallback-shell"].contains(&name.as_str()) || !std::path::Path::new(&path).is_file() || !seen.insert(name.clone()) {
+                continue;
+            }
+            add(path, name);
+        }
+    }
+    v
+}
+
+fn git_bash() -> Option<std::path::PathBuf> {
+    let git = crate::env::which("git")?;
+    // …\Git\cmd\git.exe → …\Git\bin\bash.exe
+    let bash = git.parent()?.parent()?.join("bin").join("bash.exe");
+    bash.is_file().then_some(bash)
+}
+
+/// Installed WSL distributions (`wsl -l -q` prints UTF-16).
+fn wsl_distros() -> Vec<String> {
+    let Ok(out) = crate::env::command("wsl.exe").args(["-l", "-q"]).output() else { return vec![] };
+    if !out.status.success() {
+        return vec![];
+    }
+    let units: Vec<u16> = out.stdout.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+    String::from_utf16_lossy(&units)
+        .lines()
+        .map(|l| l.trim_matches(|c: char| c.is_whitespace() || c == '\0' || c == '\u{feff}').to_string())
+        .filter(|l| !l.is_empty() && !l.starts_with("docker-desktop"))
+        .collect()
+}
+
+/// Command for a terminal. `run`: the Run terminal, which on Windows is always cmd.exe because
+/// Studio's run commands use `&&` (missing in Windows PowerShell 5). `shell`: an id from
+/// `list_shells` (None = system default).
+fn shell_command(run: bool, shell: Option<&str>, cwd: &str) -> CommandBuilder {
+    if cfg!(windows) {
+        let id = if run { "cmd" } else { shell.unwrap_or("") };
+        if let Some(distro) = id.strip_prefix("wsl:") {
+            let mut c = CommandBuilder::new("wsl.exe");
+            c.args(["-d", distro, "--cd", cwd]);
             return c;
+        }
+        match id {
+            "cmd" => {
+                let mut c = CommandBuilder::new("cmd.exe");
+                if run {
+                    c.arg("/Q");
+                }
+                return c;
+            }
+            "gitbash" => {
+                if let Some(b) = git_bash() {
+                    let mut c = CommandBuilder::new(b);
+                    c.args(["--login", "-i"]);
+                    return c;
+                }
+            }
+            "powershell" => {
+                let mut c = CommandBuilder::new("powershell.exe");
+                c.arg("-NoLogo");
+                return c;
+            }
+            _ => {}
         }
         let ps = crate::env::which("pwsh").map(|p| p.display().to_string()).unwrap_or_else(|| "powershell.exe".into());
         let mut c = CommandBuilder::new(ps);
         c.arg("-NoLogo");
         return c;
     }
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| if cfg!(target_os = "macos") { "/bin/zsh".into() } else { "/bin/bash".into() });
+    let shell = shell
+        .filter(|s| std::path::Path::new(s).is_file())
+        .map(String::from)
+        .or_else(|| std::env::var("SHELL").ok())
+        .unwrap_or_else(|| if cfg!(target_os = "macos") { "/bin/zsh".into() } else { "/bin/bash".into() });
     let mut c = CommandBuilder::new(shell);
     c.arg("-l");
     c
 }
 
 #[tauri::command]
-pub fn pty_spawn(app: AppHandle, id: String, cwd: Option<String>, cols: u16, rows: u16, kind: Option<String>) -> Result<(), String> {
+pub fn pty_spawn(app: AppHandle, id: String, cwd: Option<String>, cols: u16, rows: u16, kind: Option<String>, shell: Option<String>) -> Result<(), String> {
     let pair = native_pty_system()
         .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
         .map_err(|e| e.to_string())?;
 
-    let mut cmd = shell_command(kind.as_deref() == Some("run"));
     let home = crate::env::home().display().to_string();
     let dir = cwd.filter(|d| std::path::Path::new(d).is_dir()).unwrap_or(home);
-    cmd.cwd(dir);
+    let mut cmd = shell_command(kind.as_deref() == Some("run"), shell.as_deref(), &dir);
+    cmd.cwd(&dir);
     cmd.env("PATH", crate::env::path());
     // Don't leak a parent Claude Code session's markers (e.g. Studio started from `claude`) into
     // the user's shells; the login shell re-reads the user's own profile anyway.
@@ -78,6 +169,12 @@ pub fn pty_spawn(app: AppHandle, id: String, cwd: Option<String>, cols: u16, row
 
     if let Some(t) = crate::mcp_control::TOKEN.lock().unwrap().clone() {
         cmd.env("STUDIO_MCP_TOKEN", t);
+    }
+    if cfg!(windows) {
+        // Forward Studio's variables into WSL shells (Windows → Linux env bridging).
+        let fwd = "TERM_PROGRAM:COLORTERM:CLAUDE_CODE_SSE_PORT:ENABLE_IDE_INTEGRATION:FORCE_CODE_TERMINAL:STUDIO_MCP_TOKEN";
+        let wslenv = std::env::var("WSLENV").map(|v| format!("{v}:{fwd}")).unwrap_or(fwd.into());
+        cmd.env("WSLENV", wslenv);
     }
     let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
     drop(pair.slave);
@@ -142,5 +239,17 @@ pub fn pty_kill_all(app: AppHandle) {
 pub fn pty_kill(app: AppHandle, id: String) {
     if let Some(mut s) = app.state::<PtyState>().sessions.lock().unwrap().remove(&id) {
         let _ = s.child.kill();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn lists_shells() {
+        let shells = super::list_shells();
+        for s in &shells {
+            println!("{} -> {}", s.label, s.id);
+        }
+        assert!(!shells.is_empty());
     }
 }

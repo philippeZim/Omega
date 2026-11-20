@@ -16,7 +16,7 @@
   import { SPELL_LANGS } from "../lib/spell";
   import { control, setControlEnabled, regenerateToken, mcpAddCommand, setControlPort } from "../lib/ai/control.svelte";
   import { ideLink, AGENTS, startAgent, isConnected, detectAgents, type Agent } from "../lib/ai/ide.svelte";
-  import { runCommand } from "../lib/terminal.svelte";
+  import { runCommand, listShells, shellPref, setDefaultShell } from "../lib/terminal.svelte";
   import { lspSettings, setStrictPython } from "../lib/code/lsp.svelte";
 
   const AGENT_INFO: Record<Agent["id"], Key> = {
@@ -115,6 +115,15 @@
           <div class="srow">
             <div><b>{t("app.settings.strictPython")}</b><span class="sub2">{t("app.settings.strictPythonSub")}</span></div>
             <button class="switch" class:on={lspSettings.strictPython} onclick={() => setStrictPython(!lspSettings.strictPython)} role="switch" aria-checked={lspSettings.strictPython} aria-label={t("app.settings.strictPython")}><span></span></button>
+          </div>
+          <div class="srow">
+            <div><b>{t("app.settings.defaultShell")}</b><span class="sub2">{t("app.settings.defaultShellSub")}</span></div>
+            {#await listShells() then shells}
+              <select class="shell-select" value={shellPref.id} onchange={(e) => setDefaultShell((e.currentTarget as HTMLSelectElement).value)}>
+                <option value="">{t("app.settings.systemDefault")}{shells[0] ? ` (${shells[0].label})` : ""}</option>
+                {#each shells.slice(1) as sh (sh.id)}<option value={sh.id}>{sh.label}</option>{/each}
+              </select>
+            {/await}
           </div>
         </div>
       </section>
@@ -329,4 +338,5 @@
   .swatches { display: flex; gap: 4px; }
   .swatches i { width: 10px; height: 10px; border-radius: 50%; }
   /* No open animation: any fade over the blurred backdrop flashes the editor in WebKitGTK. */
+  .shell-select { padding: 5px 10px; border-radius: 8px; background: var(--recess); color: var(--label); border: 1px solid rgba(var(--fg-rgb), 0.1); font: inherit; font-size: 12.5px; max-width: 220px; }
 </style>

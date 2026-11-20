@@ -1,6 +1,7 @@
 <script lang="ts">
   import { app, setMode } from "../lib/state.svelte";
-  import { terms, newTerminal, closeTerminal, attach, fitTerm, focusTerm, setHeight, toggleTerminal } from "../lib/terminal.svelte";
+  import { terms, newTerminal, closeTerminal, attach, fitTerm, focusTerm, setHeight, toggleTerminal, listShells, shellPref, setDefaultShell } from "../lib/terminal.svelte";
+  import { ui } from "../lib/ui.svelte";
   import DebugConsole from "./DebugConsole.svelte";
   import SearchDock from "./SearchDock.svelte";
   import { find } from "../lib/search/search.svelte";
@@ -54,6 +55,24 @@
     if (body) ro.observe(body);
     return () => ro.disconnect();
   });
+
+  /** Menu of available shells (WSL distributions, Git Bash, zsh/fish …) for a new terminal. */
+  async function shellMenu(e: MouseEvent) {
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const shells = await listShells();
+    const def = shellPref.id || shells[0]?.id;
+    ui.menu = {
+      x: r.left,
+      y: r.bottom + 4,
+      items: [
+        ...shells.map((sh) => ({ label: `${sh.label}${sh.id === def ? " ✓" : ""}`, action: () => newTerminal(app.root, "shell", undefined, sh) })),
+        { label: "", separator: true },
+        ...shells
+          .filter((sh) => sh.id !== def)
+          .map((sh) => ({ label: t("code.term.makeDefault", { name: sh.label }), action: () => setDefaultShell(sh.id === shells[0]?.id ? "" : sh.id) })),
+      ],
+    };
+  }
 </script>
 
 <section class="terminal glass" style="height: {terms.height}px" class:hidden={!terms.visible}>
@@ -81,6 +100,7 @@
       </div>
     {/if}
     <button class="add" title={t("code.term.new")} onclick={() => newTerminal(app.root)}>+</button>
+    <button class="add pick" title={t("code.term.chooseShell")} onclick={shellMenu}>▾</button>
     <span class="spacer"></span>
     <button class="add" title={t("code.term.hide")} onclick={toggleTerminal}>⌄</button>
   </div>
@@ -109,6 +129,7 @@
   .console-slot { flex: 1; min-height: 0; position: relative; }
   .x { width: 18px; height: 18px; border-radius: 50%; font-size: 14px; line-height: 1; color: var(--label-2); }
   .x:hover { background: var(--fill-2); color: var(--label); }
+  .add.pick { width: 18px; margin-left: -6px; font-size: 10px; }
   .add { width: 28px; height: 28px; border-radius: 50%; color: var(--label-2); font-size: 16px; }
   .add:hover { background: var(--fill-hover); color: var(--label); }
   .spacer { flex: 1; }
