@@ -150,11 +150,16 @@ export function dockResults() {
 
 // ------------------------------------------------------------------ replace
 
+/** A Unicode word character as Rust's `regex` crate defines `\w` (UTS #18), which the backend's `\b` uses. */
+const W = String.raw`[\p{Alphabetic}\p{M}\p{Nd}\p{Pc}\p{Join_Control}]`;
+/** Unicode-aware `\b`: JS's own `\b` only knows ASCII word characters, even with the `u` flag. */
+const WORD_BOUNDARY = String.raw`(?:(?<=${W})(?!${W})|(?<!${W})(?=${W}))`;
+
 /** JS RegExp equivalent of the backend pattern (for replacing). */
 export function buildRegex(global = true): RegExp | null {
   try {
     let src = find.regex ? find.query : find.query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    if (find.wholeWord) src = `\\b(?:${src})\\b`;
+    if (find.wholeWord) src = `${WORD_BOUNDARY}(?:${src})${WORD_BOUNDARY}`;
     return new RegExp(src, (global ? "g" : "") + (find.caseSensitive ? "" : "i") + "u");
   } catch {
     return null;
@@ -162,15 +167,14 @@ export function buildRegex(global = true): RegExp | null {
 }
 
 function replaceText(text: string, re: RegExp): { text: string; count: number } {
-  let count = 0;
-  const out = text.replace(re, (...args) => {
-    count++;
-    if (!find.regex) return find.replacement;
-    // $1 … $9 / $& groups in regex mode
-    const m = args.slice(0, -2) as string[];
-    return find.replacement.replace(/\$(\d|&)/g, (_, g) => (g === "&" ? m[0] : (m[Number(g)] ?? "")));
-  });
-  return { text: out, count };
+  if (!find.regex) {
+    let count = 0;
+    const out = text.replace(re, () => (count++, find.replacement));
+    return { text: out, count };
+  }
+  // Regex mode: the native replacement string handles $1, $<name>, $&, $$ etc. correctly.
+  const count = [...text.matchAll(re)].length;
+  return { text: count ? text.replace(re, find.replacement) : text, count };
 }
 
 /** Replaces in one file (open tabs are edited in the editor, so undo works). Returns replacement count. */
