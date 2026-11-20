@@ -55,6 +55,8 @@ async function runOk(args: string[], what: Key): Promise<Out | null> {
 }
 
 let refreshing = false;
+/** HEAD commit seen by the last refresh ("" = none yet). */
+let headSha = "";
 export async function refresh() {
   if (!app.root || refreshing) {
     // No folder (closed, or a collab guest showing the host's workspace): nothing of the previous
@@ -65,15 +67,19 @@ export async function refresh() {
   refreshing = true;
   try {
     const s = await invoke<{ repo: boolean; top: string; branch: string; upstream: string | null; ahead: number; behind: number; changes: Change[] }>("git_status", { root: app.root });
-    const headChanged = s.branch !== git.branch || s.top !== git.top;
+    let headChanged = s.branch !== git.branch || s.top !== git.top;
     Object.assign(git, { repo: s.repo, top: s.top, branch: s.branch, upstream: s.upstream, ahead: s.ahead, behind: s.behind, changes: s.changes });
     git.excluded = git.excluded.filter((p) => s.changes.some((c) => c.path === p));
-    if (headChanged) git.headVersion++;
     if (s.repo) {
       const [remote, head] = await Promise.all([run(["remote", "get-url", "origin"], s.top), run(["rev-parse", "--verify", "-q", "HEAD"], s.top)]);
       git.remoteUrl = remote.code === 0 ? remote.stdout.trim() : null;
       git.hasCommits = head.code === 0;
+      // A commit, reset or amend made outside Omega moves HEAD without changing the branch name.
+      const sha = head.code === 0 ? head.stdout.trim() : "";
+      if (sha !== headSha) headChanged = true;
+      headSha = sha;
     }
+    if (headChanged) git.headVersion++;
     syncFromDisk();
   } catch {
     git.repo = false;
