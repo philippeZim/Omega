@@ -91,11 +91,14 @@ function cfg(): ed.EditorConfig {
 export function setSpellLang(lang: SpellLang) {
   const path = activeTab()?.path;
   if (path) {
+    // Per file only: other files keep their language (#45).
     spellLangs[path] = lang;
     localStorage.setItem("spellLangs", JSON.stringify(spellLangs));
+  } else {
+    // No file (untitled tab or no tab): sets the default for files without their own choice.
+    app.spellDefault = lang;
+    localStorage.setItem("spellDefault", lang);
   }
-  app.spellDefault = lang;
-  localStorage.setItem("spellDefault", lang);
   if (!app.spellEnabled) app.spellEnabled = true;
   localStorage.setItem("spellEnabled", "true");
   ed.configure(cfg());
