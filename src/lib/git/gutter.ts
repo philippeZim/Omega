@@ -4,6 +4,7 @@ import { EditorView, GutterMarker, ViewPlugin, gutter } from "@codemirror/view";
 import { Chunk } from "@codemirror/merge";
 import { invoke } from "@tauri-apps/api/core";
 import { t } from "../i18n/index.svelte";
+import { lineDiff } from "./lineDiff";
 
 type Kind = "added" | "modified" | "deleted";
 
@@ -28,10 +29,12 @@ interface GitData {
   chunks: readonly Chunk[];
 }
 
-function computeChunks(head: Text | null, doc: Text): readonly Chunk[] {
+/** Changed ranges vs. HEAD. Lines first, then characters (#139): the plain character diff is slow on
+ *  large files and gives up into one coarse block when changes are scattered. */
+export function computeChunks(head: Text | null, doc: Text): readonly Chunk[] {
   if (!head) return [];
   try {
-    return Chunk.build(head, doc, { scanLimit: 5000 });
+    return Chunk.build(head, doc, { override: lineDiff });
   } catch {
     return [];
   }
