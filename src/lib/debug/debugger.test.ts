@@ -18,6 +18,7 @@ vi.mock("../state.svelte", () => ({
   openFile: (...a: any[]) => m.openFile(...a),
   save: async () => {},
   setMode: () => {},
+  inRoot: (p: string, root: string | null) => !!root && (p === root || p.startsWith(root.replace(/\/?$/, "/"))),
 }));
 vi.mock("../ui.svelte", () => ({ ui: { toast: (...a: any[]) => m.toast(...a), confirm: async () => true } }));
 vi.mock("../editor", () => ({ getView: () => null }));
@@ -203,6 +204,16 @@ describe("debugger controller with a fake adapter", () => {
     await vi.waitFor(() => expect(S.dbg.status).toBe("stopped"));
     expect(fake.id).not.toBe(first);
     expect(ipc.filter(([c]) => c === "proc_spawn").length).toBe(2);
+  });
+
+  test("only breakpoints of the open project are sent to the adapter (#104)", async () => {
+    S.dbg.breakpoints["/other/main.rs"] = [{ line: 8 }];
+    S.dbg.breakpoints["/p2/x.py"] = [{ line: 1 }];
+    await startAndStop();
+    const paths = fake.requests.filter((r) => r.command === "setBreakpoints").map((r) => r.arguments.source.path);
+    expect(paths).toEqual(["/p/main.py"]);
+    expect(D.inProject("/p/sub/a.py")).toBe(true);
+    expect(D.inProject("/other/main.rs")).toBe(false);
   });
 
   test("selecting a frame in another file opens it", async () => {
