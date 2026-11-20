@@ -33,7 +33,8 @@
     const seq = ++renderSeq;
     const url = convertFileSrc(path) + "?v=" + latex.pdfVersion;
     const next = await pdfjs.getDocument({ url, isEvalSupported: false }).promise.catch(() => null);
-    if (!next || seq !== renderSeq) return;
+    if (!next) return;
+    if (seq !== renderSeq) return void next.destroy();
     const old = doc;
     doc = next;
     await render(seq);
@@ -116,8 +117,18 @@
     scroller.scrollTo({ top: pageEl.offsetTop + top - 12, behavior: "smooth" });
   }
 
+  /** Drops the rendered pages (e.g. after switching to a .tex tab without a PDF). */
+  function clear() {
+    renderSeq++;
+    doc?.destroy();
+    doc = null;
+    pageSizes = [];
+    pagesEl.replaceChildren();
+  }
+
   $effect(() => {
-    if (latex.pdf && latex.pdfVersion) load(latex.pdf);
+    if (!latex.pdf) clear();
+    else if (latex.pdfVersion) load(latex.pdf);
   });
 
   $effect(() => {
