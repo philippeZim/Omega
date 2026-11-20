@@ -308,6 +308,23 @@ describe("debugger controller with a fake adapter", () => {
     expect(await D.hoverValue("y")).toBe("<y>");
   });
 
+  test("a REPL assignment refreshes Variables and keeps expanded nodes open (#103)", async () => {
+    await startAndStop();
+    await D.toggleNode(S.dbg.scopes[0].children![2]); // expand obj
+    fake.replies.variables = (a) => ({
+      variables:
+        a.variablesReference === 100
+          ? [{ name: "x", value: "42", type: "int", variablesReference: 0 }, { name: "obj", value: "Obj()", variablesReference: 300 }]
+          : a.variablesReference === 300 ? [{ name: "a", value: "1", variablesReference: 0 }] : [],
+    });
+    await D.replEval("x = 42");
+    const vars = Object.fromEntries(S.dbg.scopes[0].children!.map((v) => [v.name, v]));
+    expect(vars.x).toMatchObject({ value: "42", changed: true });
+    expect(vars.obj.expanded).toBe(true);
+    expect(vars.obj.children!.map((c) => c.name)).toEqual(["a"]);
+    expect(S.dbg.scopes[1].expanded).toBe(false);
+  });
+
   test("setVariable updates the node and marks it changed", async () => {
     await startAndStop();
     fake.replies.setVariable = (a) => ({ value: `${a.value}!` });
