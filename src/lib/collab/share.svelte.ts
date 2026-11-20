@@ -40,6 +40,8 @@ interface SharedDoc {
   /** Host: guests that opened this doc. */
   subscribers: Set<string>;
   writeTimer?: number;
+  /** Host, background docs: the file content as last read or written, to notice outside changes. */
+  disk?: string;
   cleanup: (() => void)[];
 }
 
@@ -150,7 +152,45 @@ function scheduleHostWrite(d: SharedDoc) {
   // Open tabs are saved by the host's autosave; background docs are written here.
   if (d.tabId || !app.root) return;
   clearTimeout(d.writeTimer);
-  d.writeTimer = window.setTimeout(() => fsApi.writeFile(joinPath(app.root!, d.rel), d.ytext.toString()).catch(() => {}), 700);
+  d.writeTimer = window.setTimeout(() => void hostWrite(d), 700);
+}
+
+async function hostWrite(d: SharedDoc) {
+  if (d.tabId || !app.root) return;
+  const abs = joinPath(app.root, d.rel);
+  const text = d.ytext.toString();
+  if (text === d.disk) return;
+  // The file changed outside Omega and the watcher hasn't told us yet: take that change instead of
+  // overwriting it (#128).
+  const now = await fsApi.readFile(abs).catch(() => undefined);
+  if (now !== undefined && d.disk !== undefined && now !== d.disk) return applyDisk(d, now);
+  const before = d.disk;
+  d.disk = text;
+  await fsApi.writeFile(abs, text).catch(() => (d.disk = before));
+}
+
+/** Host: a background doc's file changed on disk → everybody gets the new content. */
+async function hostReload(d: SharedDoc) {
+  if (d.tabId || !app.root) return;
+  const text = await fsApi.readFile(joinPath(app.root, d.rel)).catch(() => undefined);
+  if (text !== undefined && !d.tabId) applyDisk(d, text);
+}
+
+function applyDisk(d: SharedDoc, text: string) {
+  if (text === d.disk) return;
+  d.disk = text;
+  clearTimeout(d.writeTimer);
+  const cur = d.ytext.toString();
+  if (cur === text) return;
+  // Replace only the changed middle part, so remote cursors elsewhere stay where they are.
+  let a = 0;
+  while (a < cur.length && a < text.length && cur[a] === text[a]) a++;
+  let b = 0;
+  while (b < cur.length - a && b < text.length - a && cur[cur.length - 1 - b] === text[text.length - 1 - b]) b++;
+  d.ydoc.transact(() => {
+    d.ytext.delete(a, cur.length - a - b);
+    d.ytext.insert(a, text.slice(a, text.length - b));
+  }, "disk");
 }
 
 async function hostDoc(rel: string): Promise<SharedDoc | null> {
@@ -176,6 +216,7 @@ async function hostDoc(rel: string): Promise<SharedDoc | null> {
   const d = makeDoc(rel, true);
   d.ytext.insert(0, text);
   if (tab) bindHostTab(d, tab.id);
+  else d.disk = text;
   return d;
 }
 
@@ -198,6 +239,10 @@ function onHostTabClosed(tabId: string) {
       for (const p of d.subscribers) send(p, { t: "doc.gone", path: d.rel });
       d.cleanup.forEach((f) => f());
       docs.delete(d.rel);
+    } else {
+      // From now on the file on disk is the reference (the tab was saved or discarded).
+      d.disk = d.ytext.toString();
+      void hostReload(d);
     }
   }
 }
@@ -416,9 +461,14 @@ collabHooks.openRemote = (path) => openRemote(path.slice(REMOTE.length));
 collabHooks.tabOpened = (id, path) => onHostTabOpened(id, path);
 collabHooks.tabClosed = (path, id) => (collab.role === "host" ? onHostTabClosed(id) : onTabClosed(path));
 
-// Host: files changed on disk (new/deleted/renamed, git checkout …) → guests reload their tree.
+// Host: files changed on disk (new/deleted/renamed, git checkout …) → guests reload their tree,
+// shared files without a host tab are reloaded (open tabs follow the disk via state.svelte.ts).
 let fsTimer = 0;
-onFilesChanged(() => {
+onFilesChanged((files) => {
+  if (collab.role === "host" && app.root) {
+    const changed = new Set(files);
+    for (const d of docs.values()) if (!d.tabId && changed.has(joinPath(app.root, d.rel))) void hostReload(d);
+  }
   if (collab.role !== "host" || collab.participants.length < 2) return;
   clearTimeout(fsTimer);
   fsTimer = window.setTimeout(() => broadcast({ t: "fs.changed" }), 300);

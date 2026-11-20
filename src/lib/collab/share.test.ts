@@ -128,3 +128,46 @@ test("the host's own edits in the editor stay undoable (#126)", async () => {
   expect(guestCopy("a.txt")).toBe("one\n");
   view.destroy();
 });
+
+/** A guest edit (insert at `at`) arriving at the host; returns the guest's doc. */
+async function guestInsert(path: string, at: number, text: string, g = new Y.Doc()) {
+  guestCopy(path, g);
+  const before = Y.encodeStateVector(g);
+  g.getText("content").insert(at, text);
+  await receive("g1", { t: "doc.update", path, update: b64(Y.encodeStateAsUpdate(g, before)) });
+  return g;
+}
+
+test("a background doc follows an outside change of its file, the guest's next edit keeps it (#128)", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    const fs = fakeFs({ "/p/a.txt": "original a\n" });
+    await receive("g1", { t: "doc.open", path: "a.txt" });
+    fs.files.set("/p/a.txt", "EXTERNAL v2\n");
+    for (const f of fileListeners) f(["/p/a.txt"]);
+    await vi.advanceTimersByTimeAsync(10);
+    const g = new Y.Doc();
+    expect(guestCopy("a.txt", g)).toBe("EXTERNAL v2\n");
+
+    await guestInsert("a.txt", 0, "Y", g);
+    await vi.advanceTimersByTimeAsync(800);
+    expect(fs.files.get("/p/a.txt")).toBe("YEXTERNAL v2\n");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("an outside change the watcher hasn't reported yet isn't overwritten by a guest edit (#128)", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    const fs = fakeFs({ "/p/a.txt": "original a\n" });
+    await receive("g1", { t: "doc.open", path: "a.txt" });
+    fs.files.set("/p/a.txt", "EXTERNAL v2\n");
+    const g = await guestInsert("a.txt", 0, "Y");
+    await vi.advanceTimersByTimeAsync(800);
+    expect(fs.files.get("/p/a.txt")).toBe("EXTERNAL v2\n");
+    expect(guestCopy("a.txt", g)).toBe("EXTERNAL v2\n");
+  } finally {
+    vi.useRealTimers();
+  }
+});
