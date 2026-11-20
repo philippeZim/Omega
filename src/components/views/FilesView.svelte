@@ -18,11 +18,11 @@
     const p = joinPath(app.root, name);
     try {
       if (dir) await fsApi.createDir(p);
-      else await fsApi.writeFile(p, "");
+      else await fsApi.createFile(p);
       app.treeVersion++;
       if (!dir) openFile(p);
     } catch (e) {
-      ui.toast(String(e), "error");
+      ui.toast(!dir && (await fsApi.exists(p)) ? t("code.existsAlready", { name }) : String(e), "error");
     }
   }
 

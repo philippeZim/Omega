@@ -14,6 +14,8 @@ export const fsApi = {
   listDir: (path: string) => invoke<Entry[]>("list_dir", { path }),
   readFile: (path: string) => invoke<string>("read_file", { path }),
   writeFile: (path: string, content: string) => invoke<void>("write_file", { path, content: wellFormed(content) }),
+  /** Creates an empty file; rejects if it already exists (never truncates). */
+  createFile: (path: string) => invoke<void>("create_file", { path }),
   writeFileBase64: (path: string, data: string) => invoke<void>("write_file_base64", { path, data }),
   createDir: (path: string) => invoke<void>("create_dir", { path }),
   rename: (from: string, to: string) => invoke<void>("rename_path", { from, to }),
