@@ -11,7 +11,8 @@
     "build": "vite build",
     "check": "svelte-check",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test": "vitest run"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.4",
@@ -59,9 +60,11 @@
     "@tauri-apps/cli": "^2",
     "@tsconfig/svelte": "^5.0.9",
     "@types/katex": "^0.16.8",
+    "happy-dom": "^21.0.4",
     "svelte": "^5.58.0",
     "svelte-check": "^4.7.8",
     "typescript": "~6.0.3",
-    "vite": "^8.0.16"
+    "vite": "^8.0.16",
+    "vitest": "^5.1.1"
   }
 }
