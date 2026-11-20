@@ -68,6 +68,14 @@ describe("custom editor commands", () => {
     expect(run("editor.joinLines", "last|").out).toBe("last|");
   });
 
+  test("joinLines joins every line of a multi-line selection and keeps it selected", () => {
+    expect(run("editor.joinLines", "a[aa\nbbb\nc]cc\nddd").out).toBe("a[aa bbb c]cc\nddd");
+    // Ending at the start of a line (Shift+Down) leaves that line alone.
+    expect(run("editor.joinLines", "[aaa\nbbb\n]ccc").out).toBe("[aaa bbb\n]ccc");
+    // A selection within one line still joins with the next line.
+    expect(run("editor.joinLines", "[aa]a\nbbb").out).toBe("[aa]a bbb");
+  });
+
   test("sortLines sorts the selected lines", () => {
     expect(run("editor.sortLines", "x[c\na\nb]").doc).toBe("a\nb\nxc");
     expect(run("editor.sortLines", "only|").doc).toBe("only");
