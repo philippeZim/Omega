@@ -8,7 +8,7 @@ import { toPng } from "html-to-image";
 import { app, activeTab, openFile, save, setMode, setRoot } from "../state.svelte";
 import { ui } from "../ui.svelte";
 import * as ed from "../editor";
-import { fsApi } from "../api";
+import { fsApi, wellFormed } from "../api";
 import { COMMANDS, keysFor, runCommand, availableCommands, palette, isTerminalShortcut } from "../commands.svelte";
 import { formatKey } from "../keys";
 import { git } from "../git/git.svelte";
@@ -146,7 +146,9 @@ function editorInfo() {
 function posOf(line?: number, column?: number) {
   const v = ed.getView()!;
   const l = v.state.doc.line(Math.max(1, Math.min(line ?? v.state.doc.lines, v.state.doc.lines)));
-  return Math.min(l.to, l.from + Math.max(0, (column ?? l.length + 1) - 1));
+  const pos = Math.min(l.to, l.from + Math.max(0, (column ?? l.length + 1) - 1));
+  // Columns count UTF-16 units: never land between the two halves of an emoji (that splits it into lone surrogates).
+  return pos > l.from && /^[\uD800-\uDBFF][\uDC00-\uDFFF]$/.test(v.state.sliceDoc(pos - 1, pos + 1)) ? pos - 1 : pos;
 }
 
 // ------------------------------------------------------------------ tools
@@ -265,6 +267,7 @@ const TOOLS: Tool[] = [
     run: ({ action, text, search, line, column }) => {
       const v = ed.getView();
       if (!v || !activeTab()) throw new Error("Kein Editor aktiv");
+      text = wellFormed(text);
       const doc = v.state.doc.toString();
       if (action === "set") v.dispatch({ changes: { from: 0, to: v.state.doc.length, insert: text }, userEvent: "input" });
       else if (action === "replace") {

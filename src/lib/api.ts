@@ -6,10 +6,14 @@ export interface Entry {
   is_dir: boolean;
 }
 
+/** Replaces lone UTF-16 surrogates with U+FFFD. They have no UTF-8 encoding, so the IPC payload (and with
+ *  it every save) would fail. Same as String.prototype.toWellFormed(), which ES2022 / older WebKit lack. */
+export const wellFormed = (s: string) => s.replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]|[\uD800-\uDFFF]/g, (m) => (m.length === 2 ? m : "�"));
+
 export const fsApi = {
   listDir: (path: string) => invoke<Entry[]>("list_dir", { path }),
   readFile: (path: string) => invoke<string>("read_file", { path }),
-  writeFile: (path: string, content: string) => invoke<void>("write_file", { path, content }),
+  writeFile: (path: string, content: string) => invoke<void>("write_file", { path, content: wellFormed(content) }),
   writeFileBase64: (path: string, data: string) => invoke<void>("write_file_base64", { path, data }),
   createDir: (path: string) => invoke<void>("create_dir", { path }),
   rename: (from: string, to: string) => invoke<void>("rename_path", { from, to }),
