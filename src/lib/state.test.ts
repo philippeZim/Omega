@@ -630,3 +630,25 @@ describe("quit with a tab deleted outside Omega (#32)", () => {
     expect(fs.files.has("/p/a.txt")).toBe(false);
   });
 });
+
+describe("spell check language per file (#45)", () => {
+  beforeEach(() => localStorage.clear());
+
+  test("choosing a language for one file leaves other files alone", async () => {
+    await setup({ "/p/README.md": "a", "/p/notes/über.md": "b" });
+    await open("/p/README.md");
+    st.setSpellLang("en");
+    st.setSpellLang("fr");
+    expect(st.spellLangFor("/p/README.md")).toBe("fr");
+    expect(st.spellLangFor("/p/notes/über.md")).toBe("de");
+    expect(st.app.spellDefault).toBe("de");
+  });
+
+  test("without a file the choice sets the default", async () => {
+    await setup({});
+    st.newFile();
+    st.setSpellLang("en");
+    expect(st.app.spellDefault).toBe("en");
+    expect(st.spellLangFor("/p/other.md")).toBe("en");
+  });
+});
