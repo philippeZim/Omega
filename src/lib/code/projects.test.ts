@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, test } from "vitest";
 import { mockIPC } from "@tauri-apps/api/mocks";
 import { cmakeExecutable, detectProject, findPythonMain, pyprojectScripts, pythonEntry, TEMPLATES } from "./projects";
+import { i18n } from "../i18n/index.svelte";
 
 let files: Record<string, string> = {};
 beforeEach(() => {
@@ -238,5 +239,20 @@ describe("TypeScript template (#80)", () => {
     expect(plan.files?.["pnpm-workspace.yaml"]).toMatch(/allowBuilds:\n\s+esbuild: true/);
     expect(plan.files?.["pnpm-workspace.yaml"]).toMatch(/onlyBuiltDependencies:\n\s+- esbuild/);
     expect(plan.cmds.at(-1)).toMatch(/^pnpm exec tsc --init/);
+  });
+});
+
+describe("template hello world follows the UI language (#82)", () => {
+  test.each([["en", "Hello, world!"], ["de", "Hallo, Welt!"]] as const)("%s", async (locale, hello) => {
+    const before = i18n.locale;
+    i18n.locale = locale;
+    try {
+      for (const [id, file] of [["typescript", "src/index.ts"], ["javascript", "index.js"], ["c", "src/main.c"], ["cpp", "src/main.cpp"]]) {
+        const plan = await TEMPLATES.find((t) => t.id === id)!.create("demo");
+        expect(plan.files?.[file], id).toContain(`"${hello}`);
+      }
+    } finally {
+      i18n.locale = before;
+    }
   });
 });

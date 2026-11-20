@@ -434,8 +434,8 @@ const cmakeProject = (name: string, cxx: boolean) => async () => {
   const ext = cxx ? "cpp" : "c";
   const lists = `cmake_minimum_required(VERSION 3.20)\nproject(${name} ${cxx ? "CXX" : "C"})\n\nset(CMAKE_${cxx ? "CXX" : "C"}_STANDARD ${cxx ? 20 : 17})\nset(CMAKE_EXPORT_COMPILE_COMMANDS ON)\n\nadd_executable(${name} src/main.${ext})\n`;
   const main = cxx
-    ? `#include <iostream>\n\nint main() {\n    std::cout << "Hallo, Welt!" << std::endl;\n    return 0;\n}\n`
-    : `#include <stdio.h>\n\nint main(void) {\n    printf("Hallo, Welt!\\n");\n    return 0;\n}\n`;
+    ? `#include <iostream>\n\nint main() {\n    std::cout << "${t("code.tpl.hello")}" << std::endl;\n    return 0;\n}\n`
+    : `#include <stdio.h>\n\nint main(void) {\n    printf("${t("code.tpl.hello")}\\n");\n    return 0;\n}\n`;
   return {
     files: { "CMakeLists.txt": lists, [`src/main.${ext}`]: main, ".gitignore": "build/\nbuild-release/\n" },
     cmds: [...(await gitInit()), (await cmakeConfigure("build", "Debug")).cmd],
@@ -459,7 +459,7 @@ export const TEMPLATES: Template[] = [
     create: async (n) => ({
       files: {
         "package.json": packageJson(n, { type: "module", scripts: { dev: "tsx watch src/index.ts", start: "tsx src/index.ts", build: "tsc" } }),
-        "src/index.ts": 'console.log("Hallo, Welt!");\n',
+        "src/index.ts": `console.log("${t("code.tpl.hello")}");\n`,
         ".gitignore": "node_modules/\ndist/\n",
         // tsx needs esbuild's postinstall. pnpm 10+ blocks unapproved build scripts and fails the
         // install (so `tsc --init` never ran); allowBuilds is pnpm 11+, onlyBuiltDependencies pnpm 10.
@@ -476,7 +476,7 @@ export const TEMPLATES: Template[] = [
     marker: "package.json",
     open: ["index.js"],
     create: async (n) => ({
-      files: { "package.json": packageJson(n, { type: "module", scripts: { start: "node index.js" } }), "index.js": 'console.log("Hallo, Welt!");\n', ".gitignore": "node_modules/\n" },
+      files: { "package.json": packageJson(n, { type: "module", scripts: { start: "node index.js" } }), "index.js": `console.log("${t("code.tpl.hello")}");\n`, ".gitignore": "node_modules/\n" },
       cmds: [...(await gitInit())],
     }),
   },
