@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { contrast, foreignLocale, isRawKey, looksGerman, over, parseColor } from "./uiAudit";
+import { contrast, foreignLocale, isRawKey, looksGerman, over, parseColor, tooltipOf } from "./uiAudit";
 
 describe("colours", () => {
   test("parses computed colours", () => {
@@ -37,5 +37,17 @@ describe("i18n detection", () => {
   test("raw keys", () => {
     expect(isRawKey("common.cancel")).toBe(true);
     expect(isRawKey("main.rs")).toBe(false);
+  });
+});
+
+describe("tooltips", () => {
+  test("a re-set title wins over the data-tip Tooltip.svelte left behind (#55)", () => {
+    const b = document.createElement("button");
+    b.dataset.tip = "Show log / errors"; // hovered before the language switch
+    b.setAttribute("title", "Log / Fehler anzeigen"); // Svelte re-sets the translated title
+    expect(tooltipOf(b)).toBe("Log / Fehler anzeigen");
+    b.removeAttribute("title");
+    expect(tooltipOf(b)).toBe("Show log / errors");
+    expect(tooltipOf(document.createElement("span"))).toBe("");
   });
 });

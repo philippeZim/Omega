@@ -118,10 +118,15 @@ const rectOf = (el: Element) => {
   return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) };
 };
 
+/**
+ * Tooltip text. Tooltip.svelte moves `title` to `data-tip` on hover; when Svelte later re-sets
+ * `title` (e.g. after a language switch) the new title is current and `data-tip` is stale.
+ */
+export const tooltipOf = (el: Element) => el.getAttribute("title") || (el as HTMLElement).dataset?.tip || "";
+
 const label = (el: Element) => {
   const h = el as HTMLElement;
-  // title before data-tip: Tooltip.svelte keeps a copy in data-tip that can be stale.
-  return (h.getAttribute("aria-label") || h.getAttribute("title") || h.dataset.tip || (h as HTMLInputElement).placeholder || h.innerText || "").replace(/\s+/g, " ").trim();
+  return (h.getAttribute("aria-label") || tooltipOf(h) || (h as HTMLInputElement).placeholder || h.innerText || "").replace(/\s+/g, " ").trim();
 };
 
 /** Effective background behind `el`: semi-transparent layers composited up to the page colour. */
@@ -261,7 +266,7 @@ export function audit(opts: { checks?: Check[]; selector?: string; minContrast?:
     const seen = new Set<string>();
     const consider = [...textEls, ...controls];
     for (const el of consider) {
-      for (const t of new Set([ownText(el), el.getAttribute("aria-label") ?? "", (el as HTMLInputElement).placeholder ?? "", (el as HTMLElement).dataset?.tip ?? ""])) {
+      for (const t of new Set([ownText(el), el.getAttribute("aria-label") ?? "", (el as HTMLInputElement).placeholder ?? "", tooltipOf(el)])) {
         if (!t || seen.has(t)) continue;
         if (isRawKey(t)) {
           seen.add(t);
