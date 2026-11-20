@@ -148,7 +148,8 @@ async function run() {
       latex.pdfVersion++;
       sync = r.sync;
     }
-    applyDiagnostics(job.path);
+    // The user may have left LaTeX mode (or switched tabs) while the compile ran.
+    if (ed.isActive(job.id) && ed.activeMode() === "latex") applyDiagnostics(job.path);
   } catch (e) {
     latex.status = "error";
     latex.diagnostics = [{ file: "", line: 0, message: String(e), severity: "error" }];
