@@ -340,7 +340,9 @@ async function resolveCommand(kind: ServerKind, root: string): Promise<{ cmd: st
       return cmd ? { cmd, args: ["--stdio"] } : null;
     }
     case "typescript": {
-      const cmd = await first(`${tools}/typescript/node_modules/.bin/typescript-language-server`, "typescript-language-server");
+      // An older managed install pulled TypeScript 7 (no lib/tsserver.js): treat it as missing so it is reinstalled.
+      const managed = (await fsApi.exists(`${tools}/typescript/node_modules/typescript/lib/tsserver.js`)) ? [`${tools}/typescript/node_modules/.bin/typescript-language-server`] : [];
+      const cmd = await first(...managed, "typescript-language-server");
       return cmd ? { cmd, args: ["--stdio"] } : null;
     }
     case "clangd": {

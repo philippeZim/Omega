@@ -639,6 +639,34 @@ describe("client registry", () => {
     ]);
   });
 
+  // #108: the managed install pulled TypeScript 7, which has no tsserver.js; the server could never start.
+  test("managed TypeScript server without tsserver.js counts as missing", async () => {
+    let tsserver = false;
+    const spawned: string[] = [];
+    mockIPC(
+      (cmd, args: any) => {
+        if (cmd === "tools_dir") return "/tools";
+        if (cmd === "which_cmd") return args.cmd === "/tools/typescript/node_modules/.bin/typescript-language-server" ? args.cmd : null;
+        if (cmd === "path_exists") return tsserver && args.path === "/tools/typescript/node_modules/typescript/lib/tsserver.js";
+        if (cmd === "proc_spawn") spawned.push(args.cmd);
+        return null;
+      },
+      { shouldMockEvents: true },
+    );
+    vi.resetModules();
+    L = await import("./lsp.svelte");
+    await settle();
+    const TS = { server: "typescript", lspId: "javascript" } as any;
+    const ask = vi.fn(async () => false);
+    expect(await L.clientFor(TS, "/w/a.js", "/w", ask)).toBeNull();
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(spawned).toEqual([]);
+    tsserver = true;
+    L.stopServers("typescript");
+    void L.clientFor(TS, "/w/a.js", "/w", ask);
+    await vi.waitFor(() => expect(spawned).toEqual(["/tools/typescript/node_modules/.bin/typescript-language-server"]));
+  });
+
   test("missing server: status missing, askInstall declined → null", async () => {
     mockIPC((cmd) => (cmd === "tools_dir" ? "/tools" : cmd === "path_exists" ? false : null), { shouldMockEvents: true });
     const ask = vi.fn(async () => false);

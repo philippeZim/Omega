@@ -235,8 +235,7 @@ pub async fn install_server(app: AppHandle, kind: String) -> Result<String, Stri
             "python" | "typescript" => {
                 let target = dir.join(&kind);
                 std::fs::create_dir_all(&target).map_err(|e| e.to_string())?;
-                let pkgs: &[&str] = if kind == "python" { &["basedpyright"] } else { &["typescript", "typescript-language-server"] };
-                run(crate::env::tool("npm")?.arg("install").arg("--prefix").arg(&target).arg("--no-fund").arg("--no-audit").args(pkgs))?;
+                run(crate::env::tool("npm")?.arg("install").arg("--prefix").arg(&target).arg("--no-fund").arg("--no-audit").args(npm_packages(&kind)))?;
                 let bin = if kind == "python" { "basedpyright-langserver" } else { "typescript-language-server" };
                 Ok(crate::env::norm(target.join("node_modules").join(".bin").join(bin)))
             }
@@ -260,6 +259,16 @@ pub async fn install_server(app: AppHandle, kind: String) -> Result<String, Stri
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// npm packages of a managed language server. TypeScript is pinned to 5: TypeScript 7 (the
+/// native port) ships no `lib/tsserver.js`, which typescript-language-server needs.
+fn npm_packages(kind: &str) -> &'static [&'static str] {
+    if kind == "python" {
+        &["basedpyright"]
+    } else {
+        &["typescript@5", "typescript-language-server"]
+    }
 }
 
 /// Installs a debug adapter into the tools dir and returns its main path.
@@ -359,7 +368,13 @@ pub async fn install_debugger(app: AppHandle, kind: String) -> Result<String, St
 
 #[cfg(test)]
 mod tests {
-    use super::read_message;
+    use super::{npm_packages, read_message};
+
+    #[test]
+    fn typescript_is_pinned_to_a_version_with_tsserver() {
+        assert!(npm_packages("typescript").contains(&"typescript@5"));
+        assert_eq!(npm_packages("python"), &["basedpyright"]);
+    }
     use std::io::Cursor;
 
     fn read_all(input: &[u8]) -> Vec<Vec<u8>> {
