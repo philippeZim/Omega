@@ -227,15 +227,33 @@ describe("debugger controller with a fake adapter", () => {
     expect(fake.requests.length).toBe(n);
   });
 
-  // bug: step() sets status "running" before sending the request and never restores it when the
-  // adapter rejects it (e.g. "next" not possible here). The program is still paused, but every
-  // step/continue button is now ignored (step() requires "stopped") until a new stopped event.
-  test.fails("a rejected step request leaves the session stopped", async () => {
+  // Regression: step() set status "running" before sending the request and never restored it
+  // when the adapter rejected it, so every step/continue button was ignored afterwards.
+  test("a rejected step request leaves the session stopped", async () => {
     await startAndStop();
+    const exec = { ...S.dbg.exec! };
     fake.replies.next = () => { throw new Error("cannot step here"); };
     await D.stepOver();
     expect(S.dbg.console.some((l) => l.kind === "error" && l.text.includes("cannot step here"))).toBe(true);
     expect(S.dbg.status).toBe("stopped");
+    expect(S.dbg.exec).toEqual(exec);
+    // Stepping works again.
+    delete fake.replies.next;
+    await D.stepOver();
+    expect(fake.requests.filter((r) => r.command === "next").length).toBe(2);
+  });
+
+  test("a rejected step does not overwrite a continued event that arrived first", async () => {
+    await startAndStop();
+    fake.replies.continue = () => {
+      fake.event("continued", { threadId: 1 });
+      throw new Error("late failure");
+    };
+    await D.continueRun();
+    await settle();
+    expect(S.dbg.console.some((l) => l.kind === "error" && l.text.includes("late failure"))).toBe(true);
+    expect(S.dbg.status).toBe("running");
+    expect(S.dbg.exec).toBeNull();
   });
 
   test("watches and REPL evaluate in the selected frame", async () => {
