@@ -31,6 +31,8 @@ export const git = $state({
   remoteUrl: null as string | null,
   /** False until the first commit exists. */
   hasCommits: true,
+  /** "rebase" / "merge" while one is in progress (e.g. a pull stopped at a conflict), else "". */
+  operation: "" as "" | "rebase" | "merge",
   /** Bumps when HEAD may have changed (commit, pull, branch switch) → gutter markers refetch. */
   headVersion: 0,
 });
@@ -62,14 +64,14 @@ export async function refresh() {
   if (!app.root || refreshing) {
     // No folder (closed, or a collab guest showing the host's workspace): nothing of the previous
     // repo may linger in the top bar or the Changes view.
-    if (!app.root) Object.assign(git, { repo: false, top: "", branch: "", upstream: null, ahead: 0, behind: 0, changes: [], remoteUrl: null });
+    if (!app.root) Object.assign(git, { repo: false, top: "", branch: "", upstream: null, ahead: 0, behind: 0, changes: [], remoteUrl: null, operation: "" });
     return;
   }
   refreshing = true;
   try {
-    const s = await invoke<{ repo: boolean; top: string; branch: string; upstream: string | null; ahead: number; behind: number; changes: Change[] }>("git_status", { root: app.root });
+    const s = await invoke<{ repo: boolean; top: string; branch: string; upstream: string | null; ahead: number; behind: number; changes: Change[]; operation?: "rebase" | "merge" | null }>("git_status", { root: app.root });
     let headChanged = s.branch !== git.branch || s.top !== git.top;
-    Object.assign(git, { repo: s.repo, top: s.top, branch: s.branch, upstream: s.upstream, ahead: s.ahead, behind: s.behind, changes: s.changes });
+    Object.assign(git, { repo: s.repo, top: s.top, branch: s.branch, upstream: s.upstream, ahead: s.ahead, behind: s.behind, changes: s.changes, operation: s.operation ?? "" });
     git.excluded = git.excluded.filter((p) => s.changes.some((c) => c.path === p));
     if (s.repo) {
       const [remote, head] = await Promise.all([run(["remote", "get-url", "origin"], s.top), run(["rev-parse", "--verify", "-q", "HEAD"], s.top)]);
@@ -110,6 +112,7 @@ async function saveAll() {
 // ------------------------------------------------------------------ commit / push / pull
 
 export async function commit(andPush: boolean) {
+  if (git.operation) return continueOperation(andPush);
   const files = git.changes.filter((c) => !git.excluded.includes(c.path));
   if (!files.length) return ui.toast(t("git.noFilesSelected"), "error");
   if (!git.message.trim()) return ui.toast(t("git.enterMessage"), "error");
@@ -132,8 +135,13 @@ export async function commit(andPush: boolean) {
   }
 }
 
+/** Detached HEAD (outside a rebase): `git status` reports the branch as "HEAD (no branch)". */
+const detached = () => git.branch.startsWith("HEAD (");
+
 export async function push() {
   if (!git.repo) return;
+  if (git.operation) return ui.toast(t(git.operation === "rebase" ? "git.pushDuringRebase" : "git.pushDuringMerge"), "error");
+  if (detached()) return ui.toast(t("git.pushDetached"), "error");
   git.busy = t("git.busy.push");
   try {
     await fetchSettled();
@@ -152,16 +160,107 @@ export async function pull() {
   git.busy = t("git.busy.pull");
   try {
     await fetchSettled();
-    const r = await runOk(["pull", "--autostash", "--no-edit"], "git.op.pull");
-    if (r) {
-      const msg = /Already up to date/.test(r.stdout) ? t("git.upToDate") : t("git.updated");
-      ui.toast(msg);
-      git.headVersion++;
-      await reloadOpenFiles();
+    const r = await run(["pull", "--autostash", "--no-edit"]);
+    if (r.code !== 0) {
+      await refresh();
+      if (git.operation) {
+        // Stopped at a conflict: say what to do next instead of git's "Could not apply …".
+        git.headVersion++;
+        await reloadOpenFiles();
+        conflictToast("git.pullConflict");
+      } else ui.toast(t("git.failed", { what: t("git.op.pull"), msg: gitErrorMessage(r) }), "error");
+      return;
     }
+    ui.toast(/Already up to date/.test(r.stdout) ? t("git.upToDate") : t("git.updated"));
+    git.headVersion++;
+    await reloadOpenFiles();
   } finally {
     git.busy = "";
     await refresh();
+  }
+}
+
+// ------------------------------------------------------------------ rebase / merge in progress
+
+function conflictToast(key: "git.pullConflict" | "git.stillConflict") {
+  const files = git.changes.filter((c) => kind(c) === "conflict").map((c) => c.path);
+  const op = t(git.operation === "merge" ? "git.opMerge" : "git.opRebase");
+  ui.toast(t(key, { files: files.join(", ") || "?", op }), "error");
+}
+
+/** Conflicted files among `files` that still contain conflict markers (not resolved yet). */
+async function unresolved(files: Change[]): Promise<string[]> {
+  const out: string[] = [];
+  for (const c of files) {
+    if (kind(c) !== "conflict") continue;
+    const text = await fsApi.readFile(absPath(c.path)).catch(() => "");
+    if (/^<{7}(?: |$)/m.test(text) && /^>{7}(?: |$)/m.test(text)) out.push(c.path);
+  }
+  return out;
+}
+
+/**
+ * Commit while a rebase/merge stopped at a conflict: stage the ticked files and continue it, so the
+ * resolved commits land on the branch (a plain commit would stay on the detached HEAD).
+ */
+export async function continueOperation(andPush = false) {
+  const op = git.operation;
+  if (!op) return;
+  await saveAll();
+  const files = git.changes.filter((c) => !git.excluded.includes(c.path));
+  const open = await unresolved(files);
+  if (open.length) return ui.toast(t("git.conflictMarkers", { files: open.join(", ") }), "error");
+  git.busy = t("git.busy.commit");
+  let finished = false;
+  try {
+    // No `git reset` here: it would drop MERGE_HEAD and unstage the parts git already resolved.
+    const paths = files.flatMap((c) => (c.orig ? [c.orig, c.path] : [c.path]));
+    if (paths.length && !(await runOk(["add", "-A", "--", ...paths], "git.op.add"))) return;
+    const msg = git.message.trim();
+    let r: Out;
+    if (op === "merge") r = await run(msg ? ["commit", "-q", "-m", msg] : ["commit", "-q", "--no-edit"]);
+    else {
+      // A typed message replaces the one of the commit being replayed; empty keeps it.
+      const staged = await run(["diff", "--cached", "--quiet"]);
+      if (msg && staged.code === 1 && !(await runOk(["commit", "-q", "-m", msg], "git.op.commit"))) return;
+      r = await run(["rebase", "--continue"]);
+    }
+    git.headVersion++;
+    await refresh();
+    await reloadOpenFiles();
+    if (git.operation) {
+      // The next replayed commit conflicts too (or the merge is still open).
+      if (r.code !== 0 && git.changes.some((c) => kind(c) === "conflict")) conflictToast("git.stillConflict");
+      else if (r.code !== 0) ui.toast(t("git.failed", { what: t("git.op.continue"), msg: gitErrorMessage(r) }), "error");
+      return;
+    }
+    if (r.code !== 0) return ui.toast(t("git.failed", { what: t("git.op.continue"), msg: gitErrorMessage(r) }), "error");
+    ui.toast(t(op === "merge" ? "git.mergeDone" : "git.rebaseDone"));
+    git.message = "";
+    git.excluded = [];
+    finished = true;
+  } finally {
+    git.busy = "";
+    await refresh();
+  }
+  if (finished && andPush) await push();
+}
+
+/** Abort the rebase/merge: back to the state before the pull. */
+export async function abortOperation() {
+  const op = git.operation;
+  if (!op) return;
+  const ok = await ui.confirm(t(op === "merge" ? "git.abortMergeTitle" : "git.abortRebaseTitle"), t("git.abortBody"), t("git.op.abort"), true);
+  if (!ok) return;
+  git.busy = t("git.busy.abort");
+  try {
+    if (await runOk([op, "--abort"], "git.op.abort")) ui.toast(t(op === "merge" ? "git.mergeAborted" : "git.rebaseAborted"));
+    git.headVersion++;
+    app.treeVersion++;
+  } finally {
+    git.busy = "";
+    await refresh();
+    await reloadOpenFiles();
   }
 }
 

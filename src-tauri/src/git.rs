@@ -55,6 +55,8 @@ pub struct Status {
     ahead: u32,
     behind: u32,
     changes: Vec<Change>,
+    /// "rebase" or "merge" while one is in progress (e.g. stopped at a conflict), else None.
+    operation: Option<String>,
 }
 
 /// Repository status (branch, ahead/behind, changed files). `repo: false` outside a repository.
@@ -63,15 +65,41 @@ pub async fn git_status(root: String) -> Result<Status, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let top = git_cmd(&root).args(["rev-parse", "--show-toplevel"]).output().map_err(|e| e.to_string())?;
         if !top.status.success() {
-            return Ok(Status { repo: false, top: String::new(), branch: String::new(), upstream: None, ahead: 0, behind: 0, changes: vec![] });
+            return Ok(Status { repo: false, top: String::new(), branch: String::new(), upstream: None, ahead: 0, behind: 0, changes: vec![], operation: None });
         }
         let top = String::from_utf8_lossy(&top.stdout).trim().to_string();
         let out = git_cmd(&top).args(["status", "--porcelain=v1", "-b", "-z", "--untracked-files=all"]).output().map_err(|e| e.to_string())?;
         let text = String::from_utf8_lossy(&out.stdout).to_string();
-        Ok(Status { top, ..parse_status(&text) })
+        let mut s = Status { top: top.clone(), ..parse_status(&text) };
+        let git_dir = git_cmd(&top).args(["rev-parse", "--absolute-git-dir"]).output().map_err(|e| e.to_string())?;
+        if git_dir.status.success() {
+            let (operation, branch) = operation_in(std::path::Path::new(String::from_utf8_lossy(&git_dir.stdout).trim()));
+            s.operation = operation;
+            // A rebase detaches HEAD ("HEAD (no branch)"); show the branch being rebased instead.
+            if let Some(b) = branch {
+                s.branch = b;
+            }
+        }
+        Ok(s)
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// Rebase/merge in progress in `git_dir`: ("rebase" | "merge", branch being rebased).
+fn operation_in(git_dir: &std::path::Path) -> (Option<String>, Option<String>) {
+    for d in ["rebase-merge", "rebase-apply"] {
+        let dir = git_dir.join(d);
+        if dir.is_dir() {
+            let head = std::fs::read_to_string(dir.join("head-name")).ok();
+            let branch = head.map(|h| h.trim().trim_start_matches("refs/heads/").to_string()).filter(|h| !h.is_empty() && h != "detached HEAD");
+            return (Some("rebase".into()), branch);
+        }
+    }
+    if git_dir.join("MERGE_HEAD").is_file() {
+        return (Some("merge".into()), None);
+    }
+    (None, None)
 }
 
 /// Parses `git status --porcelain=v1 -b -z` output (`top` is left empty).
@@ -103,7 +131,7 @@ fn parse_status(text: &str) -> Status {
         let orig = if x == "R" || x == "C" { parts.next().map(|s| s.to_string()) } else { None };
         changes.push(Change { path, x, y, orig });
     }
-    Status { repo: true, top: String::new(), branch, upstream, ahead, behind, changes }
+    Status { repo: true, top: String::new(), branch, upstream, ahead, behind, changes, operation: None }
 }
 
 /// File content at HEAD (None if the file is new / not in HEAD).
@@ -228,6 +256,20 @@ fn parse_blame(s: &str) -> Blame {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn operation_detects_rebase_and_merge() {
+        let dir = std::env::temp_dir().join(format!("omega-git-op-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(operation_in(&dir), (None, None));
+        std::fs::write(dir.join("MERGE_HEAD"), "abc\n").unwrap();
+        assert_eq!(operation_in(&dir), (Some("merge".into()), None));
+        std::fs::create_dir(dir.join("rebase-merge")).unwrap();
+        std::fs::write(dir.join("rebase-merge/head-name"), "refs/heads/feature/x\n").unwrap();
+        assert_eq!(operation_in(&dir), (Some("rebase".into()), Some("feature/x".into())));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn git_runs_with_untranslated_messages() {
