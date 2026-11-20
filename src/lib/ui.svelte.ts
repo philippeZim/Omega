@@ -24,6 +24,17 @@ interface DialogState {
   resolve: (v: string | null, input?: string) => void;
 }
 
+/**
+ * Shows a dialog. A dialog that is still open gets cancelled (resolved with null) first, so its
+ * caller is never left waiting forever.
+ */
+function openDialog(d: DialogState) {
+  const old = ui.dialog;
+  ui.dialog = null;
+  old?.resolve(null);
+  ui.dialog = d;
+}
+
 export const ui = $state({
   toasts: [] as { id: number; text: string; kind: "info" | "error" }[],
   dialog: null as DialogState | null,
@@ -38,14 +49,14 @@ export const ui = $state({
 
   choose(title: string, message: string, options: ChoiceOption[]): Promise<string | null> {
     return new Promise((resolve) => {
-      ui.dialog = { title, message, options, resolve: (v) => resolve(v) };
+      openDialog({ title, message, options, resolve: (v) => resolve(v) });
     });
   },
 
   /** `multiline`: wide dialog with a wrapping field for long values (e.g. shell commands); Enter still confirms. */
   prompt(title: string, value = "", placeholder = "", selectUntil?: number, suggest?: Suggest, multiline = false): Promise<string | null> {
     return new Promise((resolve) => {
-      ui.dialog = {
+      openDialog({
         title,
         options: [
           { label: t("common.cancel"), value: "cancel" },
@@ -53,7 +64,7 @@ export const ui = $state({
         ],
         input: { value, placeholder, selectUntil, suggest, multiline },
         resolve: (v, input) => resolve(v === "ok" && input?.trim() ? input.replace(/\s*\n\s*/g, " ").trim() : null),
-      };
+      });
     });
   },
 
