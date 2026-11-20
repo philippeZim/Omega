@@ -604,6 +604,41 @@ describe("client registry", () => {
     expect(spawned.length).toBe(0);
   });
 
+  // #110: two servers returning the same symbol gave duplicate keys and the list failed to render.
+  test("workspaceSymbols merges all servers and drops duplicate locations", async () => {
+    const spawned: string[] = [];
+    mockIPC(
+      (cmd, args: any) => {
+        if (cmd === "tools_dir") return "/tools";
+        if (cmd === "which_cmd") return args.cmd === "basedpyright-langserver" ? "/usr/bin/basedpyright-langserver" : null;
+        if (cmd === "path_exists") return false;
+        if (cmd === "proc_spawn") spawned.push(args.id);
+        if (cmd === "proc_send") {
+          const msg = JSON.parse(args.msg);
+          if (msg.id === undefined || !msg.method) return null;
+          const loc = (line: number) => ({ uri: "file:///lib/core/ops.rs", range: { start: { line, character: 4 }, end: { line, character: 7 } } });
+          const result =
+            msg.method === "initialize" ? { capabilities: {} }
+            : msg.method === "workspace/symbol" ? [{ name: "Add", kind: 11, location: loc(155) }, { name: "Add", kind: 11, location: loc(200) }, { name: "nowhere", kind: 12 }]
+            : null;
+          setTimeout(() => emit("proc-msg", { id: args.id, msg: JSON.stringify({ jsonrpc: "2.0", id: msg.id, result }) }), 0);
+        }
+        return null;
+      },
+      { shouldMockEvents: true },
+    );
+    vi.resetModules();
+    L = await import("./lsp.svelte");
+    await settle();
+    await L.clientFor(PY, "/w/a.py", "/w", no);
+    await L.clientFor(PY, "/v/b.py", "/v", no);
+    expect(spawned.length).toBe(2);
+    expect(await L.workspaceSymbols("add")).toEqual([
+      { name: "Add", kind: 11, containerName: undefined, path: "/lib/core/ops.rs", line: 155, character: 4 },
+      { name: "Add", kind: 11, containerName: undefined, path: "/lib/core/ops.rs", line: 200, character: 4 },
+    ]);
+  });
+
   test("missing server: status missing, askInstall declined → null", async () => {
     mockIPC((cmd) => (cmd === "tools_dir" ? "/tools" : cmd === "path_exists" ? false : null), { shouldMockEvents: true });
     const ask = vi.fn(async () => false);

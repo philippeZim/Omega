@@ -540,6 +540,36 @@ export function allClients() {
   return [...clients.values()];
 }
 
+export interface WorkspaceSymbol {
+  name: string;
+  kind: number;
+  containerName?: string;
+  path: string;
+  line: number;
+  character: number;
+}
+
+/**
+ * `workspace/symbol` from every running server, de-duplicated by location: two servers
+ * (e.g. the project's and a std library rust-analyzer) can report the same symbol.
+ */
+export async function workspaceSymbols(query: string): Promise<WorkspaceSymbol[]> {
+  const results = await Promise.all(allClients().map((c) => c.request("workspace/symbol", { query }, 4000).catch(() => [])));
+  const seen = new Set<string>();
+  const out: WorkspaceSymbol[] = [];
+  for (const s of results.flatMap((r: Json) => (Array.isArray(r) ? r : []))) {
+    const loc = s?.location;
+    if (!loc?.uri) continue;
+    const path = uriPath(loc.uri);
+    const line = loc.range?.start?.line ?? 0, character = loc.range?.start?.character ?? 0;
+    const key = `${path}:${s.name}:${line}:${character}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ name: s.name, kind: s.kind, containerName: s.containerName, path, line, character });
+  }
+  return out;
+}
+
 export function statusFor(lang: LangInfo | null, file: string | null): { status: ServerStatus | null; message?: string } {
   if (!lang?.server || !file) return { status: null };
   // Find the client whose root contains the file (most specific).

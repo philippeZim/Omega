@@ -8,7 +8,7 @@
   import { fuzzy, highlight } from "../lib/fuzzy";
   import { app, openFile, recent } from "../lib/state.svelte";
   import { joinPath, basename } from "../lib/api";
-  import { allClients, uriPath } from "../lib/code/lsp.svelte";
+  import { allClients, workspaceSymbols } from "../lib/code/lsp.svelte";
   import { openFind, find, nextSearchId } from "../lib/search/search.svelte";
   import * as ed from "../lib/editor";
   import { t, type Key } from "../lib/i18n/index.svelte";
@@ -103,19 +103,13 @@
     if (!q) return (symbols = []);
     symTimer = window.setTimeout(async () => {
       const out: Item[] = [];
-      for (const c of allClients()) {
-        const res: any[] = await c.request("workspace/symbol", { query: q }, 4000).catch(() => []);
-        for (const s of res ?? []) {
-          const loc = s.location;
-          const path = loc?.uri ? uriPath(loc.uri) : null;
-          if (!path) continue;
-          const m = fuzzy(q, s.name) ?? { score: 0, positions: [] };
-          out.push({
-            kind: "symbol", key: `${path}:${s.name}:${loc.range?.start?.line}`, label: s.name,
-            detail: `${t(`commands.palette.kind.${SYMBOL_KIND[s.kind] ?? "symbol"}` as Key)}${s.containerName ? " · " + s.containerName : ""} — ${rel(path)}`,
-            positions: m.positions, score: m.score, path, line: (loc.range?.start?.line ?? 0) + 1, col: (loc.range?.start?.character ?? 0) + 1,
-          });
-        }
+      for (const s of await workspaceSymbols(q)) {
+        const m = fuzzy(q, s.name) ?? { score: 0, positions: [] };
+        out.push({
+          kind: "symbol", key: `${s.path}:${s.name}:${s.line}:${s.character}`, label: s.name,
+          detail: `${t(`commands.palette.kind.${SYMBOL_KIND[s.kind] ?? "symbol"}` as Key)}${s.containerName ? " · " + s.containerName : ""} — ${rel(s.path)}`,
+          positions: m.positions, score: m.score, path: s.path, line: s.line + 1, col: s.character + 1,
+        });
       }
       if (query.trim() === q) symbols = out.sort((a, b) => b.score - a.score).slice(0, 80);
     }, 150);
