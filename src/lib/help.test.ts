@@ -61,11 +61,13 @@ describe("cheat sheets", () => {
 
 // #87: key columns of the code sheets follow the real bindings instead of fixed strings.
 describe("command shortcuts in cheat sheets", () => {
-  test("resolveKeys replaces {command.id} with its label, — when unbound", () => {
+  test("resolveKeys replaces {cmd:command.id} with its label, — when unbound", () => {
     const label = (id: string) => ({ "terminal.toggle": "Strg ^", "run.run": "" })[id] ?? "";
-    expect(resolveKeys("{terminal.toggle}", label)).toBe("Strg ^");
-    expect(resolveKeys("{run.run} · Ctrl Click", label)).toBe("— · Ctrl Click");
+    expect(resolveKeys("{cmd:terminal.toggle}", label)).toBe("Strg ^");
+    expect(resolveKeys("{cmd:run.run} · Ctrl Click", label)).toBe("— · Ctrl Click");
     expect(resolveKeys("Ctrl Space", label)).toBe("Ctrl Space");
+    // Braces in code samples are left alone.
+    expect(resolveKeys('print(f"Value: {x}")', label)).toBe('print(f"Value: {x}")');
   });
 
   test("the code sheets' editor and debugger rows use command placeholders", () => {
@@ -75,5 +77,6 @@ describe("command shortcuts in cheat sheets", () => {
     expect(rows).toContain("<run.run>");
     expect(rows).toContain("<debug.stepOver>");
     expect(rows.join("\n")).not.toMatch(/Ctrl \^|Ctrl F2|⇧ F10/);
+    expect(rows).toContain('print(f"Value: {x}")');
   });
 });
