@@ -123,19 +123,24 @@ function describe(el: HTMLElement, i: number) {
 function clickElement(el: HTMLElement, double = false, right = false) {
   el.scrollIntoView({ block: "nearest" });
   const r = el.getBoundingClientRect();
-  const opts = { bubbles: true, cancelable: true, composed: true, clientX: r.x + r.width / 2, clientY: r.y + r.height / 2, button: 0 };
-  el.dispatchEvent(new PointerEvent("pointerover", opts));
-  el.dispatchEvent(new MouseEvent("mouseover", opts));
+  const base = { bubbles: true, cancelable: true, composed: true, clientX: r.x + r.width / 2, clientY: r.y + r.height / 2 };
+  const opts = { ...base, button: 0 };
+  el.dispatchEvent(new PointerEvent("pointerover", base));
+  el.dispatchEvent(new MouseEvent("mouseover", base));
+  if (right) {
+    // The whole sequence as button 2, so left-click handlers (tab activation, cursor) don't fire.
+    const down = { ...base, button: 2, buttons: 2 };
+    const up = { ...base, button: 2, buttons: 0 };
+    el.dispatchEvent(new PointerEvent("pointerdown", down));
+    el.dispatchEvent(new MouseEvent("mousedown", down));
+    el.dispatchEvent(new PointerEvent("pointerup", up));
+    el.dispatchEvent(new MouseEvent("mouseup", up));
+    el.dispatchEvent(new MouseEvent("contextmenu", up));
+    return;
+  }
   el.dispatchEvent(new PointerEvent("pointerdown", opts));
   el.dispatchEvent(new MouseEvent("mousedown", opts));
   if (el.matches("input, textarea, [contenteditable=true]")) el.focus();
-  if (right) {
-    const r2 = { ...opts, button: 2, buttons: 2 };
-    el.dispatchEvent(new PointerEvent("pointerup", r2));
-    el.dispatchEvent(new MouseEvent("mouseup", r2));
-    el.dispatchEvent(new MouseEvent("contextmenu", r2));
-    return;
-  }
   el.dispatchEvent(new PointerEvent("pointerup", opts));
   el.dispatchEvent(new MouseEvent("mouseup", opts));
   el.dispatchEvent(new MouseEvent("click", opts));
@@ -737,9 +742,10 @@ function sandboxNativeWindows() {
   sandboxNative({
     async dialog(kind, o: any) {
       console.info(`[instance] native dialog (${kind}) shown as in-app prompt`);
-      const v = await ui.prompt(`Native dialog (${kind})${o.title ? `: ${o.title}` : ""}`, o.defaultPath ?? "", o.multiple ? "absolute paths, one per line" : "absolute path", undefined, undefined, !!o.multiple);
+      // ui.prompt turns newlines into spaces, so several paths are separated by "|".
+      const v = await ui.prompt(`Native dialog (${kind})${o.title ? `: ${o.title}` : ""}`, o.defaultPath ?? "", o.multiple ? "absolute paths, separated by |" : "absolute path");
       if (!v) return null;
-      return o.multiple ? v.split("\n").map((x) => x.trim()).filter(Boolean) : v.trim();
+      return o.multiple ? v.split("|").map((x) => x.trim()).filter(Boolean) : v.trim();
     },
     open(what) {
       console.info(`[instance] would open: ${what}`);

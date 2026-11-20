@@ -12,12 +12,14 @@ findings. You do **not** fix code. The orchestrator turns verified findings into
 2. **Only fixture copies.** Get a workspace with `dev/qa/fixture.sh <name> <scratch-dir>`; never
    open the repo itself or anything in `$HOME` as the workspace.
 3. **Native windows are sandboxed in instances:** file dialogs (Open Folder, Save As, …) appear
-   as an in-app prompt titled "Native dialog (…)": type an absolute path and press Enter.
+   as an in-app prompt titled "Native dialog (…)": type an absolute path (several: separated by `|`)
+   and press Enter.
    Opening URLs or revealing files only logs `[instance] would open: …` (console + toast).
    If any other window still appears outside workspace 5, close it immediately
    (`hyprctl dispatch 'hl.dsp.window.close({ window = "address:0x…" })'`) and report it as a tooling problem.
 4. **Forbidden actions:** installing LSP servers/debug adapters (install dialogs: screenshot them,
-   then cancel), "Check for updates"/updater,
+   then cancel), the Report/Feedback button and report commands (they overwrite the user's real
+   clipboard and write folders into ~/Downloads), "Check for updates"/updater,
    logging in to Codex/Claude/OpenCode, collab with external tickets, `git push`, editing files
    in the repo (`src/`, `src-tauri/`, …).
 5. Don't trigger `alert/confirm` browser dialogs; in-app dialogs are fine.
