@@ -33,7 +33,7 @@ export const uriPath = (uri: string) => {
 export class LspClient {
   readonly id: string;
   private seq = 1;
-  private pending = new Map<number, { resolve: (v: Json) => void; reject: (e: Error) => void }>();
+  private pending = new Map<number, { resolve: (v: Json) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
   capabilities: Json = {};
   ready: Promise<void>;
   /** uri -> version of what the server has */
@@ -54,6 +54,13 @@ export class LspClient {
       },
       exit: () => {
         this.alive = false;
+        // Fail in-flight requests now instead of letting them hang until their timeout.
+        const err = new Error(t("code.lsp.exited", { kind: this.kind, tail: "" }));
+        for (const p of this.pending.values()) {
+          clearTimeout(p.timer);
+          p.reject(err);
+        }
+        this.pending.clear();
         lspState.status[this.key] = "stopped";
         lspState.message[this.key] = tail.join("\n");
         clients.delete(this.key);
@@ -115,14 +122,15 @@ export class LspClient {
   request<T = Json>(method: string, params: Json, timeoutMs = 15000): Promise<T> {
     const id = this.seq++;
     return new Promise<T>((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      const timer = setTimeout(() => {
+        if (this.pending.delete(id)) reject(new Error(`${method}: Timeout`));
+      }, timeoutMs);
+      this.pending.set(id, { resolve, reject, timer });
       this.send({ id, method, params }).catch((e) => {
+        clearTimeout(timer);
         this.pending.delete(id);
         reject(e);
       });
-      setTimeout(() => {
-        if (this.pending.delete(id)) reject(new Error(`${method}: Timeout`));
-      }, timeoutMs);
     });
   }
 
@@ -135,6 +143,7 @@ export class LspClient {
     if (msg.id !== undefined && !msg.method) {
       const p = this.pending.get(msg.id);
       if (!p) return;
+      clearTimeout(p.timer);
       this.pending.delete(msg.id);
       if (msg.error) p.reject(new Error(msg.error.message));
       else p.resolve(msg.result);

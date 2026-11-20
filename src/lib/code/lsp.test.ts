@@ -220,9 +220,8 @@ describe("LspClient", () => {
     expect(srv.sent).toEqual([]);
   });
 
-  // bug: LspClient's exit handler never rejects `pending` (DapSession does), so every in-flight
-  // request (hover, completion, …) hangs until its 15 s timeout after the server crashed.
-  test.fails("proc-exit rejects in-flight requests right away", async () => {
+  // #23: in-flight requests (hover, completion, …) must fail on exit, not hang until the 15 s timeout.
+  test("proc-exit rejects in-flight requests right away", async () => {
     const c = await readyClient();
     srv.results.slow = "none";
     vi.useFakeTimers();
@@ -232,6 +231,8 @@ describe("LspClient", () => {
     await emit("proc-exit", c.id);
     await vi.advanceTimersByTimeAsync(100);
     expect(settled).toHaveBeenCalled();
+    await expect(p).rejects.toThrow();
+    expect(vi.getTimerCount()).toBe(0); // the request's timeout timer is cleared too
   });
 
   test("stop: shutdown request, exit notification, then kill", async () => {
