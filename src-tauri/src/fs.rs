@@ -121,63 +121,67 @@ pub fn cli_paths() -> Vec<String> {
 /// All files below `root` (relative paths), skipping VCS/dependency/build folders. Capped for huge trees.
 #[tauri::command]
 pub async fn list_files(root: String) -> Result<Vec<String>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        const SKIP: &[&str] = &[".git", "node_modules", "target", "__pycache__", ".venv", "venv", ".idea", "build", "dist", ".gradle", ".mypy_cache", ".pytest_cache", ".cache"];
-        let base = PathBuf::from(&root);
-        let mut out = Vec::new();
-        // Symlinks are followed, but every real directory is visited only once (tracked by its
-        // canonical path), so loops and webs of links can't make the walk explode. Entries are
-        // walked in sorted order, and symlinked folders are deferred until all real folders are
-        // done, so a folder inside the root appears under its real path and links only add what
-        // isn't reachable otherwise. Only symlinks are canonicalized: a real directory's canonical path is
-        // its parent's plus its name. If canonicalizing fails (RAM disks, network or shared
-        // folders), the raw path stands in.
-        let base_canon = base.canonicalize().unwrap_or_else(|_| base.clone());
-        let mut visited = std::collections::HashSet::new();
-        let mut stack = vec![(base.clone(), base_canon)];
-        let mut deferred = std::collections::VecDeque::new();
-        loop {
-            let Some((dir, canon)) = stack.pop().or_else(|| deferred.pop_front()) else { break };
-            if !visited.insert(canon.clone()) {
-                continue;
-            }
-            let Ok(rd) = fs::read_dir(&dir) else { continue };
-            let mut entries: Vec<_> = rd.flatten().collect();
-            entries.sort_by_key(|e| e.file_name());
-            let (mut subdirs, mut links) = (Vec::new(), Vec::new());
-            for e in entries {
-                let name = e.file_name().to_string_lossy().to_string();
-                let Ok(mut ft) = e.file_type() else { continue };
-                let link = ft.is_symlink();
-                if link {
-                    // Broken links are skipped.
-                    let Ok(m) = fs::metadata(e.path()) else { continue };
-                    ft = m.file_type();
-                }
-                if ft.is_dir() {
-                    if !SKIP.contains(&name.as_str()) && !(name.starts_with('.') && name != ".github") {
-                        let c = if link { e.path().canonicalize().unwrap_or_else(|_| e.path()) } else { canon.join(e.file_name()) };
-                        if !visited.contains(&c) {
-                            if link { links.push((e.path(), c)) } else { subdirs.push((e.path(), c)) }
-                        }
-                    }
-                } else if ft.is_file() {
-                    if let Ok(rel) = e.path().strip_prefix(&base) {
-                        out.push(crate::env::norm(rel));
-                    }
-                    if out.len() >= 50_000 {
-                        return Ok(out);
-                    }
-                }
-            }
-            stack.extend(subdirs.into_iter().rev());
-            deferred.extend(links);
+    tauri::async_runtime::spawn_blocking(move || Ok(collect_files(&root, 50_000)))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// The walk behind `list_files`, stopping after `cap` files. The result is always sorted.
+fn collect_files(root: &str, cap: usize) -> Vec<String> {
+    const SKIP: &[&str] = &[".git", "node_modules", "target", "__pycache__", ".venv", "venv", ".idea", "build", "dist", ".gradle", ".mypy_cache", ".pytest_cache", ".cache"];
+    let base = PathBuf::from(root);
+    let mut out = Vec::new();
+    // Symlinks are followed, but every real directory is visited only once (tracked by its
+    // canonical path), so loops and webs of links can't make the walk explode. Entries are
+    // walked in sorted order, and symlinked folders are deferred until all real folders are
+    // done, so a folder inside the root appears under its real path and links only add what
+    // isn't reachable otherwise. Only symlinks are canonicalized: a real directory's canonical path is
+    // its parent's plus its name. If canonicalizing fails (RAM disks, network or shared
+    // folders), the raw path stands in.
+    let base_canon = base.canonicalize().unwrap_or_else(|_| base.clone());
+    let mut visited = std::collections::HashSet::new();
+    let mut stack = vec![(base.clone(), base_canon)];
+    let mut deferred = std::collections::VecDeque::new();
+    'walk: loop {
+        let Some((dir, canon)) = stack.pop().or_else(|| deferred.pop_front()) else { break };
+        if !visited.insert(canon.clone()) {
+            continue;
         }
-        out.sort();
-        Ok(out)
-    })
-    .await
-    .map_err(|e| e.to_string())?
+        let Ok(rd) = fs::read_dir(&dir) else { continue };
+        let mut entries: Vec<_> = rd.flatten().collect();
+        entries.sort_by_key(|e| e.file_name());
+        let (mut subdirs, mut links) = (Vec::new(), Vec::new());
+        for e in entries {
+            let name = e.file_name().to_string_lossy().to_string();
+            let Ok(mut ft) = e.file_type() else { continue };
+            let link = ft.is_symlink();
+            if link {
+                // Broken links are skipped.
+                let Ok(m) = fs::metadata(e.path()) else { continue };
+                ft = m.file_type();
+            }
+            if ft.is_dir() {
+                if !SKIP.contains(&name.as_str()) && !(name.starts_with('.') && name != ".github") {
+                    let c = if link { e.path().canonicalize().unwrap_or_else(|_| e.path()) } else { canon.join(e.file_name()) };
+                    if !visited.contains(&c) {
+                        if link { links.push((e.path(), c)) } else { subdirs.push((e.path(), c)) }
+                    }
+                }
+            } else if ft.is_file() {
+                if let Ok(rel) = e.path().strip_prefix(&base) {
+                    out.push(crate::env::norm(rel));
+                }
+                if out.len() >= cap {
+                    // Stop the walk, but still sort what was collected.
+                    break 'walk;
+                }
+            }
+        }
+        stack.extend(subdirs.into_iter().rev());
+        deferred.extend(links);
+    }
+    out.sort();
+    out
 }
 
 // ------------------------------------------------------------------ file watcher
@@ -441,5 +445,18 @@ mod tests {
         }
         let out = list_files(s(r)).await.unwrap();
         assert_eq!(out, [".env", ".github/workflows/ci.yml", "a.txt", "src/main.rs", "src/nested/deep.rs", "z.txt"]);
+    }
+
+    #[test]
+    fn collect_files_sorts_when_capped() {
+        let t = tempfile::tempdir().unwrap();
+        let r = t.path();
+        fs::create_dir_all(r.join("a")).unwrap();
+        // The walk lists the files of a folder before its subfolders, so an unsorted result is
+        // ["b.txt", "a/z.txt"].
+        for f in ["b.txt", "a/z.txt"] {
+            fs::write(r.join(f), "").unwrap();
+        }
+        assert_eq!(collect_files(&s(r), 2), ["a/z.txt", "b.txt"]);
     }
 }
