@@ -79,13 +79,13 @@
     const p = joinPath(path, name);
     try {
       if (dir) await fsApi.createDir(p);
-      else await fsApi.writeFile(p, "");
+      else await fsApi.createFile(p);
       expanded.add(path);
       persist();
       app.treeVersion++;
       if (!dir) openFile(p);
     } catch (e) {
-      ui.toast(String(e), "error");
+      ui.toast(!dir && (await fsApi.exists(p)) ? t("code.existsAlready", { name }) : String(e), "error");
     }
   }
 

@@ -47,6 +47,19 @@ pub fn write_file(path: String, content: String) -> Result<(), String> {
     fs::write(&path, content).map_err(err)
 }
 
+/// Creates a new empty file. Fails instead of truncating if the file already exists.
+#[tauri::command]
+pub fn create_file(path: String) -> Result<(), String> {
+    if let Some(parent) = Path::new(&path).parent() {
+        fs::create_dir_all(parent).map_err(err)?;
+    }
+    match fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err("Ziel existiert bereits".into()),
+        Err(e) => Err(err(e)),
+    }
+}
+
 /// Writes binary data sent as base64 (e.g. screenshots from the report dialog).
 #[tauri::command]
 pub fn write_file_base64(path: String, data: String) -> Result<(), String> {
@@ -209,4 +222,22 @@ pub fn watch_dir(app: tauri::AppHandle, path: Option<String>) -> Result<(), Stri
         }
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn create_file_keeps_existing_content() {
+        let dir = std::env::temp_dir().join(format!("omega-create-file-{}", std::process::id()));
+        let file = dir.join("sub/main.c");
+        let path = file.to_string_lossy().to_string();
+        create_file(path.clone()).unwrap();
+        assert_eq!(fs::read(&file).unwrap(), b"");
+        fs::write(&file, "int main() {}").unwrap();
+        assert!(create_file(path).is_err());
+        assert_eq!(fs::read_to_string(&file).unwrap(), "int main() {}");
+        fs::remove_dir_all(dir).unwrap();
+    }
 }
