@@ -82,6 +82,13 @@ describe("custom editor commands", () => {
     expect(run("editor.sortLines", "|").ok).toBe(false);
   });
 
+  test("sortLines leaves the line after a full-line selection alone and keeps the selection", () => {
+    // Select All with a trailing newline: the final empty line stays at the end.
+    expect(run("editor.sortLines", "[b\nc\na\n]").out).toBe("[a\nb\nc\n]");
+    // Ending at column 1 of line 3 (Shift+Down twice) sorts only lines 1-2.
+    expect(run("editor.sortLines", "[ccc\nbbb\n]aaa\nddd").out).toBe("[bbb\nccc\n]aaa\nddd");
+  });
+
   test("upper / lower case", () => {
     expect(run("editor.upperCase", "a[bc]d").out).toBe("a[BC]d");
     expect(run("editor.lowerCase", "[ÄB]c").out).toBe("[äb]c");
