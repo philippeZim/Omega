@@ -9,7 +9,7 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import { getVersion } from "@tauri-apps/api/app";
 import { t } from "./i18n/index.svelte";
 import { ui } from "./ui.svelte";
-import { flushAutosave } from "./state.svelte";
+import { flushAutosave, unsavedTabs } from "./state.svelte";
 
 export const updater = $state({ busy: false, progress: 0, version: "" });
 
@@ -44,8 +44,14 @@ export async function checkForUpdates(manual = false) {
     updater.busy = false;
     return;
   }
+  await flushAutosave();
+  // Relaunching drops unsaved tabs (new files, files deleted on disk): ask like on quit (#32).
+  const lost = unsavedTabs();
+  if (lost.length && !(await ui.confirm(t("app.quitUnsavedTitle", { n: lost.length }), t("app.quitUnsavedMessage"), t("app.quitAnyway"), true))) {
+    updater.busy = false;
+    return;
+  }
   try {
-    await flushAutosave();
     let total = 0;
     let done = 0;
     ui.toast(t("app.update.downloading"));

@@ -109,7 +109,7 @@ export function kind(c: Change): "new" | "modified" | "deleted" | "renamed" | "c
 export const absPath = (rel: string) => joinPath(git.top, rel);
 
 async function saveAll() {
-  for (const t of app.tabs) if (t.dirty && t.path) await save(t.id);
+  for (const t of app.tabs) if (t.dirty && t.path && !t.deleted) await save(t.id);
 }
 
 // ------------------------------------------------------------------ commit / push / pull

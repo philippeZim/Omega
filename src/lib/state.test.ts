@@ -9,8 +9,12 @@ vi.mock("./editor", async () => (await import("../test/fakes")).fakeEditor());
 vi.mock("./ui.svelte", async () => ({ ui: (await import("../test/fakes")).fakeUi() }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(async () => null), save: vi.fn(async () => null) }));
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: vi.fn() }));
+const win = vi.hoisted(() => ({ onClose: null as null | ((e: { preventDefault(): void }) => Promise<void>) }));
 vi.mock("@tauri-apps/api/window", () => ({
-  getCurrentWindow: () => ({ onCloseRequested: async () => () => {}, destroy: async () => {} }),
+  getCurrentWindow: () => ({
+    onCloseRequested: async (fn: typeof win.onClose) => ((win.onClose = fn), () => {}),
+    destroy: async () => {},
+  }),
 }));
 vi.mock("./latex/controller.svelte", () => ({ schedule: vi.fn() }));
 vi.mock("./code/lspExtension", () => ({ setLspHooks: vi.fn() }));
@@ -562,5 +566,67 @@ describe("Markdown heading anchor links (#42)", () => {
     await (await linkHandler())("second.md#second", "/p/a.md");
     expect(st.activeTab()?.path).toBe("/p/second.md");
     expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ selection: { anchor: 7 } }));
+  });
+});
+
+describe("file deleted outside Omega (#32)", () => {
+  test("clean tab: marked deleted and dirty, closing asks first", async () => {
+    await setup({ "/p/a.txt": "keep me" });
+    const tab = await open("/p/a.txt");
+    fs.files.delete("/p/a.txt");
+    await st.syncFromDisk();
+    expect(tab.deleted).toBe(true);
+    expect(tab.dirty).toBe(true);
+    expect(ui.toast).toHaveBeenCalledWith(expect.stringContaining("app.deletedOnDisk"));
+    ui.choose.mockResolvedValueOnce("cancel");
+    await st.closeTab(tab.id);
+    expect(ui.choose).toHaveBeenCalledTimes(1);
+    expect(st.app.tabs).toHaveLength(1);
+    expect(writes()).toEqual([]);
+    expect(fs.files.has("/p/a.txt")).toBe(false);
+  });
+
+  test("dirty tab: autosave does not recreate the file, Ctrl+S does", async () => {
+    await setup({ "/p/a.txt": "hello" });
+    const tab = await open("/p/a.txt");
+    ed.type(tab.id, "hello!");
+    fs.files.delete("/p/a.txt"); // before the watcher noticed
+    await vi.advanceTimersByTimeAsync(1000);
+    await flush();
+    expect(fs.files.has("/p/a.txt")).toBe(false);
+    expect(tab.deleted).toBe(true);
+    await st.flushAutosave();
+    expect(fs.files.has("/p/a.txt")).toBe(false);
+    expect(await st.save(tab.id)).toBe(true);
+    expect(fs.files.get("/p/a.txt")).toBe("hello!");
+    expect(tab.deleted).toBe(false);
+    expect(tab.dirty).toBe(false);
+  });
+
+  test("file comes back unchanged: the mark is cleared", async () => {
+    await setup({ "/p/a.txt": "same" });
+    const tab = await open("/p/a.txt");
+    fs.files.delete("/p/a.txt");
+    await st.syncFromDisk();
+    fs.files.set("/p/a.txt", "same");
+    await st.syncFromDisk();
+    expect(tab.deleted).toBe(false);
+    expect(tab.dirty).toBe(false);
+  });
+});
+
+describe("quit with a tab deleted outside Omega (#32)", () => {
+  test("asks before quitting instead of losing the buffer", async () => {
+    await setup({ "/p/a.txt": "keep me", "/p/b.txt": "fine" });
+    await open("/p/b.txt");
+    const tab = await open("/p/a.txt");
+    fs.files.delete("/p/a.txt");
+    await st.syncFromDisk();
+    expect(st.unsavedTabs().map((t) => t.id)).toEqual([tab.id]);
+    const preventDefault = vi.fn();
+    await win.onClose!({ preventDefault });
+    expect(preventDefault).toHaveBeenCalled();
+    expect(ui.confirm).toHaveBeenCalledWith(expect.stringContaining("app.quitUnsavedTitle"), expect.anything(), expect.anything(), true);
+    expect(fs.files.has("/p/a.txt")).toBe(false);
   });
 });
