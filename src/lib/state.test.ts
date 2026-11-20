@@ -456,3 +456,40 @@ describe("createEntry: New File (#6)", () => {
     expect(st.app.tabs).toHaveLength(0);
   });
 });
+
+describe("createEntry: names that leave the folder (#35)", () => {
+  test.each(["../escape.txt", "a/../../x.txt", "/abs.txt", "trailing/", "a//b.txt", ".", ".."])(
+    "rejects %s with a translated toast and creates nothing",
+    async (name) => {
+      await setup({});
+      expect(await st.createEntry("/p", name, false)).toBe(false);
+      expect(await st.createEntry("/p", name, true)).toBe(false);
+      const cmds = fs.calls.map((c) => c.cmd);
+      expect(cmds).not.toContain("create_file");
+      expect(cmds).not.toContain("create_dir");
+      expect(ui.toast).toHaveBeenCalledWith(expect.stringContaining("app.invalidEntryName"), "error");
+      expect(st.app.tabs).toHaveLength(0);
+    },
+  );
+
+  test("sub/inner.txt is still allowed", async () => {
+    await setup({});
+    expect(await st.createEntry("/p", "sub/inner.txt", false)).toBe(true);
+    expect(fs.calls.find((c) => c.cmd === "create_file")?.args).toEqual({ path: "/p/sub/inner.txt" });
+  });
+
+  test("inRoot resolves .. segments", async () => {
+    await setup({});
+    expect(st.inRoot("/p/../escape.txt", "/p")).toBe(false);
+    expect(st.inRoot("/p/sub/../a.txt", "/p")).toBe(true);
+    expect(st.inRoot("/p/./a.txt", "/p")).toBe(true);
+    expect(st.resolveDots("/..")).toBe("/");
+    expect(st.resolveDots("C:/a/..")).toBe("C:/");
+  });
+
+  test("openFile normalises .. in the tab path", async () => {
+    await setup({ "/x.txt": "hi" });
+    await st.openFile("/p/../x.txt");
+    expect(st.app.tabs.map((t) => t.path)).toEqual(["/x.txt"]);
+  });
+});
