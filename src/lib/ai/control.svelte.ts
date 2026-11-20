@@ -297,8 +297,9 @@ const TOOLS: Tool[] = [
     description: "Speichert den aktiven Tab bzw. alle (passiert sonst automatisch).",
     inputSchema: obj({ all: bool("Alle geänderten Tabs speichern") }),
     run: async ({ all }) => {
-      if (all) for (const t of app.tabs) if (t.dirty) await save(t.id);
-      else await save();
+      const tabs = all ? app.tabs.filter((t) => t.dirty) : app.tabs.filter((t) => t.id === app.activeId);
+      if (!all && !tabs.length) throw new Error("Kein Tab aktiv");
+      for (const t of tabs) if (!(await save(t.id))) throw new Error(`Speichern fehlgeschlagen: ${t.path ?? t.name}`);
       return "gespeichert";
     },
   },
