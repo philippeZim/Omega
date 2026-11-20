@@ -66,37 +66,42 @@ pub async fn git_status(root: String) -> Result<Status, String> {
         let top = String::from_utf8_lossy(&top.stdout).trim().to_string();
         let out = git_cmd(&top).args(["status", "--porcelain=v1", "-b", "-z", "--untracked-files=all"]).output().map_err(|e| e.to_string())?;
         let text = String::from_utf8_lossy(&out.stdout).to_string();
-        let mut parts = text.split('\0').filter(|s| !s.is_empty());
-        let (mut branch, mut upstream, mut ahead, mut behind) = (String::new(), None, 0, 0);
-        let mut changes = Vec::new();
-        while let Some(p) = parts.next() {
-            if let Some(h) = p.strip_prefix("## ") {
-                // "main...origin/main [ahead 1, behind 2]" or "No commits yet on main"
-                let h = h.trim_start_matches("No commits yet on ").to_string();
-                let (head, rest) = h.split_once(" [").map(|(a, b)| (a.to_string(), b.trim_end_matches(']').to_string())).unwrap_or((h.clone(), String::new()));
-                if let Some((b, u)) = head.split_once("...") {
-                    branch = b.into();
-                    upstream = Some(u.into());
-                } else {
-                    branch = head;
-                }
-                for piece in rest.split(", ") {
-                    if let Some(n) = piece.strip_prefix("ahead ") { ahead = n.parse().unwrap_or(0); }
-                    if let Some(n) = piece.strip_prefix("behind ") { behind = n.parse().unwrap_or(0); }
-                }
-                continue;
-            }
-            if p.len() < 4 {
-                continue;
-            }
-            let (x, y, path) = (p[0..1].to_string(), p[1..2].to_string(), p[3..].to_string());
-            let orig = if x == "R" || x == "C" { parts.next().map(|s| s.to_string()) } else { None };
-            changes.push(Change { path, x, y, orig });
-        }
-        Ok(Status { repo: true, top, branch, upstream, ahead, behind, changes })
+        Ok(Status { top, ..parse_status(&text) })
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// Parses `git status --porcelain=v1 -b -z` output (`top` is left empty).
+fn parse_status(text: &str) -> Status {
+    let mut parts = text.split('\0').filter(|s| !s.is_empty());
+    let (mut branch, mut upstream, mut ahead, mut behind) = (String::new(), None, 0, 0);
+    let mut changes = Vec::new();
+    while let Some(p) = parts.next() {
+        if let Some(h) = p.strip_prefix("## ") {
+            // "main...origin/main [ahead 1, behind 2]" or "No commits yet on main"
+            let h = h.trim_start_matches("No commits yet on ").to_string();
+            let (head, rest) = h.split_once(" [").map(|(a, b)| (a.to_string(), b.trim_end_matches(']').to_string())).unwrap_or((h.clone(), String::new()));
+            if let Some((b, u)) = head.split_once("...") {
+                branch = b.into();
+                upstream = Some(u.into());
+            } else {
+                branch = head;
+            }
+            for piece in rest.split(", ") {
+                if let Some(n) = piece.strip_prefix("ahead ") { ahead = n.parse().unwrap_or(0); }
+                if let Some(n) = piece.strip_prefix("behind ") { behind = n.parse().unwrap_or(0); }
+            }
+            continue;
+        }
+        if p.len() < 4 {
+            continue;
+        }
+        let (x, y, path) = (p[0..1].to_string(), p[1..2].to_string(), p[3..].to_string());
+        let orig = if x == "R" || x == "C" { parts.next().map(|s| s.to_string()) } else { None };
+        changes.push(Change { path, x, y, orig });
+    }
+    Status { repo: true, top: String::new(), branch, upstream, ahead, behind, changes }
 }
 
 /// File content at HEAD (None if the file is new / not in HEAD).
@@ -216,4 +221,129 @@ fn parse_blame(s: &str) -> Blame {
         }
     }
     Blame { commits, lines: out }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const H1: &str = "1111111111111111111111111111111111111111";
+    const H2: &str = "2222222222222222222222222222222222222222";
+    const H0: &str = "0000000000000000000000000000000000000000";
+
+    #[test]
+    fn blame_reuses_index_for_repeated_hash() {
+        let s = format!(
+            "{H1} 1 1 1\nauthor Alice\nauthor-mail <alice@x.org>\nauthor-time 100\nsummary first\nfilename a.txt\n\tline1\n\
+             {H2} 2 2 1\nauthor Bob\nauthor-mail <bob@x.org>\nauthor-time 200\nsummary second\nfilename a.txt\n\tline2\n\
+             {H1} 3 3 1\nfilename a.txt\n\tline3\n"
+        );
+        let b = parse_blame(&s);
+        assert_eq!(b.commits.len(), 2);
+        assert_eq!(b.lines, vec![0, 1, 0]);
+        assert_eq!(b.commits[0].hash, H1);
+        assert_eq!(b.commits[0].author, "Alice");
+        assert_eq!(b.commits[0].mail, "alice@x.org");
+        assert_eq!(b.commits[0].time, 100);
+        assert_eq!(b.commits[0].summary, "first");
+        assert_eq!(b.commits[1].author, "Bob");
+        assert_eq!(b.commits[1].mail, "bob@x.org");
+        assert_eq!(b.commits[1].time, 200);
+    }
+
+    #[test]
+    fn blame_uncommitted_is_minus_one() {
+        let s = format!("{H0} 1 1 1\nauthor Not Committed Yet\nauthor-mail <not.committed.yet>\nsummary Version of a.txt from a.txt\n\tnew\n");
+        let b = parse_blame(&s);
+        assert_eq!(b.lines, vec![-1]);
+        assert_eq!(b.commits.len(), 1);
+        assert_eq!(b.commits[0].author, "Not Committed Yet");
+        assert_eq!(b.commits[0].mail, "not.committed.yet");
+    }
+
+    #[test]
+    fn blame_length_is_highest_final_line_with_gaps() {
+        let s = format!("{H1} 1 2 1\nauthor A\n\tx\n{H1} 3 5 1\n\ty\n");
+        let b = parse_blame(&s);
+        assert_eq!(b.lines, vec![-1, 0, -1, -1, 0]);
+    }
+
+    #[test]
+    fn blame_empty() {
+        let b = parse_blame("");
+        assert!(b.commits.is_empty());
+        assert!(b.lines.is_empty());
+    }
+
+    #[test]
+    fn status_branch_ahead_behind() {
+        let s = parse_status("## main...origin/main [ahead 1, behind 2]\0 M src/a.rs\0");
+        assert!(s.repo);
+        assert_eq!(s.branch, "main");
+        assert_eq!(s.upstream.as_deref(), Some("origin/main"));
+        assert_eq!((s.ahead, s.behind), (1, 2));
+        assert_eq!(s.changes.len(), 1);
+        let c = &s.changes[0];
+        assert_eq!((c.x.as_str(), c.y.as_str(), c.path.as_str()), (" ", "M", "src/a.rs"));
+        assert!(c.orig.is_none());
+    }
+
+    #[test]
+    fn status_only_behind_and_no_upstream() {
+        let s = parse_status("## dev...origin/dev [behind 7]\0");
+        assert_eq!((s.ahead, s.behind), (0, 7));
+        let s = parse_status("## feature\0");
+        assert_eq!(s.branch, "feature");
+        assert!(s.upstream.is_none());
+        assert_eq!((s.ahead, s.behind), (0, 0));
+    }
+
+    #[test]
+    fn status_no_commits_yet() {
+        let s = parse_status("## No commits yet on main\0?? a.txt\0");
+        assert_eq!(s.branch, "main");
+        assert!(s.upstream.is_none());
+        assert_eq!(s.changes.len(), 1);
+    }
+
+    #[test]
+    fn status_detached_head() {
+        let s = parse_status("## HEAD (no branch)\0");
+        assert_eq!(s.branch, "HEAD (no branch)");
+        assert!(s.upstream.is_none());
+    }
+
+    #[test]
+    fn status_rename_sets_orig() {
+        let s = parse_status("## main\0R  new.rs\0old.rs\0M  other.rs\0");
+        assert_eq!(s.changes.len(), 2);
+        assert_eq!(s.changes[0].x, "R");
+        assert_eq!(s.changes[0].path, "new.rs");
+        assert_eq!(s.changes[0].orig.as_deref(), Some("old.rs"));
+        assert_eq!(s.changes[1].path, "other.rs");
+        assert!(s.changes[1].orig.is_none());
+    }
+
+    #[test]
+    fn status_untracked_with_spaces() {
+        let s = parse_status("## main\0?? path with spaces/file name.txt\0");
+        assert_eq!(s.changes[0].x, "?");
+        assert_eq!(s.changes[0].y, "?");
+        assert_eq!(s.changes[0].path, "path with spaces/file name.txt");
+    }
+
+    #[test]
+    fn status_skips_short_entries() {
+        let s = parse_status("## main\0M \0?? \0 M ok\0");
+        assert_eq!(s.changes.len(), 1);
+        assert_eq!(s.changes[0].path, "ok");
+    }
+
+    #[test]
+    fn status_empty() {
+        let s = parse_status("");
+        assert!(s.repo);
+        assert_eq!(s.branch, "");
+        assert!(s.changes.is_empty());
+    }
 }

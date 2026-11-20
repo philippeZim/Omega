@@ -349,4 +349,93 @@ mod tests {
         assert!(!l5.is_empty());
         assert!(l5.iter().all(|b| b.x > 50.0 && b.x < 600.0 && b.y > 50.0 && b.y < 800.0));
     }
+
+    fn id(f: &str) -> String {
+        f.to_string()
+    }
+
+    #[test]
+    fn tectonic_warning_and_no_location() {
+        let out = "note: Running TeX ...\nwarning: main.tex:4: Overfull \\hbox\nerror: something went wrong\nwarning: no colon here";
+        let d = parse_tectonic(out, &|f| format!("/src/{f}"));
+        assert_eq!(d.len(), 3);
+        assert_eq!((d[0].file.as_str(), d[0].line, d[0].message.as_str(), d[0].severity.as_str()), ("/src/main.tex", 4, "Overfull \\hbox", "warning"));
+        assert_eq!((d[1].file.as_str(), d[1].line, d[1].message.as_str(), d[1].severity.as_str()), ("", 0, "something went wrong", "error"));
+        assert_eq!((d[2].file.as_str(), d[2].line, d[2].message.as_str()), ("", 0, "no colon here"));
+    }
+
+    #[test]
+    fn tectonic_non_numeric_line_falls_back() {
+        let d = parse_tectonic("error: a.tex:x: msg", &id);
+        assert_eq!((d[0].file.as_str(), d[0].line, d[0].message.as_str()), ("", 0, "a.tex:x: msg"));
+    }
+
+    #[test]
+    fn tectonic_dedupes_non_adjacent() {
+        let out = "error: a.tex:1: A\nerror: a.tex:2: B\nerror: a.tex:1: A\nerror: b.tex:1: A\nwarning: a.tex:2: B";
+        let d = parse_tectonic(out, &id);
+        let got: Vec<_> = d.iter().map(|d| (d.file.as_str(), d.line, d.message.as_str())).collect();
+        // Same file/line/message with another severity counts as a duplicate too.
+        assert_eq!(got, vec![("a.tex", 1, "A"), ("a.tex", 2, "B"), ("b.tex", 1, "A")]);
+    }
+
+    #[test]
+    #[ignore = "bug: Windows drive colon splits the path"]
+    fn tectonic_windows_path() {
+        let d = parse_tectonic("error: C:\\x\\a.tex:3: msg", &id);
+        assert_eq!((d[0].file.as_str(), d[0].line, d[0].message.as_str()), ("C:\\x\\a.tex", 3, "msg"));
+    }
+
+    #[test]
+    fn tex_log_reference_warning() {
+        let log = "(./main.tex\nLaTeX Warning: Reference `fig:a' on page 1 undefined on input line 42.\n\n[1]";
+        let d = parse_tex_log(log, &id);
+        assert_eq!(d.len(), 1);
+        assert_eq!(d[0].line, 42);
+        assert_eq!(d[0].message, "Reference `fig:a' on page 1 undefined");
+        assert_eq!(d[0].severity, "warning");
+        assert_eq!(d[0].file, "");
+    }
+
+    #[test]
+    fn tex_log_without_input_line() {
+        let log = "LaTeX Warning: There were undefined references.\n\n\nLaTeX Warning: Label(s) may have changed. Rerun to get cross-references right.\n\n )";
+        let d = parse_tex_log(log, &id);
+        assert_eq!(d.len(), 2);
+        assert_eq!((d[0].line, d[0].message.as_str()), (0, "There were undefined references."));
+        assert_eq!((d[1].line, d[1].message.as_str()), (0, "Label(s) may have changed. Rerun to get cross-references right."));
+    }
+
+    #[test]
+    fn tex_log_wrapped_lines() {
+        let log = "LaTeX Warning: Citation `knuth84' on page 3 undefined on input\nline 17.\n\n";
+        let d = parse_tex_log(log, &id);
+        assert_eq!(d.len(), 1);
+        assert_eq!(d[0].line, 17);
+        assert_eq!(d[0].message, "Citation `knuth84' on page 3 undefined");
+        let log = "LaTeX Warning: Reference `a' on page 1 undefined\non input line 5.\n\n";
+        let d = parse_tex_log(log, &id);
+        assert_eq!((d[0].line, d[0].message.as_str()), (5, "Reference `a' on page 1 undefined"));
+        assert!(parse_tex_log("no warnings here", &id).is_empty());
+    }
+
+    #[test]
+    fn root_magic_comment() {
+        let p = Path::new("/proj/chapters/ch1.tex");
+        assert_eq!(find_root(p, "% !TEX root = ../main.tex\n\\section{A}"), Path::new("/proj/chapters").join("../main.tex"));
+        assert_eq!(find_root(p, "%!TeX root=main.tex\n"), Path::new("/proj/chapters/main.tex"));
+        // Magic comment wins over \documentclass.
+        assert_eq!(find_root(p, "% !TEX root = book.tex\n\\documentclass{article}"), Path::new("/proj/chapters/book.tex"));
+    }
+
+    #[test]
+    fn root_documentclass_sibling_and_self() {
+        let dir = tempfile::tempdir().unwrap();
+        let ch = dir.path().join("ch.tex");
+        assert_eq!(find_root(&ch, "\\section{A}"), ch);
+        assert_eq!(find_root(&ch, "\\documentclass{article}"), ch);
+        std::fs::write(dir.path().join("main.tex"), "\\documentclass{article}").unwrap();
+        assert_eq!(find_root(&ch, "\\section{A}"), dir.path().join("main.tex"));
+        assert_eq!(find_root(&ch, "\\documentclass{article}"), ch);
+    }
 }

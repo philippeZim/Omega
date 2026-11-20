@@ -73,6 +73,31 @@ fn utf16_col(line: &str, byte: usize) -> usize {
     line[..byte].encode_utf16().count()
 }
 
+fn build_regex(query: &str, case_sensitive: bool, whole_word: bool, is_regex: bool) -> Result<regex::Regex, regex::Error> {
+    let pattern = if is_regex { query.to_string() } else { regex::escape(query) };
+    let pattern = if whole_word { format!(r"\b(?:{pattern})\b") } else { pattern };
+    RegexBuilder::new(&pattern).case_insensitive(!case_sensitive).build()
+}
+
+/// Matches every line of one file. `total` counts matches across files; returns the hits and
+/// whether `max_results` was reached (stops after the line that reached it).
+fn match_text(re: &regex::Regex, file: &str, text: &str, total: &mut usize, max_results: usize) -> (Vec<Hit>, bool) {
+    let mut hits = Vec::new();
+    for (n, line) in text.lines().enumerate() {
+        let ranges: Vec<(usize, usize)> = re.find_iter(line).filter(|m| m.end() > m.start()).map(|m| (utf16_col(line, m.start()), utf16_col(line, m.end()))).collect();
+        if ranges.is_empty() {
+            continue;
+        }
+        *total += ranges.len();
+        let shown: String = line.chars().take(400).collect();
+        hits.push(Hit { file: file.to_string(), line: n + 1, ranges, text: shown });
+        if *total >= max_results {
+            return (hits, true);
+        }
+    }
+    (hits, false)
+}
+
 #[tauri::command]
 pub fn search_text(app: AppHandle, id: u64, root: String, opts: SearchOptions) -> Result<u64, String> {
     // The caller picks the id so it can match events that arrive before this call returns.
@@ -81,9 +106,7 @@ pub fn search_text(app: AppHandle, id: u64, root: String, opts: SearchOptions) -
         let _ = app.emit("search-done", Done { id, files: 0, hits: 0, truncated: false, error: None });
         return Ok(id);
     }
-    let pattern = if opts.regex { opts.query.clone() } else { regex::escape(&opts.query) };
-    let pattern = if opts.whole_word { format!(r"\b(?:{pattern})\b") } else { pattern };
-    let re = match RegexBuilder::new(&pattern).case_insensitive(!opts.case_sensitive).build() {
+    let re = match build_regex(&opts.query, opts.case_sensitive, opts.whole_word, opts.regex) {
         Ok(r) => Arc::new(r),
         Err(e) => {
             let _ = app.emit("search-done", Done { id, files: 0, hits: 0, truncated: false, error: Some(e.to_string()) });
@@ -142,24 +165,12 @@ pub fn search_text(app: AppHandle, id: u64, root: String, opts: SearchOptions) -
                 continue; // binary or huge
             }
             let Ok(text) = String::from_utf8(bytes) else { continue };
-            let mut in_file = false;
-            for (n, line) in text.lines().enumerate() {
-                let ranges: Vec<(usize, usize)> = re.find_iter(line).filter(|m| m.end() > m.start()).map(|m| (utf16_col(line, m.start()), utf16_col(line, m.end()))).collect();
-                if ranges.is_empty() {
-                    continue;
-                }
-                if !in_file {
-                    in_file = true;
-                    files_with_hits += 1;
-                }
-                total += ranges.len();
-                let shown: String = line.chars().take(400).collect();
-                batch.push(Hit { file: crate::env::norm(&path), line: n + 1, ranges, text: shown });
-                if total >= opts.max_results {
-                    truncated = true;
-                    break;
-                }
+            let (hits, t) = match_text(&re, &crate::env::norm(&path), &text, &mut total, opts.max_results);
+            if !hits.is_empty() {
+                files_with_hits += 1;
             }
+            batch.extend(hits);
+            truncated = t;
             if batch.len() >= 200 || (last_emit.elapsed().as_millis() > 60 && !batch.is_empty()) {
                 let _ = app.emit("search-hits", Batch { id, hits: std::mem::take(&mut batch) });
                 last_emit = std::time::Instant::now();
@@ -179,4 +190,130 @@ pub fn search_text(app: AppHandle, id: u64, root: String, opts: SearchOptions) -
 #[tauri::command]
 pub fn search_cancel() {
     CURRENT.store(0, Ordering::SeqCst);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run(query: &str, case_sensitive: bool, whole_word: bool, is_regex: bool, text: &str) -> Vec<Hit> {
+        let re = build_regex(query, case_sensitive, whole_word, is_regex).unwrap();
+        let mut total = 0;
+        match_text(&re, "f", text, &mut total, usize::MAX).0
+    }
+
+    fn ranges(hits: &[Hit]) -> Vec<(usize, Vec<(usize, usize)>)> {
+        hits.iter().map(|h| (h.line, h.ranges.clone())).collect()
+    }
+
+    #[test]
+    fn mask_include_exclude() {
+        let (inc, exc) = build_mask("*.rs, !target/**; src/*.ts").unwrap();
+        let (inc, exc) = (inc.unwrap(), exc.unwrap());
+        assert!(inc.is_match("main.rs"));
+        assert!(inc.is_match("a/b/lib.rs"));
+        assert!(inc.is_match("src/x.ts"));
+        assert!(!inc.is_match("lib/x.ts"));
+        assert!(!inc.is_match("a.py"));
+        assert!(exc.is_match("target/debug/x.rs"));
+        assert!(!exc.is_match("src/target.rs"));
+    }
+
+    #[test]
+    fn mask_bare_matches_anywhere() {
+        let (inc, exc) = build_mask("*.py").unwrap();
+        let inc = inc.unwrap();
+        assert!(exc.is_none());
+        assert!(inc.is_match("a/b/c.py"));
+        assert!(inc.is_match("c.py"));
+        assert!(!inc.is_match("c.pyc"));
+    }
+
+    #[test]
+    fn mask_empty_and_invalid() {
+        let (inc, exc) = build_mask("").unwrap();
+        assert!(inc.is_none() && exc.is_none());
+        let (inc, exc) = build_mask(" , ;").unwrap();
+        assert!(inc.is_none() && exc.is_none());
+        assert!(build_mask("[").is_err());
+    }
+
+    #[test]
+    fn utf16_columns() {
+        let s = "äö😀x";
+        let b = s.find('x').unwrap();
+        assert_eq!(b, 8);
+        assert_eq!(utf16_col(s, b), 4);
+        assert_eq!(utf16_col(s, 0), 0);
+    }
+
+    #[test]
+    fn literal_is_escaped() {
+        let h = run("a.b(", true, false, false, "axb(\na.b(c\n");
+        assert_eq!(ranges(&h), vec![(2, vec![(0, 4)])]);
+        assert_eq!(h[0].text, "a.b(c");
+        assert_eq!(h[0].file, "f");
+    }
+
+    #[test]
+    fn regex_mode() {
+        let h = run(r"b\d+", true, false, true, "b1 b22 bx");
+        assert_eq!(ranges(&h), vec![(1, vec![(0, 2), (3, 6)])]);
+        assert!(build_regex("(", true, false, true).is_err());
+    }
+
+    #[test]
+    fn whole_word() {
+        let h = run("foo", true, true, false, "foobar\nfoo bar\nx.foo()");
+        assert_eq!(ranges(&h), vec![(2, vec![(0, 3)]), (3, vec![(2, 5)])]);
+    }
+
+    #[test]
+    fn whole_word_unicode() {
+        let h = run("Größe", true, true, false, "Größenordnung\ndie Größe ist");
+        assert_eq!(ranges(&h), vec![(2, vec![(4, 9)])]);
+        // A prefix must not match inside an umlaut word.
+        assert!(run("Gr", true, true, false, "Größe").is_empty());
+    }
+
+    #[test]
+    fn case_insensitive() {
+        assert_eq!(ranges(&run("hello", false, false, false, "HeLLo hello")), vec![(1, vec![(0, 5), (6, 11)])]);
+        assert!(run("hello", true, false, false, "HeLLo").is_empty());
+        assert_eq!(ranges(&run("größe", false, false, false, "GRÖßE")).len(), 1);
+    }
+
+    #[test]
+    fn empty_matches_ignored() {
+        let h = run("a*", true, false, true, "bab\nxyz\naa");
+        assert_eq!(ranges(&h), vec![(1, vec![(1, 2)]), (3, vec![(0, 2)])]);
+    }
+
+    #[test]
+    fn max_results_truncates() {
+        let re = build_regex("x", true, false, false).unwrap();
+        let mut total = 0;
+        let (h, t) = match_text(&re, "f", "x\nxxx\nx\n", &mut total, 2);
+        assert!(t);
+        assert_eq!(h.len(), 2);
+        assert_eq!(total, 4);
+        // Total carries over from previous files.
+        let mut total = 5;
+        let (h, t) = match_text(&re, "f", "x\n", &mut total, 6);
+        assert!(t);
+        assert_eq!(h.len(), 1);
+        let mut total = 0;
+        let (h, t) = match_text(&re, "f", "x\nx\n", &mut total, 10);
+        assert!(!t);
+        assert_eq!((h.len(), total), (2, 2));
+    }
+
+    #[test]
+    fn long_line_capped_at_400_chars() {
+        let line = format!("{}needle", "ä".repeat(500));
+        let h = run("needle", true, false, false, &line);
+        assert_eq!(h[0].text.chars().count(), 400);
+        // Ranges still refer to the full line.
+        assert_eq!(h[0].ranges, vec![(500, 506)]);
+    }
 }
