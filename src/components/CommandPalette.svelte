@@ -268,7 +268,8 @@
   .name.mono { font-family: var(--mono); font-size: 12.5px; }
   .m { color: var(--accent); font-weight: 650; }
   .detail { color: var(--label-3); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .detail.right { margin-left: auto; }
+  /* Shortcuts and file:line are short: never ellipsize them, let the name shrink instead. */
+  .detail.right { margin-left: auto; flex-shrink: 0; }
   .empty { color: var(--label-3); padding: 14px; margin: 0; }
   @keyframes fade { from { opacity: 0; } }
   @keyframes drop { from { opacity: 0; transform: translateY(-10px) scale(0.98); } }
