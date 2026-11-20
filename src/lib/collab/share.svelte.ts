@@ -46,6 +46,9 @@ interface SharedDoc {
 }
 
 const docs = new Map<string, SharedDoc>();
+/** Host: old key → new key of renamed docs, for guest messages still sent under the old name. */
+const renamed = new Map<string, string>();
+const hostDocAt = (path: string) => docs.get(path) ?? docs.get(renamed.get(path) ?? "");
 
 export const share = $state({
   /** Host project name (guest side). */
@@ -271,8 +274,22 @@ function onHostPathMoved(from: string, to: string | null) {
   if (!rel) return;
   for (const d of [...docs.values()]) {
     if (d.rel !== rel && !d.rel.startsWith(rel + "/")) continue;
-    if (to === null) hostFileGone(d);
+    const dest = to === null ? null : relOf(to + d.rel.slice(rel.length));
+    if (dest === null) hostFileGone(d);
+    else hostRename(d, dest);
   }
+}
+
+/** Host: a shared file was renamed → the doc (and the guests' tabs) follow it (#127). */
+function hostRename(d: SharedDoc, dest: string) {
+  const old = d.rel;
+  const replaced = docs.get(dest);
+  if (replaced && replaced !== d) hostFileGone(replaced);
+  docs.delete(old);
+  d.rel = dest;
+  docs.set(dest, d);
+  renamed.set(old, dest);
+  for (const p of d.subscribers) send(p, { t: "doc.moved", path: old, to: dest, name: basename(dest) });
 }
 
 /** Host opened a file that is already shared → bind it. */
@@ -398,13 +415,13 @@ onCollabMessage(async (peer, msg) => {
       const states = [...d.awareness.getStates().keys()];
       if (states.length) send(peer, { t: "aw", path: d.rel, update: b64(encodeAwarenessUpdate(d.awareness, states)) });
     } else if (msg.t === "doc.update") {
-      const d = docs.get(msg.path);
+      const d = hostDocAt(msg.path);
       if (d) Y.applyUpdate(d.ydoc, unb64(msg.update), peer);
     } else if (msg.t === "aw") {
-      const d = docs.get(msg.path);
+      const d = hostDocAt(msg.path);
       if (d) applyAwarenessUpdate(d.awareness, unb64(msg.update), peer);
     } else if (msg.t === "doc.close") {
-      docs.get(msg.path)?.subscribers.delete(peer);
+      hostDocAt(msg.path)?.subscribers.delete(peer);
     } else if (msg.t === "fs.list") {
       const rel = String(msg.path || "");
       let entries: { name: string; rel: string; is_dir: boolean }[] = [];
@@ -435,6 +452,15 @@ onCollabMessage(async (peer, msg) => {
     share.hostRoot = msg.name;
   } else if (msg.t === "doc.state") {
     guestReceiveState(msg.path, unb64(msg.update), msg.name);
+  } else if (msg.t === "doc.moved") {
+    // The host renamed the file: the tab follows it (#127).
+    const d = docs.get(msg.path);
+    if (!d) return;
+    docs.delete(msg.path);
+    d.rel = msg.to;
+    docs.set(msg.to, d);
+    const tab = d.tabId ? app.tabs.find((x) => x.id === d.tabId) : null;
+    if (tab) Object.assign(tab, { path: REMOTE + msg.to, name: msg.name || basename(msg.to) });
   } else if (msg.t === "doc.gone" && msg.reason === "deleted") {
     // The host deleted the file: keep the text as an unsaved local tab instead of editing into
     // nothing (#134).
@@ -488,6 +514,7 @@ export async function teardownShare() {
     d.cleanup.forEach((f) => f());
   }
   docs.clear();
+  renamed.clear();
   share.presence = {};
   share.following = null;
   share.hostRoot = "";
