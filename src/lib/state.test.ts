@@ -1,7 +1,7 @@
 // Regression tests for #2 (external changes overwritten on save), #3/#4 (what reaches write_file)
 // and #6 (New File truncated existing files). The editor and dialogs are faked; the file system is
 // an in-memory map behind mockIPC (see src/test/fakes.ts).
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { mockIPC } from "@tauri-apps/api/mocks";
 import { deferred, fakeFs, flush, type FakeEditor, type FakeFs, type FakeUi } from "../test/fakes";
 
@@ -44,6 +44,14 @@ async function open(path: string) {
 }
 
 const writes = () => fs.calls.filter((c) => c.cmd === "write_file").map((c) => c.args);
+
+// The first import of state.svelte transforms its whole dependency graph, which takes seconds on
+// a loaded machine. Do it once here, so it doesn't count against the first test's timeout (a timed
+// out test keeps running and writes into the next test's fakes). Later imports after
+// vi.resetModules() reuse the transform cache.
+beforeAll(async () => {
+  await import("./state.svelte");
+}, 60_000);
 
 beforeEach(() => {
   vi.useFakeTimers();
