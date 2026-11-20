@@ -115,6 +115,7 @@ export const collabHooks = {
   openRemote: (_path: string) => {},
   tabOpened: (_id: string, _path: string) => {},
   tabClosed: (_path: string | null, _id: string) => {},
+  pathMoved: (_from: string, _to: string | null) => {},
 };
 export const isRemotePath = (p: string | null | undefined) => !!p && p.startsWith("collab:");
 
@@ -572,6 +573,7 @@ export function pathMoved(from: string, to: string | null) {
       }
     }
   }
+  collabHooks.pathMoved(from, to);
   app.treeVersion++;
 }
 

@@ -75,7 +75,7 @@ function makeDoc(rel: string, isHost: boolean): SharedDoc {
 
   // Local Yjs changes → network. Origin = peer id for remote updates, so they aren't echoed back.
   const onUpdate = (update: Uint8Array, origin: unknown) => {
-    const msg = { t: "doc.update", path: rel, update: b64(update) };
+    const msg = { t: "doc.update", path: d.rel, update: b64(update) };
     if (isHost) {
       for (const p of d.subscribers) if (p !== origin) send(p, msg);
       scheduleHostWrite(d);
@@ -85,7 +85,7 @@ function makeDoc(rel: string, isHost: boolean): SharedDoc {
 
   const onAwareness = ({ added, updated, removed }: { added: number[]; updated: number[]; removed: number[] }, origin: unknown) => {
     const changed = added.concat(updated, removed);
-    const msg = { t: "aw", path: rel, update: b64(encodeAwarenessUpdate(awareness, changed)) };
+    const msg = { t: "aw", path: d.rel, update: b64(encodeAwarenessUpdate(awareness, changed)) };
     if (isHost) {
       for (const p of d.subscribers) if (p !== origin) send(p, msg);
     } else if (origin !== "remote") send(collab.hostPeer!, msg);
@@ -164,6 +164,8 @@ async function hostWrite(d: SharedDoc) {
   // overwriting it (#128).
   const now = await fsApi.readFile(abs).catch(() => undefined);
   if (now !== undefined && d.disk !== undefined && now !== d.disk) return applyDisk(d, now);
+  // Deleted meanwhile: don't bring the file back (#134).
+  if (now === undefined && d.disk !== undefined && !(await fsApi.exists(abs).catch(() => true))) return hostFileGone(d);
   const before = d.disk;
   d.disk = text;
   await fsApi.writeFile(abs, text).catch(() => (d.disk = before));
@@ -172,8 +174,11 @@ async function hostWrite(d: SharedDoc) {
 /** Host: a background doc's file changed on disk → everybody gets the new content. */
 async function hostReload(d: SharedDoc) {
   if (d.tabId || !app.root) return;
-  const text = await fsApi.readFile(joinPath(app.root, d.rel)).catch(() => undefined);
-  if (text !== undefined && !d.tabId) applyDisk(d, text);
+  const abs = joinPath(app.root, d.rel);
+  const text = await fsApi.readFile(abs).catch(() => undefined);
+  if (d.tabId || docs.get(d.rel) !== d) return;
+  if (text !== undefined) applyDisk(d, text);
+  else if (!(await fsApi.exists(abs).catch(() => true))) hostFileGone(d); // deleted outside Omega
 }
 
 function applyDisk(d: SharedDoc, text: string) {
@@ -244,6 +249,29 @@ function onHostTabClosed(tabId: string) {
       d.disk = d.ytext.toString();
       void hostReload(d);
     }
+  }
+}
+
+/**
+ * Host: a shared file was deleted. Guests keep their text as an unsaved tab; a host tab keeps it
+ * too (state.svelte.ts turned it into an unsaved one), it's just no longer shared (#134).
+ */
+function hostFileGone(d: SharedDoc) {
+  for (const p of d.subscribers) send(p, { t: "doc.gone", path: d.rel, reason: "deleted" });
+  clearTimeout(d.writeTimer);
+  if (d.tabId) ed.setCollab(d.tabId, null);
+  d.cleanup.forEach((f) => f());
+  docs.delete(d.rel);
+}
+
+/** Host: a file or folder was deleted (`to` null) or renamed in the explorer. */
+function onHostPathMoved(from: string, to: string | null) {
+  if (collab.role !== "host") return;
+  const rel = relOf(from);
+  if (!rel) return;
+  for (const d of [...docs.values()]) {
+    if (d.rel !== rel && !d.rel.startsWith(rel + "/")) continue;
+    if (to === null) hostFileGone(d);
   }
 }
 
@@ -407,6 +435,20 @@ onCollabMessage(async (peer, msg) => {
     share.hostRoot = msg.name;
   } else if (msg.t === "doc.state") {
     guestReceiveState(msg.path, unb64(msg.update), msg.name);
+  } else if (msg.t === "doc.gone" && msg.reason === "deleted") {
+    // The host deleted the file: keep the text as an unsaved local tab instead of editing into
+    // nothing (#134).
+    const d = docs.get(msg.path);
+    if (!d) return;
+    const tab = d.tabId ? app.tabs.find((x) => x.id === d.tabId) : null;
+    if (tab) {
+      ed.setCollab(tab.id, null);
+      tab.path = null;
+      tab.dirty = true;
+      ui.toast(t("ai.collab.fileDeleted", { name: tab.name }), "error");
+    }
+    d.cleanup.forEach((f) => f());
+    docs.delete(msg.path);
   } else if (msg.t === "doc.gone") {
     const d = docs.get(msg.path);
     if (d?.tabId) {
@@ -460,6 +502,7 @@ setInterval(publishPresence, 600);
 collabHooks.openRemote = (path) => openRemote(path.slice(REMOTE.length));
 collabHooks.tabOpened = (id, path) => onHostTabOpened(id, path);
 collabHooks.tabClosed = (path, id) => (collab.role === "host" ? onHostTabClosed(id) : onTabClosed(path));
+collabHooks.pathMoved = (from, to) => onHostPathMoved(from, to);
 
 // Host: files changed on disk (new/deleted/renamed, git checkout …) → guests reload their tree,
 // shared files without a host tab are reloaded (open tabs follow the disk via state.svelte.ts).
