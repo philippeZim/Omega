@@ -428,18 +428,38 @@ export async function selectFrame(f: Frame) {
     }
   } else dbg.exec = null;
   refreshEditor();
+  await loadScopes(f.id);
+  await evaluateWatches();
+}
+
+/** (Re)loads the variables of a frame. With `keepOpen`, the nodes expanded so far are expanded
+ *  again (used after a REPL command, which may have changed variables); otherwise only the first
+ *  cheap scope is expanded. */
+async function loadScopes(frameId: number, keepOpen = false) {
+  if (!active) return;
   const prev = new Map(flatten(dbg.scopes).map((n) => [path(n), n.value]));
+  const open = new Set(flatten(dbg.scopes).filter((n) => n.expanded).map(path));
   try {
-    const scopes: Json[] = (await active.request("scopes", { frameId: f.id })).scopes ?? [];
+    const scopes: Json[] = (await active.request("scopes", { frameId })).scopes ?? [];
     dbg.scopes = scopes.map((sc) => ({ name: sc.name, value: "", ref: sc.variablesReference, parentRef: 0, children: null, expanded: false }));
-    // Expand the first (cheap) scope like PyCharm does.
-    const firstScope = dbg.scopes.find((_, i) => !scopes[i].expensive);
-    if (firstScope) await toggleNode(firstScope);
+    if (keepOpen) {
+      const reopen = async (nodes: VarNode[]) => {
+        for (const n of nodes)
+          if (n.ref && open.has(path(n))) {
+            await toggleNode(n);
+            if (n.children) await reopen(n.children);
+          }
+      };
+      await reopen(dbg.scopes);
+    } else {
+      // Expand the first (cheap) scope like PyCharm does.
+      const firstScope = dbg.scopes.find((_, i) => !scopes[i].expensive);
+      if (firstScope) await toggleNode(firstScope);
+    }
     markChanged(prev);
   } catch (e) {
     log(String(e), "error");
   }
-  await evaluateWatches();
 }
 
 const path = (n: VarNode & { _path?: string }) => n._path ?? n.name;
@@ -549,6 +569,8 @@ export async function replEval(expr: string) {
   try {
     const r = await evaluate(expr, "repl");
     log(r.result, "result");
+    // The expression may have assigned a variable: refresh Variables, not just the watches.
+    if (dbg.status === "stopped" && dbg.frameId !== null) await loadScopes(dbg.frameId, true);
     await evaluateWatches();
   } catch (e) {
     log(String(e instanceof Error ? e.message : e), "error");
