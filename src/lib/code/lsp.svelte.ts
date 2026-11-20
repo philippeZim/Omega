@@ -59,6 +59,8 @@ export class LspClient {
   stopping = false;
   /** Start failed: the process was killed and its late exit must not touch the status. */
   failed = false;
+  /** TypeScript project whose dependencies are still being installed: a failed start is not reported. */
+  quiet = false;
 
   constructor(readonly kind: ServerKind, readonly root: string, cmd: string, args: string[], readonly initOptions?: Json) {
     this.id = `lsp-${kind}-${Math.random().toString(36).slice(2, 8)}`;
@@ -85,7 +87,7 @@ export class LspClient {
           clients.delete(this.key);
         }
         for (const l of this.exitListeners) l();
-        if (!this.stopping) ui.toast(t("code.lsp.exited", { kind: this.kind, tail: exitReason(tail) }), "error");
+        if (!this.stopping && !this.quiet) ui.toast(t("code.lsp.exited", { kind: this.kind, tail: exitReason(tail) }), "error");
       },
     });
     this.ready = this.start(cmd, args);
@@ -437,7 +439,7 @@ export async function clientFor(
     clients.delete(key);
   } else if (existing) return existing.ready.then(() => existing);
   if (starting.has(key)) return starting.get(key)!;
-  if (failed.has(key)) return null;
+  if (failed.has(key) || installWaits.has(key)) return null;
 
   const p = (async () => {
     let cmd = await resolveCommand(kind, root);
@@ -467,12 +469,27 @@ export async function clientFor(
       cmd = await resolveCommand(kind, root);
       if (!cmd) return null;
     }
+    const waitInstall = kind === "typescript" && (await tsInstallMissing(root));
     const c = new LspClient(kind, root, cmd.cmd, cmd.args, cmd.init);
+    c.quiet = waitInstall;
     clients.set(key, c);
     try {
       await c.ready;
+      c.quiet = false;
       return c;
     } catch (e) {
+      if (c.quiet) {
+        // node_modules/typescript is missing (e.g. a new project's `pnpm add` still runs): wait for it.
+        if (c.alive) invoke("proc_kill", { id: c.id }).catch(() => {});
+        c.failed = c.stopping = true;
+        if (c.current) {
+          clients.delete(key);
+          lspState.status[key] = "starting";
+          delete lspState.message[key];
+        }
+        void retryAfterInstall(key, root, e, () => clientFor(lang, file, workspace, askInstall));
+        return null;
+      }
       // Died during initialize: the exit handler already kept the stderr tail as message and showed a toast.
       const exited = !c.alive;
       failed.add(key);
@@ -494,6 +511,34 @@ export async function clientFor(
   const r = await p;
   starting.delete(key);
   return r;
+}
+
+/** How long a TypeScript server waits for a running dependency install (tests shorten it). */
+export const tsInstallWait = { pollMs: 1000, maxMs: 5 * 60_000 };
+const installWaits = new Set<string>();
+
+async function tsInstallMissing(root: string) {
+  return (await fsApi.exists(joinPath(root, "package.json"))) && !(await fsApi.exists(joinPath(root, "node_modules/typescript/package.json")));
+}
+
+/** Starts the server again once node_modules/typescript exists; reports the start error only after a timeout. */
+async function retryAfterInstall(key: string, root: string, err: unknown, start: () => Promise<LspClient | null>) {
+  installWaits.add(key);
+  const until = Date.now() + tsInstallWait.maxMs;
+  let ready = false;
+  while (!ready && Date.now() < until) {
+    await new Promise((r) => setTimeout(r, tsInstallWait.pollMs));
+    ready = !(await tsInstallMissing(root));
+  }
+  installWaits.delete(key);
+  if (!ready) {
+    failed.add(key);
+    lspState.status[key] = "error";
+    lspState.message[key] = backendErrorText(err);
+    ui.toast(t("code.lsp.startFailed", { kind: "typescript", err: String(err) }), "error");
+    return;
+  }
+  if (await start()) for (const l of restartListeners) l();
 }
 
 /** Stops all running servers of `kind` (before it is updated or removed); they restart on demand. */
