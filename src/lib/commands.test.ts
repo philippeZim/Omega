@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { KEYMAPS } from "./keymaps";
-import { normalize } from "./keys";
+import { formatKey, normalize } from "./keys";
 import { dictionaries } from "./i18n/strings";
-import { COMMANDS, applyKeymap, conflicts, defaultKeysFor, handleGlobalKey, keymapState, keysFor, modeNames, resetAllKeys, setKeys } from "./commands.svelte";
+import { COMMANDS, applyKeymap, conflicts, defaultKeysFor, handleGlobalKey, keymapState, keysFor, modeNames, resetAllKeys, setKeys, shortcutLabel, withShortcut } from "./commands.svelte";
 import { toggleZone } from "./layout.svelte";
 import { settings } from "./settings.svelte";
 const { stub } = vi.hoisted(() => {
@@ -171,5 +171,21 @@ describe("modeNames", () => {
     expect(modeNames(["latex"])).toBe("LaTeX");
     expect(modeNames(["code", "markdown"])).toBe("Code, Markdown");
     expect(modeNames(undefined)).toBe("");
+  });
+});
+
+describe("shortcutLabel / withShortcut", () => {
+  beforeEach(() => {
+    applyKeymap("omega", false);
+    resetAllKeys();
+  });
+
+  test("follow custom bindings instead of the defaults", () => {
+    setKeys("mode.text", ["Mod-1", "Mod-2"]);
+    setKeys("mode.markdown", []);
+    expect(shortcutLabel("mode.text")).toBe(`${formatKey("Mod-1")} / ${formatKey("Mod-2")}`);
+    expect(shortcutLabel("mode.markdown")).toBe("");
+    expect(withShortcut("Markdown", "mode.markdown")).toBe("Markdown");
+    expect(withShortcut("Sidebar", "app.sidebar")).toBe(`Sidebar (${formatKey("Mod-b")})`);
   });
 });
