@@ -30,4 +30,28 @@ describe("gitErrorMessage", () => {
   test("without fatal/error lines: last two non-hint lines, falling back to stdout", () => {
     expect(gitErrorMessage({ stdout: "a\nb\nc\nhint: x", stderr: "" })).toBe("b c");
   });
+
+  test("non-fast-forward push names the rejected ref before the generic failure", () => {
+    const stderr = [
+      "To github.com:me/repo.git",
+      " ! [rejected]        main -> main (non-fast-forward)",
+      "error: failed to push some refs to 'github.com:me/repo.git'",
+      "hint: Updates were rejected because the tip of your current branch is behind",
+      "hint: its remote counterpart. If you want to integrate the remote changes,",
+    ].join("\n");
+    expect(gitErrorMessage({ stdout: "", stderr })).toBe("[rejected] main -> main (non-fast-forward) failed to push some refs to 'github.com:me/repo.git'");
+  });
+
+  test("protected-branch push shows the server's reason, capped at three lines", () => {
+    const stderr = [
+      "remote: error: GH006: Protected branch update failed for refs/heads/main.",
+      "remote: error: Changes must be made through a pull request.",
+      "To github.com:me/repo.git",
+      " ! [remote rejected] main -> main (protected branch hook declined)",
+      "error: failed to push some refs to 'github.com:me/repo.git'",
+    ].join("\n");
+    expect(gitErrorMessage({ stdout: "", stderr })).toBe(
+      "GH006: Protected branch update failed for refs/heads/main. Changes must be made through a pull request. [remote rejected] main -> main (protected branch hook declined)",
+    );
+  });
 });
