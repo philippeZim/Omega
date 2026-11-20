@@ -3,7 +3,7 @@ import { mount, unmount, flushSync } from "svelte";
 
 vi.mock("../lib/state.svelte", () => ({ openFile: async () => {} }));
 vi.mock("../lib/editor", () => ({ getView: () => null }));
-vi.mock("../lib/debug/debugger.svelte", () => ({ stopReasonLabel: (r: string) => r, selectFrame: () => {}, toggleNode: () => {} }));
+vi.mock("../lib/debug/debugger.svelte", () => ({ stopReasonLabel: (r: string) => r, selectFrame: () => {}, toggleNode: () => {}, inProject: () => true }));
 
 import DebugPanel from "./DebugPanel.svelte";
 import { dbg } from "../lib/debug/store.svelte";

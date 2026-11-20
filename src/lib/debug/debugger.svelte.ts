@@ -3,7 +3,7 @@ import { DapSession } from "./dap";
 import { planFor, type Plan } from "./adapters";
 import { dbg, dbgHooks, saveWatches, type Frame, type VarNode } from "./store.svelte";
 import { debugRefresh } from "./editorExt";
-import { app, activeTab, openFile, save, setMode } from "../state.svelte";
+import { app, activeTab, openFile, save, setMode, inRoot } from "../state.svelte";
 import { ui } from "../ui.svelte";
 import * as ed from "../editor";
 import { invoke } from "@tauri-apps/api/core";
@@ -95,8 +95,14 @@ async function sendBreakpoints(s: DapSession, path: string) {
   }
 }
 
+/** Breakpoints are stored for all projects; only those of the open project (and the debugged
+ *  file, which may lie outside it) are listed and sent to the adapter. */
+export function inProject(path: string) {
+  return !app.root || inRoot(path, app.root) || path === lastPlan?.file;
+}
+
 async function configure(s: DapSession) {
-  for (const path of Object.keys(dbg.breakpoints)) if (dbg.breakpoints[path].length) await sendBreakpoints(s, path);
+  for (const path of Object.keys(dbg.breakpoints)) if (dbg.breakpoints[path].length && inProject(path)) await sendBreakpoints(s, path);
   const filters = (s.capabilities.exceptionBreakpointFilters ?? []).filter((f: Json) => f.default).map((f: Json) => f.filter);
   await s.request("setExceptionBreakpoints", { filters }).catch(() => {});
   configured.add(s);

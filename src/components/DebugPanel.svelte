@@ -5,7 +5,7 @@
   import {
     startDebugging, stopDebugging, restartDebugging, continueRun, stepOver, stepInto, stepOut, pause,
     selectFrame, selectThread, addWatch, removeWatch, toggleWatch,
-    stopReasonLabel,
+    stopReasonLabel, inProject,
   } from "../lib/debug/debugger.svelte";
   import { t } from "../lib/i18n/index.svelte";
   import { openFile } from "../lib/state.svelte";
@@ -17,7 +17,7 @@
   const stopped = $derived(dbg.status === "stopped");
   const running = $derived(dbg.status === "running" || dbg.status === "starting");
   const live = $derived(stopped || running);
-  const bpList = $derived(Object.entries(dbg.breakpoints).flatMap(([p, list]) => list.map((b) => ({ path: p, ...b }))));
+  const bpList = $derived(Object.entries(dbg.breakpoints).filter(([p]) => inProject(p)).flatMap(([p, list]) => list.map((b) => ({ path: p, ...b }))));
 
   function toggleSection(k: string) {
     open[k] = !open[k];
