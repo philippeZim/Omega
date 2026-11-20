@@ -98,8 +98,8 @@
 </div>
 
 <style>
-  .backdrop { position: fixed; inset: 0; z-index: 86; display: grid; place-items: center; background: var(--scrim); animation: fade 0.15s ease-out; }
-  .sheet { width: 94vw; height: 90vh; display: flex; flex-direction: column; border-radius: 24px; background: var(--glass-strong); backdrop-filter: var(--blur); box-shadow: var(--glass-highlight), 0 30px 90px rgba(0, 0, 0, 0.7); overflow: hidden; outline: none; animation: pop 0.28s cubic-bezier(0.22, 1.2, 0.36, 1); }
+  .backdrop { position: fixed; inset: 0; z-index: 86; display: grid; place-items: center; background: var(--scrim); }
+  .sheet { width: 94vw; height: 90vh; display: flex; flex-direction: column; border-radius: 24px; background: var(--glass-strong); backdrop-filter: var(--blur); box-shadow: var(--glass-highlight), 0 30px 90px rgba(0, 0, 0, 0.7); overflow: hidden; outline: none; /* no open animation: WebKitGTK flashes when glass animates */ }
   header { display: flex; align-items: baseline; gap: 12px; padding: 16px 16px 8px 22px; }
   .title { font-weight: 700; font-size: 15px; }
   .path { font-family: var(--mono); font-size: 12px; color: var(--label-3); }

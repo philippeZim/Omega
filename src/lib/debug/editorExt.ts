@@ -1,6 +1,6 @@
 /** Breakpoint gutter + execution-line highlight for code mode. */
 import { RangeSet, StateEffect, StateField, type Extension, type EditorState } from "@codemirror/state";
-import { Decoration, EditorView, GutterMarker, gutter, hoverTooltip, type DecorationSet } from "@codemirror/view";
+import { Decoration, EditorView, GutterMarker, ViewPlugin, gutter, gutterLineClass, hoverTooltip, type DecorationSet } from "@codemirror/view";
 import { viewActions } from "../editorActions";
 import { dbg, dbgHooks, setBreakpointLines } from "./store.svelte";
 import { t } from "../i18n/index.svelte";
@@ -49,6 +49,24 @@ class BpMarker extends GutterMarker {
   }
 }
 
+/** Faint preview of a breakpoint on the hovered line (shows where a click will put one). */
+class GhostMarker extends GutterMarker {
+  eq() {
+    return true;
+  }
+  toDOM() {
+    const el = document.createElement("div");
+    el.className = "cm-bp ghost";
+    return el;
+  }
+}
+const ghost = new GhostMarker();
+
+/** Highlights the hovered line's number. */
+const hoverLineClass = new (class extends GutterMarker {
+  elementClass = "cm-bp-hoverline";
+})();
+
 class ExecMarker extends GutterMarker {
   /** True when the execution line sits on a breakpoint: one combined icon instead of two overlapping. */
   constructor(readonly onBreakpoint: boolean) {
@@ -67,6 +85,20 @@ class ExecMarker extends GutterMarker {
 /** Re-read breakpoints/exec line from the store (dispatched by the controller). */
 export const debugRefresh = StateEffect.define<null>();
 const toggleBp = StateEffect.define<{ pos: number; condition?: string | null }>();
+/** Start of the line under the mouse in the breakpoint hit area, or null. */
+const setHover = StateEffect.define<number | null>();
+const hoverField = StateField.define<number | null>({
+  create: () => null,
+  update(v, tr) {
+    for (const e of tr.effects) if (e.is(setHover)) v = e.value;
+    if (v !== null && tr.docChanged) v = null;
+    return v;
+  },
+  provide: (f) => gutterLineClass.compute([f], (s) => {
+    const at = s.field(f);
+    return at === null ? RangeSet.empty : RangeSet.of([hoverLineClass.range(at)]);
+  }),
+});
 
 interface BpValue {
   pos: number;
@@ -153,32 +185,75 @@ export function debugExtension(path: string): Extension {
     gutter({
       class: "cm-bp-gutter",
       markers: (v) => {
-        const bps = v.state.field(bpField, false) ?? RangeSet.empty;
+        let bps: RangeSet<GutterMarker> = v.state.field(bpField, false) ?? RangeSet.empty;
+        const hover = v.state.field(hoverField, false);
+        if (hover != null && hover <= v.state.doc.length) {
+          let has = false;
+          bps.between(hover, hover, () => {
+            has = true;
+          });
+          if (!has) bps = RangeSet.join<GutterMarker>([bps, RangeSet.of<GutterMarker>([ghost.range(hover)])]);
+        }
         if (dbg.exec?.path !== path || dbg.exec.line > v.state.doc.lines) return bps;
         const at = v.state.doc.line(dbg.exec.line).from;
         let onBp = false;
         bps.between(at, at, () => {
           onBp = true;
         });
-        const rest = onBp ? bps.update({ filter: (from) => from !== at }) : bps;
+        // The exec icon replaces whatever sits on that line (breakpoint → combined icon, ghost → arrow).
+        const rest = bps.update({ filter: (from) => from !== at });
         return RangeSet.join<GutterMarker>([rest, RangeSet.of<GutterMarker>([new ExecMarker(onBp).range(at)])]);
       },
       initialSpacer: () => new BpMarker(undefined, undefined),
-      domEventHandlers: {
-        mousedown(view, line, e) {
-          if ((e as MouseEvent).button !== 0) return false;
-          toggleAt(view, line.from);
-          return true;
+    }),
+    hoverField,
+    // Hit area = breakpoint column + git stripe + line number (everything left of the fold
+    // gutter). Listeners sit on the scroller because CodeMirror's own handlers only cover
+    // the content, not the gutters.
+    ViewPlugin.define((view) => {
+      const lineAt = (e: MouseEvent): number | null => {
+        const target = e.target as Element | null;
+        if (!target?.closest(".cm-gutters")) return null;
+        const nums = view.dom.querySelector(".cm-lineNumbers");
+        if (nums && e.clientX > nums.getBoundingClientRect().right) return null;
+        const block = view.lineBlockAtHeight(e.clientY - view.documentTop);
+        return block.from <= view.state.doc.length ? block.from : null;
+      };
+      const hover = (at: number | null) => {
+        if (view.state.field(hoverField, false) !== at) view.dispatch({ effects: setHover.of(at) });
+      };
+      const onMove = (e: MouseEvent) => hover(lineAt(e));
+      const onLeave = () => hover(null);
+      const onDown = (e: MouseEvent) => {
+        if (e.button !== 0) return;
+        const at = lineAt(e);
+        if (at === null) return;
+        e.preventDefault();
+        toggleAt(view, at);
+      };
+      const onMenu = (e: MouseEvent) => {
+        const at = lineAt(e);
+        if (at === null) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const current = (dbg.breakpoints[path] ?? []).find((b) => b.line === view.state.doc.lineAt(at).number)?.condition ?? "";
+        conditionHook(current).then((c) => {
+          if (c !== null) toggleAt(view, at, c);
+        });
+      };
+      const el = view.scrollDOM;
+      el.addEventListener("mousemove", onMove);
+      el.addEventListener("mouseleave", onLeave);
+      el.addEventListener("mousedown", onDown);
+      el.addEventListener("contextmenu", onMenu);
+      return {
+        destroy() {
+          el.removeEventListener("mousemove", onMove);
+          el.removeEventListener("mouseleave", onLeave);
+          el.removeEventListener("mousedown", onDown);
+          el.removeEventListener("contextmenu", onMenu);
         },
-        contextmenu(view, line, e) {
-          e.preventDefault();
-          const current = (dbg.breakpoints[path] ?? []).find((b) => b.line === view.state.doc.lineAt(line.from).number)?.condition ?? "";
-          conditionHook(current).then((c) => {
-            if (c !== null) toggleAt(view, line.from, c);
-          });
-          return true;
-        },
-      },
+      };
     }),
     viewActions.of({ "debug.toggleBreakpoint": (v) => (toggleAt(v, v.state.selection.main.head), true) }),
     EditorView.updateListener.of((u) => {
@@ -188,32 +263,29 @@ export function debugExtension(path: string): Extension {
       }
     }),
     EditorView.baseTheme({
-      ".cm-bp-gutter": { width: "18px", paddingLeft: "4px", cursor: "default" },
+      ".cm-bp-gutter": { width: "24px", paddingLeft: "6px" },
       ".cm-bp-gutter .cm-gutterElement": { display: "flex", alignItems: "center", justifyContent: "center", position: "relative" },
-      ".cm-bp-gutter .cm-gutterElement:hover::after": { content: '""', width: "10px", height: "10px", borderRadius: "50%", background: "rgba(223, 112, 103,0.35)", position: "absolute" },
+      // Pointer over the whole hit area (breakpoint column, git stripe, line numbers).
+      ".cm-gutters": { cursor: "pointer" },
+      ".cm-foldGutter": { cursor: "default" },
+      ".cm-lineNumbers .cm-bp-hoverline": { color: "var(--label-2)" },
       ".cm-bp": { width: "11px", height: "11px", borderRadius: "50%", background: "#df7067", boxShadow: "0 0 0 2px rgba(223, 112, 103,0.25)", position: "relative", zIndex: "1" },
+      ".cm-bp.ghost": { opacity: "0.35", boxShadow: "none" },
       ".cm-bp.cond": { background: "#d6a35f", boxShadow: "0 0 0 2px rgba(214, 163, 95,0.25)" },
       ".cm-bp.unverified": { background: "transparent", border: "2px solid #df7067", boxShadow: "none" },
-      ".cm-exec-arrow": { position: "absolute", width: "0", height: "0", borderTop: "6px solid transparent", borderBottom: "6px solid transparent", borderLeft: "9px solid #d8c27a", zIndex: "2" },
+      // Current line (not on a breakpoint): a rounded yellow arrow tag.
+      ".cm-exec-arrow": { position: "absolute", width: "13px", height: "11px", background: "#d8c27a", clipPath: "polygon(0 0, 55% 0, 100% 50%, 55% 100%, 0 100%)", borderRadius: "2px", zIndex: "2" },
       ".cm-debug-value": { padding: "6px 10px", fontFamily: "var(--mono)", fontSize: "12.5px", maxWidth: "600px", whiteSpace: "pre-wrap", wordBreak: "break-all" },
       ".cm-debug-value span:first-child": { color: "#a996cf" },
+      // Stopped on a breakpoint: keep the red dot, ringed in the current-line yellow.
       ".cm-exec-bp": {
-        width: "13px",
-        height: "13px",
+        width: "11px",
+        height: "11px",
         borderRadius: "50%",
         background: "#df7067",
-        boxShadow: "0 0 0 2px rgba(216, 194, 122, 0.45)",
+        boxShadow: "0 0 0 2px #d8c27a, 0 0 6px 2px rgba(216, 194, 122, 0.35)",
         position: "relative",
         zIndex: "2",
-      },
-      ".cm-exec-bp::after": {
-        content: '""',
-        position: "absolute",
-        left: "4.5px",
-        top: "3px",
-        borderTop: "3.5px solid transparent",
-        borderBottom: "3.5px solid transparent",
-        borderLeft: "5px solid #d8c27a",
       },
       ".cm-exec-line": { backgroundColor: "rgba(216, 194, 122,0.16) !important", boxShadow: "inset 3px 0 0 #d8c27a" },
     }),

@@ -7,9 +7,12 @@ import * as ed from "./editor";
 const num = (k: string, d: number) => Number(localStorage.getItem(k)) || d;
 
 export type Appearance = "dark" | "light";
+/** Panel material: the regular frosted glass, or the clearer, refractive "Liquid Glass". */
+export type Material = "solid" | "liquid";
 
 export const settings = $state({
   appearance: (localStorage.getItem("appearance") === "light" ? "light" : "dark") as Appearance,
+  material: (localStorage.getItem("material") === "liquid" ? "liquid" : "solid") as Material,
   /** Chosen syntax theme per appearance; `syntaxTheme` is the one currently applied. */
   syntaxThemeDark: localStorage.getItem("syntaxThemeDark") || localStorage.getItem("syntaxTheme") || "xcode",
   syntaxThemeLight: localStorage.getItem("syntaxThemeLight") || "xcode-light",
@@ -70,5 +73,13 @@ export function setAppearance(a: Appearance) {
   applySyntaxTheme(a === "light" ? settings.syntaxThemeLight : settings.syntaxThemeDark);
 }
 
+/** Switches the panel material (independent of light/dark). */
+export function setMaterial(m: Material) {
+  settings.material = m;
+  localStorage.setItem("material", m);
+  document.documentElement.dataset.material = m;
+}
+
 setAppearance(settings.appearance);
+setMaterial(settings.material);
 applySizes();

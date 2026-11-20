@@ -11,6 +11,7 @@ import * as latexCtl from "./latex/controller.svelte";
 import { setLspHooks } from "./code/lspExtension";
 import { allClients, fileUri } from "./code/lsp.svelte";
 import { t } from "./i18n/index.svelte";
+import { watchRoot } from "./fsWatch.svelte";
 
 setLspHooks({
   workspace: () => app.root,
@@ -367,7 +368,9 @@ export function setRoot(dir: string | null) {
   if (dir) localStorage.setItem("root", dir);
   else localStorage.removeItem("root");
   app.treeVersion++;
+  watchRoot(dir);
 }
+watchRoot(app.root);
 
 /** Called after a rename/delete in the explorer so open tabs follow the file. */
 export function pathMoved(from: string, to: string | null) {

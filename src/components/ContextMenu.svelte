@@ -2,13 +2,15 @@
   import { ui } from "../lib/ui.svelte";
 
   let el: HTMLDivElement | undefined = $state();
-  let pos = $state({ x: 0, y: 0 });
+  // Position for the menu it was measured for; until then the menu stays invisible, so it never
+  // shows for a frame at a stale/unclamped spot and then jumps.
+  let pos = $state.raw<{ x: number; y: number; menu: typeof ui.menu }>({ x: 0, y: 0, menu: null });
 
   $effect(() => {
     const m = ui.menu;
     if (!m || !el) return;
     const r = el.getBoundingClientRect();
-    pos = { x: Math.min(m.x, innerWidth - r.width - 6), y: Math.min(m.y, innerHeight - r.height - 6) };
+    pos = { x: Math.max(6, Math.min(m.x, innerWidth - r.width - 6)), y: Math.max(6, Math.min(m.y, innerHeight - r.height - 6)), menu: m };
   });
 
   const close = () => (ui.menu = null);
@@ -18,7 +20,7 @@
 
 {#if ui.menu}
   <div class="catcher" role="presentation" onpointerdown={close} oncontextmenu={(e) => { e.preventDefault(); close(); }}></div>
-  <div class="menu" bind:this={el} style="left: {pos.x || ui.menu.x}px; top: {pos.y || ui.menu.y}px" role="menu">
+  <div class="menu" bind:this={el} style="left: {pos.menu === ui.menu ? pos.x : ui.menu.x}px; top: {pos.menu === ui.menu ? pos.y : ui.menu.y}px; visibility: {pos.menu === ui.menu ? 'visible' : 'hidden'}" role="menu">
     {#each ui.menu.items as item, i (i)}
       {#if item.separator}
         <div class="sep"></div>
@@ -43,7 +45,7 @@
     background: var(--glass-strong);
     backdrop-filter: var(--blur);
     box-shadow: var(--glass-highlight), 0 20px 50px rgba(0, 0, 0, 0.65);
-    animation: pop 0.12s ease-out;
+    /* No open animation: fading/scaling an element with backdrop-filter makes WebKitGTK flash. */
   }
   button {
     width: 100%;
@@ -61,5 +63,4 @@
   .sc { color: var(--label-3); }
 
   .sep { height: 1px; margin: 5px 10px; background: rgba(var(--fg-rgb), 0.07); }
-  @keyframes pop { from { opacity: 0; transform: scale(0.97); } }
 </style>

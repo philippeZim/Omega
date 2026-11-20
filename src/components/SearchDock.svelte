@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Glyph from "./Glyph.svelte";
   import { find, gotoHit, matchSummary, type Hit } from "../lib/search/search.svelte";
   import { app } from "../lib/state.svelte";
   import { basename } from "../lib/api";
@@ -39,7 +40,7 @@
     <div class="list">
       {#each groups as [file, hits] (file)}
         <button class="file" onclick={() => (collapsed[file] = !collapsed[file])}>
-          <span class="chev" class:open={!collapsed[file]}>›</span>
+          <span class="chev" class:open={!collapsed[file]}><Glyph name="chevron" size={8} /></span>
           <span class="fname">{basename(file)}</span>
           <span class="fpath">{rel(file)}</span>
           <span class="n">{hits.length}</span>
@@ -64,7 +65,7 @@
   .list { flex: 1; overflow: auto; padding: 4px 8px 10px; }
   .file { width: 100%; display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 8px; text-align: left; font-size: 12.5px; }
   .file:hover, .hit:hover { background: rgba(var(--fg-rgb), 0.06); }
-  .chev { width: 10px; color: var(--label-3); transition: transform 0.12s; }
+  .chev { display: inline-grid; place-items: center; width: 10px; height: 10px; flex-shrink: 0; color: var(--label-3);  }
   .chev.open { transform: rotate(90deg); }
   .fname { font-weight: 600; }
   .fpath { color: var(--label-3); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Glyph from "./Glyph.svelte";
   import { app, setMode } from "../lib/state.svelte";
   import { terms, newTerminal, closeTerminal, attach, fitTerm, focusTerm, setHeight, toggleTerminal, listShells, shellPref, setDefaultShell } from "../lib/terminal.svelte";
   import { ui } from "../lib/ui.svelte";
@@ -82,27 +83,27 @@
       <div class="tab" class:active={tab.id === terms.active} class:exited={tab.exited} role="tab" tabindex="0" aria-selected={tab.id === terms.active}
         onclick={() => { terms.active = tab.id; focusTerm(tab.id); }} onkeydown={(e) => e.key === "Enter" && (terms.active = tab.id)}>
         <span class="dot" class:run={tab.kind === "run"}></span>
-        <span>{tab.title}</span>
-        <button class="x" onclick={(e) => { e.stopPropagation(); closeTerminal(tab.id); }} aria-label={t("common.close")}>×</button>
+        <span class="label" title={tab.title}>{tab.title}</span>
+        <button class="x" onclick={(e) => { e.stopPropagation(); closeTerminal(tab.id); }} aria-label={t("common.close")}><Glyph name="x" size={8} /></button>
       </div>
     {/each}
     {#if showConsole}
       <div class="tab" class:active={terms.active === "console"} role="tab" tabindex="0" aria-selected={terms.active === "console"}
         onclick={() => (terms.active = "console")} onkeydown={(e) => e.key === "Enter" && (terms.active = "console")}>
-        <span class="dot dbg"></span><span>{t("code.term.debugConsole")}</span>
+        <span class="dot dbg"></span><span class="label" title={t("code.term.debugConsole")}>{t("code.term.debugConsole")}</span>
       </div>
     {/if}
     {#if find.docked}
       <div class="tab" class:active={terms.active === "search"} role="tab" tabindex="0" aria-selected={terms.active === "search"}
         onclick={() => (terms.active = "search")} onkeydown={(e) => e.key === "Enter" && (terms.active = "search")}>
-        <span class="dot srch"></span><span>{t("code.term.search", { query: find.docked.query })}</span>
-        <button class="x" onclick={(e) => { e.stopPropagation(); find.docked = null; if (terms.active === "search") terms.active = terms.tabs[0]?.id ?? null; }} aria-label={t("common.close")}>×</button>
+        <span class="dot srch"></span><span class="label" title={t("code.term.search", { query: find.docked.query })}>{t("code.term.search", { query: find.docked.query })}</span>
+        <button class="x" onclick={(e) => { e.stopPropagation(); find.docked = null; if (terms.active === "search") terms.active = terms.tabs[0]?.id ?? null; }} aria-label={t("common.close")}><Glyph name="x" size={8} /></button>
       </div>
     {/if}
-    <button class="add" title={t("code.term.new")} onclick={() => newTerminal(app.root)}>+</button>
-    <button class="add pick" title={t("code.term.chooseShell")} onclick={shellMenu}>▾</button>
+    <button class="add" title={t("code.term.new")} onclick={() => newTerminal(app.root)}><Glyph name="plus" size={10} /></button>
+    <button class="add pick" title={t("code.term.chooseShell")} onclick={shellMenu}><Glyph name="chevron-down" size={10} /></button>
     <span class="spacer"></span>
-    <button class="add" title={t("code.term.hide")} onclick={toggleTerminal}>⌄</button>
+    <button class="add" title={t("code.term.hide")} onclick={toggleTerminal}><Glyph name="chevron-down" size={11} /></button>
   </div>
   <div class="body" class:console-on={terms.active === "console" || terms.active === "search"} bind:this={body} role="presentation" onclick={() => terms.active !== "console" && focusTerm()}></div>
   {#if terms.active === "console"}
@@ -117,7 +118,13 @@
   .terminal.hidden { display: none; }
   .resizer { position: absolute; top: -6px; left: 0; right: 0; height: 10px; cursor: row-resize; z-index: 5; }
   .head { height: 42px; flex-shrink: 0; display: flex; align-items: center; gap: 4px; padding: 0 10px; border-bottom: 1px solid rgba(var(--fg-rgb), 0.05); }
-  .tab { height: 28px; display: flex; align-items: center; gap: 7px; padding: 0 6px 0 12px; border-radius: 999px; color: var(--label-2); font-size: 12px; }
+  /* Narrow panels: tabs shrink and truncate on one line instead of wrapping. */
+  .head > * { flex-shrink: 0; }
+  .head > .tab { flex-shrink: 1; min-width: 0; max-width: 240px; }
+  .tab { height: 28px; display: flex; align-items: center; gap: 7px; padding: 0 5px 0 12px; border-radius: 999px; color: var(--label-2); font-size: 12px; white-space: nowrap; }
+  .tab:not(:has(.x)) { padding-right: 12px; }
+  .tab > :not(.label) { flex-shrink: 0; }
+  .label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .tab:hover { background: var(--fill-hover); color: var(--label); }
   .tab.active { background: rgba(var(--fg-rgb), 0.1); color: var(--label); box-shadow: inset 0 1px 0 rgba(var(--hl-rgb), 0.08); }
   .tab.exited { opacity: 0.55; }
@@ -127,10 +134,10 @@
   .dot.srch { background: var(--yellow); }
   .body.console-on { display: none; }
   .console-slot { flex: 1; min-height: 0; position: relative; }
-  .x { width: 18px; height: 18px; border-radius: 50%; font-size: 14px; line-height: 1; color: var(--label-2); }
+  .x { width: 18px; height: 18px; display: grid; place-items: center; border-radius: 50%; color: var(--label-2); }
   .x:hover { background: var(--fill-2); color: var(--label); }
-  .add.pick { width: 18px; margin-left: -6px; font-size: 10px; }
-  .add { width: 28px; height: 28px; border-radius: 50%; color: var(--label-2); font-size: 16px; }
+  .add.pick { margin-left: -4px; }
+  .add { width: 28px; height: 28px; display: grid; place-items: center; border-radius: 50%; color: var(--label-2); font-size: 16px; }
   .add:hover { background: var(--fill-hover); color: var(--label); }
   .spacer { flex: 1; }
   .body { flex: 1; min-height: 0; position: relative; padding: 8px 4px 4px 14px; }

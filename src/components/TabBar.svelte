@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Glyph from "./Glyph.svelte";
   import { app, activate, closeTab, newFile } from "../lib/state.svelte";
   import { ui } from "../lib/ui.svelte";
   import RunBar from "./RunBar.svelte";
@@ -30,11 +31,11 @@
       >
         <span class="name">{tab.name}</span>
         <button class="close" class:dirty={tab.dirty} onclick={(e) => { e.stopPropagation(); closeTab(tab.id); }} aria-label={t("common.close")}>
-          <span class="x">×</span><span class="d"></span>
+          <span class="x"><Glyph name="x" size={8} /></span><span class="d"></span>
         </button>
       </div>
     {/each}
-    <button class="add" onclick={newFile} title="{t('app.newFile')} ({t('app.ctrl')}+N)" aria-label={t("app.newFile")}>+</button>
+    <button class="add" onclick={newFile} title="{t('app.newFile')} ({t('app.ctrl')}+N)" aria-label={t("app.newFile")}><Glyph name="plus" size={11} /></button>
     {#if app.mode === "code"}<RunBar />{/if}
   </div>
 {/if}
@@ -77,7 +78,7 @@
     color: var(--label-2);
   }
   .close:hover { background: var(--fill-2); color: var(--label); }
-  .close .x { opacity: 0; grid-area: 1 / 1; }
+  .close .x { opacity: 0; grid-area: 1 / 1; display: grid; place-items: center; }
   .tab:hover .close .x, .tab.active .close .x { opacity: 1; }
   .close .d { grid-area: 1 / 1; width: 7px; height: 7px; border-radius: 50%; background: var(--label-2); display: none; }
   .close.dirty .d { display: block; }
@@ -87,8 +88,9 @@
   .add {
     width: 30px;
     height: 30px;
+    display: grid;
+    place-items: center;
     border-radius: 50%;
-    font-size: 17px;
     color: var(--label-2);
     flex-shrink: 0;
   }

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Glyph from "./Glyph.svelte";
   import VarTree from "./VarTree.svelte";
   import { dbg, setBreakpointLines } from "../lib/debug/store.svelte";
   import {
@@ -108,7 +109,7 @@
 
   <div class="scroll">
     <!-- Variables -->
-    <button class="sec" onclick={() => toggleSection("vars")}><span class="chev" class:open={open.vars}>›</span>{t("code.dbg.variables")}</button>
+    <button class="sec" onclick={() => toggleSection("vars")}><span class="chev" class:open={open.vars}><Glyph name="chevron" size={8} /></span>{t("code.dbg.variables")}</button>
     {#if open.vars}
       <div class="box">
         {#if stopped && dbg.scopes.length}
@@ -120,16 +121,16 @@
     {/if}
 
     <!-- Watches -->
-    <button class="sec" onclick={() => toggleSection("watch")}><span class="chev" class:open={open.watch}>›</span>{t("code.dbg.watches")}</button>
+    <button class="sec" onclick={() => toggleSection("watch")}><span class="chev" class:open={open.watch}><Glyph name="chevron" size={8} /></span>{t("code.dbg.watches")}</button>
     {#if open.watch}
       <div class="box">
         {#each dbg.watches as w, i (w.expr + i)}
           <div class="watch" role="treeitem" tabindex="-1" aria-selected="false" onclick={() => toggleWatch(i)} onkeydown={() => {}}>
-            {#if w.ref}<span class="chev small" class:open={w.expanded}>›</span>{:else}<span class="sp"></span>{/if}
+            {#if w.ref}<span class="chev small" class:open={w.expanded}><Glyph name="chevron" size={8} /></span>{:else}<span class="sp"></span>{/if}
             <span class="expr">{w.expr}</span>
             <span class="eq">=</span>
             <span class="wval" class:err={w.error}>{w.value || (stopped ? "…" : "–")}</span>
-            <button class="rm" onclick={(e) => { e.stopPropagation(); removeWatch(i); }} aria-label={t("code.dbg.remove")}>×</button>
+            <button class="rm" onclick={(e) => { e.stopPropagation(); removeWatch(i); }} aria-label={t("code.dbg.remove")}><Glyph name="x" size={8} /></button>
           </div>
           {#if w.expanded && w.children}<VarTree nodes={w.children} depth={1} />{/if}
         {/each}
@@ -140,7 +141,7 @@
     {/if}
 
     <!-- Call stack -->
-    <button class="sec" onclick={() => toggleSection("stack")}><span class="chev" class:open={open.stack}>›</span>{t("code.dbg.callStack")}</button>
+    <button class="sec" onclick={() => toggleSection("stack")}><span class="chev" class:open={open.stack}><Glyph name="chevron" size={8} /></span>{t("code.dbg.callStack")}</button>
     {#if open.stack}
       <div class="box">
         {#if dbg.threads.length > 1}
@@ -162,7 +163,7 @@
     {/if}
 
     <!-- Breakpoints -->
-    <button class="sec" onclick={() => toggleSection("bps")}><span class="chev" class:open={open.bps}>›</span>{t("code.dbg.breakpoints")} <span class="count">{bpList.length}</span></button>
+    <button class="sec" onclick={() => toggleSection("bps")}><span class="chev" class:open={open.bps}><Glyph name="chevron" size={8} /></span>{t("code.dbg.breakpoints")} <span class="count">{bpList.length}</span></button>
     {#if open.bps}
       <div class="box">
         {#each bpList as b (b.path + b.line)}
@@ -170,7 +171,7 @@
             <span class="bdot" class:cond={b.condition} class:unverified={b.verified === false}></span>
             <span class="bfile">{b.path.split("/").pop()}:{b.line}</span>
             {#if b.condition}<span class="bcond">{b.condition}</span>{/if}
-            <button class="rm" onclick={(e) => { e.stopPropagation(); removeBp(b.path, b.line); }} aria-label={t("code.dbg.remove")}>×</button>
+            <button class="rm" onclick={(e) => { e.stopPropagation(); removeBp(b.path, b.line); }} aria-label={t("code.dbg.remove")}><Glyph name="x" size={8} /></button>
           </div>
         {:else}
           <p class="hint">{t("code.dbg.noBreakpoints")}</p>
@@ -195,9 +196,9 @@
   .label { color: var(--label-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .scroll { flex: 1; overflow: auto; padding: 0 10px 20px; }
   .sec { width: 100%; display: flex; align-items: center; gap: 6px; margin-top: 12px; padding: 4px 6px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--label-2); }
-  .chev { display: inline-block; width: 10px; transition: transform 0.12s; font-size: 14px; line-height: 1; }
+  .chev { display: inline-grid; place-items: center; width: 10px; height: 10px;  }
   .chev.open { transform: rotate(90deg); }
-  .chev.small { color: var(--label-3); font-family: var(--font); }
+  .chev.small { color: var(--label-3); }
   .count { margin-left: auto; color: var(--label-3); }
   .box { background: rgba(var(--fg-rgb), 0.035); box-shadow: inset 0 1px 0 rgba(var(--hl-rgb), 0.03); border-radius: 14px; padding: 6px; margin-top: 4px; }
   .hint { margin: 6px 8px; font-size: 12px; color: var(--label-3); line-height: 1.45; }
@@ -208,7 +209,7 @@
   .eq { color: var(--label-3); }
   .wval { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .wval.err { color: var(--red); font-family: var(--font); font-size: 11.5px; }
-  .rm { width: 20px; height: 20px; border-radius: 50%; color: var(--label-3); opacity: 0; font-family: var(--font); }
+  .rm { width: 20px; height: 20px; display: grid; place-items: center; border-radius: 50%; color: var(--label-3); opacity: 0; font-family: var(--font); }
   .watch:hover .rm, .bp:hover .rm { opacity: 1; }
   .rm:hover { background: var(--fill-2); color: var(--label); }
   .add { padding: 4px 2px 2px; }

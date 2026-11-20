@@ -9,7 +9,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 #[derive(Serialize)]
 pub struct Diagnostic {
@@ -120,20 +120,22 @@ fn compile(app: &AppHandle, path: Option<String>, content: String) -> Result<Com
     }
 
     // Offline first (≈0.2 s); if a package isn't cached yet, retry online so Tectonic can fetch it.
-    let run = |cached: bool| {
+    // The online run can take minutes the first time (format + hundreds of support files), so it
+    // keeps Tectonic's normal chatter and streams it to the UI as progress.
+    let cmd = |cached: bool| {
         let mut c = crate::env::command(&tectonic);
         c.current_dir(&build);
         if cached {
-            c.arg("--only-cached");
+            c.args(["--only-cached", "--chatter", "minimal"]);
         }
-        c.args(["--synctex", "--keep-logs", "--keep-intermediates", "--chatter", "minimal", "-Z", "continue-on-errors", "-Z"])
+        c.args(["--synctex", "--keep-logs", "--keep-intermediates", "-Z", "continue-on-errors", "-Z"])
             .arg(format!("search-path={}", root_dir.display()))
-            .arg(&root_name)
-            .output()
+            .arg(&root_name);
+        c
     };
-    let mut out = run(true).map_err(|e| e.to_string())?;
+    let mut out = cmd(true).output().map_err(|e| e.to_string())?;
     if !out.status.success() {
-        out = run(false).map_err(|e| e.to_string())?;
+        out = run_with_progress(app, cmd(false)).map_err(|e| e.to_string())?;
     }
 
     let stem = root_name.trim_end_matches(".tex");
@@ -166,6 +168,62 @@ fn compile(app: &AppHandle, path: Option<String>, content: String) -> Result<Com
     })
 }
 
+#[derive(Serialize, Clone)]
+struct Progress {
+    /// "format" (building the LaTeX format, first run only), "download", "tex", "rerun", "pdf", "write"
+    phase: &'static str,
+    /// Files downloaded so far in this run.
+    downloads: u32,
+    /// File currently being downloaded.
+    file: Option<String>,
+}
+
+/// Runs Tectonic, turning its `note:` lines (stdout) into `latex-progress` events.
+fn run_with_progress(app: &AppHandle, mut c: std::process::Command) -> std::io::Result<std::process::Output> {
+    use std::io::BufRead;
+    use std::process::Stdio;
+    let mut child = c.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    let mut stderr = child.stderr.take().expect("piped stderr");
+    let err_thread = std::thread::spawn(move || {
+        let mut b = Vec::new();
+        let _ = stderr.read_to_end(&mut b);
+        b
+    });
+    let mut stdout = Vec::new();
+    let mut phase = "tex";
+    let mut downloads = 0;
+    for line in std::io::BufReader::new(child.stdout.take().expect("piped stdout")).split(b'\n') {
+        let line = line?;
+        let text = String::from_utf8_lossy(&line);
+        let note = text.trim().strip_prefix("note: ").unwrap_or("");
+        let mut file = None;
+        if note.starts_with("generating format") {
+            phase = "format";
+        } else if let Some(f) = note.strip_prefix("downloading ") {
+            downloads += 1;
+            file = Some(f.to_string());
+            if phase != "format" && phase != "pdf" {
+                phase = "download";
+            }
+        } else if note.starts_with("Running TeX") {
+            phase = "tex";
+        } else if note.starts_with("Rerunning TeX") {
+            phase = "rerun";
+        } else if note.starts_with("Running xdvipdfmx") {
+            phase = "pdf";
+        } else if note.starts_with("Writing") {
+            phase = "write";
+        } else {
+            stdout.extend_from_slice(&line);
+            stdout.push(b'\n');
+            continue;
+        }
+        let _ = app.emit("latex-progress", Progress { phase, downloads, file });
+    }
+    let status = child.wait()?;
+    Ok(std::process::Output { status, stdout, stderr: err_thread.join().unwrap_or_default() })
+}
+
 /// Tectonic reports `error: file.tex:12: Undefined control sequence` (also `warning:`).
 fn parse_tectonic(out: &str, map_file: &dyn Fn(&str) -> String) -> Vec<Diagnostic> {
     let mut v = Vec::new();
@@ -187,7 +245,9 @@ fn parse_tectonic(out: &str, map_file: &dyn Fn(&str) -> String) -> Vec<Diagnosti
             _ => v.push(Diagnostic { file: String::new(), line: 0, message: rest.trim().into(), severity: sev.into() }),
         }
     }
-    v.dedup_by(|a, b| a.line == b.line && a.message == b.message && a.file == b.file);
+    // Tectonic repeats messages on every TeX pass (not necessarily adjacent): keep the first of each.
+    let mut seen = std::collections::HashSet::new();
+    v.retain(|d| seen.insert((d.file.clone(), d.line, d.message.clone())));
     v
 }
 

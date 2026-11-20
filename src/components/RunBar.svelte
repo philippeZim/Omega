@@ -1,7 +1,7 @@
 <script lang="ts">
   import { app, activeTab } from "../lib/state.svelte";
   import { ui } from "../lib/ui.svelte";
-  import { runner, refreshProject, runAction } from "../lib/code/runner.svelte";
+  import { runner, refreshProject, runAction, editRunCommand, resetRunCommand, chooseVersion } from "../lib/code/runner.svelte";
   import { startDebugging, stopDebugging } from "../lib/debug/debugger.svelte";
   import { dbg } from "../lib/debug/store.svelte";
   import { langFor } from "../lib/code/languages";
@@ -26,10 +26,30 @@
 
   const p = $derived(runner.project);
 
+  const runItems = () => [
+    { label: t("code.rb.editRunCmd"), action: editRunCommand },
+    ...(p?.defaultRun !== undefined ? [{ label: t("code.rb.resetRunCmd"), action: resetRunCommand }] : []),
+  ];
+
+  // Version chip: one setting → pick directly; several (Rust, C+C++) → menu of settings.
+  function versionClick(e: MouseEvent) {
+    const vs = runner.versions;
+    if (vs.length === 1) return chooseVersion(vs[0]);
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    ui.openMenu(new MouseEvent("contextmenu", { clientX: r.left, clientY: r.bottom + 8 }), vs.map((s) => ({
+      label: `${s.label}: ${s.current ?? t("code.ver.default")}…`,
+      action: () => chooseVersion(s),
+    })));
+  }
+
   function moreMenu(e: MouseEvent) {
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const more = (p?.more ?? []).map((a) => ({ label: a.label, action: () => runAction(a) }));
     ui.openMenu(new MouseEvent("contextmenu", { clientX: r.right - 240, clientY: r.bottom + 8 }), [
-      ...(p?.more ?? []).map((a) => ({ label: a.label, action: () => runAction(a) })),
+      ...more,
+      ...(more.length ? [{ label: "", separator: true }] : []),
+      ...runner.versions.map((s) => ({ label: `${s.label}: ${s.current ?? t("code.ver.default")}…`, action: () => chooseVersion(s) })),
+      ...runItems(),
     ]);
   }
 
@@ -39,7 +59,7 @@
   {#if p}
     <div class="gcap">
       {#if p.run}
-        <button class="gbtn icon run" title="{p.run.label} (⇧F10)" onclick={() => runAction(p.run)} aria-label={p.run.label}>
+        <button class="gbtn icon run" title="{p.run.cmd} (⇧F10) · {t('code.rb.runRightClick')}" onclick={() => runAction(p.run)} oncontextmenu={(e) => ui.openMenu(e, runItems())} aria-label={p.run.label}>
           <svg class="ico" width="11" height="12" viewBox="0 0 11 12"><path d="M1.5 1.2v9.6a.6.6 0 0 0 .9.5l7.8-4.8a.6.6 0 0 0 0-1L2.4.7a.6.6 0 0 0-.9.5z" fill="currentColor"/></svg>
         </button>
       {/if}
@@ -54,6 +74,14 @@
         </button>
       {/if}
     </div>
+
+    {#if runner.versions.length}
+      <div class="gcap">
+        <button class="gbtn neutral" title={t("code.ver.chipTitle")} onclick={versionClick}>
+          {runner.versions.map((s) => s.chip).join(" · ")}
+        </button>
+      </div>
+    {/if}
 
     {#if p.build || p.test}
       <div class="gcap">
@@ -82,7 +110,7 @@
         <svg width="15" height="15" viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.3"/><line x1="10" y1="2.5" x2="10" y2="13.5" stroke="currentColor" stroke-width="1.3"/></svg>
       </button>
     {/if}
-    {#if p?.more.length}
+    {#if p}
       <button class="gbtn icon" title={t("code.rb.moreActions")} onclick={moreMenu} aria-label={t("code.rb.more")}>
         <svg width="14" height="4" viewBox="0 0 14 4"><circle cx="2" cy="2" r="1.5" fill="currentColor"/><circle cx="7" cy="2" r="1.5" fill="currentColor"/><circle cx="12" cy="2" r="1.5" fill="currentColor"/></svg>
       </button>

@@ -4,7 +4,8 @@ import { fsApi, basename, dirname, joinPath, isRoot } from "../api";
 import { q, cd, exe, IS_WIN, OS, runRel, unlessExists, rmrf, tmpPath } from "../platform";
 import type { ToolId } from "../tools.svelte";
 import { langFor, type LangId } from "./languages";
-import { t, type Key } from "../i18n/index.svelte";
+import { suggestPythonAdd, suggestPythonRemove, pythonRemoveArg, suggestNodeAdd, suggestNodeRemove, type Suggest } from "./packages";
+import { t, i18n, type Key } from "../i18n/index.svelte";
 
 export type ProjectKind = "cargo" | "uv" | "pnpm" | "cmake" | "gradle" | "file";
 
@@ -15,6 +16,10 @@ export interface Action {
   cmd?: string;
   /** Needs a user-provided argument (e.g. package name); `{}` is replaced. */
   ask?: string;
+  /** Suggestions/autocomplete for the argument prompt. */
+  suggest?: Suggest;
+  /** Turns the entered text into the command argument (e.g. adds `--dev`). */
+  arg?: (input: string) => Promise<string>;
   shortcut?: string;
   /** Tools the command needs (offered for installation when missing). */
   needs?: ToolId[];
@@ -25,6 +30,8 @@ export interface Project {
   root: string;
   label: string;
   run: Action | null;
+  /** The detected run action when the user replaced it with a custom command (see runner). */
+  defaultRun?: Action | null;
   build: Action | null;
   test: Action | null;
   more: Action[];
@@ -110,8 +117,8 @@ async function packageScripts(root: string): Promise<string[]> {
 const RUN = "Shift+F10", BUILD = "Ctrl+F9";
 
 /** Action whose label and argument prompt follow the UI language (getters re-read the locale). */
-function act(id: string, label: Key, cmd: string, opts: { shortcut?: string; ask?: () => string } = {}): Action {
-  return { id, cmd, shortcut: opts.shortcut, get label() { return t(label); }, get ask() { return opts.ask?.(); } };
+function act(id: string, label: Key, cmd: string, opts: { shortcut?: string; ask?: () => string; suggest?: Suggest; arg?: Action["arg"] } = {}): Action {
+  return { id, cmd, shortcut: opts.shortcut, suggest: opts.suggest, arg: opts.arg, get label() { return t(label); }, get ask() { return opts.ask?.(); } };
 }
 const askPkg = (example: string) => () => t("code.act.askPackage", { example });
 const askPkgPlain = () => t("code.act.askPackagePlain");
@@ -151,9 +158,9 @@ export async function detectProject(file: string | null, workspace: string | nul
       test: act("test", "code.act.test", "uv run pytest"),
       more: [
         act("sync", "code.act.uvSync", "uv sync"),
-        act("add", "code.act.addDep", "uv add {}", { ask: askPkg("requests") }),
-        act("adddev", "code.act.addDevDep", "uv add --dev {}", { ask: askPkg("pytest") }),
-        act("remove", "code.act.removeDep", "uv remove {}", { ask: askPkgPlain }),
+        act("add", "code.act.addDep", "uv add {}", { ask: askPkg("requests"), suggest: suggestPythonAdd(p.root, false) }),
+        act("adddev", "code.act.addDevDep", "uv add --dev {}", { ask: askPkg("pytest"), suggest: suggestPythonAdd(p.root, true) }),
+        act("remove", "code.act.removeDep", "uv remove {}", { ask: askPkgPlain, suggest: suggestPythonRemove(p.root), arg: (v) => pythonRemoveArg(p.root, v) }),
         act("fmt", "code.act.ruffFmt", "uvx ruff format"),
         act("lint", "code.act.ruffLint", "uvx ruff check"),
         { id: "lock", label: "uv lock", cmd: "uv lock" },
@@ -164,7 +171,7 @@ export async function detectProject(file: string | null, workspace: string | nul
   if (p?.kind === "pnpm") {
     const scripts = await packageScripts(p.root);
     const lang = file ? langFor(file)?.id : null;
-    const fileRun = file && (lang === "typescript" ? `pnpm dlx tsx ${q(file)}` : lang === "javascript" ? `node ${q(file)}` : null);
+    const fileRun = file && (lang === "typescript" ? `pnpm dlx tsx ${q(file)}` : lang === "javascript" ? `pnpm exec node ${q(file)}` : null); // pnpm exec honours devEngines.runtime (chosen Node version)
     const runScript = ["dev", "start"].find((s) => scripts.includes(s));
     return {
       ...p,
@@ -180,9 +187,9 @@ export async function detectProject(file: string | null, workspace: string | nul
       more: [
         ...scripts.map((s) => ({ id: `script:${s}`, label: `pnpm run ${s}`, cmd: `pnpm run ${s}` })),
         { id: "install", label: "pnpm install", cmd: "pnpm install" },
-        act("add", "code.act.addDep", "pnpm add {}", { ask: askPkg("zod") }),
-        act("adddev", "code.act.addDevDep", "pnpm add -D {}", { ask: askPkg("vitest") }),
-        act("remove", "code.act.removeDep", "pnpm remove {}", { ask: askPkgPlain }),
+        act("add", "code.act.addDep", "pnpm add {}", { ask: askPkg("zod"), suggest: suggestNodeAdd(p.root, false) }),
+        act("adddev", "code.act.addDevDep", "pnpm add -D {}", { ask: askPkg("vitest"), suggest: suggestNodeAdd(p.root, true) }),
+        act("remove", "code.act.removeDep", "pnpm remove {}", { ask: askPkgPlain, suggest: suggestNodeRemove(p.root) }),
       ],
     };
   }
@@ -295,6 +302,38 @@ export interface Template {
   marker: string;
   /** Files to open afterwards, first existing wins (relative; {name} = project name). */
   open: string[];
+  /** Editor mode to switch to after creating (default "code"). */
+  mode?: "code" | "latex";
+}
+
+/**
+ * Starter document for Tectonic (XeLaTeX engine): fontspec instead of inputenc/fontenc, babel in
+ * the UI language. The build output goes to Studio's cache, so the folder stays clean.
+ */
+function latexMain(name: string): string {
+  const [babel, intro, hello] = ({ en: ["english", "Introduction", "Hello, world!"], de: ["ngerman", "Einleitung", "Hallo, Welt!"], fr: ["french", "Introduction", "Bonjour, le monde\\,!"] } as const)[i18n.locale];
+  return `\\documentclass[11pt, a4paper]{article}
+
+\\usepackage{fontspec}
+\\usepackage[${babel}]{babel}
+\\usepackage{amsmath, amssymb}
+\\usepackage{graphicx}
+\\usepackage[margin=2.5cm]{geometry}
+\\usepackage{hyperref}
+
+\\title{${name.replace(/_/g, "\\_")}}
+\\author{}
+\\date{\\today}
+
+\\begin{document}
+\\maketitle
+
+\\section{${intro}}
+
+${hello} \\(E = mc^2\\)
+
+\\end{document}
+`;
 }
 
 const gitInit = async () => ((await which("git")) ? ["git init -q"] : []);
@@ -358,5 +397,15 @@ export const TEMPLATES: Template[] = [
     create: async (n) => ({
       cmds: [`gradle init --type java-application --dsl kotlin --test-framework junit-jupiter --package app --project-name ${q(n)} --no-split-project --java-version 21 --use-defaults --no-incubating`],
     }),
+  },
+  {
+    id: "latex",
+    label: "LaTeX",
+    tool: "Tectonic",
+    needs: ["tectonic"],
+    marker: "main.tex",
+    open: ["main.tex"],
+    mode: "latex",
+    create: async (n) => ({ files: { "main.tex": latexMain(n) }, cmds: [...(await gitInit())] }),
   },
 ];

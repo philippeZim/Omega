@@ -66,16 +66,22 @@
       { label: t("app.closeFolder"), action: () => setRoot(null) },
     ]);
   }
+
+  /** 758 → "758", 1234 → "1.2k", 25000 → "25k" (exact number in the tooltip). */
+  function compactCount(n: number): string {
+    if (n < 1000) return String(n);
+    return n < 10000 ? `${(Math.floor(n / 100) / 10).toString()}k` : `${Math.floor(n / 1000)}k`;
+  }
 </script>
 
 <aside class="sidebar glass" style="width: {width}px">
-  <div class="switch" style="--n: {app.mode === 'latex' ? 3 : 2}">
-    <button class:on={app.sidebarView === "files"} onclick={() => (app.sidebarView = "files")}>{t("app.files")}</button>
+  <div class="switch">
+    <button class:on={app.sidebarView === "files"} onclick={() => (app.sidebarView = "files")}><span class="label">{t("app.files")}</span></button>
     <button class:on={showChanges} onclick={() => { app.sidebarView = "changes"; gitRefresh(); }}>
-      {t("app.changes")}{#if git.changes.length}<span class="count">{git.changes.length}</span>{/if}
+      <span class="label">{t("app.changes")}</span>{#if git.changes.length}<span class="count" title={String(git.changes.length)}>{compactCount(git.changes.length)}</span>{/if}
     </button>
     {#if app.mode === "latex"}
-      <button class:on={showOutline} onclick={() => (app.sidebarView = "outline")}>{t("app.outline")}</button>
+      <button class:on={showOutline} onclick={() => (app.sidebarView = "outline")}><span class="label">{t("app.outline")}</span></button>
     {/if}
   </div>
   {#if guestView && app.sidebarView === "files"}
@@ -171,16 +177,17 @@
   .empty p { margin: 0; }
   .hint { font-size: 11px; color: var(--label-3); }
   .switch {
-    display: grid;
-    grid-template-columns: repeat(var(--n), 1fr);
+    display: flex;
     margin: 12px 12px 0;
     padding: 3px;
     border-radius: 999px;
     background: var(--recess);
     box-shadow: var(--recess-shadow);
   }
-  .switch button { height: 26px; border-radius: 999px; font-size: 12px; font-weight: 500; color: var(--label-2); }
-  .count { margin-left: 5px; padding: 0 5px; border-radius: 999px; font-size: 10px; background: rgba(var(--fg-rgb), 0.14); }
+  /* Tabs share the width but a longer one (label + count) may take more; labels truncate instead of overflowing. */
+  .switch button { flex: 1 1 auto; min-width: 0; height: 26px; padding: 0 8px; display: flex; align-items: center; justify-content: center; gap: 5px; border-radius: 999px; font-size: 12px; font-weight: 500; color: var(--label-2); white-space: nowrap; }
+  .label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .count { flex-shrink: 0; min-width: 16px; height: 16px; padding: 0 5px; display: grid; place-items: center; border-radius: 999px; font-size: 10px; line-height: 1; font-variant-numeric: tabular-nums; background: rgba(var(--fg-rgb), 0.14); }
   .switch button.on { color: var(--label); background: var(--raised-bg); box-shadow: var(--raised-shadow); }
   .outline { flex: 1; overflow: auto; padding: 10px 10px 20px; }
   .oitem { width: 100%; display: flex; gap: 8px; align-items: center; height: 30px; padding-right: 10px; border-radius: 10px; text-align: left; color: var(--label-2); }

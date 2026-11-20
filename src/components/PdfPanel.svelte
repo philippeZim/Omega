@@ -1,6 +1,8 @@
 <script lang="ts">
+  import Glyph from "./Glyph.svelte";
   import { onDestroy } from "svelte";
   import { convertFileSrc } from "@tauri-apps/api/core";
+  import { openUrl } from "@tauri-apps/plugin-opener";
   import * as pdfjs from "pdfjs-dist";
   import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
   import { latex, setDark, reverseSync, forwardSync, installLatex } from "../lib/latex/controller.svelte";
@@ -62,11 +64,57 @@
       wrap.appendChild(canvas);
       await page.render({ canvasContext: canvas.getContext("2d")!, viewport: vp, transform: dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : undefined }).promise;
       if (seq !== renderSeq) return;
+      await addLinks(page, vp, wrap);
       frag.push(wrap);
     }
     // Swap all pages at once to avoid flicker, then restore the scroll position.
     pagesEl.replaceChildren(...frag);
     scroller.scrollTop = ratio * scroller.scrollHeight;
+  }
+
+  /**
+   * The canvas is only a picture: overlay the PDF's link annotations (hyperref: table of contents,
+   * \ref, \cite, \url) as clickable boxes. Internal links scroll the viewer, external ones open
+   * in the browser.
+   */
+  async function addLinks(page: pdfjs.PDFPageProxy, vp: pdfjs.PageViewport, wrap: HTMLElement) {
+    const annots = await page.getAnnotations({ intent: "display" }).catch(() => []);
+    for (const a of annots) {
+      if (a.subtype !== "Link" || (!a.dest && !a.url)) continue;
+      const [x1, y1, x2, y2] = vp.convertToViewportRectangle(a.rect);
+      const el = document.createElement("a");
+      el.className = "link";
+      el.style.left = `${Math.min(x1, x2)}px`;
+      el.style.top = `${Math.min(y1, y2)}px`;
+      el.style.width = `${Math.abs(x2 - x1)}px`;
+      el.style.height = `${Math.abs(y2 - y1)}px`;
+      if (a.url) el.title = a.url;
+      el.onclick = (e) => {
+        e.preventDefault();
+        if (a.url) openUrl(a.url);
+        else gotoDest(a.dest);
+      };
+      el.ondblclick = (e) => e.stopPropagation(); // don't trigger reverse sync
+      wrap.appendChild(el);
+    }
+  }
+
+  /** Scrolls to a PDF destination (named, or explicit `[pageRef, {name}, …args]`). */
+  async function gotoDest(dest: string | unknown[]) {
+    if (!doc) return;
+    const explicit = typeof dest === "string" ? await doc.getDestination(dest).catch(() => null) : dest;
+    if (!explicit?.length) return;
+    const ref = explicit[0] as number | { num: number; gen: number };
+    const index = typeof ref === "number" ? ref : await doc.getPageIndex(ref).catch(() => -1);
+    const pageEl = pagesEl.querySelector<HTMLElement>(`[data-page="${index + 1}"]`);
+    const size = pageSizes[index];
+    if (!pageEl || !size) return;
+    const s = pageEl.clientWidth / size.w;
+    // PDF y runs bottom-up; XYZ carries (left, top, zoom), FitH/FitBH carry (top).
+    const kind = (explicit[1] as { name?: string } | undefined)?.name;
+    const y = kind === "XYZ" ? explicit[3] : kind === "FitH" || kind === "FitBH" ? explicit[2] : null;
+    const top = typeof y === "number" ? (size.h - y) * s : 0;
+    scroller.scrollTo({ top: pageEl.offsetTop + top - 12, behavior: "smooth" });
   }
 
   $effect(() => {
@@ -145,7 +193,7 @@
       {#if latex.available === false}
         {t("code.pdf.tectonicMissing")}
       {:else if latex.status === "compiling"}
-        <span class="spinner"></span> {t("code.pdf.compiling")}
+        <span class="spinner"></span> {latex.progress ? `${t(`code.pdf.phase.${latex.progress.phase}`)} ${Math.round(latex.progress.percent)} %` : t("code.pdf.compiling")}
       {:else if latex.status === "error"}
         {errors.length > 1 ? t("code.pdf.errors", { n: errors.length }) : t("code.pdf.error1")}
       {:else if latex.status === "ok"}
@@ -155,17 +203,26 @@
       {/if}
     </button>
     <span class="spacer"></span>
-    <button class="tool" title={t("code.pdf.syncToCursor")} onclick={syncFromEditor}>⇥</button>
+    <button class="tool icon" title={t("code.pdf.syncToCursor")} aria-label={t("code.pdf.syncToCursor")} onclick={syncFromEditor}>
+      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="7" cy="7" r="4.25" /><circle cx="7" cy="7" r="1.1" fill="currentColor" stroke="none" /><path d="M7 .75v1.5M7 11.75v1.5M.75 7h1.5M11.75 7h1.5" /></svg>
+    </button>
     <div class="zoom">
-      <button class="tool" title={t("code.pdf.zoomOut")} onclick={() => (zoom = Math.max(0.4, (zoom || 1.2) - 0.15))}>−</button>
+      <button class="tool" title={t("code.pdf.zoomOut")} onclick={() => (zoom = Math.max(0.4, (zoom || 1.2) - 0.15))}><Glyph name="minus" size={10} /></button>
       <button class="tool fit" class:on={zoom === 0} title={t("code.pdf.fitWidth")} onclick={() => (zoom = 0)}>{t("code.pdf.width")}</button>
-      <button class="tool" title={t("code.pdf.zoomIn")} onclick={() => (zoom = Math.min(4, (zoom || 1.2) + 0.15))}>+</button>
+      <button class="tool" title={t("code.pdf.zoomIn")} onclick={() => (zoom = Math.min(4, (zoom || 1.2) + 0.15))}><Glyph name="plus" size={10} /></button>
     </div>
-    <button class="tool mode" class:on={latex.dark} title={t("code.pdf.toggleDark")} onclick={() => setDark(!latex.dark)}>
-      {latex.dark ? t("code.pdf.dark") : t("code.pdf.light")}
+    <button class="tool icon" class:on={latex.dark} title="{t('code.pdf.toggleDark')} · {latex.dark ? t('code.pdf.dark') : t('code.pdf.light')}" aria-label={t("code.pdf.toggleDark")} onclick={() => setDark(!latex.dark)}>
+      {#if latex.dark}
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor"><path d="M11.9 8.6A5.25 5.25 0 0 1 5.4 2.1a5.25 5.25 0 1 0 6.5 6.5Z" /></svg>
+      {:else}
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="7" cy="7" r="2.6" /><path d="M7 .9v1.4M7 11.7v1.4M.9 7h1.4M11.7 7h1.4M2.7 2.7l1 1M10.3 10.3l1 1M2.7 11.3l1-1M10.3 3.7l1-1" /></svg>
+      {/if}
     </button>
   </div>
 
+  {#if latex.progress && latex.pdf}
+    <div class="topbar-progress" title={t(`code.pdf.phase.${latex.progress.phase}`)}><div class="fill" style="width: {latex.progress.percent}%"></div></div>
+  {/if}
   <div class="scroller" bind:this={scroller} ondblclick={onDblClick} role="document">
     {#if latex.available === false}
       <div class="empty">
@@ -173,7 +230,23 @@
         <button class="install" onclick={installLatex}>{t("tools.installLatex")}</button>
       </div>
     {:else if !latex.pdf}
-      <div class="empty"><p>{latex.status === "compiling" ? t("code.pdf.firstCompile") : t("code.pdf.noPdf")}</p></div>
+      {#if latex.progress}
+        {@const pr = latex.progress}
+        <div class="progress-card">
+          <div class="pc-head">
+            <span>{t(`code.pdf.phase.${pr.phase}`)}</span>
+            <span class="pc-pct">{Math.round(pr.percent)} %</span>
+          </div>
+          <div class="bar"><div class="fill" style="width: {pr.percent}%"></div></div>
+          <div class="pc-sub">
+            {#if pr.downloads}{t("code.pdf.downloaded", { n: pr.downloads })}{/if}
+            {#if pr.file}<span class="pc-file">· {pr.file}</span>{/if}
+          </div>
+          <p class="pc-hint">{t("code.pdf.firstCompile")}</p>
+        </div>
+      {:else}
+        <div class="empty"><p>{latex.status === "compiling" ? t("code.pdf.firstCompile") : t("code.pdf.noPdf")}</p></div>
+      {/if}
     {/if}
     <div class="pages" class:dark={latex.dark} bind:this={pagesEl}></div>
     {#if flash}
@@ -188,7 +261,7 @@
     <div class="log">
       <div class="log-head">
         <span>{t("code.pdf.problems")}</span>
-        <button class="tool" onclick={() => (showLog = false)}>×</button>
+        <button class="tool" onclick={() => (showLog = false)} aria-label={t("common.close")}><Glyph name="x" size={8} /></button>
       </div>
       <div class="log-list">
         {#each latex.diagnostics as d, i (i)}
@@ -231,6 +304,10 @@
   .status {
     display: flex;
     align-items: center;
+    min-width: 0;
+    flex-shrink: 1;
+    overflow: hidden;
+    white-space: nowrap;
     gap: 7px;
     height: 30px;
     padding: 0 14px;
@@ -244,6 +321,7 @@
   .status.ok { color: var(--green); }
   .status.error { color: var(--red); }
   .spinner {
+    flex-shrink: 0;
     width: 11px;
     height: 11px;
     border-radius: 50%;
@@ -253,6 +331,10 @@
   }
   @keyframes spin { to { transform: rotate(360deg); } }
   .tool {
+    display: inline-grid;
+    place-items: center;
+    flex-shrink: 0;
+    white-space: nowrap;
     height: 30px;
     min-width: 30px;
     padding: 0 10px;
@@ -261,14 +343,18 @@
     font-size: 13px;
   }
   .tool:hover { background: var(--fill-hover); color: var(--label); }
-  .tool.on { color: var(--label); background: rgba(var(--fg-rgb), 0.1); }
-  .zoom { display: flex; align-items: center; border-radius: 999px; background: var(--recess); box-shadow: var(--recess-shadow); }
+  .tool.on { color: var(--label); background: var(--raised-bg); box-shadow: var(--raised-shadow); }
+  .tool.icon { width: 30px; padding: 0; }
+  .zoom { display: flex; align-items: center; flex-shrink: 0; gap: 2px; padding: 2px; border-radius: 999px; background: var(--recess); box-shadow: var(--recess-shadow); }
+  .zoom .tool { height: 26px; min-width: 26px; }
+  .zoom .tool:not(.fit) { width: 26px; padding: 0; }
   .fit { font-size: 11.5px; }
-  .mode { font-size: 11.5px; }
   .scroller { position: relative; flex: 1; overflow: auto; padding: 16px; }
   .pages { display: flex; flex-direction: column; align-items: center; gap: 14px; }
   .pages :global(.page) { position: relative; border-radius: 6px; overflow: hidden; box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5); background: white; }
   .pages :global(canvas) { width: 100%; height: 100%; display: block; }
+  .pages :global(.link) { position: absolute; border-radius: 3px; cursor: pointer; }
+  .pages :global(.link:hover) { background: rgba(52, 120, 246, 0.14); box-shadow: 0 0 0 1px rgba(52, 120, 246, 0.35); }
   .pages.dark :global(canvas) { filter: invert(0.9) hue-rotate(180deg) brightness(1.05); }
   .pages.dark :global(.page) { background: #1a1a1a; }
   .flash {
@@ -277,10 +363,24 @@
     background: rgba(216, 194, 122, 0.25);
     box-shadow: 0 0 0 2px rgba(216, 194, 122, 0.7);
     pointer-events: none;
-    animation: fade 1.4s ease-out forwards;
+    /* Fades colours, not opacity: an opacity animation inside the glass panel flashes in WebKitGTK. */
+    animation: flash-fade 1.4s ease-out forwards;
   }
-  @keyframes fade { 0%, 60% { opacity: 1; } 100% { opacity: 0; } }
+  @keyframes flash-fade { 0%, 60% { background: rgba(216, 194, 122, 0.25); box-shadow: 0 0 0 2px rgba(216, 194, 122, 0.7); } 100% { background: transparent; box-shadow: 0 0 0 2px transparent; } }
   .empty { text-align: center; color: var(--label-2); padding-top: 80px; }
+  .progress-card { max-width: 340px; margin: 70px auto 0; padding: 16px 18px; border-radius: 18px; background: var(--fill-hover); box-shadow: inset 0 1px 0 rgba(var(--hl-rgb), 0.05); }
+  .pc-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; font-weight: 600; color: var(--label); }
+  .pc-pct { font-size: 12px; font-weight: 500; color: var(--label-2); font-variant-numeric: tabular-nums; }
+  .bar { height: 6px; margin: 12px 0 8px; border-radius: 999px; background: var(--recess); box-shadow: var(--recess-shadow); overflow: hidden; }
+  .bar .fill, .topbar-progress .fill { position: relative; height: 100%; border-radius: inherit; background: var(--accent); transition: width 0.35s ease; overflow: hidden; }
+  /* Moving sheen so the bar visibly lives even when a single step takes long. */
+  .bar .fill::after, .topbar-progress .fill::after { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.35), transparent); transform: translateX(-100%); animation: sheen 1.4s ease-in-out infinite; }
+  @keyframes sheen { to { transform: translateX(100%); } }
+  .pc-sub { min-height: 16px; display: flex; gap: 5px; font-size: 11.5px; color: var(--label-2); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .pc-file { overflow: hidden; text-overflow: ellipsis; color: var(--label-3); font-family: var(--mono); font-size: 11px; }
+  .pc-hint { margin: 10px 0 0; font-size: 11.5px; color: var(--label-3); }
+  .topbar-progress { height: 2px; flex-shrink: 0; background: transparent; }
+  @media (prefers-reduced-motion: reduce) { .bar .fill::after, .topbar-progress .fill::after { animation: none; } }
   .empty h3 { color: var(--label); margin: 0 0 8px; }
   .empty .install { margin-top: 10px; padding: 7px 16px; border-radius: 999px; background: var(--accent); color: #fff; font-weight: 600; }
   .log { max-height: 45%; display: flex; flex-direction: column; border-top: 1px solid rgba(var(--fg-rgb), 0.06); background: var(--well); }

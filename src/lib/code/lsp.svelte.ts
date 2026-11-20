@@ -94,7 +94,9 @@ export class LspClient {
           signatureHelp: { signatureInformation: { documentationFormat: ["markdown", "plaintext"], parameterInformation: { labelOffsetSupport: true } } },
           definition: { linkSupport: true },
           formatting: {},
-          publishDiagnostics: { relatedInformation: false },
+          // codeActionsInline: clangd extension – fixes (e.g. "Include <stdio.h>") arrive with the diagnostic.
+          publishDiagnostics: { relatedInformation: false, codeActionsInline: true },
+          codeAction: { codeActionLiteralSupport: { codeActionKind: { valueSet: ["quickfix", "refactor", "source"] } }, isPreferredSupport: true },
         },
         workspace: { configuration: true, workspaceFolders: true },
         window: { workDoneProgress: true },

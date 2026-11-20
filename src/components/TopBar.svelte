@@ -53,7 +53,7 @@
       <svg width="16" height="16" viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.3"/><line x1="6" y1="2.5" x2="6" y2="13.5" stroke="currentColor" stroke-width="1.3"/></svg>
     </button>
     <button class="title" onclick={projectMenu} title={app.root ?? t("app.openFolder")}>
-      {collab.role === "guest" && collab.status === "connected" ? t("app.hostSuffix", { name: share.hostRoot || t("app.project") }) : app.root ? basename(app.root) : t("app.noFolder")}
+      <span class="name">{collab.role === "guest" && collab.status === "connected" ? t("app.hostSuffix", { name: share.hostRoot || t("app.project") }) : app.root ? basename(app.root) : t("app.noFolder")}</span>
       <svg width="9" height="9" viewBox="0 0 10 10"><path d="M2.5 3.8L5 6.3l2.5-2.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
     </button>
     {#if git.repo && git.branch}
@@ -106,19 +106,28 @@
     height: 58px;
     flex-shrink: 0;
     display: grid;
-    grid-template-columns: 1fr auto 1fr;
+    /* minmax(0, …) lets the side columns shrink below their content so the left pill
+       truncates instead of colliding with the mode switcher in narrow windows. */
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    column-gap: 12px;
     align-items: center;
     padding: 0 4px;
   }
   .left, .right { display: flex; align-items: center; gap: 8px; }
   .left {
     justify-self: start;
+    min-width: 0;
+    max-width: 100%;
     padding: 4px;
     border-radius: 999px;
     background: var(--glass);
     box-shadow: var(--glass-highlight), 0 6px 20px rgba(0, 0, 0, 0.4);
   }
-  .right { justify-content: flex-end; gap: 10px; }
+  .right { justify-content: flex-end; gap: 10px; min-width: 0; }
+  .left > *, .right > * { flex-shrink: 0; }
+  .left > .title, .left > .branch { flex-shrink: 1; min-width: 0; }
+  .title .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .title svg { flex-shrink: 0; }
   .title { display: flex; align-items: center; gap: 6px; height: 32px; padding: 0 10px; border-radius: 999px; font-weight: 600; font-size: 13px; color: var(--label); transition: background 0.15s; }
   .title:hover { background: var(--fill-hover); }
   .title svg { color: var(--label-3); }
@@ -155,8 +164,6 @@
   .face { width: 24px; height: 24px; margin-left: -7px; border-radius: 50%; display: grid; place-items: center; font-size: 10px; font-weight: 700; color: #111; box-shadow: 0 0 0 2px var(--glass-strong); }
   .face:first-child { margin-left: 0; }
   .badge { position: absolute; top: -3px; right: -3px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 999px; background: var(--red); color: #fff; font-size: 10px; font-weight: 700; display: grid; place-items: center; }
-  .gear svg { transition: transform 0.6s cubic-bezier(0.34, 1.56, 0.64, 1); }
-  .gear:hover svg { transform: rotate(60deg); }
 
   .segmented {
     position: relative;
@@ -166,7 +173,7 @@
     border-radius: 999px;
     background: var(--glass);
     box-shadow: var(--glass-highlight), 0 8px 24px rgba(0, 0, 0, 0.45);
-    width: calc(var(--count) * 104px);
+    width: calc(var(--count) * clamp(72px, 9vw, 104px));
   }
   .segmented::before {
     content: "";
@@ -191,6 +198,11 @@
   }
   .segmented button {
     position: relative;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    padding: 0 6px;
     z-index: 1;
     height: 32px;
     font-size: 13px;
@@ -199,4 +211,86 @@
     transition: color 0.2s;
   }
   .segmented button.active { color: var(--label); font-weight: 600; }
+
+  /* ---- Liquid Glass: the track keeps the regular look; the moving thumb becomes a small
+     slab of thick glass: dark glossy core, clear rim with specular hits, a bright lower lip
+     where light leaves the glass, and light falling through onto the track below it. ---- */
+  :global(:root[data-material="liquid"]) .thumb {
+    top: 2px;
+    bottom: 2px;
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.14) 0%, rgba(255, 255, 255, 0.04) 46%, rgba(255, 255, 255, 0) 54%, rgba(255, 255, 255, 0.06) 100%),
+      linear-gradient(180deg, #2e2e33, #1b1b1f);
+    box-shadow:
+      /* rim: bright outer surface, clear body, dark seam where it meets the core */
+      inset 0 0 0 1px rgba(255, 255, 255, 0.3),
+      inset 0 1.5px 0.5px 0 rgba(255, 255, 255, 0.9),
+      inset 0 -2px 1px 0 rgba(255, 255, 255, 0.7),
+      inset 0 -6px 7px -3px rgba(255, 255, 255, 0.28),
+      inset 0 5px 5px -4px rgba(255, 255, 255, 0.3),
+      inset 0 0 0 4.5px rgba(150, 150, 165, 0.2),
+      inset 0 0 0 5.5px rgba(0, 0, 0, 0.5),
+      /* edge against air, contact shadow, depth */
+      0 0 0 1px rgba(0, 0, 0, 0.6),
+      0 2px 3px rgba(0, 0, 0, 0.5),
+      0 8px 16px -4px rgba(0, 0, 0, 0.7);
+    transition: left 0.55s cubic-bezier(0.34, 1.45, 0.5, 1);
+  }
+  /* Specular hits on the rim. */
+  :global(:root[data-material="liquid"]) .thumb::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    padding: 5px;
+    background:
+      radial-gradient(34px 7px at 22% 0%, rgba(255, 255, 255, 0.95), transparent 70%),
+      radial-gradient(7px 14px at 2% 50%, rgba(255, 255, 255, 0.5), transparent 70%),
+      radial-gradient(50px 7px at 62% 100%, rgba(255, 255, 255, 0.8), transparent 70%),
+      radial-gradient(7px 14px at 98% 55%, rgba(255, 255, 255, 0.4), transparent 70%);
+    /* Rim only. Order matters: the `mask` shorthand resets the composite in WebKit. */
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+  }
+  /* Light passing through the glass, landing on the track just below it. */
+  :global(:root[data-material="liquid"]) .thumb::after {
+    content: "";
+    position: absolute;
+    left: 16%;
+    right: 16%;
+    bottom: -5px;
+    height: 8px;
+    border-radius: 50%;
+    background: radial-gradient(50% 50% at 50% 40%, rgba(225, 230, 245, 0.35), rgba(225, 230, 245, 0));
+    filter: blur(2px);
+  }
+  :global(:root[data-material="liquid"]) .segmented button.active { color: #fff; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5); }
+
+  /* Light: a bright, milky glass knob – white core, clear rim with a soft grey seam. */
+  :global(:root[data-material="liquid"][data-theme="light"]) .thumb {
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.9) 0%, rgba(255, 255, 255, 0.4) 46%, rgba(255, 255, 255, 0.15) 54%, rgba(255, 255, 255, 0.5) 100%),
+      linear-gradient(180deg, #f7f7fa, #e4e5ec);
+    box-shadow:
+      inset 0 0 0 1px rgba(255, 255, 255, 0.95),
+      inset 0 1.5px 0.5px 0 #fff,
+      inset 0 -2px 1px 0 #fff,
+      inset 0 -6px 7px -3px rgba(255, 255, 255, 0.9),
+      inset 0 0 0 4.5px rgba(205, 208, 222, 0.45),
+      inset 0 0 0 5.5px rgba(120, 125, 150, 0.28),
+      0 0 0 1px rgba(30, 30, 60, 0.16),
+      0 2px 3px rgba(30, 30, 60, 0.14),
+      0 8px 16px -4px rgba(30, 30, 60, 0.28);
+  }
+  :global(:root[data-material="liquid"][data-theme="light"]) .thumb::after {
+    background: radial-gradient(50% 50% at 50% 40%, rgba(255, 255, 255, 1), rgba(255, 255, 255, 0));
+  }
+  :global(:root[data-material="liquid"][data-theme="light"]) .segmented button.active { color: #1d1d1f; text-shadow: 0 1px 0 rgba(255, 255, 255, 0.8); }
+
+  @media (max-width: 760px) {
+    .branch span:not(.ab):not(.dirty) { display: none; }
+    .divider { display: none; }
+  }
 </style>

@@ -2,6 +2,8 @@
 import { ensureTools } from "../tools.svelte";
 import { t } from "../i18n/index.svelte";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { onFilesChanged } from "../fsWatch.svelte";
 import { setDiagnostics, type Diagnostic as CmDiagnostic } from "@codemirror/lint";
 import * as ed from "../editor";
 import { outline, type OutlineItem } from "./language";
@@ -43,6 +45,38 @@ export const latex = $state({
   outline: [] as OutlineItem[],
   /** Forward-sync target the PDF viewer should scroll to. */
   target: null as { page: number; x: number; y: number; w: number; h: number; seq: number } | null,
+  /** Live progress of a slow (online) compile; null while idle or for the fast cached compile. */
+  progress: null as LatexProgress | null,
+});
+
+export interface LatexProgress {
+  phase: "format" | "download" | "tex" | "rerun" | "pdf" | "write";
+  downloads: number;
+  file: string | null;
+  /** 0–100, never decreasing within a compile. */
+  percent: number;
+}
+
+/**
+ * Tectonic can't know how many files it will fetch, so the bar is an estimate: the first-run
+ * format build (~250 files) fills most of it, later phases jump to fixed marks.
+ */
+function estimate(phase: LatexProgress["phase"], downloads: number): number {
+  const ease = (n: number, k: number) => 1 - Math.exp(-n / k);
+  switch (phase) {
+    case "format": return 3 + 52 * ease(downloads, 110);
+    case "download": return 55 + 20 * ease(downloads, 150);
+    case "tex": return 58;
+    case "rerun": return 80;
+    case "pdf": return 88 + 8 * ease(downloads, 20);
+    case "write": return 98;
+  }
+}
+
+listen<{ phase: LatexProgress["phase"]; downloads: number; file: string | null }>("latex-progress", ({ payload: p }) => {
+  if (latex.status !== "compiling") return;
+  const percent = Math.max(latex.progress?.percent ?? 0, estimate(p.phase, p.downloads));
+  latex.progress = { ...p, percent };
 });
 
 let sync: SyncBox[] = [];
@@ -80,6 +114,16 @@ export function schedule(id: string, path: string | null, delay = 900) {
   timer = window.setTimeout(run, switched ? 0 : delay);
 }
 
+// Recompile when an included file (chapter, preamble, .bib, figure) changes on disk, e.g. edited in
+// another tab, by git or by an external tool. The active buffer itself is already compiled on edit.
+const DEPENDENCY = /\.(tex|bib|sty|cls|bst|png|jpe?g|pdf|eps|svg)$/i;
+onFilesChanged((files) => {
+  if (!current || !latex.available) return;
+  if (!files.some((f) => f !== current!.path && DEPENDENCY.test(f))) return;
+  clearTimeout(timer);
+  timer = window.setTimeout(run, 300);
+});
+
 async function run() {
   if (!current) return;
   if (running) {
@@ -90,6 +134,7 @@ async function run() {
   if (!latex.available) return;
   running = true;
   latex.status = "compiling";
+  latex.progress = null;
   const job = current;
   try {
     const r = await invoke<CompileResult>("latex_compile", { path: job.path, content: ed.getText(job.id) });
@@ -109,6 +154,7 @@ async function run() {
     latex.diagnostics = [{ file: "", line: 0, message: String(e), severity: "error" }];
   } finally {
     running = false;
+    latex.progress = null;
     if (again) {
       again = false;
       run();

@@ -29,7 +29,7 @@
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
     font-size: 12.5px;
     max-width: 520px;
-    animation: drop 0.25s cubic-bezier(0.3, 1.3, 0.5, 1);
+    /* No open animation: fading/scaling glass (backdrop-filter) makes WebKitGTK flash. */
   }
   .toast.error { color: #e3aaa4; }
   @keyframes drop { from { opacity: 0; transform: translateY(-10px); } }

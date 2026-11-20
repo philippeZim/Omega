@@ -38,6 +38,9 @@ export const baseTheme = EditorView.theme(
     ".cm-diagnostic": { borderLeft: "none", padding: "2px 4px", fontFamily: "var(--font)", fontSize: "12.5px" },
     ".cm-diagnostic-error": { color: "#e3aaa4" },
     ".cm-diagnostic-warning": { color: "#e0c59a" },
+    // Quick-fix buttons in the diagnostic tooltip (e.g. "Include <stdio.h>"): neutral glass pills.
+    ".cm-diagnosticAction": { display: "inline-block", margin: "6px 6px 0 0", padding: "3px 10px", border: "none", borderRadius: "999px", font: "600 12px var(--font)", color: "var(--label)", backgroundColor: "rgba(var(--fg-rgb), 0.1)", boxShadow: "inset 0 1px 0 rgba(var(--hl-rgb), 0.1)", cursor: "pointer" },
+    ".cm-diagnosticAction:hover": { backgroundColor: "rgba(var(--fg-rgb), 0.18)" },
     ".cm-completionDetail": { color: "var(--label-2)", fontStyle: "normal", marginLeft: "1em" },
   },
   { dark: true },

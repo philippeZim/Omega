@@ -283,7 +283,7 @@
 </div>
 
 <style>
-  .backdrop { position: fixed; inset: 0; z-index: 85; display: grid; place-items: center; background: var(--scrim); animation: fade 0.15s ease-out; }
+  .backdrop { position: fixed; inset: 0; z-index: 85; display: grid; place-items: center; background: var(--scrim); }
   .popup {
     width: min(1100px, 92vw);
     height: min(860px, 88vh);
@@ -295,7 +295,7 @@
     box-shadow: var(--glass-highlight), 0 30px 90px rgba(0, 0, 0, 0.7);
     overflow: hidden;
     outline: none;
-    animation: pop 0.28s cubic-bezier(0.22, 1.2, 0.36, 1);
+    /* No open animation: fading/scaling glass (backdrop-filter) makes WebKitGTK flash. */
   }
   header { display: flex; align-items: center; gap: 10px; padding: 14px 14px 8px 20px; }
   .title { font-weight: 700; font-size: 14px; }

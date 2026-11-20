@@ -44,6 +44,7 @@ pub fn run() {
             tools::tool_installable,
             pty::list_shells,
             fs::list_dir,
+            fs::watch_dir,
             fs::read_file,
             fs::write_file,
             fs::create_dir,

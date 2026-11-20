@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Glyph from "./Glyph.svelte";
   import { collab, startHosting, join, leave, approve, deny, kick, setMyName, clipboardTicket } from "../lib/collab/collab.svelte";
   import { onMount, tick } from "svelte";
 
@@ -99,7 +100,7 @@
             <button class="followbtn" class:on={following} onclick={() => follow(presenceKey(p))} title={following ? t("ai.collab.unfollow") : t("ai.collab.followTitle", { name: p.name })}>{following ? t("ai.collab.following") : t("ai.collab.follow")}</button>
           {/if}
           {#if collab.role === "host" && p.peer !== "self"}
-            <button class="x" onclick={() => kick(p.peer)} title={t("ai.collab.remove")} aria-label={t("ai.collab.remove")}>×</button>
+            <button class="x" onclick={() => kick(p.peer)} title={t("ai.collab.remove")} aria-label={t("ai.collab.remove")}><Glyph name="x" size={8} /></button>
           {/if}
         </div>
       {/each}
@@ -122,8 +123,8 @@
     background: var(--glass-strong);
     backdrop-filter: var(--blur);
     box-shadow: var(--glass-highlight), 0 24px 60px rgba(0, 0, 0, 0.6);
-    animation: drop 0.25s cubic-bezier(0.22, 1.2, 0.36, 1);
-    transform-origin: top right;
+    /* No open animation: animating opacity/transform over backdrop-filter makes WebKitGTK render a
+       frame without the panel (it blinks), same as the help panel. */
   }
   header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
   h2 { margin: 0; font-size: 17px; font-weight: 700; }
@@ -156,10 +157,9 @@
   .spacer { flex: 1; }
   .conn { font-size: 11px; color: var(--green); font-variant-numeric: tabular-nums; }
   .conn.relay { color: var(--orange); }
-  .x { width: 20px; height: 20px; border-radius: 50%; color: var(--label-3); }
+  .x { width: 20px; height: 20px; display: grid; place-items: center; border-radius: 50%; color: var(--label-3); }
   .x:hover { background: var(--fill-2); color: var(--label); }
   .danger { color: var(--red); }
   .spin { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--label-3); border-top-color: var(--label); animation: spin 0.8s linear infinite; flex-shrink: 0; }
   @keyframes spin { to { transform: rotate(360deg); } }
-  @keyframes drop { from { opacity: 0; transform: translateY(-6px) scale(0.97); } }
 </style>

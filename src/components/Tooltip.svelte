@@ -100,13 +100,13 @@
     font-weight: 500;
     line-height: 1.35;
     color: var(--label);
-    background: rgba(44, 44, 50, 0.9);
+    background: var(--tooltip-bg);
     backdrop-filter: var(--blur);
-    box-shadow: inset 0 1px 0 rgba(var(--hl-rgb), 0.1), 0 0 0 1px rgba(var(--fg-rgb), 0.05), 0 10px 28px rgba(0, 0, 0, 0.5);
+    box-shadow: var(--tooltip-shadow);
     pointer-events: none;
     white-space: normal;
     overflow-wrap: anywhere;
-    animation: tipIn 0.18s cubic-bezier(0.22, 1.2, 0.36, 1);
+    /* No open animation: fading/scaling glass (backdrop-filter) makes WebKitGTK flash. */
     transform-origin: top center;
   }
   .tip.above { transform-origin: bottom center; }

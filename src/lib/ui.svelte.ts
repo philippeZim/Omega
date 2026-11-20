@@ -1,4 +1,5 @@
 import { t } from "./i18n/index.svelte";
+import type { Suggest } from "./code/packages";
 
 export interface ChoiceOption {
   label: string;
@@ -19,7 +20,7 @@ interface DialogState {
   title: string;
   message?: string;
   options: ChoiceOption[];
-  input?: { value: string; placeholder?: string; selectUntil?: number };
+  input?: { value: string; placeholder?: string; selectUntil?: number; suggest?: Suggest; multiline?: boolean };
   resolve: (v: string | null, input?: string) => void;
 }
 
@@ -41,7 +42,8 @@ export const ui = $state({
     });
   },
 
-  prompt(title: string, value = "", placeholder = "", selectUntil?: number): Promise<string | null> {
+  /** `multiline`: wide dialog with a wrapping field for long values (e.g. shell commands); Enter still confirms. */
+  prompt(title: string, value = "", placeholder = "", selectUntil?: number, suggest?: Suggest, multiline = false): Promise<string | null> {
     return new Promise((resolve) => {
       ui.dialog = {
         title,
@@ -49,8 +51,8 @@ export const ui = $state({
           { label: t("common.cancel"), value: "cancel" },
           { label: t("common.ok"), value: "ok", primary: true },
         ],
-        input: { value, placeholder, selectUntil },
-        resolve: (v, input) => resolve(v === "ok" && input?.trim() ? input.trim() : null),
+        input: { value, placeholder, selectUntil, suggest, multiline },
+        resolve: (v, input) => resolve(v === "ok" && input?.trim() ? input.replace(/\s*\n\s*/g, " ").trim() : null),
       };
     });
   },

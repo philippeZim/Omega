@@ -9,6 +9,8 @@
   /* Dimmed backdrop behind modal sheets, and sunken content areas (code blocks, previews). */
   --scrim: rgba(0, 0, 0, 0.55);
   --well: rgba(0, 0, 0, 0.25);
+  --tooltip-bg: rgba(44, 44, 50, 0.9);
+  --tooltip-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), 0 0 0 1px rgba(255, 255, 255, 0.05), 0 10px 28px rgba(0, 0, 0, 0.5);
   /* iOS-style dark palette */
   --bg: #030304;
   --bg-elevated: #151518;
@@ -60,6 +62,8 @@
   --raised-shadow: 0 1px 3px rgba(0, 0, 0, 0.12), 0 0 0 0.5px rgba(0, 0, 0, 0.06);
   --scrim: rgba(0, 0, 0, 0.22);
   --well: rgba(0, 0, 0, 0.04);
+  --tooltip-bg: rgba(255, 255, 255, 0.92);
+  --tooltip-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.08), 0 8px 24px rgba(0, 0, 0, 0.14);
   --bg: #e9e9ef;
   --bg-elevated: #ffffff;
   --bg-elevated-2: #f2f2f7;
@@ -206,13 +210,12 @@ input:focus { box-shadow: var(--recess-shadow), 0 0 0 1px rgba(var(--fg-rgb), 0.
   overflow: hidden;
   isolation: isolate;
   transition:
-    transform 0.35s cubic-bezier(0.34, 1.56, 0.64, 1),
     background 0.25s ease,
     color 0.2s ease,
     box-shadow 0.3s ease;
 }
 .gbtn.icon { width: 30px; padding: 0; justify-content: center; }
-.gbtn svg { flex-shrink: 0; transition: transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1), filter 0.3s ease; }
+.gbtn svg { flex-shrink: 0; transition: filter 0.3s ease; }
 
 /* Tinted glow behind the icon, revealed on hover */
 .gbtn::before {
@@ -245,7 +248,6 @@ input:focus { box-shadow: var(--recess-shadow), 0 0 0 1px rgba(var(--fg-rgb), 0.
   box-shadow: inset 0 1px 0 rgba(var(--hl-rgb), 0.1), 0 4px 12px rgba(0, 0, 0, 0.3);
 }
 .gbtn:hover:not(:disabled)::before { opacity: 1; }
-.gbtn:hover:not(:disabled)::after { animation: gsweep 0.75s ease forwards; }
 .gbtn:active:not(:disabled) { transform: scale(0.93); transition-duration: 0.12s; }
 .gbtn:disabled { color: rgba(var(--fg-rgb), 0.28); }
 .gbtn:disabled svg { filter: grayscale(1) opacity(0.5); }
@@ -256,7 +258,6 @@ input:focus { box-shadow: var(--recess-shadow), 0 0 0 1px rgba(var(--fg-rgb), 0.
 .gbtn.run { --tint: 123, 191, 142; }
 .gbtn.run:hover:not(:disabled) svg { transform: translateX(2px) scale(1.08); }
 .gbtn.debug { --tint: 214, 163, 95; }
-.gbtn.debug:hover:not(:disabled) svg { animation: gwiggle 0.55s ease; }
 .gbtn.stop { --tint: 223, 112, 103; }
 .gbtn.stop:hover:not(:disabled) svg { transform: scale(0.82) rotate(90deg); }
 .gbtn.step { --tint: 134, 185, 204; }
@@ -266,12 +267,6 @@ input:focus { box-shadow: var(--recess-shadow), 0 0 0 1px rgba(var(--fg-rgb), 0.
 .gbtn.live { color: var(--label); background: rgba(var(--tint), 0.1); }
 .gbtn.live::before { opacity: 1; animation: gbreath 1.8s ease-in-out infinite; }
 
-/* Buttons that only exist in some states pop in with a spring */
-.gbtn.appear { animation: gpop 0.45s cubic-bezier(0.34, 1.56, 0.64, 1); }
-@keyframes gpop {
-  from { opacity: 0; transform: scale(0.4); width: 0; }
-  to { opacity: 1; transform: scale(1); width: 30px; }
-}
 
 .gsep { width: 1px; height: 16px; margin: 0 3px; background: rgba(var(--fg-rgb), 0.09); }
 
@@ -290,17 +285,6 @@ input:focus { box-shadow: var(--recess-shadow), 0 0 0 1px rgba(var(--fg-rgb), 0.
   box-shadow: var(--recess-shadow);
 }
 
-@keyframes gsweep {
-  0% { left: -60%; opacity: 0; }
-  20% { opacity: 1; }
-  100% { left: 130%; opacity: 0; }
-}
-@keyframes gwiggle {
-  0%, 100% { transform: rotate(0); }
-  20% { transform: rotate(-14deg) scale(1.1); }
-  45% { transform: rotate(11deg) scale(1.1); }
-  70% { transform: rotate(-6deg); }
-}
 @keyframes gbreath {
   0%, 100% { opacity: 0.55; }
   50% { opacity: 1; }
@@ -314,3 +298,145 @@ input:focus { box-shadow: var(--recess-shadow), 0 0 0 1px rgba(var(--fg-rgb), 0.
 ::selection {
   background: rgba(107, 155, 224, 0.55);
 }
+
+/* ================================================================== Liquid Glass
+   Opt-in material (Settings → Theme → Material). Works on top of dark and light:
+   clearer, more refractive panels on the regular neutral canvas and specular rims.
+   No transform/opacity animations here: they make WebKitGTK flash over backdrop-filter. */
+
+:root[data-material="liquid"] {
+  --glass: rgba(40, 40, 46, 0.5);
+  --glass-strong: rgba(42, 42, 50, 0.7);
+  --tooltip-bg: rgba(36, 36, 46, 0.62);
+  --raised-bg: rgba(255, 255, 255, 0.17);
+  --raised-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.3),
+    inset 0 -1px 1px rgba(255, 255, 255, 0.06),
+    0 0 0 0.5px rgba(255, 255, 255, 0.1),
+    0 4px 14px rgba(0, 0, 0, 0.35);
+  /* Specular rim: bright top edge, faint bottom bounce light, hairline all around. */
+  --glass-highlight:
+    inset 0 1px 0 rgba(255, 255, 255, 0.2),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.05),
+    inset 1px 0 0 rgba(255, 255, 255, 0.05),
+    inset -1px 0 0 rgba(255, 255, 255, 0.03),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.06),
+    inset 0 0 30px rgba(255, 255, 255, 0.025);
+  --glass-shadow: 0 24px 60px rgba(0, 0, 0, 0.5), 0 4px 14px rgba(0, 0, 0, 0.3);
+  --glass-sheen: linear-gradient(155deg, rgba(255, 255, 255, 0.09) 0%, rgba(255, 255, 255, 0.015) 28%, rgba(255, 255, 255, 0) 55%, rgba(255, 255, 255, 0.025) 100%);
+  --recess: rgba(0, 0, 0, 0.28);
+  --recess-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.45), inset 0 -1px 0 rgba(255, 255, 255, 0.07), inset 0 0 0 0.5px rgba(255, 255, 255, 0.04);
+  --scrim: rgba(0, 0, 0, 0.35);
+  --blur: saturate(210%) blur(34px) brightness(1.04);
+  --radius-panel: 26px;
+
+}
+:root[data-material="liquid"][data-theme="light"] {
+  --glass: rgba(255, 255, 255, 0.42);
+  --glass-strong: rgba(255, 255, 255, 0.64);
+  --tooltip-bg: rgba(255, 255, 255, 0.66);
+  --raised-bg: rgba(255, 255, 255, 0.85);
+  --raised-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 1),
+    inset 0 -1px 1px rgba(0, 0, 0, 0.04),
+    0 0 0 0.5px rgba(0, 0, 0, 0.06),
+    0 4px 14px rgba(40, 50, 90, 0.16);
+  --glass-highlight:
+    inset 0 1px 0 rgba(255, 255, 255, 0.95),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.45),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.45),
+    inset 0 0 0 1.5px rgba(0, 0, 0, 0.03),
+    inset 0 0 30px rgba(255, 255, 255, 0.25);
+  --glass-shadow: 0 24px 60px rgba(40, 50, 90, 0.16), 0 4px 14px rgba(40, 50, 90, 0.08);
+  --glass-sheen: linear-gradient(155deg, rgba(255, 255, 255, 0.55) 0%, rgba(255, 255, 255, 0.12) 30%, rgba(255, 255, 255, 0) 55%, rgba(255, 255, 255, 0.18) 100%);
+  --recess: rgba(255, 255, 255, 0.32);
+  --recess-shadow: inset 0 1px 3px rgba(40, 50, 90, 0.14), inset 0 -1px 0 rgba(255, 255, 255, 0.8), inset 0 0 0 0.5px rgba(0, 0, 0, 0.04);
+  --scrim: rgba(230, 232, 245, 0.25);
+  --fill-hover: rgba(255, 255, 255, 0.35);
+  --separator: rgba(60, 60, 90, 0.16);
+  --blur: saturate(190%) blur(34px) brightness(1.06);
+}
+
+/* Panels: sheen layer over the tint, specular rim, stronger depth. */
+:root[data-material="liquid"] .glass {
+  background: var(--glass-sheen), var(--glass);
+  box-shadow: var(--glass-highlight), var(--glass-shadow);
+}
+:root[data-material="liquid"] .backdrop > .sheet,
+:root[data-material="liquid"] .backdrop > .popup,
+:root[data-material="liquid"] .palette,
+:root[data-material="liquid"] .alert,
+:root[data-material="liquid"] .menu,
+:root[data-material="liquid"] .toast {
+  background: var(--glass-sheen), var(--glass-strong);
+  box-shadow: var(--glass-highlight), var(--glass-shadow);
+}
+
+/* Glass capsules (toolbars) become clear lenses. */
+:root[data-material="liquid"] .gcap {
+  background: var(--glass-sheen), rgba(var(--fg-rgb), 0.04);
+  box-shadow: var(--glass-highlight), 0 8px 24px rgba(0, 0, 0, 0.28);
+}
+:root[data-material="liquid"] .btn {
+  background: var(--glass-sheen), rgba(var(--fg-rgb), 0.07);
+  box-shadow: var(--glass-highlight);
+}
+/* Primary actions (.btn.primary, dialog OK) are the same smoked glass knob as the mode switcher's
+ thumb (dark core, clear rim, specular hits) instead of an accent-coloured fill. */
+:root[data-material="liquid"] :is(.btn.primary, .alert .buttons button.primary) {
+  position: relative;
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.14) 0%, rgba(255, 255, 255, 0.04) 46%, rgba(255, 255, 255, 0) 54%, rgba(255, 255, 255, 0.06) 100%),
+    linear-gradient(180deg, #2e2e33, #1b1b1f);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.3),
+    inset 0 1.5px 0.5px 0 rgba(255, 255, 255, 0.9),
+    inset 0 -2px 1px 0 rgba(255, 255, 255, 0.7),
+    inset 0 -6px 7px -3px rgba(255, 255, 255, 0.28),
+    inset 0 5px 5px -4px rgba(255, 255, 255, 0.3),
+    inset 0 0 0 4.5px rgba(150, 150, 165, 0.2),
+    inset 0 0 0 5.5px rgba(0, 0, 0, 0.5),
+    0 0 0 1px rgba(0, 0, 0, 0.6),
+    0 2px 3px rgba(0, 0, 0, 0.5),
+    0 8px 16px -4px rgba(0, 0, 0, 0.7);
+}
+:root[data-material="liquid"] :is(.btn.primary, .alert .buttons button.primary):hover { filter: brightness(1.15); }
+:root[data-material="liquid"] :is(.btn.primary, .alert .buttons button.primary)::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 5px;
+  pointer-events: none;
+  background:
+    radial-gradient(48px 8px at 20% 0%, rgba(255, 255, 255, 0.95), transparent 70%),
+    radial-gradient(8px 16px at 2% 50%, rgba(255, 255, 255, 0.5), transparent 70%),
+    radial-gradient(70px 8px at 64% 100%, rgba(255, 255, 255, 0.8), transparent 70%),
+    radial-gradient(8px 16px at 98% 55%, rgba(255, 255, 255, 0.4), transparent 70%);
+  /* Rim only. Order matters: the `mask` shorthand resets the composite in WebKit. */
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+}
+/* Light: the milky white glass knob, dark label. */
+:root[data-material="liquid"][data-theme="light"] :is(.btn.primary, .alert .buttons button.primary) {
+  color: #1d1d1f;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.8);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.9) 0%, rgba(255, 255, 255, 0.4) 46%, rgba(255, 255, 255, 0.15) 54%, rgba(255, 255, 255, 0.5) 100%),
+    linear-gradient(180deg, #f7f7fa, #e4e5ec);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.95),
+    inset 0 1.5px 0.5px 0 #fff,
+    inset 0 -2px 1px 0 #fff,
+    inset 0 -6px 7px -3px rgba(255, 255, 255, 0.9),
+    inset 0 0 0 4.5px rgba(205, 208, 222, 0.45),
+    inset 0 0 0 5.5px rgba(120, 125, 150, 0.28),
+    0 0 0 1px rgba(30, 30, 60, 0.16),
+    0 2px 3px rgba(30, 30, 60, 0.14),
+    0 8px 16px -4px rgba(30, 30, 60, 0.28);
+}
+:root[data-material="liquid"][data-theme="light"] :is(.btn.primary, .alert .buttons button.primary):hover { filter: brightness(1.03); }

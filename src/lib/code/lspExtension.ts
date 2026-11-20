@@ -3,7 +3,9 @@ import type { Extension, Text } from "@codemirror/state";
 import { EditorView, ViewPlugin, hoverTooltip, type ViewUpdate } from "@codemirror/view";
 import { viewActions } from "../editorActions";
 import { autocompletion, insertCompletionText, snippet, type Completion, type CompletionContext, type CompletionResult } from "@codemirror/autocomplete";
-import { setDiagnostics, type Diagnostic } from "@codemirror/lint";
+import { setDiagnostics, forEachDiagnostic, type Diagnostic, type Action } from "@codemirror/lint";
+import { ui } from "../ui.svelte";
+import { t } from "../i18n/index.svelte";
 import { clientFor, fileUri, uriPath, type LspClient, type ServerKind } from "./lsp.svelte";
 import type { LangInfo } from "./languages";
 
@@ -167,21 +169,72 @@ export function lspExtension(path: string, lang: LangInfo): Extension {
     if (client && viewRef) client.change(uri, viewRef.state.doc.toString());
   };
 
-  const applyDiags = () => {
+  /** Applies the parts of a WorkspaceEdit that target this document. */
+  const applyEdit = (view: EditorView, edit: any) => {
+    const mine = (u: string) => uriPath(u) === uriPath(uri);
+    const edits: any[] = [
+      ...Object.entries(edit?.changes ?? {}).flatMap(([u, es]) => (mine(u) ? (es as any[]) : [])),
+      ...(edit?.documentChanges ?? []).flatMap((c: any) => (c.textDocument && mine(c.textDocument.uri) ? c.edits : [])),
+    ];
+    if (!edits.length) return;
+    const doc = view.state.doc;
+    view.dispatch({ changes: edits.map((e) => ({ from: toOffset(doc, e.range.start), to: toOffset(doc, e.range.end), insert: e.newText })), userEvent: "input.quickfix" });
+  };
+
+  /** Quick fixes for one diagnostic: inline (clangd) or via textDocument/codeAction. */
+  const fixesFor = async (d: any): Promise<any[]> => {
+    let acts: any[] | null = d.codeActions ?? null;
+    if (!acts && client?.capabilities.codeActionProvider && (d.severity ?? 1) <= 2) {
+      acts = await client
+        .request("textDocument/codeAction", { textDocument: { uri }, range: d.range, context: { diagnostics: [d], only: ["quickfix"] } }, 5000)
+        .catch(() => null);
+    }
+    // Only actions that carry an edit (command-only actions would need workspace/applyEdit).
+    return (acts ?? []).filter((a: any) => a?.edit && (!a.kind || String(a.kind).startsWith("quickfix")));
+  };
+
+  let diagSeq = 0;
+  const applyDiags = async () => {
     if (!client || !viewRef) return;
-    const doc = viewRef.state.doc;
-    const diags: Diagnostic[] = (client.diagnostics.get(uri) ?? []).map((d: any) => {
-      let from = toOffset(doc, d.range.start), to = toOffset(doc, d.range.end);
-      if (from === to) to = Math.min(doc.length, from + 1);
-      return {
-        from,
-        to,
-        severity: d.severity === 1 ? "error" : d.severity === 2 ? "warning" : d.severity === 3 ? "info" : "hint",
-        message: d.message,
-        source: d.source,
-      } as Diagnostic;
+    const view = viewRef;
+    const my = ++diagSeq;
+    const raw: any[] = client.diagnostics.get(uri) ?? [];
+    const build = (fixes: any[][] | null) => {
+      const doc = view.state.doc;
+      return raw.map((d: any, i) => {
+        let from = toOffset(doc, d.range.start), to = toOffset(doc, d.range.end);
+        if (from === to) to = Math.min(doc.length, from + 1);
+        const actions: Action[] = (fixes?.[i] ?? []).map((a: any) => ({ name: a.title, apply: (v: EditorView) => applyEdit(v, a.edit) }));
+        return {
+          from,
+          to,
+          severity: d.severity === 1 ? "error" : d.severity === 2 ? "warning" : d.severity === 3 ? "info" : "hint",
+          message: d.message,
+          source: d.source,
+          ...(actions.length ? { actions } : {}),
+        } as Diagnostic;
+      });
+    };
+    // Show diagnostics right away; fixes are added when they arrive (if nothing changed meanwhile).
+    view.dispatch(setDiagnostics(view.state, build(null)));
+    const docAt = view.state.doc;
+    const fixes = await Promise.all(raw.map((d, i) => (i < 30 ? fixesFor(d) : Promise.resolve([]))));
+    if (my !== diagSeq || viewRef !== view || view.state.doc !== docAt || !fixes.some((f) => f.length)) return;
+    view.dispatch(setDiagnostics(view.state, build(fixes)));
+  };
+
+  /** Ctrl+. – apply the quick fix at the cursor (menu when there are several). */
+  const quickFix = (view: EditorView) => {
+    const pos = view.state.selection.main.head;
+    const acts: Action[] = [];
+    forEachDiagnostic(view.state, (d, from, to) => {
+      if (pos >= from && pos <= to) for (const a of d.actions ?? []) acts.push({ ...a, apply: (v: EditorView) => a.apply(v, from, to) });
     });
-    viewRef.dispatch(setDiagnostics(viewRef.state, diags));
+    if (!acts.length) return ui.toast(t("code.qf.none")), true;
+    if (acts.length === 1) return acts[0].apply(view, pos, pos), true;
+    const c = view.coordsAtPos(pos);
+    ui.openMenu(new MouseEvent("contextmenu", { clientX: c?.left ?? 200, clientY: (c?.bottom ?? 200) + 4 }), acts.map((a) => ({ label: a.name, action: () => a.apply(view, pos, pos) })));
+    return true;
   };
 
   const plugin = ViewPlugin.fromClass(
@@ -254,6 +307,7 @@ export function lspExtension(path: string, lang: LangInfo): Extension {
     viewActions.of({
       "lsp.gotoDefinition": (v) => (gotoDefinition(v), true),
       "lsp.format": (v) => (format(v), true),
+      "lsp.quickFix": quickFix,
     }),
     EditorView.domEventHandlers({
       mousedown(e, view) {

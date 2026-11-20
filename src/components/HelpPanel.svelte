@@ -141,7 +141,7 @@
     color: var(--label);
     background: rgba(var(--fg-rgb), 0.08);
     box-shadow: inset 0 1px 0 rgba(var(--hl-rgb), 0.08);
-    transition: transform 0.35s cubic-bezier(0.34, 1.56, 0.64, 1), background 0.2s;
+    transition: background 0.2s;
   }
   .close:hover { background: rgba(var(--fg-rgb), 0.14); transform: rotate(90deg); }
   .close:active { transform: rotate(90deg) scale(0.9); }
@@ -156,7 +156,7 @@
     color: var(--label-2);
     background: rgba(var(--fg-rgb), 0.05);
     box-shadow: inset 0 1px 0 rgba(var(--hl-rgb), 0.05);
-    transition: background 0.2s, color 0.2s, transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+    transition: background 0.2s, color 0.2s;
   }
   .chip:hover { color: var(--label); background: rgba(var(--fg-rgb), 0.1); transform: translateY(-1px); }
   .chip:active { transform: scale(0.94); }

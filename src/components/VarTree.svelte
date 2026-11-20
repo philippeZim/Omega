@@ -50,7 +50,7 @@
 <style>
   .row { display: flex; align-items: center; gap: 6px; min-height: 24px; padding-right: 8px; border-radius: 8px; font-family: var(--mono); font-size: 12px; white-space: nowrap; overflow: hidden; }
   .row:hover { background: var(--fill-hover); }
-  .chev { flex-shrink: 0; color: var(--label-3); transition: transform 0.12s; }
+  .chev { flex-shrink: 0; color: var(--label-3);  }
   .chev.open { transform: rotate(90deg); }
   .sp { width: 9px; flex-shrink: 0; }
   .scope { font-family: var(--font); font-weight: 600; font-size: 12px; color: var(--label-2); }

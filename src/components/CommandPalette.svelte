@@ -247,8 +247,8 @@
 </div>
 
 <style>
-  .backdrop { position: fixed; inset: 0; z-index: 95; display: flex; justify-content: center; padding-top: 11vh; background: var(--scrim); animation: fade 0.15s ease-out; }
-  .palette { width: min(720px, 92vw); max-height: 66vh; display: flex; flex-direction: column; border-radius: 22px; background: var(--glass-strong); backdrop-filter: var(--blur); box-shadow: var(--glass-highlight), 0 30px 80px rgba(0, 0, 0, 0.65); overflow: hidden; outline: none; animation: drop 0.25s cubic-bezier(0.22, 1.2, 0.36, 1); }
+  .backdrop { position: fixed; inset: 0; z-index: 95; display: flex; justify-content: center; padding-top: 11vh; background: var(--scrim); }
+  .palette { width: min(720px, 92vw); max-height: 66vh; display: flex; flex-direction: column; border-radius: 22px; background: var(--glass-strong); backdrop-filter: var(--blur); box-shadow: var(--glass-highlight), 0 30px 80px rgba(0, 0, 0, 0.65); overflow: hidden; outline: none; /* no open animation: WebKitGTK flashes when glass animates */ }
   .tabs { display: flex; align-items: center; gap: 4px; padding: 10px 12px 0; }
   .tabs button { height: 28px; padding: 0 13px; border-radius: 999px; font-size: 12.5px; font-weight: 600; color: var(--label-2); transition: background 0.2s, color 0.2s; }
   .tabs button:hover { color: var(--label); background: rgba(var(--fg-rgb), 0.07); }

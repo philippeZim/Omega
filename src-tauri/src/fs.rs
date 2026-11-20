@@ -124,3 +124,78 @@ pub async fn list_files(root: String) -> Result<Vec<String>, String> {
     .await
     .map_err(|e| e.to_string())?
 }
+
+// ------------------------------------------------------------------ file watcher
+
+static WATCHER: std::sync::Mutex<Option<notify::RecommendedWatcher>> = std::sync::Mutex::new(None);
+
+#[derive(Serialize, Clone)]
+struct FsChanged {
+    dirs: Vec<String>,
+    files: Vec<String>,
+}
+
+/// Watches the open folder recursively and emits `fs-changed` (debounced) with
+///  - `dirs`: parent directories of created/removed/renamed entries, so the explorer can reload
+///    exactly those folders, and
+///  - `files`: every file whose content or existence changed (e.g. to recompile LaTeX when an
+///    included file was edited outside the editor).
+/// Changes inside HIDDEN folders (.git, node_modules, target, …) are ignored.
+/// Calling it again replaces the previous watch; `None` stops watching.
+#[tauri::command]
+pub fn watch_dir(app: tauri::AppHandle, path: Option<String>) -> Result<(), String> {
+    use notify::{EventKind, RecursiveMode, Watcher};
+    use std::collections::BTreeSet;
+    use std::sync::mpsc;
+    use std::time::Duration;
+    use tauri::Emitter;
+
+    let mut slot = WATCHER.lock().map_err(err)?;
+    *slot = None; // drops (stops) the old watcher, which also ends its debounce thread
+    let Some(path) = path else { return Ok(()) };
+
+    // (path, structural): structural = created/removed/renamed, i.e. the parent listing changed.
+    let (tx, rx) = mpsc::channel::<(PathBuf, bool)>();
+    let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+        let Ok(ev) = res else { return };
+        let structural = matches!(ev.kind, EventKind::Create(_) | EventKind::Remove(_) | EventKind::Modify(notify::event::ModifyKind::Name(_)));
+        if !structural && !matches!(ev.kind, EventKind::Modify(_)) {
+            return; // access events etc.
+        }
+        for p in ev.paths {
+            if p.components().any(|c| HIDDEN.contains(&c.as_os_str().to_string_lossy().as_ref())) {
+                continue;
+            }
+            let _ = tx.send((p, structural));
+        }
+    })
+    .map_err(err)?;
+    watcher.watch(Path::new(&path), RecursiveMode::Recursive).map_err(err)?;
+    *slot = Some(watcher);
+
+    std::thread::spawn(move || {
+        // Blocks until the first change; ends when the watcher (sender) is dropped.
+        while let Ok(first) = rx.recv() {
+            let (mut dirs, mut files) = (BTreeSet::new(), BTreeSet::new());
+            let mut add = |(p, structural): (PathBuf, bool)| {
+                if structural {
+                    if let Some(parent) = p.parent() {
+                        dirs.insert(crate::env::norm(parent));
+                    }
+                }
+                files.insert(crate::env::norm(&p));
+            };
+            add(first);
+            // Collect until 250 ms of quiet, but flush at least every second during long bursts.
+            let start = std::time::Instant::now();
+            while start.elapsed() < Duration::from_secs(1) {
+                match rx.recv_timeout(Duration::from_millis(250)) {
+                    Ok(x) => add(x),
+                    Err(_) => break,
+                }
+            }
+            let _ = app.emit("fs-changed", FsChanged { dirs: dirs.into_iter().collect(), files: files.into_iter().collect() });
+        }
+    });
+    Ok(())
+}

@@ -182,7 +182,7 @@
   .seg button.on { color: var(--label); background: var(--raised-bg); box-shadow: var(--raised-shadow); }
   /* Recessed tray like the segmented control; the selection is a raised glass pill. */
   .grid {
-    display: grid; grid-template-columns: repeat(4, 1fr); gap: 2px;
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 2px;
     padding: 3px; margin-bottom: 18px; border-radius: 18px;
     background: var(--recess); box-shadow: var(--recess-shadow);
   }

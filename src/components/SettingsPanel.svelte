@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { settings, applySyntaxTheme, setSize, setAppearance, type Appearance } from "../lib/settings.svelte";
+  import Glyph from "./Glyph.svelte";
+  import { settings, applySyntaxTheme, setSize, setAppearance, setMaterial, type Appearance, type Material } from "../lib/settings.svelte";
   import { t, i18n, setLocale, LOCALES, type Key } from "../lib/i18n/index.svelte";
 
   // `label`/`sub` are i18n keys, translated at render time.
@@ -56,6 +57,10 @@
     { id: "dark", label: "app.settings.appearance.dark" },
     { id: "light", label: "app.settings.appearance.light" },
   ];
+  const MATERIALS: { id: Material; label: Key }[] = [
+    { id: "solid", label: "app.settings.material.solid" },
+    { id: "liquid", label: "app.settings.material.liquid" },
+  ];
   const visibleThemes = $derived(SYNTAX_THEMES.filter((th) => !!th.light === (settings.appearance === "light")));
 
   function close() {
@@ -99,9 +104,9 @@
             <div class="srow">
               <div><b>{t(sz.label)}</b><span class="sub2">{t(sz.sub)}</span></div>
               <div class="stepper">
-                <button onclick={() => setSize(sz.key, Math.max(sz.min, +(v - sz.step).toFixed(2)))} aria-label={t("app.settings.smaller")}>−</button>
+                <button onclick={() => setSize(sz.key, Math.max(sz.min, +(v - sz.step).toFixed(2)))} aria-label={t("app.settings.smaller")}><Glyph name="minus" size={10} /></button>
                 <input type="range" min={sz.min} max={sz.max} step={sz.step} value={v} oninput={(e) => setSize(sz.key, Number((e.currentTarget as HTMLInputElement).value))} />
-                <button onclick={() => setSize(sz.key, Math.min(sz.max, +(v + sz.step).toFixed(2)))} aria-label={t("app.settings.larger")}>+</button>
+                <button onclick={() => setSize(sz.key, Math.min(sz.max, +(v + sz.step).toFixed(2)))} aria-label={t("app.settings.larger")}><Glyph name="plus" size={10} /></button>
                 <span class="val">{sz.unit === "%" ? Math.round(v * 100) + " %" : v + " px"}</span>
               </div>
             </div>
@@ -219,6 +224,14 @@
               {/each}
             </div>
           </div>
+          <div class="srow">
+            <div><b>{t("app.settings.material")}</b><span class="sub2">{t("app.settings.materialSub")}</span></div>
+            <div class="seg">
+              {#each MATERIALS as m (m.id)}
+                <button class:on={settings.material === m.id} onclick={() => setMaterial(m.id)}>{t(m.label)}</button>
+              {/each}
+            </div>
+          </div>
         </div>
 
         <h2 class="mt">{t("app.settings.syntaxTheme")}</h2>
@@ -256,7 +269,7 @@
   .sheet { height: 100%; display: flex; flex-direction: column; border-radius: 28px; background: var(--glass); box-shadow: var(--glass-highlight), 0 30px 90px rgba(0, 0, 0, 0.6); overflow: hidden; }
   header { display: flex; align-items: center; justify-content: space-between; padding: 26px 26px 8px 34px; }
   h1 { margin: 0; font-size: 32px; font-weight: 750; letter-spacing: -0.025em; }
-  .close { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 50%; color: var(--label); background: rgba(var(--fg-rgb), 0.08); box-shadow: inset 0 1px 0 rgba(var(--hl-rgb), 0.08); transition: transform 0.35s cubic-bezier(0.34, 1.56, 0.64, 1), background 0.2s; }
+  .close { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 50%; color: var(--label); background: rgba(var(--fg-rgb), 0.08); box-shadow: inset 0 1px 0 rgba(var(--hl-rgb), 0.08); transition: background 0.2s; }
   .close:hover { background: rgba(var(--fg-rgb), 0.14); transform: rotate(90deg); }
   .scroll { flex: 1; overflow: auto; padding: 8px 34px 34px; }
   /* One centred column for title, tabs and content (wide windows would otherwise spread it). */
@@ -264,7 +277,7 @@
   header { padding-left: 34px; padding-right: 26px; }
   .tabs { padding-left: 30px; }
   .tabs { display: flex; gap: 6px; padding: 6px 30px 10px; }
-  .tab { height: 32px; padding: 0 16px; border-radius: 999px; font-size: 13px; font-weight: 600; color: var(--label-2); background: rgba(var(--fg-rgb), 0.05); transition: background 0.2s, color 0.2s, transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1); }
+  .tab { height: 32px; padding: 0 16px; border-radius: 999px; font-size: 13px; font-weight: 600; color: var(--label-2); background: rgba(var(--fg-rgb), 0.05); transition: background 0.2s, color 0.2s; }
   .tab:hover { color: var(--label); background: rgba(var(--fg-rgb), 0.1); }
   .tab:active { transform: scale(0.95); }
   .tab.on { color: var(--label); background: var(--raised-bg); box-shadow: var(--raised-shadow); }
@@ -274,16 +287,16 @@
   .srow b { display: block; font-size: 14px; font-weight: 600; }
   .sub2 { display: block; margin-top: 2px; font-size: 12px; color: var(--label-3); }
   .switch { position: relative; width: 50px; height: 30px; border-radius: 999px; background: rgba(120, 120, 128, 0.32); transition: background 0.25s; flex-shrink: 0; }
-  .switch span { position: absolute; top: 2px; left: 2px; width: 26px; height: 26px; border-radius: 50%; background: #fff; box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35); transition: transform 0.35s cubic-bezier(0.34, 1.56, 0.64, 1); }
+  .switch span { position: absolute; top: 2px; left: 2px; width: 26px; height: 26px; border-radius: 50%; background: #fff; box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35); /* slides via `left`, not transform (WebKitGTK flash) */ transition: left 0.35s cubic-bezier(0.34, 1.56, 0.64, 1); }
   .switch.on { background: var(--green); }
-  .switch.on span { transform: translateX(20px); }
+  .switch.on span { left: 22px; }
   .stepper { display: flex; align-items: center; gap: 8px; }
-  .stepper button { width: 28px; height: 28px; border-radius: 50%; background: rgba(var(--fg-rgb), 0.07); color: var(--label); font-size: 15px; transition: background 0.15s, transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1); }
+  .stepper button { width: 28px; height: 28px; display: grid; place-items: center; border-radius: 50%; background: rgba(var(--fg-rgb), 0.07); color: var(--label); font-size: 15px; transition: background 0.15s; }
   .stepper button:hover { background: rgba(var(--fg-rgb), 0.14); }
   .stepper button:active { transform: scale(0.88); }
   .stepper .val { width: 56px; text-align: right; font-variant-numeric: tabular-nums; color: var(--label-2); font-size: 12.5px; }
   input[type="range"] { width: 180px; padding: 0; height: 4px; appearance: none; background: var(--recess); box-shadow: var(--recess-shadow); border-radius: 999px; }
-  input[type="range"]::-webkit-slider-thumb { appearance: none; width: 20px; height: 20px; border-radius: 50%; background: #fff; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45); cursor: pointer; transition: transform 0.2s; }
+  input[type="range"]::-webkit-slider-thumb { appearance: none; width: 20px; height: 20px; border-radius: 50%; background: #fff; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45); cursor: pointer;  }
   input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.12); }
   .seg { display: flex; padding: 3px; border-radius: 999px; background: var(--recess); box-shadow: var(--recess-shadow); }
   .seg button { height: 28px; padding: 0 14px; border-radius: 999px; font-size: 12.5px; font-weight: 500; color: var(--label-2); transition: background 0.2s, color 0.2s; }
@@ -296,7 +309,7 @@
   .seg.small button { height: 24px; padding: 0 11px; font-size: 12px; }
   .pill { height: 26px; padding: 0 12px; display: inline-flex; align-items: center; border-radius: 999px; font-size: 12px; color: var(--label-2); background: rgba(var(--fg-rgb), 0.06); white-space: nowrap; }
   .pill.ok { color: var(--label); background: rgba(123, 191, 142, 0.35); }
-  .btn { height: 30px; padding: 0 14px; border-radius: 999px; font-size: 12.5px; font-weight: 600; color: var(--label); background: linear-gradient(180deg, rgba(var(--fg-rgb), 0.2), rgba(var(--fg-rgb), 0.1)); box-shadow: inset 0 1px 0 rgba(var(--hl-rgb), 0.18); white-space: nowrap; transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), background 0.2s; }
+  .btn { height: 30px; padding: 0 14px; border-radius: 999px; font-size: 12.5px; font-weight: 600; color: var(--label); background: linear-gradient(180deg, rgba(var(--fg-rgb), 0.2), rgba(var(--fg-rgb), 0.1)); box-shadow: inset 0 1px 0 rgba(var(--hl-rgb), 0.18); white-space: nowrap; transition: background 0.2s; }
   .btn:hover { background: linear-gradient(180deg, rgba(var(--fg-rgb), 0.26), rgba(var(--fg-rgb), 0.14)); }
   .btn:active { transform: scale(0.94); }
   .btn.ghost { background: rgba(var(--fg-rgb), 0.06); box-shadow: none; color: var(--label-2); }
@@ -317,7 +330,7 @@
     background: var(--well);
     box-shadow: inset 0 1px 0 rgba(var(--hl-rgb), 0.05), 0 0 0 1px rgba(var(--fg-rgb), 0.05);
     overflow: hidden;
-    transition: transform 0.35s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.25s;
+    transition: box-shadow 0.25s;
   }
   .card:hover { transform: translateY(-3px); box-shadow: inset 0 1px 0 rgba(var(--hl-rgb), 0.07), 0 0 0 1px rgba(var(--fg-rgb), 0.12), 0 14px 30px rgba(0, 0, 0, 0.4); }
   .card:active { transform: scale(0.98); }

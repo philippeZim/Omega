@@ -5,6 +5,7 @@
 </script>
 
 <script lang="ts">
+  import { fsChanges } from "../lib/fsWatch.svelte";
   import TreeNode from "./TreeNode.svelte";
   import { untrack } from "svelte";
   import { fsApi, joinPath, dirname, basename, type Entry } from "../lib/api";
@@ -39,6 +40,14 @@
 
   $effect(() => {
     if (open && isDir && children === null) load();
+  });
+
+  // Reload this folder's listing when something was created/removed/renamed in it from outside.
+  $effect(() => {
+    fsChanges.seq;
+    untrack(() => {
+      if (isDir && children !== null && fsChanges.dirs.includes(path)) load();
+    });
   });
 
   function toggle() {
@@ -140,7 +149,7 @@
   }
   .row:hover { background: var(--fill-hover); }
   .row.active { background: rgba(var(--fg-rgb), 0.1); box-shadow: inset 0 1px 0 rgba(var(--hl-rgb), 0.06); }
-  .chev { flex-shrink: 0; color: var(--label-2); transition: transform 0.15s; }
+  .chev { flex-shrink: 0; color: var(--label-2);  }
   .chev.open { transform: rotate(90deg); }
   .dot { width: 10px; flex-shrink: 0; }
   .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

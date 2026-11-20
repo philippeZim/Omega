@@ -145,6 +145,7 @@ export const EDITOR_COMMANDS: EditorCommand[] = [
   // Code (contributed by LSP / debugger extensions of the active view)
   { id: "lsp.gotoDefinition", group: "code", keys: ["F12"], run: (v) => runViewAction(v, "lsp.gotoDefinition"), modes: ["code"] },
   { id: "lsp.format", group: "code", keys: ["Shift-Alt-f", "Mod-Alt-l"], run: (v) => runViewAction(v, "lsp.format"), modes: ["code"] },
+  { id: "lsp.quickFix", group: "code", keys: ["Mod-."], run: (v) => runViewAction(v, "lsp.quickFix"), modes: ["code"] },
   { id: "debug.toggleBreakpoint", group: "debugger", keys: ["Mod-F8"], run: (v) => runViewAction(v, "debug.toggleBreakpoint"), modes: ["code"] },
 
   // Markdown
