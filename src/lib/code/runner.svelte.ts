@@ -115,7 +115,7 @@ export async function chooseVersion(s: VersionSetting) {
 }
 
 async function saveAll() {
-  for (const t of app.tabs) if (t.dirty && t.path) await save(t.id);
+  for (const t of app.tabs) if (t.dirty && t.path && !t.deleted) await save(t.id);
 }
 
 /** Actions whose output belongs in the Build tab. */

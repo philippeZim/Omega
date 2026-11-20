@@ -185,6 +185,12 @@ function markDeleted(tab: Tab) {
   ui.toast(t("app.deletedOnDisk", { name: tab.name }));
 }
 
+/**
+ * Tabs whose edits would be lost on quit after flushAutosave(): new files that never got a path and
+ * files deleted outside Omega (autosave skips those, #32).
+ */
+export const unsavedTabs = () => app.tabs.filter((t) => t.dirty && (!t.path || t.deleted));
+
 /** Writes every modified file that has a path. */
 export async function flushAutosave() {
   await Promise.all(app.tabs.filter((t) => t.path && t.dirty && !isRemotePath(t.path)).map((t) => autosave(t.id)));
@@ -298,8 +304,7 @@ document.addEventListener("visibilitychange", () => document.hidden && flushAuto
 getCurrentWindow()
   .onCloseRequested(async (e) => {
     await flushAutosave();
-    // Files on disk are autosaved; only new files that never got a path would be lost.
-    const lost = app.tabs.filter((t) => t.dirty && !t.path);
+    const lost = unsavedTabs();
     if (!lost.length) return;
     e.preventDefault();
     const ok = await ui.confirm(t("app.quitUnsavedTitle", { n: lost.length }), t("app.quitUnsavedMessage"), t("app.quitAnyway"), true);
