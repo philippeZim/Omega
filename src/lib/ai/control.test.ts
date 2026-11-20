@@ -61,6 +61,7 @@ vi.mock("../layout.svelte", () => ({
 vi.mock("../code/runner.svelte", () => ({ runner: {} }));
 vi.mock("../search/search.svelte", () => ({ find: {} }));
 vi.mock("../settings.svelte", () => ({ settings: {} }));
+vi.mock("../report.svelte", () => ({ report: { open: false } }));
 
 // The module wraps console.* at import time; undo that after each test.
 const origConsole = { error: console.error, warn: console.warn, log: console.log, info: console.info };

@@ -91,7 +91,7 @@ function shown(el: Element) {
   const r = el.getBoundingClientRect();
   if (r.width < 1 || r.height < 1) return false;
   const st = getComputedStyle(el);
-  return st.visibility !== "hidden" && st.display !== "none" && parseFloat(st.opacity) > 0.05 && !el.closest("[inert], [aria-hidden=true]");
+  return st.visibility !== "hidden" && st.display !== "none" && !(parseFloat(st.opacity) <= 0.05) && !el.closest("[inert], [aria-hidden=true]");
 }
 
 /** Short, readable CSS path (up to 4 levels). */
@@ -120,7 +120,8 @@ const rectOf = (el: Element) => {
 
 const label = (el: Element) => {
   const h = el as HTMLElement;
-  return (h.getAttribute("aria-label") || h.dataset.tip || h.getAttribute("title") || (h as HTMLInputElement).placeholder || h.innerText || "").replace(/\s+/g, " ").trim();
+  // title before data-tip: Tooltip.svelte keeps a copy in data-tip that can be stale.
+  return (h.getAttribute("aria-label") || h.getAttribute("title") || h.dataset.tip || (h as HTMLInputElement).placeholder || h.innerText || "").replace(/\s+/g, " ").trim();
 };
 
 /** Effective background behind `el`: semi-transparent layers composited up to the page colour. */
@@ -146,6 +147,30 @@ function scrollParent(el: Element): Element | null {
     if (/(auto|scroll)/.test(st.overflowX + st.overflowY)) return e;
   }
   return null;
+}
+
+/** The layer of the topmost open *modal* (aria-modal / <dialog open>, or a dialog on a backdrop
+ *  that covers the window), or null. Non-modal panels with role=dialog (collab panel) don't count. */
+export function modalLayer(): Element | null {
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const covers = (e: Element) => {
+    const r = e.getBoundingClientRect();
+    return r.width >= vw * 0.9 && r.height >= vh * 0.9;
+  };
+  const layers: { el: Element; z: number; i: number }[] = [];
+  [...document.querySelectorAll("[role=dialog], [aria-modal=true], dialog[open]")].filter(shown).forEach((d, i) => {
+    let layer: Element | null = d.matches("[aria-modal=true], dialog[open]") ? d : null;
+    let z = 0;
+    for (let e: Element | null = d; e; e = e.parentElement) {
+      const st = getComputedStyle(e);
+      if (st.position === "fixed" || st.position === "absolute") z = Math.max(z, parseInt(st.zIndex) || 0);
+      if (!layer && st.position === "fixed" && covers(e)) layer = e;
+    }
+    if (layer) layers.push({ el: layer, z, i });
+  });
+  layers.sort((a, b) => a.z - b.z || a.i - b.i);
+  return layers.length ? layers[layers.length - 1].el : null;
 }
 
 export function audit(opts: { checks?: Check[]; selector?: string; minContrast?: number; limit?: number } = {}) {
@@ -190,8 +215,7 @@ export function audit(opts: { checks?: Check[]; selector?: string; minContrast?:
 
   if (checks.has("covered")) {
     // With a modal open, everything behind it is covered on purpose: only check the modal.
-    const modals = [...document.querySelectorAll("[role=dialog], [aria-modal=true], dialog[open], .modal, .overlay")].filter(shown);
-    const top = modals[modals.length - 1];
+    const top = modalLayer();
     for (const el of controls) {
       if (top && !top.contains(el)) continue;
       const r = el.getBoundingClientRect();
@@ -228,7 +252,7 @@ export function audit(opts: { checks?: Check[]; selector?: string; minContrast?:
 
   if (checks.has("unlabeled")) {
     for (const el of controls) {
-      if (label(el) || el.getAttribute("aria-labelledby")) continue;
+      if (label(el) || el.getAttribute("aria-labelledby") || el.closest("label") || (el.id && document.querySelector(`label[for="${CSS.escape(el.id)}"]`))) continue;
       add("unlabeled", "medium", el, "bedienbares Element ohne Text, aria-label oder Tooltip");
     }
   }

@@ -22,6 +22,8 @@ import { settings } from "../settings.svelte";
 import type { Mode } from "../modes";
 import { audit, CHECKS, type Check } from "./uiAudit";
 import { sandboxNative } from "../native";
+import { findElements, labelOf, keyCode, typesIntoEditor } from "./dom";
+import { report } from "../report.svelte";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 
 // ------------------------------------------------------------------ console capture
@@ -63,49 +65,6 @@ ui.toast = (text: string, kind: "info" | "error" = "info") => {
 };
 
 // ------------------------------------------------------------------ UI helpers
-
-const INTERACTIVE = "button, a, input, textarea, select, [role=button], [role=tab], [role=menuitem], [role=treeitem], [role=switch], [role=checkbox], [contenteditable=true], .row, .item, .hit, .chip, .tab";
-
-function visible(el: Element) {
-  const r = el.getBoundingClientRect();
-  if (r.width === 0 || r.height === 0) return false;
-  const st = getComputedStyle(el);
-  return st.visibility !== "hidden" && st.display !== "none" && st.opacity !== "0";
-}
-
-function labelOf(el: Element): string {
-  const h = el as HTMLElement;
-  return (
-    h.getAttribute("aria-label") ||
-    h.dataset.tip ||
-    h.getAttribute("title") ||
-    (h as HTMLInputElement).placeholder ||
-    h.innerText ||
-    h.textContent ||
-    ""
-  ).replace(/\s+/g, " ").trim();
-}
-
-/** Finds elements by visible text / aria-label / tooltip (case-insensitive) or CSS selector. */
-function findElements(opts: { text?: string; selector?: string; exact?: boolean }): HTMLElement[] {
-  let els: HTMLElement[];
-  if (opts.selector) els = [...document.querySelectorAll<HTMLElement>(opts.selector)];
-  else els = [...document.querySelectorAll<HTMLElement>(INTERACTIVE)];
-  els = els.filter(visible);
-  if (opts.text) {
-    const q = opts.text.toLowerCase().trim();
-    const match = (el: HTMLElement) => {
-      const l = labelOf(el).toLowerCase();
-      return opts.exact ? l === q : l.includes(q);
-    };
-    els = els.filter(match);
-    // Prefer the innermost matching element (a button inside a matching row, not the row).
-    els = els.filter((el) => !els.some((o) => o !== el && el.contains(o)));
-    // Exact matches first.
-    els.sort((a, b) => Number(labelOf(b).toLowerCase() === q) - Number(labelOf(a).toLowerCase() === q));
-  }
-  return els;
-}
 
 function describe(el: HTMLElement, i: number) {
   const r = el.getBoundingClientRect();
@@ -200,6 +159,7 @@ export const TOOLS: Tool[] = [
         dialog: ui.dialog ? { title: ui.dialog.title, message: ui.dialog.message, buttons: ui.dialog.options.map((o) => o.label), input: ui.dialog.input?.value } : null,
         contextMenu: ui.menu ? ui.menu.items.filter((i) => !i.separator).map((i) => i.label) : null,
         collabPanel: collab.open,
+        report: report.open,
       },
       project: runner.project ? { tool: runner.project.label, root: runner.project.root, run: runner.project.run?.cmd, build: runner.project.build?.cmd } : null,
       git: git.repo ? { branch: git.branch, ahead: git.ahead, behind: git.behind, remote: git.remoteUrl, changes: git.changes.map((c) => `${c.x}${c.y} ${c.path}`) } : null,
@@ -415,7 +375,7 @@ export const TOOLS: Tool[] = [
       const v = ed.getView();
       const tid = focusedTerminal();
       if (tid) await invoke("pty_write", { id: tid, data: text });
-      else if (v && el && v.dom.contains(el)) {
+      else if (v && typesIntoEditor(el, v.dom)) {
         const at = v.state.selection.main;
         v.dispatch({ changes: { from: at.from, to: at.to, insert: text }, selection: { anchor: at.from + text.length }, userEvent: "input.type" });
       } else if (el && (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) {
@@ -443,7 +403,7 @@ export const TOOLS: Tool[] = [
     run: async ({ text, selector, gone, timeoutMs }) => {
       const end = Date.now() + (timeoutMs ?? 8000);
       while (Date.now() < end) {
-        const found = findElements({ text, selector }).length > 0;
+        const found = findElements({ text, selector, all: true }).length > 0;
         if (found !== !!gone) return { ok: true, waitedMs: (timeoutMs ?? 8000) - (end - Date.now()) };
         await sleep(100);
       }
@@ -471,7 +431,7 @@ export const TOOLS: Tool[] = [
     description: "Screenshot des App-Inhalts (PNG) – ganzes Fenster oder ein Element per Selektor/Text.",
     inputSchema: obj({ selector: str("CSS-Selektor (optional)"), text: str("Element per Text (optional)"), scale: num("Skalierung, Standard 1 (kleinere Werte können Artefakte zeigen)") }),
     run: async ({ selector, text, scale }) => {
-      const el = selector || text ? findElements({ selector, text })[0] : document.body;
+      const el = selector || text ? findElements({ selector, text, all: true })[0] : document.body;
       if (!el) throw new Error("Element nicht gefunden");
       const base = { pixelRatio: scale ?? 1, backgroundColor: "#030304", filter: (n: Node) => !(n instanceof HTMLElement && (n.classList.contains("tip") || n.classList.contains("cm-widgetBuffer"))) };
       // A resource that fails to load (font/image) rejects with a bare Event → retry without them.
@@ -617,7 +577,7 @@ function focusedTerminal(): string | null {
 }
 
 async function pressKey({ key, ctrl, shift, alt }: Args) {
-  const code = /^[0-9]$/.test(key) ? `Digit${key}` : key.length === 1 ? `Key${key.toUpperCase()}` : key;
+  const code = keyCode(key);
   const init = { key, bubbles: true, cancelable: true, composed: true, ctrlKey: !!ctrl, shiftKey: !!shift, altKey: !!alt, code };
   const label = [ctrl && "Strg", shift && "Umschalt", alt && "Alt", key].filter(Boolean).join("+");
   const tid = focusedTerminal();
