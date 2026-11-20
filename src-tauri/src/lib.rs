@@ -13,6 +13,7 @@ mod env;
 mod tools;
 mod installs;
 mod power;
+mod instance;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -39,6 +40,8 @@ pub fn run() {
                 eprintln!("IDE-Server: {e}");
             }
             codex_ipc::start(app.handle());
+            instance::create_windows(app)?;
+            instance::exit_on_signal(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -79,6 +82,7 @@ pub fn run() {
             collab::collab_kick,
             collab::collab_stop,
             collab::collab_conn_info,
+            instance::instance_info,
             mcp_control::mcp_control_start,
             mcp_control::mcp_control_stop,
             mcp_control::mcp_reply,
@@ -111,13 +115,18 @@ pub fn run() {
             proc::proc_kill,
             proc::install_server,
         ])
-        .build(tauri::generate_context!())
+        .build({
+            let mut ctx = tauri::generate_context!();
+            instance::apply(ctx.config_mut());
+            ctx
+        })
         .expect("error while building tauri application")
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
                 ide_ws::cleanup(app);
                 codex_ipc::cleanup(app);
                 power::cleanup();
+                instance::withdraw();
             }
         });
 }

@@ -249,7 +249,7 @@
         <p class="desc">{t("app.settings.controlDesc")}</p>
         <div class="box">
           <div class="srow">
-            <div><b>{t("app.settings.controlMcp")}</b><span class="sub2">{control.running ? t("app.settings.controlRunning", { port: control.port }) + (control.calls ? t("app.settings.controlCalls", { n: control.calls, tool: control.lastTool }) : "") : control.error ? control.error : t("app.settings.off")}</span></div>
+            <div><b>{t("app.settings.controlMcp")}</b><span class="sub2">{control.running ? t("app.settings.controlRunning", { port: control.boundPort || control.port }) + (control.calls ? t("app.settings.controlCalls", { n: control.calls, tool: control.lastTool }) : "") : control.error ? control.error : t("app.settings.off")}</span></div>
             <button class="switch" class:on={control.enabled} onclick={() => setControlEnabled(!control.enabled)} role="switch" aria-checked={control.enabled} aria-label={t("app.settings.controlMcp")}><span></span></button>
           </div>
           {#if control.enabled}

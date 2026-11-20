@@ -600,6 +600,10 @@ export const control = $state({
   enabled: localStorage.getItem("mcp.control") === "true",
   port: Number(localStorage.getItem("mcp.port")) || 47821,
   token: localStorage.getItem("mcp.token") || "",
+  /** Port the server actually listens on (differs from `port` for instances: free port). */
+  boundPort: 0,
+  /** Name of this instance (OMEGA_INSTANCE, started by dev/omega-mcp.mjs), "" for a normal Omega. */
+  instance: "",
   running: false,
   error: "",
   calls: 0,
@@ -621,7 +625,9 @@ export async function startControl() {
   clearTimeout(retryTimer);
   control.error = "";
   try {
-    await invoke("mcp_control_start", { port: control.port, token: control.token, tools: TOOLS.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })) });
+    // Instances (several side by side) take a free port; the proxy finds it via the registry.
+    const port = control.instance ? (instancePort ?? 0) : control.port;
+    control.boundPort = await invoke<number>("mcp_control_start", { port, token: control.token, tools: TOOLS.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })) });
     control.running = true;
   } catch (e) {
     control.running = false;
@@ -654,7 +660,7 @@ export async function setControlPort(p: number) {
   if (control.enabled) await startControl();
 }
 
-const url = () => `http://127.0.0.1:${control.port}/mcp`;
+const url = () => `http://127.0.0.1:${control.boundPort || control.port}/mcp`;
 /** Command that registers the control MCP in each agent (run once in a terminal). */
 export const mcpAddCommand = (agent: "claude" | "codex" | "opencode") =>
   agent === "claude"
@@ -682,7 +688,16 @@ listen<{ call: number; name: string; args: Args }>("mcp-call", async (e) => {
   invoke("mcp_reply", { call, result });
 });
 
-if (control.enabled) startControl();
+// An instance (OMEGA_INSTANCE) exists to be driven by an agent: control MCP always on.
+let instancePort: number | null = null;
+invoke<{ name: string | null; mcpPort: number | null }>("instance_info")
+  .catch(() => ({ name: null, mcpPort: null }))
+  .then((info) => {
+    control.instance = info?.name ?? "";
+    instancePort = info?.mcpPort ?? null;
+    if (control.instance) control.enabled = true;
+    if (control.enabled) startControl();
+  });
 
 // Event listeners/intervals live at module level → full reload instead of duplicate HMR instances.
 if (import.meta.hot) import.meta.hot.accept(() => location.reload());
