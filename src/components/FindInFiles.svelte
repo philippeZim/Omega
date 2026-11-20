@@ -283,11 +283,11 @@
     /* No open animation: fading/scaling glass (backdrop-filter) makes WebKitGTK flash. */
   }
   header { display: flex; align-items: center; gap: 10px; padding: 14px 14px 8px 20px; }
-  .title { font-weight: 700; font-size: 14px; }
-  .count { color: var(--label-3); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .title { font-weight: 700; font-size: 14px; white-space: nowrap; flex-shrink: 0; }
+  .count { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--label-3); font-size: 12px; font-variant-numeric: tabular-nums; }
   .err { color: var(--red); }
   .spacer { flex: 1; }
-  .mask { width: 220px; padding: 5px 12px; font-family: var(--mono); font-size: 12px; }
+  .mask { width: 220px; min-width: 100px; flex-shrink: 1; padding: 5px 12px; font-family: var(--mono); font-size: 12px; }
   .icon { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 50%; color: var(--label-2); }
   .icon:hover { background: var(--fill-hover); color: var(--label); }
   .icon.on { background: rgba(var(--fg-rgb), 0.14); color: var(--label); }
@@ -318,7 +318,9 @@
   .preview :global(.cm-editor) { position: absolute; inset: 0; }
   .preview :global(.find-match) { background: rgba(216, 194, 122, 0.3); border-radius: 2px; }
   footer { display: flex; align-items: center; gap: 8px; padding: 10px 14px 12px 20px; border-top: 1px solid rgba(var(--fg-rgb), 0.05); }
-  .keys { font-size: 11.5px; color: var(--label-3); }
+  .keys { min-width: 0; font-size: 11.5px; color: var(--label-3); }
+  /* Button labels stay on one line; the key hint wraps instead. */
+  footer .btn { white-space: nowrap; flex-shrink: 0; }
   .btn:disabled { opacity: 0.4; }
   @keyframes fade { from { opacity: 0; } }
   @keyframes pop { from { opacity: 0; transform: scale(0.97); } }
