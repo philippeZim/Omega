@@ -1,7 +1,7 @@
 <script lang="ts">
   import Glyph from "./Glyph.svelte";
   import Select from "./Select.svelte";
-  import { COMMANDS, keysFor, setKeys, keymapState, conflicts, resetAllKeys, recording, applyKeymap } from "../lib/commands.svelte";
+  import { COMMANDS, keysFor, setKeys, keymapState, conflicts, resetAllKeys, recording, applyKeymap, modeNames } from "../lib/commands.svelte";
   import { KEYMAPS, type KeymapId } from "../lib/keymaps";
   import { bindingFromEvent, formatKey, normalize } from "../lib/keys";
   import { ui } from "../lib/ui.svelte";
@@ -103,7 +103,7 @@
     {#each cmds as c (c.id)}
       {@const keys = keysFor(c.id)}
       <div class="row" class:custom={c.id in keymapState.overrides}>
-        <span class="label">{c.label}{#if c.modes}<span class="mode">{c.modes.join(", ")}</span>{/if}</span>
+        <span class="label">{c.label}{#if c.modes}<span class="mode">{modeNames(c.modes)}</span>{/if}</span>
         <span class="keys">
           {#each keys as k (k)}
             <span class="chip">{formatKey(k)}<button class="x" onclick={() => removeKey(c.id, k)} aria-label={t("commands.kb.remove")}><Glyph name="x" size={7} /></button></span>
@@ -135,7 +135,7 @@
   .label { font-size: 13px; flex: 0 1 340px; min-width: 0; }
   .keys { flex: 1 1 180px; min-width: 0; }
   .row.custom .label { color: var(--label); font-weight: 550; }
-  .mode { margin-left: 8px; font-size: 10.5px; color: var(--label-3); text-transform: capitalize; }
+  .mode { margin-left: 8px; font-size: 10.5px; color: var(--label-3); }
   .keys { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-start; }
   .chip {
     display: inline-flex;
