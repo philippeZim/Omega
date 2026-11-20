@@ -340,6 +340,25 @@ describe("debugger controller with a fake adapter", () => {
     ]);
   });
 
+  test("stopping on an exception logs type and message from exceptionInfo (#107)", async () => {
+    const init = fake.replies.initialize;
+    fake.replies.initialize = (a, r) => ({ ...init(a, r), supportsExceptionInfoRequest: true });
+    fake.replies.exceptionInfo = () => ({ exceptionId: "KeyError", description: "'zz'", breakMode: "unhandled" });
+    fake.after.configurationDone = () => fake.event("stopped", { reason: "exception", text: "KeyError", threadId: 1 });
+    await D.startDebugging();
+    await vi.waitFor(() => expect(S.dbg.status).toBe("stopped"));
+    await vi.waitFor(() => expect(S.dbg.console.filter((l) => l.kind === "error").map((l) => l.text)).toEqual(["Exception: KeyError: 'zz'"]));
+    expect(fake.last("exceptionInfo").arguments).toEqual({ threadId: 1 });
+  });
+
+  test("without exceptionInfo support the stopped event's text and description are used", async () => {
+    fake.after.configurationDone = () => fake.event("stopped", { reason: "exception", text: "panic", description: "index out of bounds", threadId: 1 });
+    await D.startDebugging();
+    await vi.waitFor(() => expect(S.dbg.status).toBe("stopped"));
+    expect(fake.commands()).not.toContain("exceptionInfo");
+    await vi.waitFor(() => expect(S.dbg.console.filter((l) => l.kind === "error").map((l) => l.text)).toEqual(["Exception: panic: index out of bounds"]));
+  });
+
   test("runInTerminal reverse request runs the command in the Run tab and answers success", async () => {
     await startAndStop();
     const sends: any[] = [];

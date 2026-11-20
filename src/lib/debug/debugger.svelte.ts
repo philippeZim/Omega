@@ -358,7 +358,10 @@ export function stopReasonLabel(reason: string) {
 async function onStopped(s: DapSession, b: Json) {
   dbg.status = "stopped";
   dbg.stopReason = b.reason ?? "";
-  if (b.reason === "exception" && b.text) log(t("code.dbg.exception", { text: b.text }), "error");
+  if (b.reason === "exception") {
+    const text = await exceptionText(s, b);
+    if (text) log(t("code.dbg.exception", { text }), "error");
+  }
   try {
     dbg.threads = (await s.request("threads")).threads ?? [];
   } catch {
@@ -366,6 +369,23 @@ async function onStopped(s: DapSession, b: Json) {
   }
   dbg.threadId = b.threadId ?? dbg.threads[0]?.id ?? null;
   await loadStack();
+}
+
+/** "KeyError: 'zz'": the stopped event only carries the type, the message comes from exceptionInfo. */
+async function exceptionText(s: DapSession, b: Json): Promise<string> {
+  let id: string = b.text ?? "";
+  let msg: string = b.description ?? "";
+  if (s.capabilities.supportsExceptionInfoRequest && b.threadId != null) {
+    try {
+      const info = await s.request("exceptionInfo", { threadId: b.threadId });
+      id = info.exceptionId || id;
+      msg = info.description || msg;
+    } catch {
+      // Fall back to what the stopped event says.
+    }
+  }
+  if (!msg || msg === id || msg.startsWith(`${id}:`)) return msg || id;
+  return id ? `${id}: ${msg}` : msg;
 }
 
 export async function selectThread(id: number) {
