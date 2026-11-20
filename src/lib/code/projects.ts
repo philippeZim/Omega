@@ -185,6 +185,17 @@ async function packageScripts(root: string): Promise<string[]> {
   }
 }
 
+/** A TypeScript project: tsconfig.json, or typescript among the (dev) dependencies. */
+async function usesTypescript(root: string): Promise<boolean> {
+  if (await fsApi.exists(joinPath(root, "tsconfig.json"))) return true;
+  try {
+    const pkg = JSON.parse(await fsApi.readFile(joinPath(root, "package.json")));
+    return !!(pkg.dependencies?.typescript ?? pkg.devDependencies?.typescript);
+  } catch {
+    return false;
+  }
+}
+
 const RUN = "Shift+F10", BUILD = "Ctrl+F9";
 
 /** tsx without a local install. pnpm 10+ blocks esbuild's build script and asks interactively
@@ -258,7 +269,11 @@ export async function detectProject(file: string | null, workspace: string | nul
         : runScript
           ? { id: "run", label: `pnpm ${runScript}`, cmd: `pnpm run ${runScript}`, shortcut: RUN }
           : null,
-      build: scripts.includes("build") ? act("build", "code.act.build", "pnpm run build", { shortcut: BUILD }) : act("build", "code.act.typecheck", "pnpm exec tsc --noEmit", { shortcut: BUILD }),
+      build: scripts.includes("build")
+        ? act("build", "code.act.build", "pnpm run build", { shortcut: BUILD })
+        : (await usesTypescript(p.root))
+          ? act("build", "code.act.typecheck", "pnpm exec tsc --noEmit", { shortcut: BUILD })
+          : null, // plain JavaScript: nothing to build or typecheck
       test: scripts.includes("test") ? act("test", "code.act.test", "pnpm test") : null,
       more: [
         ...scripts.map((s) => ({ id: `script:${s}`, label: `pnpm run ${s}`, cmd: `pnpm run ${s}` })),
