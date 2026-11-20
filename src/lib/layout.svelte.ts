@@ -38,7 +38,8 @@ function num(key: string): number | null {
   return n > 0 ? n : null;
 }
 
-function load(): { zones: Record<Zone, ZoneState>; open: OpenState } {
+/** Reads the saved layout from localStorage, dropping unknown / duplicate views (exported for tests). */
+export function load(): { zones: Record<Zone, ZoneState>; open: OpenState } {
   let saved: { zones?: Record<Zone, Partial<ZoneState>>; open?: OpenState } | null = null;
   try {
     saved = JSON.parse(localStorage.getItem("layout") || "null");
