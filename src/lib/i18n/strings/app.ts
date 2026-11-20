@@ -187,6 +187,7 @@ export const en = {
   "app.settings.group.modern": "Modern",
   "app.settings.group.retro": "Warm & Retro",
   "app.settings.sampleComment": "Fibonacci sequence",
+  "app.invalidEntryName": "Invalid name \"{name}\": no empty parts, \".\" or \"..\" and no leading or trailing \"/\"",
 };
 export const de: Record<keyof typeof en, string> = {
   "app.report.button": "Problem oder Idee melden",
@@ -372,6 +373,7 @@ export const de: Record<keyof typeof en, string> = {
   "app.settings.group.modern": "Modern",
   "app.settings.group.retro": "Warm & Retro",
   "app.settings.sampleComment": "Fibonacci-Folge",
+  "app.invalidEntryName": "Ungültiger Name „{name}“: keine leeren Teile, „.“ oder „..“ und kein „/“ am Anfang oder Ende",
 };
 export const fr: Record<keyof typeof en, string> = {
   "app.report.button": "Signaler un problème ou une idée",
@@ -557,4 +559,5 @@ export const fr: Record<keyof typeof en, string> = {
   "app.settings.group.modern": "Modernes",
   "app.settings.group.retro": "Chaleureux & rétro",
   "app.settings.sampleComment": "Suite de Fibonacci",
+  "app.invalidEntryName": "Nom invalide « {name} » : pas de parties vides, « . » ou « .. », ni de « / » au début ou à la fin",
 };

@@ -101,9 +101,25 @@ export const collabHooks = {
 };
 export const isRemotePath = (p: string | null | undefined) => !!p && p.startsWith("collab:");
 
+/** Resolves "." and ".." segments of an absolute path ("/p/../x" → "/x"). */
+export function resolveDots(path: string): string {
+  if (!/(^|\/)\.\.?(\/|$)/.test(path)) return path;
+  const out: string[] = [];
+  for (const seg of path.split("/")) {
+    if (seg === ".") continue;
+    if (seg === "..") {
+      if (out.length > 1 || (out.length === 1 && out[0] !== "" && !/^[A-Za-z]:$/.test(out[0]))) out.pop();
+    } else out.push(seg);
+  }
+  const r = out.join("/") || "/";
+  return /^[A-Za-z]:$/.test(r) ? r + "/" : r;
+}
+
 /** True if `path` lies inside the folder `root`. */
 export function inRoot(path: string, root: string | null): boolean {
   if (!root) return false;
+  path = resolveDots(path);
+  root = resolveDots(root);
   const r = root.endsWith("/") ? root : root + "/";
   return path === root || path.startsWith(r);
 }
@@ -307,7 +323,7 @@ export function activate(id: string) {
 }
 
 export async function openFile(path: string) {
-  path = normPath(path);
+  path = resolveDots(normPath(path));
   const existing = app.tabs.find((t) => t.path === path);
   if (existing) return activate(existing.id);
   if (isRemotePath(path)) return collabHooks.openRemote(path);
@@ -335,6 +351,12 @@ export async function openFile(path: string) {
  * create_file, which never truncates an existing file (#6). Returns false on failure (toast shown).
  */
 export async function createEntry(dir: string, name: string, isDir: boolean): Promise<boolean> {
+  // "sub/x.txt" creates the folders in between; anything that could leave `dir` ("..", a
+  // leading "/") or name nothing (empty parts, trailing "/", ".") is rejected (#35).
+  if (name.split(/[\\/]/).some((seg) => seg === "" || seg === "." || seg === "..")) {
+    ui.toast(t("app.invalidEntryName", { name }), "error");
+    return false;
+  }
   const p = joinPath(dir, name);
   try {
     if (isDir) await fsApi.createDir(p);
