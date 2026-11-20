@@ -39,10 +39,32 @@ pub fn create_windows(app: &tauri::App) -> tauri::Result<()> {
     let Some(name) = name() else { return Ok(()) };
     let dir = app.path().app_local_data_dir()?.join("instances").join(&name);
     for w in app.config().app.windows.clone() {
-        tauri::WebviewWindowBuilder::from_config(app.handle(), &w)?.data_directory(dir.clone()).build()?;
+        tauri::WebviewWindowBuilder::from_config(app.handle(), &w)?
+            .data_directory(dir.clone())
+            .initialization_script(FRAMES_WHEN_HIDDEN)
+            .build()?;
     }
     Ok(())
 }
+
+/// Test instances run on a desktop nobody looks at (Hyprland workspace 5). WebKit then pauses
+/// `requestAnimationFrame`, which stalls screenshots (html-to-image waits for a frame) and
+/// CodeMirror's layout measuring. In instances only, a frame callback therefore also runs after
+/// 100 ms without a frame; when the window is visible the real frame comes first.
+const FRAMES_WHEN_HIDDEN: &str = r#"(() => {
+  const raf = window.requestAnimationFrame.bind(window);
+  const caf = window.cancelAnimationFrame.bind(window);
+  const live = new Map();
+  let next = 1;
+  const drop = (id) => { const e = live.get(id); if (e) { live.delete(id); caf(e.r); clearTimeout(e.t); } return e; };
+  window.requestAnimationFrame = (cb) => {
+    const id = next++;
+    const run = (t) => { if (drop(id)) cb(typeof t === "number" ? t : performance.now()); };
+    live.set(id, { r: raf(run), t: setTimeout(run, 100) });
+    return id;
+  };
+  window.cancelAnimationFrame = (id) => { drop(id); };
+})();"#;
 
 /// Stable 16-byte identifier for the macOS data store (FNV-1a over the name, twice).
 fn store_id(name: &str) -> [u8; 16] {
