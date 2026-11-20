@@ -101,13 +101,49 @@ export async function pythonEntry(file: string | null, root: string): Promise<{ 
   return { kind: "none" };
 }
 
-async function cmakeTarget(root: string): Promise<string> {
-  try {
-    const txt = await fsApi.readFile(joinPath(root, "CMakeLists.txt"));
-    return /add_executable\s*\(\s*([\w.-]+)/.exec(txt)?.[1] ?? basename(root);
-  } catch {
-    return basename(root);
+/** Removes `#` line comments and `#[[ … ]]` bracket comments, leaving quoted strings alone. */
+function stripCmakeComments(txt: string): string {
+  let out = "";
+  for (let i = 0; i < txt.length; ) {
+    const c = txt[i];
+    if (c === '"') {
+      let j = i + 1;
+      while (j < txt.length && txt[j] !== '"') j += txt[j] === "\\" ? 2 : 1;
+      out += txt.slice(i, j + 1);
+      i = j + 1;
+    } else if (c === "#") {
+      const br = /^#\[(=*)\[/.exec(txt.slice(i, i + 64));
+      const end = br ? txt.indexOf(`]${br[1]}]`, i + br[0].length) : -1;
+      if (br) i = end < 0 ? txt.length : end + br[1].length + 2;
+      else {
+        const nl = txt.indexOf("\n", i);
+        i = nl < 0 ? txt.length : nl;
+      }
+    } else out += txt[i++];
   }
+  return out;
+}
+
+/**
+ * Name of the first executable a CMakeLists.txt defines: comments are ignored, and `${VAR}` is
+ * resolved from `project()` (PROJECT_NAME) and plain `set(VAR value)`. Null if none can be resolved.
+ */
+export function cmakeExecutable(txt: string): string | null {
+  const vars: Record<string, string> = {};
+  const expand = (s: string) => s.replace(/\$\{(\w+)\}/g, (m, v: string) => vars[v] ?? m);
+  for (const m of stripCmakeComments(txt).matchAll(/\b(\w+)\s*\(([^)]*)\)/g)) {
+    const args = [...m[2].matchAll(/"((?:[^"\\]|\\.)*)"|(\S+)/g)].map((a) => expand(a[1] ?? a[2]));
+    const cmd = m[1].toLowerCase();
+    if (cmd === "project" && args[0]) vars.PROJECT_NAME = vars.CMAKE_PROJECT_NAME = args[0];
+    else if (cmd === "set" && args.length === 2) vars[args[0]] = args[1];
+    else if (cmd === "add_executable" && args[0] && !args.includes("IMPORTED") && !args.includes("ALIAS") && !args[0].includes("${")) return args[0];
+  }
+  return vars.PROJECT_NAME ?? null;
+}
+
+async function cmakeTarget(root: string): Promise<string> {
+  const txt = await fsApi.readFile(joinPath(root, "CMakeLists.txt")).catch(() => "");
+  return cmakeExecutable(txt) ?? basename(root);
 }
 
 async function packageScripts(root: string): Promise<string[]> {
