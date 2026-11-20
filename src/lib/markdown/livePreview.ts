@@ -196,6 +196,8 @@ function buildInline(view: EditorView, path: string | null): DecorationSet {
   const widget = (a: number, b: number, w: any) => out.push(Decoration.replace({ widget: w }).range(a, b));
   const withSpace = (pos: number) => (slice(pos, pos + 1) === " " ? pos + 1 : pos);
   const callouts = new Set<number>();
+  /** Nesting depth of the blockquote on each quoted line (keyed by line start). */
+  const quoteDepth = new Map<number, number>();
   /** The `[!type]` marker of the callout being decorated; nodes inside it (e.g. a Link) are skipped. */
   let skip: [number, number] | null = null;
 
@@ -248,7 +250,10 @@ function buildInline(view: EditorView, path: string | null): DecorationSet {
         }
 
         if (name === "QuoteMark") {
-          line(n.from, "md-quote");
+          let depth = 0;
+          for (let p = node.parent; p; p = p.parent) if (p.name === "Blockquote") depth++;
+          const lineFrom = state.doc.lineAt(n.from).from;
+          quoteDepth.set(lineFrom, Math.max(depth, quoteDepth.get(lineFrom) ?? 0));
           if (onLines(state, sel, n.from, n.from)) mark(n.from, n.to, "md-formatting");
           else hide(n.from, withSpace(n.to));
           return;
@@ -378,6 +383,9 @@ function buildInline(view: EditorView, path: string | null): DecorationSet {
       },
     });
   }
+  // Nested quotes get one extra bar per level (drawn by markdown.css from --qd).
+  for (const [from, depth] of quoteDepth)
+    out.push(Decoration.line({ class: "md-quote", attributes: depth > 1 ? { style: `--qd: ${depth}` } : undefined }).range(from));
   return Decoration.set(out, true);
 }
 
