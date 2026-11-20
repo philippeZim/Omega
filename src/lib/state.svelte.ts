@@ -1,5 +1,5 @@
 import { openDialog, saveDialog, openUrl } from "./native";
-import { basename, dirname, extname, fsApi, joinPath, normPath } from "./api";
+import { basename, dirname, extname, fsApi, joinPath, normPath, wellFormed } from "./api";
 import * as ed from "./editor";
 import { modeForExtension, type Mode } from "./modes";
 import { ui } from "./ui.svelte";
@@ -239,8 +239,8 @@ export async function syncFromDisk(paths?: string[]) {
         if (saved === null || writing.has(t.id) || ed.savedText(t.id) !== saved) continue;
         const disk = fromDisk(raw);
         // Unchanged since we loaded or wrote it (this also covers events caused by our own saves);
-        // only the line ending may have been converted.
-        if (disk === saved) {
+        // only the line ending may have been converted, or lone surrogates replaced by U+FFFD (#21).
+        if (disk === wellFormed(saved)) {
           t.eol = detectEol(raw);
           continue;
         }
@@ -462,7 +462,8 @@ export async function save(id = app.activeId, forceDialog = false, overwrite = f
       disk = fromDisk(await fsApi.readFile(path));
     } catch {} // missing: nothing to protect
     const saved = ed.savedText(tab.id);
-    if (disk !== null && saved !== null && disk !== saved && disk !== ed.getText(tab.id)) return resolveConflict(tab);
+    // write_file replaced lone surrogates with U+FFFD, so compare against that (#21).
+    if (disk !== null && saved !== null && disk !== wellFormed(saved) && disk !== wellFormed(ed.getText(tab.id))) return resolveConflict(tab);
   }
   const snapshot = ed.getDoc(tab.id);
   // Never write without a live document (e.g. after an editor reset) – that would empty the file.
