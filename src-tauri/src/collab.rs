@@ -79,7 +79,7 @@ async fn register(app: AppHandle, peer_id: String, conn: Connection, send: SendS
         }
         let n = u32::from_be_bytes(len) as usize;
         if n > MAX_MSG {
-            break "Nachricht zu groß".into();
+            break "collab:too_large".into();
         }
         let mut buf = vec![0u8; n];
         if let Err(e) = recv.read_exact(&mut buf).await {
@@ -126,17 +126,23 @@ pub async fn collab_host(app: AppHandle) -> Result<String, String> {
     Ok(format!("omega-{ticket}"))
 }
 
+/// Decodes an invite code. Errors are codes "collab:<code>[:<detail>]" that the frontend
+/// translates (src/lib/collab/collabError.ts).
+fn parse_ticket(ticket: &str) -> Result<EndpointAddr, String> {
+    let raw = ticket.trim().trim_start_matches("omega-");
+    let json = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(raw).map_err(|_| "collab:invalid_ticket".to_string())?;
+    serde_json::from_slice(&json).map_err(|_| "collab:invalid_ticket".to_string())
+}
+
 /// Joins a session; returns the peer id of the host.
 #[tauri::command]
 pub async fn collab_join(app: AppHandle, ticket: String) -> Result<String, String> {
-    let raw = ticket.trim().trim_start_matches("omega-");
-    let json = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(raw).map_err(|_| "Ungültiger Einladungscode".to_string())?;
-    let addr: EndpointAddr = serde_json::from_slice(&json).map_err(|_| "Ungültiger Einladungscode".to_string())?;
+    let addr = parse_ticket(&ticket)?;
     let ep = endpoint(&app).await?;
     let conn = tokio::time::timeout(std::time::Duration::from_secs(25), ep.connect(addr, ALPN))
         .await
-        .map_err(|_| "Zeitüberschreitung – der Host ist nicht erreichbar".to_string())?
-        .map_err(|e| format!("Verbindung fehlgeschlagen: {e}"))?;
+        .map_err(|_| "collab:timeout".to_string())?
+        .map_err(|e| format!("collab:connect_failed:{e}"))?;
     let (send, recv) = conn.open_bi().await.map_err(err)?;
     let id = short_id(&conn);
     let app2 = app.clone();
@@ -154,7 +160,7 @@ pub async fn collab_join(app: AppHandle, ticket: String) -> Result<String, Strin
 
 #[tauri::command]
 pub async fn collab_send(app: AppHandle, peer: String, msg: String) -> Result<(), String> {
-    let p = app.state::<CollabState>().peers.lock().await.get(&peer).cloned().ok_or("Teilnehmer nicht verbunden")?;
+    let p = app.state::<CollabState>().peers.lock().await.get(&peer).cloned().ok_or("collab:not_connected")?;
     let bytes = msg.into_bytes();
     let mut send = p.send.lock().await;
     send.write_all(&(bytes.len() as u32).to_be_bytes()).await.map_err(err)?;
@@ -207,6 +213,13 @@ pub async fn collab_conn_info(app: AppHandle, peer: String) -> Option<ConnInfo> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bad_invite_codes_give_a_code_not_german_text() {
+        // #132: the frontend translates the code; it used to be "Ungültiger Einladungscode".
+        assert_eq!(parse_ticket("hello world").unwrap_err(), "collab:invalid_ticket");
+        assert_eq!(parse_ticket("omega-aGVsbG8").unwrap_err(), "collab:invalid_ticket");
+    }
 
     async fn roundtrip(relay_only: bool) -> (bool, std::time::Duration) {
         roundtrip_mode(if relay_only { 1 } else { 0 }).await

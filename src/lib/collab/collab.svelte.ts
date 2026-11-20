@@ -6,6 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { ui } from "../ui.svelte";
 import { t } from "../i18n/index.svelte";
+import { collabErrorText } from "./collabError";
 import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
 
 export const PEER_COLORS = ["#6b9be0", "#7bbf8e", "#d6a35f", "#cf8fb4", "#86b9cc", "#a996cf", "#df7067", "#c8b77e"];
@@ -154,7 +155,7 @@ export async function join(ticket: string) {
     await send(host, { t: "hello", name: collab.me.name, version: 1 });
   } catch (e) {
     collab.status = "error";
-    collab.error = String(e);
+    collab.error = collabErrorText(e);
     collab.role = null;
   }
 }
