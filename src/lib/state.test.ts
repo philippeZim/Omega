@@ -652,3 +652,32 @@ describe("spell check language per file (#45)", () => {
     expect(st.spellLangFor("/p/other.md")).toBe("en");
   });
 });
+
+describe("Markdown link to a folder (#48)", () => {
+  async function linkHandler() {
+    const lp = (await import("./markdown/livePreview")) as unknown as {
+      setLinkHandler: { mock: { calls: [(href: string, from: string | null) => Promise<void>][] } };
+      resolvePath: { mockImplementation(fn: (href: string) => string): void };
+    };
+    lp.resolvePath.mockImplementation((href) => "/p/" + href);
+    return lp.setLinkHandler.mock.calls.at(-1)![0];
+  }
+
+  test("[Folder](notes): friendly toast, no read of the folder", async () => {
+    await setup({ "/p/a.md": "[Folder](notes)", "/p/notes/x.md": "x" });
+    await open("/p/a.md");
+    await (await linkHandler())("notes", "/p/a.md");
+    expect(ui.toast).toHaveBeenCalledWith(expect.stringContaining("app.linkIsFolder"), "error");
+    expect(fs.calls.filter((c) => c.cmd === "read_file").map((c) => c.args.path)).toEqual(["/p/a.md"]);
+    expect(st.app.tabs).toHaveLength(1);
+  });
+
+  test("a link to a file still opens it", async () => {
+    await setup({ "/p/a.md": "[x](b.md)", "/p/b.md": "b" });
+    await open("/p/a.md");
+    await (await linkHandler())("b.md", "/p/a.md");
+    await flush();
+    expect(st.activeTab()?.path).toBe("/p/b.md");
+    expect(ui.toast).not.toHaveBeenCalled();
+  });
+});

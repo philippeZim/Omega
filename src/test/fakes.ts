@@ -94,7 +94,7 @@ export type FakeUi = ReturnType<typeof fakeUi>;
 
 /**
  * In-memory file system behind mockIPC (read_file, write_file, create_file, create_dir,
- * path_exists). `calls` records every invoke; `failWrite` makes write_file reject.
+ * path_exists, list_dir; folders exist implicitly as prefixes of file paths). `calls` records every invoke; `failWrite` makes write_file reject.
  */
 export function fakeFs(initial: Record<string, string> = {}) {
   const files = new Map(Object.entries(initial));
@@ -128,7 +128,14 @@ export function fakeFs(initial: Record<string, string> = {}) {
         case "create_dir":
           return null;
         case "path_exists":
-          return files.has(args.path);
+          return files.has(args.path) || [...files.keys()].some((f) => f.startsWith(args.path + "/"));
+        case "list_dir": {
+          // Folders exist implicitly as prefixes of file paths.
+          const pre = args.path + "/";
+          const kids = [...files.keys()].filter((f) => f.startsWith(pre)).map((f) => f.slice(pre.length).split("/")[0]);
+          if (!kids.length) throw files.has(args.path) ? "Not a directory (os error 20)" : `not found: ${args.path}`;
+          return [...new Set(kids)].map((name) => ({ name, path: pre + name, is_dir: files.has(pre + name) === false }));
+        }
         default:
           return fs.other(cmd, args);
       }
