@@ -667,6 +667,50 @@ describe("client registry", () => {
     await vi.waitFor(() => expect(spawned).toEqual(["/tools/typescript/node_modules/.bin/typescript-language-server"]));
   });
 
+  // #144: a new TypeScript project showed "failed to start" while `pnpm add typescript` was still running.
+  test("TypeScript start waits for a running install instead of failing", async () => {
+    const { ui } = await import("../ui.svelte");
+    const toast = vi.mocked(ui.toast);
+    toast.mockClear();
+    let installed = false;
+    const spawned: string[] = [];
+    mockIPC(
+      (cmd, args: any) => {
+        if (cmd === "tools_dir") return "/tools";
+        if (cmd === "which_cmd") return args.cmd === "typescript-language-server" ? "/usr/bin/typescript-language-server" : null;
+        if (cmd === "path_exists") return args.path === "/w/package.json" || (installed && args.path === "/w/node_modules/typescript/package.json");
+        if (cmd === "proc_spawn") spawned.push(args.id);
+        if (cmd === "proc_send") {
+          const msg = JSON.parse(args.msg);
+          if (msg.id !== undefined && msg.method) {
+            const body = msg.method === "initialize" && !installed ? { error: { code: -32603, message: "Could not find a valid TypeScript installation" } } : { result: msg.method === "initialize" ? { capabilities: {} } : null };
+            setTimeout(() => emit("proc-msg", { id: args.id, msg: JSON.stringify({ jsonrpc: "2.0", id: msg.id, ...body }) }), 0);
+          }
+        }
+        return null;
+      },
+      { shouldMockEvents: true },
+    );
+    vi.resetModules();
+    L = await import("./lsp.svelte");
+    await settle();
+    L.tsInstallWait.pollMs = 10;
+    const TS = { server: "typescript", lspId: "typescript" } as any;
+    const restarted = vi.fn();
+    L.restartListeners.add(restarted);
+    expect(await L.clientFor(TS, "/w/src/index.ts", "/w", no)).toBeNull();
+    expect(toast).not.toHaveBeenCalled();
+    expect(L.lspState.status["typescript|/w"]).toBe("starting");
+    expect(await L.clientFor(TS, "/w/src/index.ts", "/w", no)).toBeNull(); // no second spawn while waiting
+    expect(spawned.length).toBe(1);
+    installed = true;
+    await vi.waitFor(() => expect(restarted).toHaveBeenCalled());
+    L.restartListeners.delete(restarted);
+    expect(spawned.length).toBe(2);
+    expect(L.lspState.status["typescript|/w"]).toBe("ready");
+    expect(toast).not.toHaveBeenCalled();
+  });
+
   test("missing server: status missing, askInstall declined → null", async () => {
     mockIPC((cmd) => (cmd === "tools_dir" ? "/tools" : cmd === "path_exists" ? false : null), { shouldMockEvents: true });
     const ask = vi.fn(async () => false);
