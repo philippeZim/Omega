@@ -4,6 +4,7 @@
   import { ui } from "../lib/ui.svelte";
   import RunBar from "./RunBar.svelte";
   import { t } from "../lib/i18n/index.svelte";
+  import { tabHints } from "../lib/tabHints";
 
   function menu(e: MouseEvent, id: string, path: string | null) {
     ui.openMenu(e, [
@@ -17,12 +18,14 @@
   }
 
   let width = $state(1000);
+  // Parent folders that tell tabs with the same file name apart (#38).
+  const hints = $derived(tabHints(app.tabs));
 </script>
 
 {#if app.tabs.length || app.mode === "code"}
   <div class="tabbar" bind:clientWidth={width}>
   <div class="tabs">
-    {#each app.tabs as tab (tab.id)}
+    {#each app.tabs as tab, i (tab.id)}
       {@const foreign = foreignProject(tab)}
       <div
         class="tab"
@@ -39,6 +42,7 @@
       >
         {#if foreign}<span class="proj">{foreign}</span>{/if}
         <span class="name">{tab.name}</span>
+        {#if hints[i]}<span class="hint">{hints[i]}</span>{/if}
         <button class="close" class:dirty={tab.dirty} onclick={(e) => { e.stopPropagation(); closeTab(tab.id); }} aria-label={t("common.close")}>
           <span class="x"><Glyph name="x" size={8} /></span><span class="d"></span>
         </button>
@@ -103,6 +107,16 @@
     background: rgba(var(--fg-rgb), 0.08);
   }
   .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .hint {
+    flex-shrink: 1;
+    min-width: 0;
+    max-width: 110px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 11px;
+    opacity: 0.55;
+  }
   .close {
     width: 18px;
     height: 18px;
