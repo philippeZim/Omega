@@ -61,9 +61,12 @@ export class LspClient {
           p.reject(err);
         }
         this.pending.clear();
-        lspState.status[this.key] = "stopped";
-        lspState.message[this.key] = tail.join("\n");
-        clients.delete(this.key);
+        // A stopped client can exit after its replacement started: leave the replacement's state alone.
+        if (this.current) {
+          lspState.status[this.key] = "stopped";
+          lspState.message[this.key] = tail.join("\n");
+          clients.delete(this.key);
+        }
         if (!this.stopping) ui.toast(t("code.lsp.exited", { kind: this.kind, tail: tail.length ? ": " + tail[tail.length - 1] : "" }), "error");
       },
     });
@@ -72,6 +75,12 @@ export class LspClient {
 
   get key() {
     return `${this.kind}|${this.root}`;
+  }
+
+  /** False once another client is registered for this key (this one was stopped and replaced). */
+  get current() {
+    const c = clients.get(this.key);
+    return !c || c === this;
   }
 
   private async start(cmd: string, args: string[]) {
@@ -112,7 +121,7 @@ export class LspClient {
     });
     this.capabilities = res?.capabilities ?? {};
     this.notify("initialized", {});
-    lspState.status[this.key] = "ready";
+    if (this.current) lspState.status[this.key] = "ready";
   }
 
   private send(msg: Json) {
@@ -163,7 +172,7 @@ export class LspClient {
       const uri = fileUri(uriPath(msg.params.uri));
       this.diagnostics.set(uri, msg.params.diagnostics);
       for (const l of this.diagnosticListeners) l(uri);
-    } else if (msg.method === "window/showMessage" && msg.params?.type <= 2) {
+    } else if (msg.method === "window/showMessage" && msg.params?.type <= 2 && this.current) {
       lspState.message[this.key] = msg.params.message;
     }
   }
@@ -400,9 +409,11 @@ export async function clientFor(
       await c.ready;
       return c;
     } catch (e) {
-      lspState.status[key] = "error";
-      lspState.message[key] = String(e);
-      clients.delete(key);
+      if (c.current) {
+        lspState.status[key] = "error";
+        lspState.message[key] = String(e);
+        clients.delete(key);
+      }
       ui.toast(t("code.lsp.startFailed", { kind, err: String(e) }), "error");
       return null;
     }

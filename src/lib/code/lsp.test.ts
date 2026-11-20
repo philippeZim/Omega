@@ -355,12 +355,11 @@ describe("client registry", () => {
     expect(L.lspState.status["python|/w"]).toBe("ready");
   });
 
-  // bug: the exit handler of a stopped client does `clients.delete(this.key)` and sets
-  // status "stopped" for its key, even when a new client for the same key has started in the
-  // meantime (stopServers + restart on demand, or clientFor(..., needDebug) for Java, which stops
-  // jdtls and immediately starts a new one). The new, running server is dropped from the registry
-  // (the next clientFor spawns a duplicate) and the status bar shows "stopped".
-  test.fails("a late exit of a stopped client does not clobber its replacement", async () => {
+  // Regression (#22): a stopped client's exit used to delete its key from the registry and set
+  // status "stopped", even when a new client for the same key had started in the meantime
+  // (stopServers + restart on demand, or clientFor(..., needDebug) for Java). The running server
+  // was dropped (the next clientFor spawned a duplicate) and the status bar showed "stopped".
+  test("a late exit of a stopped client does not clobber its replacement", async () => {
     const spawned = await multiServer();
     const old = await L.clientFor(PY, "/w/a.py", "/w", no);
     L.stopServers("python");
