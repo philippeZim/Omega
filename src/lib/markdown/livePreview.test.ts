@@ -1,7 +1,8 @@
 import { describe, expect, test } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { resolvePath, toggleWrap } from "./livePreview";
+import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
+import { livePreview, resolvePath, toggleWrap } from "./livePreview";
 
 describe("resolvePath", () => {
   const from = "/home/me/notes/index.md";
@@ -87,5 +88,35 @@ describe("toggleWrap", () => {
   test("bold on italic / bold-italic", () => {
     expect(wrap("a *[b]* c", "**")).toBe("a ***[b]*** c");
     expect(wrap("a ***[b]*** c", "**")).toBe("a *[b]* c");
+  });
+});
+
+// ------------------------------------------------------------ // ------------------------------------------------------------ rendered links
+
+
+/** Renders `doc` with the cursor on an extra last line, returns the data-href of every rendered link. */
+function hrefs(doc: string): string[] {
+  const text = doc + "\n\nend";
+  const view = new EditorView({
+    state: EditorState.create({
+      doc: text,
+      selection: { anchor: text.length },
+      extensions: [markdown({ base: markdownLanguage }), livePreview("/n/index.md")],
+    }),
+    parent: document.body,
+  });
+  const out = [...view.dom.querySelectorAll<HTMLElement>("[data-href]")].map((e) => e.dataset.href!);
+  view.destroy();
+  return out;
+}
+
+describe("rendered links", () => {
+  test("plain destination", () => {
+    expect(hrefs("[a](notes/a.md)")).toEqual(["notes/a.md"]);
+  });
+
+  // #43: the <…> brackets of a CommonMark angle destination ended up in the path.
+  test("angle-bracket destination drops the brackets", () => {
+    expect(hrefs("[Angle](<notes/with space.md>)")).toEqual(["notes/with space.md"]);
   });
 });
