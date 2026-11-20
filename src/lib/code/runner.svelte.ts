@@ -1,7 +1,7 @@
 /** Glue between the UI and projects.ts: current project, running actions, new-project flow. */
 import { detectProject, type Action, type Project, TEMPLATES } from "./projects";
 import { versionSettings, type VersionSetting } from "./versions";
-import { runCommand, interruptRun } from "../terminal.svelte";
+import { runCommand, runTask, cancelTask, interruptRun } from "../terminal.svelte";
 import { app, activeTab, save, setRoot, openFile, setMode } from "../state.svelte";
 import { ui } from "../ui.svelte";
 import { fsApi, joinPath } from "../api";
@@ -56,7 +56,8 @@ function customRunCmd(root: string): string | null {
 function withCustomRun(p: Project): Project {
   const cmd = customRunCmd(p.root);
   if (!cmd) return p;
-  return { ...p, defaultRun: p.run, run: { id: "run", label: t("common.run"), cmd, shortcut: p.run?.shortcut ?? "Shift+F10" } };
+  // The build step stays: a custom command usually starts the same program with other arguments.
+  return { ...p, defaultRun: p.run, run: { id: "run", label: t("common.run"), cmd, pre: p.run?.pre, setup: p.run?.setup, shortcut: p.run?.shortcut ?? "Shift+F10" } };
 }
 
 export async function editRunCommand() {
@@ -110,6 +111,9 @@ async function saveAll() {
   for (const t of app.tabs) if (t.dirty && t.path) await save(t.id);
 }
 
+/** Actions whose output belongs in the Build tab. */
+const BUILD_ACTIONS = new Set(["build", "release", "check", "clippy", "jar"]);
+
 export async function runAction(a: Action | null | undefined) {
   const p = runner.project;
   if (!a?.cmd || !p) return;
@@ -128,7 +132,19 @@ export async function runAction(a: Action | null | undefined) {
   }
   if (!(await ensureTools([...p.needs, ...(a.needs ?? [])], t("tools.purpose.run")))) return;
   await saveAll();
-  runCommand(cmd, p.root, `${p.label}: ${a.label.replace("…", "")}`);
+  // One-time setup (CMake configure) only while its marker is missing, so it's visible when it runs.
+  let pre = a.pre;
+  if (a.setup && !(await fsApi.exists(joinPath(p.root, a.setup.unless)))) {
+    if (pre) pre = `${a.setup.cmd} && ${pre}`;
+    else cmd = `${a.setup.cmd} && ${cmd}`;
+  }
+  const title = `${p.label}: ${a.label.replace("…", "")}`;
+  if (pre) {
+    // Build in the Build tab; the program only starts (in the Run tab) when that succeeded.
+    cancelTask("run");
+    runTask("build", pre, p.root, t("code.act.build"), { onExit: (code) => code === 0 && runTask("run", cmd, p.root, title) });
+  } else if (BUILD_ACTIONS.has(a.id)) runTask("build", cmd, p.root, a.id === "build" ? t("code.act.build") : title);
+  else runCommand(cmd, p.root, title);
   // Dependency changes may alter the project (e.g. new scripts).
   if (a.ask) setTimeout(refreshProject, 3000);
 }

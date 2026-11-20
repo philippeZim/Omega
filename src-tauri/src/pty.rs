@@ -1,4 +1,4 @@
-//! Real terminals: each tab is a PTY running the user's login shell.
+//! Real terminals: each tab is a PTY running the user's login shell, or one command (Build/Run).
 use base64::Engine;
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
@@ -22,6 +22,14 @@ pub struct PtyState {
 struct PtyData {
     id: String,
     data: String,
+}
+
+/// Sent when a terminal's process ended. `code`: its exit code (None if it was killed by us or
+/// the status is unknown).
+#[derive(Serialize, Clone)]
+struct PtyExit {
+    id: String,
+    code: Option<i32>,
 }
 
 #[derive(serde::Serialize)]
@@ -135,15 +143,39 @@ fn shell_command(run: bool, shell: Option<&str>, cwd: &str) -> CommandBuilder {
     c
 }
 
+/// Runs one command instead of an interactive shell (Build/Run steps): the terminal ends with the
+/// command, so its exit code can be shown. POSIX: the login shell with `-c` (or `/bin/sh` when the
+/// login shell doesn't speak POSIX, e.g. fish); Windows: cmd.exe on a temporary batch file, because
+/// cmd.exe doesn't understand the `\"` quoting CreateProcess arguments get.
+fn single_command(id: &str, command: &str) -> Result<CommandBuilder, String> {
+    if cfg!(windows) {
+        let file = std::env::temp_dir().join(format!("omega-run-{}.cmd", id.replace(|c: char| !c.is_ascii_alphanumeric(), "_")));
+        std::fs::write(&file, format!("@echo off\r\n{command}\r\n")).map_err(|e| e.to_string())?;
+        let mut c = CommandBuilder::new("cmd.exe");
+        c.args(["/Q", "/D", "/C"]);
+        c.arg(file);
+        return Ok(c);
+    }
+    let login = std::env::var("SHELL").ok().filter(|s| std::path::Path::new(s).is_file());
+    let posix = login.as_deref().and_then(|s| s.rsplit('/').next()).is_some_and(|n| matches!(n, "bash" | "zsh" | "sh" | "dash" | "ksh" | "mksh"));
+    let mut c = CommandBuilder::new(if posix { login.unwrap() } else { "/bin/sh".into() });
+    c.args(["-l", "-c", command]);
+    Ok(c)
+}
+
 #[tauri::command]
-pub fn pty_spawn(app: AppHandle, id: String, cwd: Option<String>, cols: u16, rows: u16, kind: Option<String>, shell: Option<String>) -> Result<(), String> {
+#[allow(clippy::too_many_arguments)]
+pub fn pty_spawn(app: AppHandle, id: String, cwd: Option<String>, cols: u16, rows: u16, kind: Option<String>, shell: Option<String>, command: Option<String>) -> Result<(), String> {
     let pair = native_pty_system()
         .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
         .map_err(|e| e.to_string())?;
 
     let home = crate::env::home().display().to_string();
     let dir = cwd.filter(|d| std::path::Path::new(d).is_dir()).unwrap_or(home);
-    let mut cmd = shell_command(kind.as_deref() == Some("run"), shell.as_deref(), &dir);
+    let mut cmd = match command.as_deref() {
+        Some(c) => single_command(&id, c)?,
+        None => shell_command(kind.as_deref() == Some("run"), shell.as_deref(), &dir),
+    };
     cmd.cwd(&dir);
     cmd.env("PATH", crate::env::path());
     // Don't leak a parent Claude Code session's markers (e.g. Omega started from `claude`) into
@@ -180,9 +212,14 @@ pub fn pty_spawn(app: AppHandle, id: String, cwd: Option<String>, cols: u16, row
     drop(pair.slave);
     let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
     let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
+    // Registered before the reader starts: a command that ends at once must still find its session.
+    app.state::<PtyState>()
+        .sessions
+        .lock()
+        .unwrap()
+        .insert(id.clone(), Session { master: pair.master, writer, child });
 
     let app2 = app.clone();
-    let id2 = id.clone();
     std::thread::spawn(move || {
         let mut buf = [0u8; 16384];
         loop {
@@ -190,19 +227,15 @@ pub fn pty_spawn(app: AppHandle, id: String, cwd: Option<String>, cols: u16, row
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
                     let data = base64::engine::general_purpose::STANDARD.encode(&buf[..n]);
-                    let _ = app2.emit("pty-data", PtyData { id: id2.clone(), data });
+                    let _ = app2.emit("pty-data", PtyData { id: id.clone(), data });
                 }
             }
         }
-        let _ = app2.emit("pty-exit", id2.clone());
-        app2.state::<PtyState>().sessions.lock().unwrap().remove(&id2);
+        // Killed sessions are already gone from the map (no exit code then).
+        let session = app2.state::<PtyState>().sessions.lock().unwrap().remove(&id);
+        let code = session.and_then(|mut s| s.child.wait().ok()).map(|st| st.exit_code() as i32);
+        let _ = app2.emit("pty-exit", PtyExit { id, code });
     });
-
-    app.state::<PtyState>()
-        .sessions
-        .lock()
-        .unwrap()
-        .insert(id, Session { master: pair.master, writer, child });
     Ok(())
 }
 

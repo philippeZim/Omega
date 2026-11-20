@@ -14,7 +14,7 @@ import { share, hostKey, openRemote, isRemote } from "./share.svelte";
 import { app, activeTab, activate, closeTab, flushAutosave, newFile, openFile, setMode, setRoot } from "../state.svelte";
 import { runner, runAction, refreshProject, runnerRemote } from "../code/runner.svelte";
 import type { Action, Project } from "../code/projects";
-import { remoteTerminal, writeTerminal, runTerminalId, closeTerminal, terms } from "../terminal.svelte";
+import { remoteTerminal, writeTerminal, closeTerminal, terms, isTaskPty, setRunEcho } from "../terminal.svelte";
 import { showView } from "../layout.svelte";
 import * as ed from "../editor";
 import { fsApi, basename } from "../api";
@@ -105,8 +105,15 @@ function findAction(id: string): Action | null {
 let outBuf = "";
 let outTimer = 0;
 listen<{ id: string; data: string }>("pty-data", (e) => {
-  if (collab.role !== "host" || collab.participants.length < 2 || e.payload.id !== runTerminalId()) return;
+  if (collab.role !== "host" || collab.participants.length < 2 || !isTaskPty(e.payload.id)) return;
   queueOut(e.payload.data);
+});
+// Omega's own lines in the Build/Run tabs (command, result) go along too.
+setRunEcho((text) => {
+  if (collab.role !== "host" || collab.participants.length < 2) return;
+  let bin = "";
+  for (const b of new TextEncoder().encode(text)) bin += String.fromCharCode(b);
+  queueOut(btoa(bin));
 });
 function queueOut(b64: string) {
   outBuf += b64 + "|";

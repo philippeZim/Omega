@@ -1,7 +1,7 @@
 /** Project detection and the recommended tool per language: cargo, uv, pnpm, CMake, Gradle. */
 import { invoke } from "@tauri-apps/api/core";
 import { fsApi, basename, dirname, joinPath, isRoot } from "../api";
-import { q, cd, exe, IS_WIN, OS, runRel, unlessExists, rmrf, tmpPath } from "../platform";
+import { q, cd, exe, IS_WIN, OS, runRel, rmrf, tmpPath } from "../platform";
 import type { ToolId } from "../tools.svelte";
 import { langFor, type LangId } from "./languages";
 import { suggestPythonAdd, suggestPythonRemove, pythonRemoveArg, suggestNodeAdd, suggestNodeRemove, type Suggest } from "./packages";
@@ -14,6 +14,10 @@ export interface Action {
   label: string;
   /** Shell command run in the "Run" terminal (cwd = project root). */
   cmd?: string;
+  /** Build step run first in the "Build" terminal; `cmd` only starts when it succeeded. */
+  pre?: string;
+  /** Run first (before `pre`, or `cmd` without one) while `unless` (relative to the root) is missing, e.g. CMake configure. */
+  setup?: { unless: string; cmd: string };
   /** Needs a user-provided argument (e.g. package name); `{}` is replaced. */
   ask?: string;
   /** Suggestions/autocomplete for the argument prompt. */
@@ -117,8 +121,8 @@ async function packageScripts(root: string): Promise<string[]> {
 const RUN = "Shift+F10", BUILD = "Ctrl+F9";
 
 /** Action whose label and argument prompt follow the UI language (getters re-read the locale). */
-function act(id: string, label: Key, cmd: string, opts: { shortcut?: string; ask?: () => string; suggest?: Suggest; arg?: Action["arg"] } = {}): Action {
-  return { id, cmd, shortcut: opts.shortcut, suggest: opts.suggest, arg: opts.arg, get label() { return t(label); }, get ask() { return opts.ask?.(); } };
+function act(id: string, label: Key, cmd: string, opts: { shortcut?: string; ask?: () => string; suggest?: Suggest; arg?: Action["arg"]; pre?: string; setup?: Action["setup"] } = {}): Action {
+  return { id, cmd, pre: opts.pre, setup: opts.setup, shortcut: opts.shortcut, suggest: opts.suggest, arg: opts.arg, get label() { return t(label); }, get ask() { return opts.ask?.(); } };
 }
 const askPkg = (example: string) => () => t("code.act.askPackage", { example });
 const askPkgPlain = () => t("code.act.askPackagePlain");
@@ -132,9 +136,9 @@ export async function detectProject(file: string | null, workspace: string | nul
       ...p,
       label: "cargo",
       needs: ["rust"],
-      run: act("run", "common.run", "cargo run", { shortcut: RUN }),
+      run: act("run", "common.run", "cargo run -q", { shortcut: RUN, pre: "cargo build" }),
       build: act("build", "code.act.build", "cargo build", { shortcut: BUILD }),
-      test: act("test", "code.act.test", "cargo test"),
+      test: act("test", "code.act.test", "cargo test", { pre: "cargo test --no-run" }),
       more: [
         { id: "check", label: "cargo check", cmd: "cargo check" },
         act("clippy", "code.act.clippy", "cargo clippy"),
@@ -197,15 +201,15 @@ export async function detectProject(file: string | null, workspace: string | nul
   if (p?.kind === "cmake") {
     const target = await cmakeTarget(p.root);
     const cfg = await cmakeConfigure("build", "Debug");
-    const ensure = unlessExists("build/CMakeCache.txt", cfg.cmd);
+    const setup = { unless: "build/CMakeCache.txt", cmd: cfg.cmd };
     const run = runRel(`build/${exe(target)}`);
     return {
       ...p,
       label: "CMake",
       needs: cfg.needs,
-      run: act("run", "common.run", `${ensure} && cmake --build build && ${run}`, { shortcut: RUN }),
-      build: act("build", "code.act.build", `${ensure} && cmake --build build`, { shortcut: BUILD }),
-      test: act("test", "code.act.test", `${ensure} && cmake --build build && ctest --test-dir build --output-on-failure`),
+      run: act("run", "common.run", run, { shortcut: RUN, pre: "cmake --build build", setup }),
+      build: act("build", "code.act.build", "cmake --build build", { shortcut: BUILD, setup }),
+      test: act("test", "code.act.test", "ctest --test-dir build --output-on-failure", { pre: "cmake --build build", setup }),
       more: [
         act("configure", "code.act.configure", cfg.cmd),
         act("release", "code.act.buildRelease", `${(await cmakeConfigure("build-release", "Release")).cmd} && cmake --build build-release`),
@@ -222,7 +226,7 @@ export async function detectProject(file: string | null, workspace: string | nul
       ...p,
       label: "Gradle",
       needs: wrapper ? ["jdk"] : ["jdk", "gradle"],
-      run: act("run", "common.run", `${g} run --console=plain`, { shortcut: RUN }),
+      run: act("run", "common.run", `${g} run -q --console=plain`, { shortcut: RUN, pre: `${g} classes --console=plain` }),
       build: act("build", "code.act.build", `${g} build`, { shortcut: BUILD }),
       test: act("test", "code.act.test", `${g} test`),
       more: [
@@ -239,14 +243,14 @@ export async function detectProject(file: string | null, workspace: string | nul
   const lang = langFor(file)?.id;
   const single = await singleFileRun(lang, file);
   if (!single) return null;
-  const [cmd, needs] = single;
+  const [cmd, needs, pre] = single;
   return {
     kind: "file",
     root: dirname(file),
     needs,
     get label() { return t("code.project.file"); },
-    run: act("run", "common.run", cmd, { shortcut: RUN }),
-    build: null,
+    run: act("run", "common.run", cmd, { shortcut: RUN, pre }),
+    build: pre ? act("build", "code.act.build", pre, { shortcut: BUILD }) : null,
     test: null,
     more: [],
   };
@@ -256,17 +260,18 @@ export async function detectProject(file: string | null, workspace: string | nul
 const C_COMPILER = OS === "linux" ? "gcc" : "clang";
 const CXX_COMPILER = OS === "linux" ? "g++" : "clang++";
 
-async function singleFileRun(lang: LangId | undefined, file: string): Promise<[string, ToolId[]] | null> {
+/** [run command, tools, compile step (run first in the Build terminal)] for a lone file. */
+async function singleFileRun(lang: LangId | undefined, file: string): Promise<[string, ToolId[], string?] | null> {
   const f = q(file);
   const out = q(await tmpPath(exe(`omega-${basename(file).replace(/\.\w+$/, "")}`)));
   switch (lang) {
     case "python": return [`uv run ${f}`, ["uv"]];
-    case "c": return [`${C_COMPILER} -g -Wall ${f} -o ${out}${OS === "linux" ? " -lm" : ""} && ${out}`, ["cc"]];
-    case "cpp": return [`${CXX_COMPILER} -g -Wall -std=c++20 ${f} -o ${out} && ${out}`, ["cc"]];
+    case "c": return [out, ["cc"], `${C_COMPILER} -g -Wall ${f} -o ${out}${OS === "linux" ? " -lm" : ""}`];
+    case "cpp": return [out, ["cc"], `${CXX_COMPILER} -g -Wall -std=c++20 ${f} -o ${out}`];
     case "java": return [`java ${f}`, ["jdk"]];
     case "javascript": return [`node ${f}`, ["node"]];
     case "typescript": return [`pnpm dlx tsx ${f}`, ["node", "pnpm"]];
-    case "rust": return [`rustc -g ${f} -o ${out} && ${out}`, ["rust"]];
+    case "rust": return [out, ["rust"], `rustc -g ${f} -o ${out}`];
     default: return null;
   }
 }
