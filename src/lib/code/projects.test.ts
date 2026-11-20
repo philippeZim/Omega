@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, test } from "vitest";
 import { mockIPC } from "@tauri-apps/api/mocks";
-import { cmakeExecutable, detectProject, findPythonMain, pyprojectScripts, pythonEntry } from "./projects";
+import { cmakeExecutable, detectProject, findPythonMain, pyprojectScripts, pythonEntry, TEMPLATES } from "./projects";
 
 let files: Record<string, string> = {};
 beforeEach(() => {
@@ -220,5 +220,14 @@ describe("cmakeExecutable", () => {
     expect(cmakeExecutable("project(p)\nadd_executable(ext IMPORTED)\nadd_executable(real main.c)")).toBe("real");
     expect(cmakeExecutable("project(p)\nadd_executable(${UNKNOWN} main.c)")).toBe("p");
     expect(cmakeExecutable("cmake_minimum_required(VERSION 3.20)")).toBeNull();
+  });
+});
+
+describe("TypeScript template (#80)", () => {
+  test("allows esbuild's build script, so pnpm add succeeds and tsc --init runs", async () => {
+    const plan = await TEMPLATES.find((t) => t.id === "typescript")!.create("demo");
+    expect(plan.files?.["pnpm-workspace.yaml"]).toMatch(/allowBuilds:\n\s+esbuild: true/);
+    expect(plan.files?.["pnpm-workspace.yaml"]).toMatch(/onlyBuiltDependencies:\n\s+- esbuild/);
+    expect(plan.cmds.at(-1)).toMatch(/^pnpm exec tsc --init/);
   });
 });

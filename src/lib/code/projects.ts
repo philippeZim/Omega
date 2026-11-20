@@ -446,6 +446,9 @@ export const TEMPLATES: Template[] = [
         "package.json": packageJson(n, { type: "module", scripts: { dev: "tsx watch src/index.ts", start: "tsx src/index.ts", build: "tsc" } }),
         "src/index.ts": 'console.log("Hallo, Welt!");\n',
         ".gitignore": "node_modules/\ndist/\n",
+        // tsx needs esbuild's postinstall. pnpm 10+ blocks unapproved build scripts and fails the
+        // install (so `tsc --init` never ran); allowBuilds is pnpm 11+, onlyBuiltDependencies pnpm 10.
+        "pnpm-workspace.yaml": "allowBuilds:\n  esbuild: true\nonlyBuiltDependencies:\n  - esbuild\n",
       },
       cmds: [...(await gitInit()), "pnpm add -D typescript tsx @types/node", "pnpm exec tsc --init --target es2022 --module nodenext --rootDir src --outDir dist"],
     }),
