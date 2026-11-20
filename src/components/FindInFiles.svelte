@@ -1,11 +1,12 @@
 <script lang="ts">
   import { onMount, onDestroy, tick } from "svelte";
   import { openDialog } from "../lib/native";
-  import { EditorState, RangeSetBuilder } from "@codemirror/state";
-  import { EditorView, Decoration, lineNumbers, highlightActiveLine, keymap, drawSelection, ViewPlugin, type DecorationSet } from "@codemirror/view";
+  import { EditorState } from "@codemirror/state";
+  import { EditorView, lineNumbers, highlightActiveLine, keymap, drawSelection } from "@codemirror/view";
   import { history, historyKeymap, defaultKeymap } from "@codemirror/commands";
   import { syntaxHighlighting } from "@codemirror/language";
   import { find, runSearch, gotoHit, dockResults, replaceInFile, replaceAll, buildRegex, persistOptions, matchSummary, type Hit } from "../lib/search/search.svelte";
+  import { matchHighlighter, refreshMatches } from "../lib/search/previewMatches";
   import { app } from "../lib/state.svelte";
   import { fsApi, basename, normPath } from "../lib/api";
   import * as ed from "../lib/editor";
@@ -34,32 +35,7 @@
   // ---------------------------------------------------------------- preview editor
 
   /** Highlights every match of the current query in the preview. */
-  const matchHighlighter = ViewPlugin.fromClass(
-    class {
-      decorations: DecorationSet;
-      constructor(v: EditorView) {
-        this.decorations = this.build(v);
-      }
-      update(u: { docChanged: boolean; viewportChanged: boolean; view: EditorView }) {
-        if (u.docChanged || u.viewportChanged) this.decorations = this.build(u.view);
-      }
-      build(v: EditorView) {
-        const re = buildRegex();
-        const b = new RangeSetBuilder<Decoration>();
-        if (!re || !find.query) return b.finish();
-        for (const { from, to } of v.visibleRanges) {
-          const text = v.state.sliceDoc(from, to);
-          re.lastIndex = 0;
-          for (let m; (m = re.exec(text)); ) {
-            if (!m[0].length) { re.lastIndex++; continue; }
-            b.add(from + m.index, from + m.index + m[0].length, Decoration.mark({ class: "find-match" }));
-          }
-        }
-        return b.finish();
-      }
-    },
-    { decorations: (v) => v.decorations },
-  );
+  const highlighter = matchHighlighter(() => (find.query ? buildRegex() : null));
 
   function previewState(text: string, file: string) {
     const lang = langFor(file);
@@ -75,7 +51,7 @@
         indentFor(lang),
         syntaxHighlighting(codeHighlight),
         baseTheme,
-        matchHighlighter,
+        highlighter,
         EditorView.editorAttributes.of({ class: "mode-code" }),
         EditorView.updateListener.of((u) => {
           if (!u.docChanged || !previewFile) return;
@@ -115,12 +91,18 @@
     const [a, b] = h.ranges[0] ?? [0, 0];
     preview.dispatch({
       selection: { anchor: Math.min(line.to, line.from + a), head: Math.min(line.to, line.from + b) },
-      effects: EditorView.scrollIntoView(line.from, { y: "center" }),
+      effects: [EditorView.scrollIntoView(line.from, { y: "center" }), refreshMatches.of(null)],
     });
   }
 
   $effect(() => {
     showPreview(hit);
+  });
+
+  // A new query (or option) rebuilds the highlights even before (or without) new hits.
+  $effect(() => {
+    void [find.query, find.caseSensitive, find.wholeWord, find.regex];
+    preview?.dispatch({ effects: refreshMatches.of(null) });
   });
 
   onMount(() => {
