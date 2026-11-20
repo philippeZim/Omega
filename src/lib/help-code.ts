@@ -1,4 +1,7 @@
-/** Syntax cheat sheets per programming language (shown in Code mode for the active file). Format: see `RawSheet` in help.ts. */
+/**
+ * Syntax cheat sheets per programming language (shown in Code mode for the active file). Format: see `RawSheet` in help.ts.
+ * `{cmd:command.id}` in a key column is replaced by that command's current shortcut (see `withKeys`).
+ */
 import type { RawSheet } from "./help";
 
 type Section = RawSheet["sections"][number];
@@ -7,28 +10,28 @@ const editor: Section = {
   title: ["Editor & Project", "Editor & Projekt", "Éditeur et projet"],
   rows: [
     ["Ctrl Space", "Completion", "Vervollständigung", "Complétion"],
-    ["F12 · Ctrl Click", "Go to definition", "Gehe zu Definition", "Aller à la définition"],
-    ["⇧ Alt F", "Format document", "Dokument formatieren", "Formater le document"],
+    ["{cmd:lsp.gotoDefinition} · Ctrl Click", "Go to definition", "Gehe zu Definition", "Aller à la définition"],
+    ["{cmd:lsp.format}", "Format document", "Dokument formatieren", "Formater le document"],
     [["Hover a symbol", "Maus über Symbol", "Survol d'un symbole"], "Type & documentation", "Typ & Dokumentation", "Type et documentation"],
-    ["⇧ F10", "Run", "Ausführen", "Exécuter"],
-    ["Ctrl F9", "Build", "Bauen", "Compiler"],
-    ["Ctrl F2", "Stop (Ctrl+C to the program)", "Stopp (Strg+C ans Programm)", "Arrêter (Ctrl+C au programme)"],
-    ["Ctrl ^", "Focus terminal", "Terminal fokussieren", "Activer le terminal"],
+    ["{cmd:run.run}", "Run", "Ausführen", "Exécuter"],
+    ["{cmd:run.build}", "Build", "Bauen", "Compiler"],
+    ["{cmd:run.stop}", "Stop (Ctrl+C to the program)", "Stopp (Strg+C ans Programm)", "Arrêter (Ctrl+C au programme)"],
+    ["{cmd:terminal.toggle}", "Focus terminal", "Terminal fokussieren", "Activer le terminal"],
     ["Ctrl ⇧ C / V", "Copy / Paste in terminal", "Kopieren / Einfügen im Terminal", "Copier / Coller dans le terminal"],
   ],
 };
 
 const debugging: Section = {
-  title: ["Debugger (PyCharm keys)", "Debugger (PyCharm-Tasten)", "Débogueur (touches PyCharm)"],
+  title: "Debugger",
   rows: [
-    [["Click left of line number · Ctrl F8", "Klick links der Zeilennr. · Strg F8", "Clic à gauche du n° de ligne · Ctrl F8"], "Toggle breakpoint", "Breakpoint setzen/entfernen", "Ajouter/retirer un point d'arrêt"],
+    [["Click left of line number · {cmd:debug.toggleBreakpoint}", "Klick links der Zeilennr. · {cmd:debug.toggleBreakpoint}", "Clic à gauche du n° de ligne · {cmd:debug.toggleBreakpoint}"], "Toggle breakpoint", "Breakpoint setzen/entfernen", "Ajouter/retirer un point d'arrêt"],
     [["Right-click breakpoint gutter", "Rechtsklick auf Breakpoint-Rand", "Clic droit sur la marge des points d'arrêt"], "Set condition", "Bedingung festlegen", "Définir une condition"],
-    ["⇧ F9", "Start debugging", "Debuggen starten", "Démarrer le débogage"],
-    ["F8", "Step Over"],
-    ["F7", "Step Into"],
-    ["⇧ F8", "Step Out"],
-    ["F9", "Resume", "Fortsetzen", "Reprendre"],
-    ["Ctrl F2", "Stop debugging", "Debuggen beenden", "Arrêter le débogage"],
+    ["{cmd:debug.start}", "Start debugging", "Debuggen starten", "Démarrer le débogage"],
+    ["{cmd:debug.stepOver}", "Step Over"],
+    ["{cmd:debug.stepInto}", "Step Into"],
+    ["{cmd:debug.stepOut}", "Step Out"],
+    ["{cmd:debug.continue}", "Resume", "Fortsetzen", "Reprendre"],
+    ["{cmd:run.stop}", "Stop debugging", "Debuggen beenden", "Arrêter le débogage"],
     [["Hover a variable", "Maus über Variable", "Survol d'une variable"], "Show current value", "Aktuellen Wert anzeigen", "Afficher la valeur actuelle"],
     [["Double-click a variable", "Doppelklick auf Variable", "Double-clic sur une variable"], "Change value", "Wert ändern", "Modifier la valeur"],
     [["Debug console (bottom)", "Debug-Konsole (unten)", "Console de débogage (en bas)"], "Evaluate expressions", "Ausdrücke auswerten", "Évaluer des expressions"],

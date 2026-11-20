@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "vitest";
-import { allSheets, sheetIdFor } from "./help";
+import { allSheets, resolveKeys, sheetIdFor, withKeys } from "./help";
 import { codeSheets } from "./help-code";
 import { setLocale, type Locale } from "./i18n/index.svelte";
 
@@ -56,5 +56,27 @@ describe("cheat sheets", () => {
     expect(sheetIdFor("text", null)).toBe("shortcuts");
     expect(sheetIdFor("markdown", null)).toBe("markdown");
     expect(sheetIdFor("latex", "rust")).toBe("latex");
+  });
+});
+
+// #87: key columns of the code sheets follow the real bindings instead of fixed strings.
+describe("command shortcuts in cheat sheets", () => {
+  test("resolveKeys replaces {cmd:command.id} with its label, — when unbound", () => {
+    const label = (id: string) => ({ "terminal.toggle": "Strg ^", "run.run": "" })[id] ?? "";
+    expect(resolveKeys("{cmd:terminal.toggle}", label)).toBe("Strg ^");
+    expect(resolveKeys("{cmd:run.run} · Ctrl Click", label)).toBe("— · Ctrl Click");
+    expect(resolveKeys("Ctrl Space", label)).toBe("Ctrl Space");
+    // Braces in code samples are left alone.
+    expect(resolveKeys('print(f"Value: {x}")', label)).toBe('print(f"Value: {x}")');
+  });
+
+  test("the code sheets' editor and debugger rows use command placeholders", () => {
+    const sheet = allSheets().find((s) => s.id === "python")!.sheet;
+    const rows = withKeys(sheet, (id) => `<${id}>`).sections.flatMap((s) => s.rows.map(([code]) => code));
+    expect(rows).toContain("<terminal.toggle>");
+    expect(rows).toContain("<run.run>");
+    expect(rows).toContain("<debug.stepOver>");
+    expect(rows.join("\n")).not.toMatch(/Ctrl \^|Ctrl F2|⇧ F10/);
+    expect(rows).toContain('print(f"Value: {x}")');
   });
 });

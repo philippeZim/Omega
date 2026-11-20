@@ -2,8 +2,8 @@
   import { tick } from "svelte";
   import { app, activeTab } from "../lib/state.svelte";
   import { ui } from "../lib/ui.svelte";
-  import { allSheets, sheetIdFor, type Sheet } from "../lib/help";
-  import { COMMANDS, keysFor, keymapState } from "../lib/commands.svelte";
+  import { allSheets, sheetIdFor, withKeys, type Sheet } from "../lib/help";
+  import { COMMANDS, keysFor, keymapState, shortcutLabel } from "../lib/commands.svelte";
   import { formatKey } from "../lib/keys";
   import { t } from "../lib/i18n/index.svelte";
 
@@ -37,7 +37,7 @@
   let input: HTMLInputElement | undefined = $state();
   const q = $derived(filter.trim().toLowerCase());
   const shortcuts = $derived(shortcutsSheet());
-  const current = $derived(selected === "shortcuts" ? shortcuts : (sheets.find((s) => s.id === selected)?.sheet ?? shortcuts));
+  const current = $derived(selected === "shortcuts" ? shortcuts : withKeys(sheets.find((s) => s.id === selected)?.sheet ?? shortcuts, shortcutLabel));
   /** Filtered once per keystroke; empty sections are dropped without re-creating the others. */
   const visibleSections = $derived(
     current.sections

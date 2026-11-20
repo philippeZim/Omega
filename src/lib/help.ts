@@ -263,6 +263,16 @@ export function allSheets(): { id: string; label: string; sheet: Sheet }[] {
   return list;
 }
 
+/** `{cmd:command.id}` placeholders in a key column → the command's current shortcut ("—" if it has none). */
+export function resolveKeys(code: string, label: (id: string) => string): string {
+  return code.replace(/\{cmd:([\w.]+)\}/g, (_, id: string) => label(id) || "—");
+}
+
+/** The sheet with every placeholder resolved, so it follows the keymap preset, custom bindings and keyboard layout. */
+export function withKeys(sheet: Sheet, label: (id: string) => string): Sheet {
+  return { ...sheet, sections: sheet.sections.map((sec) => ({ ...sec, rows: sec.rows.map(([code, desc]): [string, string] => [resolveKeys(code, label), desc]) })) };
+}
+
 export function sheetIdFor(mode: string, language: string | null): string {
   if (mode === "code") return language && codeSheets[language] ? language : "python";
   if (mode === "text") return "shortcuts";
