@@ -85,5 +85,8 @@ describe("custom editor commands", () => {
   test("upper / lower case", () => {
     expect(run("editor.upperCase", "a[bc]d").out).toBe("a[BC]d");
     expect(run("editor.lowerCase", "[ÄB]c").out).toBe("[äb]c");
+    // The result can be longer than the selection: all of it stays selected.
+    expect(run("editor.upperCase", "[aaa straße]").out).toBe("[AAA STRASSE]");
+    expect(run("editor.lowerCase", "x[İ]y").out).toBe("x[i̇]y");
   });
 });
