@@ -112,8 +112,17 @@ describe("detectProject", () => {
     expect(p.more.filter((a) => a.id.startsWith("script:")).map((a) => a.cmd)).toEqual(["pnpm run dev", "pnpm run build", "pnpm run test"]);
   });
 
+  test("pnpm: plain JavaScript without a build script has no Build (#83)", async () => {
+    files["/w/package.json"] = JSON.stringify({ scripts: { start: "node index.js", test: "node --test" } });
+    const p = (await detectProject("/w/index.js", "/w"))!;
+    expect(p.build).toBeNull();
+    files["/w/package.json"] = JSON.stringify({ devDependencies: { typescript: "^5" } });
+    expect((await detectProject("/w/index.js", "/w"))!.build?.cmd).toBe("pnpm exec tsc --noEmit");
+  });
+
   test("pnpm: a TS file runs with tsx, no build script → typecheck", async () => {
     files["/w/package.json"] = "{}";
+    files["/w/tsconfig.json"] = "{}";
     const p = (await detectProject("/w/src/index.ts", "/w"))!;
     // Without a local tsx: dlx, with esbuild's build allowed so pnpm doesn't ask interactively (#81).
     expect(p.run?.cmd).toBe("pnpm dlx --allow-build=esbuild tsx /w/src/index.ts");
