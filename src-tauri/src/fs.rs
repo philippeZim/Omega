@@ -76,7 +76,7 @@ pub fn home_dir() -> String {
     crate::env::norm(crate::env::home())
 }
 
-/// Paths passed on the command line (`studio <ordner|datei>…`), made absolute.
+/// Paths passed on the command line (`omega <ordner|datei>…`), made absolute.
 #[tauri::command]
 pub fn cli_paths() -> Vec<String> {
     let cwd = std::env::current_dir().unwrap_or_default();

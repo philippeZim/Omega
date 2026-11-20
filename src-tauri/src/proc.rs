@@ -327,7 +327,7 @@ pub async fn install_debugger(app: AppHandle, kind: String) -> Result<String, St
             let _ = std::fs::remove_file(&archive);
             r?;
             if let Some(v) = crate::installs::extract_version(&url.rsplit('/').next().unwrap_or_default()) {
-                let _ = std::fs::write(dir.join("js-debug").join(".studio-version"), v);
+                let _ = std::fs::write(dir.join("js-debug").join(".omega-version"), v);
             }
             Ok(crate::env::norm(dir.join("js-debug").join("src").join("dapDebugServer.js")))
         }

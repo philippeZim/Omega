@@ -61,8 +61,8 @@
     setKeys(id, keysFor(id).filter((k) => k !== key));
   }
 
-  /** "Studio" would read like Visual Studio, so the built-in keymap is shown as "Default". */
-  const keymapName = (id: KeymapId) => (id === "studio" ? t("commands.kb.presetDefault") : KEYMAPS.find((k) => k.id === id)!.name);
+  /** "Omega" would read like Visual Studio, so the built-in keymap is shown as "Default". */
+  const keymapName = (id: KeymapId) => (id === "omega" ? t("commands.kb.presetDefault") : KEYMAPS.find((k) => k.id === id)!.name);
 
   async function pickKeymap(id: KeymapId) {
     const name = keymapName(id);
@@ -123,15 +123,17 @@
 {/each}
 
 <style>
-  .bar { display: flex; gap: 10px; margin: 6px 0 4px; }
-  .bar input { flex: 1; min-width: 0; }
+  .bar { display: flex; flex-wrap: wrap; gap: 10px; margin: 6px 0 4px; }
+  .bar input { flex: 1 1 200px; min-width: 0; }
   .preset { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--label-2); white-space: nowrap; }
   h3 { margin: 22px 2px 8px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--label-2); }
   .box { border-radius: 18px; background: rgba(var(--fg-rgb), 0.035); box-shadow: inset 0 1px 0 rgba(var(--hl-rgb), 0.04); padding: 4px; }
-  .row { display: grid; grid-template-columns: minmax(0, 340px) 1fr; align-items: center; gap: 20px; min-height: 40px; padding: 4px 10px 4px 14px; border-radius: 12px; }
+  /* Label column up to 340px; the keys take the rest and drop below the label in very narrow windows. */
+  .row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 20px; min-height: 40px; padding: 4px 10px 4px 14px; border-radius: 12px; }
   .row:hover { background: rgba(var(--fg-rgb), 0.07); }
   .row + .row { border-top: 1px solid rgba(var(--fg-rgb), 0.035); }
-  .label { font-size: 13px; }
+  .label { font-size: 13px; flex: 0 1 340px; min-width: 0; }
+  .keys { flex: 1 1 180px; min-width: 0; }
   .row.custom .label { color: var(--label); font-weight: 550; }
   .mode { margin-left: 8px; font-size: 10.5px; color: var(--label-3); text-transform: capitalize; }
   .keys { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-start; }

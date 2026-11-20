@@ -61,8 +61,8 @@ function waitInitialized(s: DapSession) {
 
 async function initialize(s: DapSession, adapterID: string) {
   s.capabilities = await s.request("initialize", {
-    clientID: "studio",
-    clientName: "Studio",
+    clientID: "omega",
+    clientName: "Omega",
     adapterID,
     pathFormat: "path",
     linesStartAt1: true,
@@ -104,7 +104,7 @@ async function configure(s: DapSession) {
 
 /** Starts the adapter, sends launch, waits for `initialized`, configures. */
 async function launchSession(s: DapSession, request: "launch" | "attach", args: Json) {
-  await initialize(s, args.type ?? "studio");
+  await initialize(s, args.type ?? "omega");
   const init = waitInitialized(s);
   const launched = s.request(request, args, 0);
   await Promise.race([init, launched.then(() => init)]);

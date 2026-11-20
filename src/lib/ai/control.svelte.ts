@@ -649,11 +649,11 @@ const url = () => `http://127.0.0.1:${control.port}/mcp`;
 /** Command that registers the control MCP in each agent (run once in a terminal). */
 export const mcpAddCommand = (agent: "claude" | "codex" | "opencode") =>
   agent === "claude"
-    ? `claude mcp add --scope user --transport http studio ${url()} --header "Authorization: Bearer ${control.token}"`
+    ? `claude mcp add --scope user --transport http omega ${url()} --header "Authorization: Bearer ${control.token}"`
     : agent === "codex"
-      ? // Codex reads the token from STUDIO_MCP_TOKEN (set in Studio's terminals).
-        `codex mcp add studio --url ${url()} --bearer-token-env-var STUDIO_MCP_TOKEN`
-      : `opencode mcp add studio --url ${url()} --header "Authorization=Bearer ${control.token}" --global`;
+      ? // Codex reads the token from OMEGA_MCP_TOKEN (set in Omega's terminals).
+        `codex mcp add omega --url ${url()} --bearer-token-env-var OMEGA_MCP_TOKEN`
+      : `opencode mcp add omega --url ${url()} --header "Authorization=Bearer ${control.token}" --global`;
 export const claudeAddCommand = () => mcpAddCommand("claude");
 
 listen<{ call: number; name: string; args: Args }>("mcp-call", async (e) => {

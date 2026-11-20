@@ -53,6 +53,31 @@
   }
 
   const activeIndex = $derived(MODES.findIndex((m) => m.id === app.mode));
+
+  const below = (e: MouseEvent, alignRight = false) => {
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    return new MouseEvent("contextmenu", { clientX: alignRight ? r.right - 240 : r.left, clientY: r.bottom + 8 });
+  };
+
+  // Narrow window: the mode switcher becomes a pill with a menu …
+  function modeMenu(e: MouseEvent) {
+    ui.openMenu(below(e), MODES.map((m, i) => ({
+      label: (m.id === app.mode ? "✓  " : "     ") + m.label,
+      shortcut: `${t("app.ctrl")} ${i + 1}`,
+      action: () => setMode(m.id),
+    })));
+  }
+
+  // … and the round buttons on the right move into a "more" menu (settings stays).
+  function moreMenu(e: MouseEvent) {
+    ui.openMenu(below(e, true), [
+      { label: t("commands.group.terminal"), shortcut: `${t("app.ctrl")} ^`, action: toggleTerminalPanel },
+      { label: t("app.collab"), action: () => (collab.open = !collab.open) },
+      { label: t("app.report.button"), action: () => (report.open = true) },
+      { label: t("app.help"), shortcut: "F1", action: () => (ui.help = !ui.help) },
+      { label: t("app.settings"), action: () => (settings.open = !settings.open) },
+    ]);
+  }
 </script>
 
 <header class="topbar">
@@ -73,15 +98,19 @@
         {#if git.changes.length}<span class="dirty"></span>{/if}
       </button>
     {/if}
-    <span class="divider"></span>
-    <button class="ghost" title="{t('app.openFolder')} ({t('app.ctrl')}+O)" onclick={openFolder} aria-label={t("app.openFolder")}>
+    <span class="divider extra"></span>
+    <button class="ghost extra" title="{t('app.openFolder')} ({t('app.ctrl')}+O)" onclick={openFolder} aria-label={t("app.openFolder")}>
       <svg width="15" height="14" viewBox="0 0 15 14"><path d="M1.5 3.5a1 1 0 0 1 1-1h3l1.3 1.5h5.7a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1h-10a1 1 0 0 1-1-1z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>
     </button>
-    <button class="ghost" title={t("app.newProject")} onclick={() => (runner.newProject = true)} aria-label={t("app.newProject")}>
+    <button class="ghost extra" title={t("app.newProject")} onclick={() => (runner.newProject = true)} aria-label={t("app.newProject")}>
       <svg width="14" height="14" viewBox="0 0 14 14"><path d="M7 2.5v9M2.5 7h9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
     </button>
   </div>
 
+  <button class="mode-pill" onclick={modeMenu} title={t("app.ctrl") + "+1 – " + MODES.length}>
+    <span>{MODES[activeIndex]?.label}</span>
+    <svg width="9" height="9" viewBox="0 0 10 10"><path d="M2.5 3.8L5 6.3l2.5-2.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  </button>
   <div class="segmented" role="tablist" style="--count: {MODES.length}">
     <div class="thumb" style="--index: {activeIndex}"></div>
     {#each MODES as m, i (m.id)}
@@ -92,10 +121,10 @@
   </div>
 
   <div class="right">
-    <button class="ghost help" class:on={isShown("terminal")} title={t("code.rb.toggleTerminal")} onclick={toggleTerminalPanel} aria-label="Terminal">
+    <button class="ghost help wide" class:on={isShown("terminal")} title={t("code.rb.toggleTerminal")} onclick={toggleTerminalPanel} aria-label="Terminal">
       <svg width="16" height="16" viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M4.5 6.2l2 1.8-2 1.8M8 10h3.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
     </button>
-    <button class="ghost help collab" class:on={collab.open} class:live={!!collab.role} title={t("app.collab")} onclick={() => (collab.open = !collab.open)} aria-label={t("app.collab")}>
+    <button class="ghost help collab" class:wide={!collab.role && !collab.requests.length} class:on={collab.open} class:live={!!collab.role} title={t("app.collab")} onclick={() => (collab.open = !collab.open)} aria-label={t("app.collab")}>
       {#if collab.role && collab.participants.length > 1}
         <span class="faces">
           {#each collab.participants.slice(0, 3) as p (p.peer)}<span class="face" style="background: {p.color}">{p.name.slice(0, 1).toUpperCase()}</span>{/each}
@@ -108,10 +137,13 @@
     <button class="ghost help gear" class:on={settings.open} title={t("app.settings")} onclick={() => (settings.open = !settings.open)} aria-label={t("app.settings")}>
       <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
     </button>
-    <button class="ghost help" class:on={report.open} title={t("app.report.button")} onclick={() => (report.open = true)} aria-label={t("app.report.button")}>
+    <button class="ghost help wide" class:on={report.open} title={t("app.report.button")} onclick={() => (report.open = true)} aria-label={t("app.report.button")}>
       <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M12 7v4"/><path d="M12 14h.01"/></svg>
     </button>
-    <button class="ghost help" class:on={ui.help} title={t("app.cheatSheet")} onclick={() => (ui.help = !ui.help)} aria-label={t("app.help")}>?</button>
+    <button class="ghost help wide" class:on={ui.help} title={t("app.cheatSheet")} onclick={() => (ui.help = !ui.help)} aria-label={t("app.help")}>?</button>
+    <button class="ghost help more" title={t("code.rb.more")} onclick={moreMenu} aria-label={t("code.rb.more")}>
+      <svg width="16" height="4" viewBox="0 0 16 4"><circle cx="2" cy="2" r="1.6" fill="currentColor"/><circle cx="8" cy="2" r="1.6" fill="currentColor"/><circle cx="14" cy="2" r="1.6" fill="currentColor"/></svg>
+    </button>
   </div>
 </header>
 
@@ -187,7 +219,7 @@
     border-radius: 999px;
     background: var(--glass);
     box-shadow: var(--glass-highlight), 0 8px 24px rgba(0, 0, 0, 0.45);
-    width: calc(var(--count) * clamp(72px, 9vw, 104px));
+    width: calc(var(--count) * clamp(84px, 9vw, 104px));
   }
   .segmented::before {
     content: "";
@@ -303,8 +335,49 @@
   }
   :global(:root[data-material="liquid"][data-theme="light"]) .segmented button.active { color: #1d1d1f; text-shadow: 0 1px 0 rgba(255, 255, 255, 0.8); }
 
+  .mode-pill {
+    display: none;
+    align-items: center;
+    gap: 7px;
+    height: 40px;
+    padding: 0 16px 0 18px;
+    border-radius: 999px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--label);
+    background: var(--glass);
+    box-shadow: var(--glass-highlight), 0 8px 24px rgba(0, 0, 0, 0.45);
+    white-space: nowrap;
+  }
+  .mode-pill:hover { background: var(--glass-strong); }
+  .mode-pill svg { color: var(--label-3); flex-shrink: 0; }
+  .more { display: none; }
+
+  /* Narrower windows: things fold away step by step instead of overlapping. */
+  @media (max-width: 1100px) {
+    .extra { display: none; }
+  }
+  @media (max-width: 900px) {
+    .right > .wide { display: none; }
+    .more { display: grid; }
+  }
   @media (max-width: 760px) {
     .branch span:not(.ab):not(.dirty) { display: none; }
-    .divider { display: none; }
+  }
+  @media (max-width: 860px) {
+    .segmented { display: none; }
+    .mode-pill { display: flex; }
+    .topbar { column-gap: 8px; }
+  }
+  @media (max-width: 440px) {
+    .right > .gear { display: none; }
+  }
+  @media (max-width: 520px) {
+    .branch { display: none; }
+    /* Too narrow to keep the mode pill centred: the project name gets the room instead. */
+    .topbar { grid-template-columns: minmax(0, 1fr) auto auto; column-gap: 6px; }
+    .right { gap: 6px; }
+    .title { padding: 0 8px; }
+    .mode-pill { padding: 0 12px 0 14px; }
   }
 </style>

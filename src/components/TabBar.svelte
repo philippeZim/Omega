@@ -15,9 +15,12 @@
       ...(path ? [{ separator: true, label: "" }, { label: t("app.copyPath"), action: () => navigator.clipboard.writeText(path) }] : []),
     ]);
   }
+
+  let width = $state(1000);
 </script>
 
 {#if app.tabs.length || app.mode === "code"}
+  <div class="tabbar" bind:clientWidth={width}>
   <div class="tabs">
     {#each app.tabs as tab (tab.id)}
       {@const foreign = foreignProject(tab)}
@@ -42,20 +45,30 @@
       </div>
     {/each}
     <button class="add" onclick={newFile} title="{t('app.newFile')} ({t('app.ctrl')}+N)" aria-label={t("app.newFile")}><Glyph name="plus" size={11} /></button>
-    {#if app.mode === "code"}<RunBar />{/if}
+  </div>
+  {#if app.mode === "code"}<RunBar {width} />{/if}
   </div>
 {/if}
 
 <style>
-  .tabs {
+  .tabbar {
     height: 50px;
     flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    padding-right: 10px;
+    border-bottom: 1px solid rgba(var(--fg-rgb), 0.05);
+  }
+  /* Only the tabs scroll; the run bar stays pinned on the right. */
+  .tabs {
+    flex: 1;
+    min-width: 0;
+    height: 100%;
     display: flex;
     align-items: center;
     gap: 4px;
     padding: 0 10px;
     overflow-x: auto;
-    border-bottom: 1px solid rgba(var(--fg-rgb), 0.05);
   }
   .tabs::-webkit-scrollbar { height: 0; }
   .tab {

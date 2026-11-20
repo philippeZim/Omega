@@ -2,7 +2,7 @@
   <img src="docs/logo.png" width="112" alt="">
 </p>
 
-<h1 align="center">Studio</h1>
+<h1 align="center">Omega</h1>
 
 <p align="center">
   Notes, LaTeX and code. One app, one window, the whole semester.<br><br>
@@ -15,7 +15,7 @@
 
 ![LaTeX source next to the live PDF](docs/screenshots/latex.png)
 
-Lecture notes in Obsidian, the exercise sheet in Overleaf, the programming assignment in VS Code. Studio replaces all three, and switching between them is just `Ctrl+1` to `Ctrl+4`.
+Lecture notes in Obsidian, the exercise sheet in Overleaf, the programming assignment in VS Code. Omega replaces all three, and switching between them is just `Ctrl+1` to `Ctrl+4`.
 
 ### LaTeX without the setup
 
@@ -37,9 +37,9 @@ And a few things you'll be glad about later: live collaboration with a classmate
 
 ## Install
 
-Download Studio for your system from the [latest release](https://github.com/philippeZim/Omega/releases/latest): `.exe` for Windows, `.dmg` for macOS, `.AppImage` for Linux.
+Download Omega for your system from the [latest release](https://github.com/philippeZim/Omega/releases/latest): `.exe` for Windows, `.dmg` for macOS, `.AppImage` for Linux.
 
-The app isn't signed yet, so the first start needs one extra click: *More info → Run anyway* on Windows, *right-click → Open* on macOS. After that Studio keeps itself up to date.
+The app isn't signed yet, so the first start needs one extra click: *More info → Run anyway* on Windows, *right-click → Open* on macOS. After that Omega keeps itself up to date.
 
 ## Feedback
 

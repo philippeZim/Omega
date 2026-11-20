@@ -23,7 +23,7 @@ pub struct McpControlState {
 }
 
 static NEXT_CALL: AtomicU64 = AtomicU64::new(1);
-/// Token of the running control server; exported as STUDIO_MCP_TOKEN in our terminals.
+/// Token of the running control server; exported as OMEGA_MCP_TOKEN in our terminals.
 pub static TOKEN: Mutex<Option<String>> = Mutex::new(None);
 
 fn rpc_result(id: &Value, result: Value) -> Value {
@@ -44,8 +44,8 @@ fn handle(app: &AppHandle, msg: &Value) -> Option<Value> {
             rpc_result(&id, json!({
                 "protocolVersion": version,
                 "capabilities": { "tools": { "listChanged": false } },
-                "serverInfo": { "name": "studio", "title": "Studio IDE", "version": env!("CARGO_PKG_VERSION") },
-                "instructions": "Steuert die laufende Studio-IDE. Mit get_state den Zustand lesen, mit list_commands verfügbare Befehle sehen, mit click/type_text/press_key die Oberfläche bedienen und mit screenshot das Ergebnis prüfen."
+                "serverInfo": { "name": "omega", "title": "Omega IDE", "version": env!("CARGO_PKG_VERSION") },
+                "instructions": "Steuert die laufende Omega-IDE. Mit get_state den Zustand lesen, mit list_commands verfügbare Befehle sehen, mit click/type_text/press_key die Oberfläche bedienen und mit screenshot das Ergebnis prüfen."
             }))
         }
         "ping" => rpc_result(&id, json!({})),
@@ -151,7 +151,7 @@ pub async fn mcp_control_start(app: AppHandle, port: u16, token: String, tools: 
                 let Ok(msg) = serde_json::from_str::<Value>(&body) else {
                     return respond(req, 400, Some(rpc_error(&Value::Null, -32700, "Parse error")), &[]);
                 };
-                let session = ("Mcp-Session-Id", "studio".to_string());
+                let session = ("Mcp-Session-Id", "omega".to_string());
                 if let Some(batch) = msg.as_array() {
                     let out: Vec<Value> = batch.iter().filter_map(|m| handle(&app, m)).collect();
                     if out.is_empty() { respond(req, 202, None, &[session]) } else { respond(req, 200, Some(Value::Array(out)), &[session]) }

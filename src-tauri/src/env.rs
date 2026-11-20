@@ -1,5 +1,5 @@
-//! Process environment shared by everything Studio spawns: the effective `PATH` (login-shell PATH
-//! on macOS/Linux, the registry PATH on Windows, common tool folders and the tools Studio manages
+//! Process environment shared by everything Omega spawns: the effective `PATH` (login-shell PATH
+//! on macOS/Linux, the registry PATH on Windows, common tool folders and the tools Omega manages
 //! itself), executable lookup (incl. `.exe`/`.cmd` on Windows), and path normalisation.
 //!
 //! Paths handed to the frontend always use `/` as separator (Windows accepts it everywhere), so
@@ -31,7 +31,7 @@ pub fn norm(p: impl AsRef<Path>) -> String {
 }
 
 pub fn tools_dir() -> PathBuf {
-    TOOLS_DIR.get().cloned().unwrap_or_else(|| home().join(".studio-tools"))
+    TOOLS_DIR.get().cloned().unwrap_or_else(|| home().join(".omega-tools"))
 }
 
 /// Must be called once at startup (before any process is spawned).
@@ -76,7 +76,7 @@ pub fn rebuild() {
         add(PathBuf::from("/bin"));
         add(PathBuf::from("/Library/TeX/texbin"));
     }
-    // Tools Studio installed itself come last: the user's own installations win.
+    // Tools Omega installed itself come last: the user's own installations win.
     for d in crate::tools::managed_bin_dirs() {
         add(d);
     }
@@ -94,7 +94,7 @@ fn user_path() -> OsString {
     let current = std::env::var_os("PATH").unwrap_or_default();
     let shell = std::env::var("SHELL").unwrap_or_else(|_| if cfg!(target_os = "macos") { "/bin/zsh".into() } else { "/bin/bash".into() });
     let child = Command::new(&shell)
-        .args(["-l", "-c", "printf '__STUDIO_PATH__%s__END__' \"$PATH\""])
+        .args(["-l", "-c", "printf '__OMEGA_PATH__%s__END__' \"$PATH\""])
         .stdin(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -106,7 +106,7 @@ fn user_path() -> OsString {
     });
     let Ok(Ok(out)) = rx.recv_timeout(std::time::Duration::from_secs(4)) else { return current };
     let text = String::from_utf8_lossy(&out.stdout);
-    let Some(p) = text.split("__STUDIO_PATH__").nth(1).and_then(|s| s.split("__END__").next()) else { return current };
+    let Some(p) = text.split("__OMEGA_PATH__").nth(1).and_then(|s| s.split("__END__").next()) else { return current };
     // Login PATH first, then whatever we inherited that it lacks.
     let mut dirs: Vec<PathBuf> = std::env::split_paths(OsStr::new(p)).collect();
     for d in std::env::split_paths(&current) {
@@ -119,7 +119,7 @@ fn user_path() -> OsString {
 
 #[cfg(windows)]
 fn user_path() -> OsString {
-    // The registry holds the current PATH, including changes made after Studio started
+    // The registry holds the current PATH, including changes made after Omega started
     // (e.g. `winget install` in the terminal).
     let current = std::env::var_os("PATH").unwrap_or_default();
     let read = |key: &str| -> Option<String> {

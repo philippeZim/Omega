@@ -176,7 +176,7 @@ function loadOverrides(): Record<string, string[]> {
 
 function loadPreset(): KeymapId {
   const id = localStorage.getItem("keymap.preset");
-  return KEYMAPS.some((k) => k.id === id) ? (id as KeymapId) : "studio";
+  return KEYMAPS.some((k) => k.id === id) ? (id as KeymapId) : "omega";
 }
 
 export const keymapState = $state({ overrides: loadOverrides(), preset: loadPreset() });
@@ -185,12 +185,12 @@ const modesOverlap = (a: Command | undefined, b: Command) => !a?.modes || !b.mod
 
 const baseCache = new Map<KeymapId, Record<string, string[]>>();
 
-/** Keys of every command under a preset: its own entries, else Studio's defaults minus keys the preset gave to others. */
+/** Keys of every command under a preset: its own entries, else Omega's defaults minus keys the preset gave to others. */
 function presetBase(id: KeymapId): Record<string, string[]> {
   let base = baseCache.get(id);
   if (base) return base;
   const preset = KEYMAPS.find((k) => k.id === id)?.keys ?? {};
-  // Only keys a command newly gets count as claimed; clashes Studio already has (and resolves by scope) stay.
+  // Only keys a command newly gets count as claimed; clashes Omega already has (and resolves by scope) stay.
   const claimed = COMMANDS.filter((c) => c.id in preset).map((c) => {
     const own = c.keys.map(normalize);
     return { c, keys: preset[c.id].map(normalize).filter((k) => !own.includes(k)) };

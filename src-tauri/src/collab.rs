@@ -15,7 +15,7 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::Mutex;
 
-const ALPN: &[u8] = b"studio/collab/1";
+const ALPN: &[u8] = b"omega/collab/1";
 const MAX_MSG: usize = 32 * 1024 * 1024;
 
 struct Peer {
@@ -56,9 +56,9 @@ async fn endpoint(app: &AppHandle) -> Result<Endpoint, String> {
         return Ok(ep.clone());
     }
     let mut builder = Endpoint::builder(presets::N0).alpns(vec![ALPN.to_vec()]);
-    // Diagnostics: STUDIO_COLLAB_RELAY_ONLY=1 disables direct connections (simulates networks
+    // Diagnostics: OMEGA_COLLAB_RELAY_ONLY=1 disables direct connections (simulates networks
     // like eduroam that block peer-to-peer traffic).
-    if std::env::var("STUDIO_COLLAB_RELAY_ONLY").is_ok_and(|v| v == "1") {
+    if std::env::var("OMEGA_COLLAB_RELAY_ONLY").is_ok_and(|v| v == "1") {
         builder = builder.clear_ip_transports();
     }
     let ep = builder.bind().await.map_err(err)?;
@@ -123,13 +123,13 @@ pub async fn collab_host(app: AppHandle) -> Result<String, String> {
             }
         });
     }
-    Ok(format!("studio-{ticket}"))
+    Ok(format!("omega-{ticket}"))
 }
 
 /// Joins a session; returns the peer id of the host.
 #[tauri::command]
 pub async fn collab_join(app: AppHandle, ticket: String) -> Result<String, String> {
-    let raw = ticket.trim().trim_start_matches("studio-");
+    let raw = ticket.trim().trim_start_matches("omega-");
     let json = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(raw).map_err(|_| "Ungültiger Einladungscode".to_string())?;
     let addr: EndpointAddr = serde_json::from_slice(&json).map_err(|_| "Ungültiger Einladungscode".to_string())?;
     let ep = endpoint(&app).await?;

@@ -355,7 +355,7 @@ export async function save(id = app.activeId, forceDialog = false): Promise<bool
     return false;
   }
   ed.markSaved(tab.id, snapshot);
-  window.dispatchEvent(new CustomEvent("studio:saved", { detail: path }));
+  window.dispatchEvent(new CustomEvent("omega:saved", { detail: path }));
   for (const c of allClients()) c.save(fileUri(path), ed.getText(tab.id));
   if (tab.path !== path) {
     tab.path = path;

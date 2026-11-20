@@ -171,23 +171,23 @@
                 </div>
                 <div class="rowend">
                   {#if st}
-                    <span class="pill" class:ok={st.source === "studio"} class:sys={st.source === "system"}>
-                      {st.source === "studio" ? t("installs.studio") : st.source === "system" ? t("installs.system") : t("installs.missing")}{#if st.source !== "missing"}{` · ${st.version ?? t("installs.unknownVersion")}`}{/if}
+                    <span class="pill" class:ok={st.source === "omega"} class:sys={st.source === "system"}>
+                      {st.source === "omega" ? t("installs.omega") : st.source === "system" ? t("installs.system") : t("installs.missing")}{#if st.source !== "missing"}{` · ${st.version ?? t("installs.unknownVersion")}`}{/if}
                     </span>
                   {:else}
                     <span class="pill">…</span>
                   {/if}
                   {#if busy}
                     <span class="note inline">{t(`installs.busy.${busy}`)}</span>
-                  {:else if st?.source === "studio" || st?.source === "system"}
-                    {#if it.id === "lsp:rust" && st.source === "studio"}
+                  {:else if st?.source === "omega" || st?.source === "system"}
+                    {#if it.id === "lsp:rust" && st.source === "omega"}
                       <span class="note inline">{t("installs.withRust")}</span>
                     {:else if upd}
                       <button class="btn" onclick={() => update(it.id)}>{t("installs.update", { v: upd })}</button>
                     {:else if wasChecked(it.id)}
                       <span class="note inline">{t("installs.upToDate")}</span>
                     {/if}
-                    {#if st.source === "studio"}<button class="btn ghost" onclick={() => remove(it.id)}>{t("installs.remove")}</button>{/if}
+                    {#if st.source === "omega"}<button class="btn ghost" onclick={() => remove(it.id)}>{t("installs.remove")}</button>{/if}
                   {:else if st?.source === "missing" && canInstall(it.id)}
                     <button class="btn" onclick={() => install(it.id)}>{t("installs.install")}</button>
                   {/if}
@@ -347,13 +347,18 @@
   header, .tabs, .scroll > section { width: 100%; max-width: 900px; margin-left: auto; margin-right: auto; }
   header { padding-left: 34px; padding-right: 26px; }
   .tabs { padding-left: 30px; }
-  .tabs { display: flex; gap: 6px; padding: 6px 30px 10px; }
+  .tabs { display: flex; gap: 6px; padding: 6px 30px 10px; overflow-x: auto; flex-shrink: 0; }
+  .tabs::-webkit-scrollbar { height: 0; }
+  .tab { flex-shrink: 0; white-space: nowrap; }
   .tab { height: 32px; padding: 0 16px; border-radius: 999px; font-size: 13px; font-weight: 600; color: var(--label-2); background: rgba(var(--fg-rgb), 0.05); transition: background 0.2s, color 0.2s; }
   .tab:hover { color: var(--label); background: rgba(var(--fg-rgb), 0.1); }
   .tab:active { transform: scale(0.95); }
   .tab.on { color: var(--label); background: var(--raised-bg); box-shadow: var(--raised-shadow); }
   .box { border-radius: 18px; background: rgba(var(--fg-rgb), 0.035); box-shadow: inset 0 1px 0 rgba(var(--hl-rgb), 0.04); padding: 4px; margin-top: 14px; }
-  .srow { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 14px 16px; }
+  /* The control wraps below its label once the label would get narrower than ~200px. */
+  .srow { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 20px; padding: 14px 16px; }
+  .srow > :first-child { flex: 1 1 200px; min-width: 0; }
+  .srow > :not(:first-child) { max-width: 100%; }
   .srow + .srow { border-top: 1px solid rgba(var(--fg-rgb), 0.05); }
   .srow b { display: block; font-size: 14px; font-weight: 600; }
   .sub2 { display: block; margin-top: 2px; font-size: 12px; color: var(--label-3); }
@@ -366,7 +371,7 @@
   .stepper button:hover { background: rgba(var(--fg-rgb), 0.14); }
   .stepper button:active { transform: scale(0.88); }
   .stepper .val { width: 56px; text-align: right; font-variant-numeric: tabular-nums; color: var(--label-2); font-size: 12.5px; }
-  input[type="range"] { width: 180px; padding: 0; height: 4px; appearance: none; background: var(--recess); box-shadow: var(--recess-shadow); border-radius: 999px; }
+  input[type="range"] { width: clamp(80px, 25vw, 180px); padding: 0; height: 4px; appearance: none; background: var(--recess); box-shadow: var(--recess-shadow); border-radius: 999px; }
   input[type="range"]::-webkit-slider-thumb { appearance: none; width: 20px; height: 20px; border-radius: 50%; background: #fff; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45); cursor: pointer;  }
   input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.12); }
   .seg { display: flex; padding: 3px; border-radius: 999px; background: var(--recess); box-shadow: var(--recess-shadow); }
@@ -397,7 +402,14 @@
   h2 { margin: 12px 0 4px; font-size: 20px; font-weight: 700; }
   .desc { margin: 0 0 8px; color: var(--label-2); font-size: 13px; }
   h3 { margin: 22px 2px 10px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--label-2); }
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(280px, 100%), 1fr)); gap: 14px; }
+  @media (max-width: 600px) {
+    .overlay { padding: 8px; }
+    header { padding: 18px 16px 6px 22px; }
+    .tabs { padding: 6px 18px 10px; }
+    .scroll { padding: 8px 18px 24px; }
+    .srow { padding: 12px; }
+  }
   .card {
     display: flex;
     flex-direction: column;

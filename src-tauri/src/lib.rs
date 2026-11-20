@@ -31,7 +31,7 @@ pub fn run() {
         .manage(codex_ipc::CodexState::default())
         .setup(|app| {
             use tauri::Manager;
-            let tools = app.path().app_data_dir().map(|d| d.join("tools")).unwrap_or_else(|_| env::home().join(".studio-tools"));
+            let tools = app.path().app_data_dir().map(|d| d.join("tools")).unwrap_or_else(|_| env::home().join(".omega-tools"));
             env::init(tools);
             // Start the Claude Code IDE server before any terminal spawns (they get its port).
             let h = app.handle().clone();

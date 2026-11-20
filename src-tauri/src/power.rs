@@ -1,5 +1,5 @@
 //! Keep the machine awake (also with the lid closed) while an AI agent – Claude Code, Codex or
-//! OpenCode – runs in one of Studio's terminals.
+//! OpenCode – runs in one of Omega's terminals.
 //!
 //! A background thread looks at the process trees of all terminal shells every few seconds and
 //! holds a platform "inhibitor" while an agent is found:
@@ -203,10 +203,10 @@ mod platform {
     }
 
     pub fn acquire(_: Option<&Path>) -> (Handle, bool, Option<String>) {
-        // `tail --pid` ends together with Studio, so a crash can't leave the inhibitor behind.
+        // `tail --pid` ends together with Omega, so a crash can't leave the inhibitor behind.
         let me = std::process::id().to_string();
         let child = std::process::Command::new("systemd-inhibit")
-            .args(["--what=handle-lid-switch:sleep:idle", "--who=Studio", "--why=AI agent running in a terminal", "--mode=block"])
+            .args(["--what=handle-lid-switch:sleep:idle", "--who=Omega", "--why=AI agent running in a terminal", "--mode=block"])
             .args(["tail", "--pid", &me, "-f", "/dev/null"])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -245,12 +245,12 @@ mod platform {
 
     /// `pmset` needs root: ask for the admin password with the system dialog.
     fn pmset(value: u8) -> Result<(), String> {
-        let script = format!("do shell script \"/usr/bin/pmset -a disablesleep {value}\" with administrator privileges with prompt \"Studio: keep the Mac awake with the lid closed while an AI agent is running\"");
+        let script = format!("do shell script \"/usr/bin/pmset -a disablesleep {value}\" with administrator privileges with prompt \"Omega: keep the Mac awake with the lid closed while an AI agent is running\"");
         let out = std::process::Command::new("osascript").args(["-e", &script]).output().map_err(|e| e.to_string())?;
         if out.status.success() { Ok(()) } else { Err(String::from_utf8_lossy(&out.stderr).trim().to_string()) }
     }
 
-    /// Studio crashed while the lid setting was changed: turn it back.
+    /// Omega crashed while the lid setting was changed: turn it back.
     pub fn recover(dir: Option<&Path>) {
         if let Some(m) = marker(dir).filter(|m| m.exists()) {
             if pmset(0).is_ok() {
@@ -321,7 +321,7 @@ mod platform {
     use windows_sys::Win32::System::Power::{SetThreadExecutionState, ES_CONTINUOUS, ES_SYSTEM_REQUIRED};
 
     pub struct Handle {
-        /// Lid values (AC, DC) before Studio changed them.
+        /// Lid values (AC, DC) before Omega changed them.
         saved: Option<(u32, u32)>,
         marker: Option<PathBuf>,
     }

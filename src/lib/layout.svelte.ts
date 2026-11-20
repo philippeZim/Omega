@@ -14,7 +14,10 @@ export type ViewId = "files" | "changes" | "outline" | "terminal" | "debug" | "c
 export type Zone = "left" | "right" | "bottom";
 export const ZONES: Zone[] = ["left", "right", "bottom"];
 export const VIEWS: ViewId[] = ["files", "changes", "outline", "terminal", "debug", "console", "search", "pdf"];
-export const MIN_SIZE: Record<Zone, number> = { left: 170, right: 260, bottom: 120 };
+export const MIN_SIZE: Record<Zone, number> = { left: 210, right: 260, bottom: 120 };
+/** Narrowest editor column next to docked side zones; below that the side zones float over it. */
+export const CENTER_MIN = 340;
+const GAP = 8;
 
 interface ZoneState {
   views: ViewId[];
@@ -72,6 +75,16 @@ export const layout = $state({
   zones: initial.zones,
   open: initial.open,
 });
+
+/** Window size in CSS px (decides whether side zones are docked or float as overlays). */
+export const viewport = $state({ w: innerWidth, h: innerHeight });
+addEventListener("resize", () => {
+  viewport.w = innerWidth;
+  viewport.h = innerHeight;
+});
+
+/** Side zones opened as overlay in a narrow window. Not persisted: overlays start closed. */
+const peek = $state<Record<Zone, boolean>>({ left: false, right: false, bottom: false });
 
 export const drag = $state({
   view: null as ViewId | null,
@@ -133,14 +146,36 @@ function defaultOpen(z: Zone, mode: Mode): boolean {
 }
 
 export const isOpen = (z: Zone): boolean => layout.open[app.mode]?.[z] ?? defaultOpen(z, app.mode);
-export const zoneShown = (z: Zone): boolean => isOpen(z) && activeView(z) !== null;
+
+/** Whether a side zone fits next to the editor column (else it floats over the editor). */
+export function isOverlay(z: Zone): boolean {
+  if (z === "bottom") return false;
+  const base = 2 * GAP + CENTER_MIN + GAP; // shell padding + editor + gap to the zone
+  const leftFits = viewport.w >= base + MIN_SIZE.left;
+  if (z === "left") return !leftFits;
+  const leftDocked = leftFits && isOpen("left") && activeView("left") !== null;
+  return viewport.w < base + MIN_SIZE.right + (leftDocked ? MIN_SIZE.left + GAP : 0);
+}
+
+export const zoneShown = (z: Zone): boolean => activeView(z) !== null && (isOverlay(z) ? peek[z] : isOpen(z));
 export const isShown = (v: ViewId): boolean => zoneShown(zoneOf(v)) && activeView(zoneOf(v)) === v;
 
 // ------------------------------------------------------------------ actions
 
 export function setOpen(z: Zone, open: boolean) {
+  // Overlays: one at a time. The open state is saved too, for when the window gets wider again
+  // (clicking next to an overlay only closes it via closeOverlays and keeps that state).
+  if (isOverlay(z)) {
+    peek[z] = open;
+    if (open) for (const o of ZONES) if (o !== z) peek[o] = false;
+  }
   (layout.open[app.mode] ??= {})[z] = open;
   save();
+}
+
+/** Closes floating side zones (click into the editor, file opened …). */
+export function closeOverlays() {
+  peek.left = peek.right = false;
 }
 
 export function setActive(z: Zone, v: ViewId) {

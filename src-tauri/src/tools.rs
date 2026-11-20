@@ -1,8 +1,8 @@
-//! Tools Studio can install by itself into its app-data folder (`tools/`), per OS and CPU:
+//! Tools Omega can install by itself into its app-data folder (`tools/`), per OS and CPU:
 //! uv (Python), tectonic (LaTeX), Node.js, pnpm, CMake, Ninja, clangd, a JDK, Gradle, Rust (rustup),
 //! a C/C++ compiler (llvm-mingw on Windows, Xcode Command Line Tools on macOS) and Git on Windows.
 //! Installed tools are recorded in `tools/managed.json` (tool id → folder with its executables);
-//! those folders are appended to the PATH of everything Studio starts (see `env.rs`).
+//! those folders are appended to the PATH of everything Omega starts (see `env.rs`).
 use crate::env;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -53,7 +53,7 @@ struct Progress<'a> {
 }
 
 fn agent() -> ureq::Agent {
-    ureq::AgentBuilder::new().user_agent("studio-ide").timeout_connect(std::time::Duration::from_secs(20)).build()
+    ureq::AgentBuilder::new().user_agent("omega-ide").timeout_connect(std::time::Duration::from_secs(20)).build()
 }
 
 pub fn http_text(url: &str) -> Result<String, String> {
@@ -340,7 +340,7 @@ fn install_rust(app: &AppHandle) -> Result<String, String> {
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).chars().take(800).collect());
     }
-    // Recorded so the Installations tab knows this toolchain is Studio's to update/remove.
+    // Recorded so the Installations tab knows this toolchain is Omega's to update/remove.
     let bin = env::home().join(".cargo").join("bin");
     record("rust", &bin)?;
     Ok(env::norm(bin))
@@ -354,7 +354,7 @@ mod tests {
     #[test]
     #[ignore]
     fn install_small_tools() {
-        let root = std::env::temp_dir().join(format!("studio-tools-test-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("omega-tools-test-{}", std::process::id()));
         for id in ["ninja", "uv", "pnpm", "tectonic"] {
             let p = plan(id).unwrap();
             let tmp = root.join(format!(".{id}.dl"));

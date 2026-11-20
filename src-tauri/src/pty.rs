@@ -88,7 +88,7 @@ fn wsl_distros() -> Vec<String> {
 }
 
 /// Command for a terminal. `run`: the Run terminal, which on Windows is always cmd.exe because
-/// Studio's run commands use `&&` (missing in Windows PowerShell 5). `shell`: an id from
+/// Omega's run commands use `&&` (missing in Windows PowerShell 5). `shell`: an id from
 /// `list_shells` (None = system default).
 fn shell_command(run: bool, shell: Option<&str>, cwd: &str) -> CommandBuilder {
     if cfg!(windows) {
@@ -146,7 +146,7 @@ pub fn pty_spawn(app: AppHandle, id: String, cwd: Option<String>, cols: u16, row
     let mut cmd = shell_command(kind.as_deref() == Some("run"), shell.as_deref(), &dir);
     cmd.cwd(&dir);
     cmd.env("PATH", crate::env::path());
-    // Don't leak a parent Claude Code session's markers (e.g. Studio started from `claude`) into
+    // Don't leak a parent Claude Code session's markers (e.g. Omega started from `claude`) into
     // the user's shells; the login shell re-reads the user's own profile anyway.
     for (k, _) in std::env::vars() {
         if k == "CLAUDECODE" || k.starts_with("CLAUDE_CODE_") || k == "CLAUDE_AGENT_SDK_VERSION" {
@@ -155,7 +155,7 @@ pub fn pty_spawn(app: AppHandle, id: String, cwd: Option<String>, cols: u16, row
     }
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
-    cmd.env("TERM_PROGRAM", "Studio");
+    cmd.env("TERM_PROGRAM", "Omega");
     // Claude Code started in this terminal connects to our IDE server automatically.
     let ide_port = crate::ide_ws::PORT.load(std::sync::atomic::Ordering::SeqCst);
     if ide_port != 0 {
@@ -168,11 +168,11 @@ pub fn pty_spawn(app: AppHandle, id: String, cwd: Option<String>, cols: u16, row
     }
 
     if let Some(t) = crate::mcp_control::TOKEN.lock().unwrap().clone() {
-        cmd.env("STUDIO_MCP_TOKEN", t);
+        cmd.env("OMEGA_MCP_TOKEN", t);
     }
     if cfg!(windows) {
-        // Forward Studio's variables into WSL shells (Windows → Linux env bridging).
-        let fwd = "TERM_PROGRAM:COLORTERM:CLAUDE_CODE_SSE_PORT:ENABLE_IDE_INTEGRATION:FORCE_CODE_TERMINAL:STUDIO_MCP_TOKEN";
+        // Forward Omega's variables into WSL shells (Windows → Linux env bridging).
+        let fwd = "TERM_PROGRAM:COLORTERM:CLAUDE_CODE_SSE_PORT:ENABLE_IDE_INTEGRATION:FORCE_CODE_TERMINAL:OMEGA_MCP_TOKEN";
         let wslenv = std::env::var("WSLENV").map(|v| format!("{v}:{fwd}")).unwrap_or(fwd.into());
         cmd.env("WSLENV", wslenv);
     }

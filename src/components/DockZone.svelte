@@ -1,6 +1,6 @@
 <script lang="ts">
   import Glyph from "./Glyph.svelte";
-  import { layout, visibleViews, activeView, zoneShown, setActive, setOpen, setSize, saveLayout, startDrag, noteFocus, drag, MIN_SIZE, type Zone, type ViewId } from "../lib/layout.svelte";
+  import { layout, visibleViews, activeView, zoneShown, isOverlay, setActive, setOpen, setSize, saveLayout, startDrag, noteFocus, drag, MIN_SIZE, type Zone, type ViewId } from "../lib/layout.svelte";
   import { t } from "../lib/i18n/index.svelte";
   import { git, refresh as gitRefresh } from "../lib/git/git.svelte";
   import { find } from "../lib/search/search.svelte";
@@ -20,6 +20,7 @@
   const views = $derived(visibleViews(zone));
   const active = $derived(activeView(zone));
   const shown = $derived(zoneShown(zone));
+  const overlay = $derived(isOverlay(zone));
   const hasTerminal = $derived(z.views.includes("terminal"));
 
   function label(v: ViewId): string {
@@ -67,11 +68,11 @@
   }
 </script>
 
-<section class="dock dock-{zone} glass" class:hidden={!shown} data-zone={zone} onfocusin={noteFocus}
-  style={zone === "bottom" ? `height: ${z.size}px` : `width: ${z.size}px; min-width: ${MIN_SIZE[zone]}px`}>
+<section class="dock dock-{zone} glass" class:hidden={!shown} class:overlay data-zone={zone} onfocusin={noteFocus}
+  style={zone === "bottom" ? `height: ${z.size}px` : overlay ? `width: min(${z.size}px, 100% - 48px)` : `width: ${z.size}px; min-width: ${MIN_SIZE[zone]}px`}>
   <div class="resizer" role="separator" onpointerdown={startResize}></div>
   <header class="head">
-    <div class="switch" class:grow={active !== "terminal"} data-drop-zone={zone} role="tablist">
+    <div class="switch" class:grow={active !== "terminal"} class:single={views.length === 1} data-drop-zone={zone} role="tablist">
       {#each views as v (v)}
         <button class="vt" class:on={v === active} class:dragging={drag.view === v} data-view-tab={v} role="tab" aria-selected={v === active}
           onpointerdown={(e) => startDrag(e, v)} onclick={() => pick(v)} title={label(v)}>
@@ -110,11 +111,30 @@
 </section>
 
 <style>
-  .dock { position: relative; display: flex; flex-direction: column; min-height: 0; }
+  .dock { position: relative; display: flex; flex-direction: column; min-height: 0; container: dock / inline-size; }
+  /* Narrow zone with a single view: its name only costs room the terminal tabs need. */
+  @container dock (max-width: 380px) {
+    .switch.single:not(.grow) { display: none; }
+  }
   .dock.hidden { display: none; }
   /* Side zones give way (down to their minimum) before the editor column disappears. */
   .dock-left, .dock-right { flex-shrink: 1; }
-  .dock-bottom { flex-shrink: 0; }
+  /* In a low window the terminal gives way down to a usable minimum before the editor does. */
+  .dock-bottom { flex-shrink: 1; min-height: 90px; }
+  /* Narrow window: side zones float over the editor like a drawer. */
+  .dock.overlay {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    z-index: 30;
+    background: var(--glass-strong);
+    box-shadow: var(--glass-highlight), 0 24px 70px rgba(0, 0, 0, 0.7), 0 4px 14px rgba(0, 0, 0, 0.45);
+    animation: dock-in 0.18s cubic-bezier(0.3, 0.9, 0.3, 1);
+  }
+  .dock-left.overlay { left: 0; }
+  .dock-right.overlay { right: 0; }
+  /* Opacity only: WebKitGTK flashes a stale frame when a transform animation ends. */
+  @keyframes dock-in { from { opacity: 0; } }
 
   .resizer { position: absolute; z-index: 5; }
   .dock-left .resizer { right: -6px; top: 0; bottom: 0; width: 6px; cursor: col-resize; }

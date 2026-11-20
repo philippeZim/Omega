@@ -1,6 +1,6 @@
 /**
  * External tools a feature needs (compilers, runtimes, LaTeX …). `ensureTools` checks the PATH and
- * offers to install what's missing into Studio's app folder (see src-tauri/src/tools.rs), so the
+ * offers to install what's missing into Omega's app folder (see src-tauri/src/tools.rs), so the
  * same features work on Windows, macOS and Linux without manual setup.
  */
 import { invoke } from "@tauri-apps/api/core";
@@ -57,7 +57,7 @@ export async function hasTool(id: ToolId): Promise<boolean> {
 let installable: Promise<string[]> | null = null;
 const canInstall = async (id: ToolId) => (await (installable ??= invoke<string[]>("tool_installable"))).includes(id);
 
-/** How to get a tool by hand when Studio can't install it (Linux system compilers). */
+/** How to get a tool by hand when Omega can't install it (Linux system compilers). */
 function manualHint(id: ToolId): string {
   if (id === "cc" || id === "git")
     return "sudo apt install build-essential git   # Debian/Ubuntu\nsudo dnf install gcc gcc-c++ git          # Fedora\nsudo pacman -S base-devel git             # Arch";

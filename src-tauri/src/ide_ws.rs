@@ -49,14 +49,14 @@ fn lock_dir() -> PathBuf {
     }
 }
 
-/// Removes lock files of Studio instances that are no longer running (killed / crashed).
+/// Removes lock files of Omega instances that are no longer running (killed / crashed).
 fn remove_stale_locks() {
     let Ok(rd) = std::fs::read_dir(lock_dir()) else { return };
     for e in rd.flatten() {
         let p = e.path();
         if p.extension().and_then(|x| x.to_str()) != Some("lock") { continue }
         let Ok(v) = std::fs::read_to_string(&p).map(|t| serde_json::from_str::<Value>(&t).unwrap_or_default()) else { continue };
-        if v["ideName"] != "Studio" { continue }
+        if v["ideName"] != "Omega" { continue }
         let alive = v["pid"].as_u64().is_some_and(|pid| crate::env::pid_alive(pid as u32));
         if !alive {
             let _ = std::fs::remove_file(&p);
@@ -76,7 +76,7 @@ fn write_lock(port: u16, token: &str, folders: &[String]) -> Option<PathBuf> {
     let body = json!({
         "pid": std::process::id(),
         "workspaceFolders": folders,
-        "ideName": "Studio",
+        "ideName": "Omega",
         "transport": "ws",
         "authToken": token,
     });
@@ -274,7 +274,7 @@ async fn handle(app: &AppHandle, conn: u64, msg: &Value) -> Option<String> {
             result(&id, json!({
             "protocolVersion": "2024-11-05",
             "capabilities": { "logging": {}, "prompts": { "listChanged": true }, "tools": { "listChanged": true } },
-            "serverInfo": { "name": "studio", "version": env!("CARGO_PKG_VERSION") },
+            "serverInfo": { "name": "omega", "version": env!("CARGO_PKG_VERSION") },
         }))
         }
         "ping" => result(&id, json!({})),

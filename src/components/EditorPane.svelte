@@ -65,6 +65,7 @@
   <div class="host" class:hidden={!app.activeId} bind:this={host} oncontextmenu={contextMenu} role="presentation"></div>
   {#if !app.activeId}
     <div class="welcome">
+      <div class="inner">
       <h1>{modeLabel}</h1>
       <div class="actions">
         <button class="btn" onclick={newFile}>{t("code.ed.newFile")} <kbd>{IS_MAC ? "⌘" : t("code.key.ctrl")} N</kbd></button>
@@ -72,6 +73,7 @@
         {#if app.mode === "code"}<button class="btn primary" onclick={() => (runner.newProject = true)}>{t("code.np.newProject")}</button>{/if}
       </div>
       <p class="hint">{t("code.ed.hint")}</p>
+      </div>
     </div>
   {/if}
 </div>
@@ -85,13 +87,16 @@
     inset: 0;
     display: flex;
     flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 18px;
+    padding: 16px;
+    text-align: center;
     color: var(--label-2);
+    overflow: auto;
   }
+  /* margin: auto centres while there is room and never pushes content above the top edge. */
+  .inner { margin: auto; display: flex; flex-direction: column; align-items: center; gap: 18px; }
   h1 { margin: 0; font-size: 34px; font-weight: 700; letter-spacing: -0.02em; color: var(--label); }
-  .actions { display: flex; gap: 10px; }
+  .actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; }
+  .actions .btn { white-space: nowrap; }
   kbd { font-family: var(--font); font-size: 11px; color: var(--label-3); margin-left: 8px; }
   .hint { margin: 0; font-size: 12px; color: var(--label-3); }
 </style>

@@ -25,6 +25,7 @@
 </script>
 
 <div class="ttabs">
+  <div class="list">
   {#each terms.tabs as tab (tab.id)}
     <div class="tab" class:active={tab.id === terms.active} class:exited={tab.exited} role="tab" tabindex="0" aria-selected={tab.id === terms.active}
       onclick={() => { terms.active = tab.id; focusTerm(tab.id); }} onkeydown={(e) => e.key === "Enter" && (terms.active = tab.id)}>
@@ -33,6 +34,7 @@
       <button class="x" onclick={(e) => { e.stopPropagation(); closeTerminal(tab.id); }} aria-label={t("common.close")}><Glyph name="x" size={8} /></button>
     </div>
   {/each}
+  </div>
   <button class="add" title={t("code.term.new")} onclick={() => newTerminal(app.root)}><Glyph name="plus" size={10} /></button>
   <button class="add pick" title={t("code.term.chooseShell")} onclick={shellMenu}><Glyph name="chevron-down" size={10} /></button>
   {#if terms.tabs.length > 1 || terms.split}
@@ -49,7 +51,10 @@
 <style>
   .ttabs { min-width: 0; flex: 0 1 auto; display: flex; align-items: center; gap: 4px; overflow: hidden; }
   .ttabs > * { flex-shrink: 0; }
-  .ttabs > .tab { flex-shrink: 1; min-width: 0; max-width: 240px; }
+  /* Tabs keep a readable minimum and scroll sideways; the buttons next to them stay put. */
+  .list { flex: 0 1 auto; min-width: 0; display: flex; align-items: center; gap: 4px; overflow-x: auto; }
+  .list::-webkit-scrollbar { height: 0; }
+  .list > .tab { flex: 0 1 auto; min-width: 88px; max-width: 240px; }
   .tab { height: 28px; display: flex; align-items: center; gap: 7px; padding: 0 5px 0 12px; border-radius: 999px; color: var(--label-2); font-size: 12px; white-space: nowrap; cursor: default; }
   .tab > :not(.label) { flex-shrink: 0; }
   .label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }

@@ -1,8 +1,8 @@
 {
-  "name": "studio",
+  "name": "omega",
   "private": true,
   "version": "0.1.0",
-  "description": "Studio – an editor for text, Markdown, LaTeX and code",
+  "description": "Omega – an editor for text, Markdown, LaTeX and code",
   "repository": "github:philippeZim/Omega",
   "license": "GPL-3.0-or-later",
   "type": "module",

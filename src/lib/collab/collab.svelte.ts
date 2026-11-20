@@ -114,7 +114,7 @@ export function approveNext() {
 export async function clipboardTicket(): Promise<string | null> {
   try {
     const s = (await readText())?.trim() ?? "";
-    return s.startsWith("studio-") ? s : null;
+    return s.startsWith("omega-") ? s : null;
   } catch {
     return null;
   }

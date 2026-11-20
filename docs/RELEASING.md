@@ -14,4 +14,4 @@ A local `pnpm tauri build` also signs and therefore needs `TAURI_SIGNING_PRIVATE
 
 - Drafts and pre-releases are invisible to the updater; only the latest published release counts.
 - On Linux only the AppImage updates itself. `.deb` / `.rpm` installs must be updated manually.
-- macOS: if Gatekeeper says the app is damaged, `xattr -cr /Applications/Studio.app` fixes it.
+- macOS: if Gatekeeper says the app is damaged, `xattr -cr /Applications/Omega.app` fixes it.

@@ -1,6 +1,6 @@
-//! Overview of everything Studio installs on demand (tools, language servers, debug adapters) for
-//! the "Installations" settings tab: where each one comes from (Studio's tools folder, the system,
-//! or missing), its version, the newest available version, and uninstalling Studio's copies.
+//! Overview of everything Omega installs on demand (tools, language servers, debug adapters) for
+//! the "Installations" settings tab: where each one comes from (Omega's tools folder, the system,
+//! or missing), its version, the newest available version, and uninstalling Omega's copies.
 //! Installing/updating reuses the regular install commands (`tool_install`, `install_server`,
 //! `install_debugger`); things that come from the system are only shown, never touched.
 use crate::env;
@@ -11,7 +11,7 @@ use std::time::Duration;
 #[derive(serde::Serialize)]
 pub struct Status {
     id: String,
-    /// "studio" | "system" | "missing"
+    /// "omega" | "system" | "missing"
     source: &'static str,
     path: Option<String>,
     version: Option<String>,
@@ -37,7 +37,7 @@ fn all_ids() -> Vec<String> {
     v
 }
 
-/// Commands that identify a tool on the PATH (first one = the executable in Studio's copy).
+/// Commands that identify a tool on the PATH (first one = the executable in Omega's copy).
 fn tool_cmds(id: &str) -> &'static [&'static str] {
     match id {
         "jdk" => &["java"],
@@ -119,7 +119,7 @@ fn in_tools(p: &Path) -> bool {
     p.starts_with(tools())
 }
 
-/// First of `cmds` on the PATH that isn't one of Studio's own copies.
+/// First of `cmds` on the PATH that isn't one of Omega's own copies.
 fn system_exe(cmds: &[&str]) -> Option<(PathBuf, String)> {
     let path = env::path();
     for c in cmds {
@@ -135,8 +135,8 @@ fn system_exe(cmds: &[&str]) -> Option<(PathBuf, String)> {
     None
 }
 
-fn studio(path: PathBuf, version: Option<String>) -> (&'static str, Option<PathBuf>, Option<String>) {
-    ("studio", Some(path), version)
+fn omega(path: PathBuf, version: Option<String>) -> (&'static str, Option<PathBuf>, Option<String>) {
+    ("omega", Some(path), version)
 }
 
 fn system_tool(cmds: &[&str], with_version: bool) -> (&'static str, Option<PathBuf>, Option<String>) {
@@ -160,28 +160,28 @@ fn locate(id: &str) -> (&'static str, Option<PathBuf>, Option<String>) {
                 let exe = env::which(&env::norm(bin.join(cmd))).unwrap_or_else(|| bin.join(cmd));
                 // llvm-mingw is versioned by release date; its folder name carries it.
                 let v = if name == "cc" && cfg!(windows) { name_version(&t.join("cc"), "llvm-mingw-") } else { exe_version(&exe, version_arg(cmd)) };
-                return studio(exe, v);
+                return omega(exe, v);
             }
             system_tool(tool_cmds(name), true)
         }
         ("lsp", "python") => {
             let d = t.join("python").join("node_modules");
             match env::which(&env::norm(d.join(".bin").join("basedpyright-langserver"))) {
-                Some(p) => studio(p, json_version(&d.join("basedpyright").join("package.json"))),
+                Some(p) => omega(p, json_version(&d.join("basedpyright").join("package.json"))),
                 None => system_tool(&["basedpyright-langserver", "pyright-langserver"], false),
             }
         }
         ("lsp", "typescript") => {
             let d = t.join("typescript").join("node_modules");
             match env::which(&env::norm(d.join(".bin").join("typescript-language-server"))) {
-                Some(p) => studio(p, json_version(&d.join("typescript-language-server").join("package.json"))),
+                Some(p) => omega(p, json_version(&d.join("typescript-language-server").join("package.json"))),
                 None => system_tool(&["typescript-language-server"], true),
             }
         }
         ("lsp", "java") => {
             let d = t.join("jdtls");
             if d.join("plugins").is_dir() {
-                return studio(d.clone(), name_version(&d.join("plugins"), "org.eclipse.jdt.ls.core_"));
+                return omega(d.clone(), name_version(&d.join("plugins"), "org.eclipse.jdt.ls.core_"));
             }
             system_tool(&["jdtls"], false)
         }
@@ -190,24 +190,24 @@ fn locate(id: &str) -> (&'static str, Option<PathBuf>, Option<String>) {
             match env::which("rust-analyzer").filter(|p| env::command(p).arg("--version").output().is_ok_and(|o| o.status.success())) {
                 Some(p) => {
                     let v = exe_version(&p, &["--version"]);
-                    (if manifest.contains_key("rust") { "studio" } else { "system" }, Some(p), v)
+                    (if manifest.contains_key("rust") { "omega" } else { "system" }, Some(p), v)
                 }
                 None => ("missing", None, None),
             }
         }
         ("debug", "codelldb") => {
             let d = t.join("codelldb").join("extension");
-            if d.is_dir() { studio(t.join("codelldb"), json_version(&d.join("package.json"))) } else { ("missing", None, None) }
+            if d.is_dir() { omega(t.join("codelldb"), json_version(&d.join("package.json"))) } else { ("missing", None, None) }
         }
         ("debug", "debugpy") => {
             let d = t.join("debugpy");
-            if d.join("debugpy").is_dir() { studio(d.clone(), name_version(&d, "debugpy-")) } else { ("missing", None, None) }
+            if d.join("debugpy").is_dir() { omega(d.clone(), name_version(&d, "debugpy-")) } else { ("missing", None, None) }
         }
         ("debug", "jsdebug") => {
             let d = t.join("js-debug");
             if d.is_dir() {
-                let v = std::fs::read_to_string(d.join(".studio-version")).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-                studio(d, v)
+                let v = std::fs::read_to_string(d.join(".omega-version")).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+                omega(d, v)
             } else {
                 ("missing", None, None)
             }
@@ -215,7 +215,7 @@ fn locate(id: &str) -> (&'static str, Option<PathBuf>, Option<String>) {
         ("debug", "javadebug") => {
             let d = t.join("java-debug");
             match name_version(&d, "com.microsoft.java.debug.plugin-") {
-                Some(v) => studio(d, Some(v)),
+                Some(v) => omega(d, Some(v)),
                 None => ("missing", None, None),
             }
         }
@@ -509,14 +509,14 @@ fn uninstall(id: &str) -> Result<(), String> {
     match id.split_once(':').unwrap_or(("", id)) {
         ("tool", "rust") => {
             if !manifest.contains_key("rust") {
-                return Err("Rust wurde nicht von Studio installiert".into());
+                return Err("Rust wurde nicht von Omega installiert".into());
             }
             run_ok(env::tool("rustup")?.args(["self", "uninstall", "-y"]))?;
             crate::tools::forget("rust")
         }
         ("tool", name) | ("lsp", name @ "clangd") => {
             if !manifest.contains_key(name) {
-                return Err(format!("{name} wurde nicht von Studio installiert"));
+                return Err(format!("{name} wurde nicht von Omega installiert"));
             }
             remove_dir(&t.join(name))?;
             crate::tools::forget(name)
@@ -541,18 +541,18 @@ fn uninstall(id: &str) -> Result<(), String> {
     }
 }
 
-/// Removes an item Studio installed (system installations are refused).
+/// Removes an item Omega installed (system installations are refused).
 #[tauri::command]
 pub async fn installs_remove(id: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || uninstall(&id)).await.map_err(|e| e.to_string())?
 }
 
-/// `rustup update` for a Rust toolchain Studio installed.
+/// `rustup update` for a Rust toolchain Omega installed.
 #[tauri::command]
 pub async fn installs_update_rust() -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(|| {
         if !crate::tools::manifest().contains_key("rust") {
-            return Err("Rust wurde nicht von Studio installiert".into());
+            return Err("Rust wurde nicht von Omega installiert".into());
         }
         run_ok(env::tool("rustup")?.arg("update"))
     })
@@ -581,7 +581,7 @@ mod live {
     #[test]
     #[ignore]
     fn live_overview() {
-        crate::env::init(crate::env::home().join(".local/share/io.github.philippezim.studio/tools"));
+        crate::env::init(crate::env::home().join(".local/share/io.github.philippezim.omega/tools"));
         for id in super::all_ids() {
             let (s, p, v) = super::locate(&id);
             let l = super::latest(&id);
@@ -593,7 +593,7 @@ mod live {
     #[test]
     #[ignore]
     fn live_system_updates() {
-        crate::env::init(crate::env::home().join(".local/share/io.github.philippezim.studio/tools"));
+        crate::env::init(crate::env::home().join(".local/share/io.github.philippezim.omega/tools"));
         let mut items = std::collections::BTreeMap::new();
         for id in super::all_ids() {
             let (s, p, _) = super::locate(&id);

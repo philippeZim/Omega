@@ -66,7 +66,7 @@ fn serve(app: AppHandle, mut s: UnixStream) {
             let _ = app.emit("codex-ide-request", ());
             json!({
                 "type": "response", "requestId": id, "resultType": "success", "method": "ide-context",
-                "handledByClientId": "studio",
+                "handledByClientId": "omega",
                 "result": { "type": "broadcast", "ideContext": if ctx.is_null() { json!({ "openTabs": [] }) } else { ctx } },
             })
         } else {

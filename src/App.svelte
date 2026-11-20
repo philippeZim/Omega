@@ -14,7 +14,7 @@
   import "./lib/power.svelte";
   import DockZone from "./components/DockZone.svelte";
   import DockOverlay from "./components/DockOverlay.svelte";
-  import { showView } from "./lib/layout.svelte";
+  import { showView, isOverlay, zoneShown, closeOverlays } from "./lib/layout.svelte";
   import NewProjectDialog from "./components/NewProjectDialog.svelte";
   import CommandPalette from "./components/CommandPalette.svelte";
   import FindInFiles from "./components/FindInFiles.svelte";
@@ -33,7 +33,7 @@
   setGitGutterHooks({ root: () => git.top || app.root, menu: (e, items) => ui.openMenu(e, items), showDiff: openDiff });
   setBlameRoot(() => git.top || app.root);
   startGitWatch();
-  window.addEventListener("studio:saved", () => gitRefresh());
+  window.addEventListener("omega:saved", () => gitRefresh());
   $effect(() => {
     void app.root;
     gitRefresh();
@@ -57,7 +57,7 @@
   import { openFile, setRoot } from "./lib/state.svelte";
   import { fsApi } from "./lib/api";
 
-  // `studio <folder|file>…` opens folders as workspace and files as tabs.
+  // `omega <folder|file>…` opens folders as workspace and files as tabs.
   onMount(async () => {
     for (const p of await invoke<string[]>("cli_paths")) {
       try {
@@ -69,6 +69,16 @@
     }
   });
 
+
+  // Floating side zones close when a file gets opened or the user clicks into the editor column.
+  $effect(() => {
+    void app.activeId;
+    closeOverlays();
+  });
+  const floating = $derived((isOverlay("left") && zoneShown("left")) || (isOverlay("right") && zoneShown("right")));
+  function centerDown(e: PointerEvent) {
+    if (floating && !(e.target as HTMLElement).closest("[data-zone=left], [data-zone=right]")) closeOverlays();
+  }
 
   // Docking search results shows the search view.
   $effect(() => {
@@ -84,9 +94,9 @@
 
 <div class="shell">
   <TopBar />
-  <div class="main">
+  <div class="main" class:floating onpointerdowncapture={centerDown}>
     <DockZone zone="left" />
-    <div class="center">
+    <div class="center" class:full={isOverlay("left") && isOverlay("right")}>
       <section class="workspace glass">
         <TabBar />
         <EditorPane />
@@ -134,6 +144,7 @@
     padding: 0 var(--gap) var(--gap);
   }
   .main {
+    position: relative;
     flex: 1;
     display: flex;
     gap: var(--gap);
@@ -142,14 +153,16 @@
   .center {
     flex: 1;
     /* Side panels (sidebar, PDF, debugger) give way before the editor column disappears. */
-    min-width: 320px;
+    min-width: 340px;
     display: flex;
     flex-direction: column;
     gap: var(--gap);
   }
+  /* Side zones float over the editor (narrow window): the editor column takes everything. */
+  .center.full { min-width: 0; }
   .workspace {
     flex: 1;
-    min-height: 0;
+    min-height: 120px;
     min-width: 0;
     display: flex;
     flex-direction: column;

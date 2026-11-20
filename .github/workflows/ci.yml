@@ -1,4 +1,4 @@
-# Compiles Studio on Windows, macOS and Linux for every push to main and every pull request.
+# Compiles Omega on Windows, macOS and Linux for every push to main and every pull request.
 name: CI
 
 on:

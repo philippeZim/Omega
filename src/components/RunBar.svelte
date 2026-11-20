@@ -9,6 +9,10 @@
   import { toggleView, isShown } from "../lib/layout.svelte";
   import { t } from "../lib/i18n/index.svelte";
 
+  /** Width of the tab bar: below ~640px labels collapse to icons, below ~460px build/test/version move into the "more" menu. */
+  let { width = 1000 }: { width?: number } = $props();
+  const level = $derived(width < 460 ? 2 : width < 640 ? 1 : 0);
+
   function terminal() {
     toggleView("terminal");
     if (isShown("terminal")) requestAnimationFrame(() => focusTerm());
@@ -46,7 +50,9 @@
   function moreMenu(e: MouseEvent) {
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
     const more = (p?.more ?? []).map((a) => ({ label: a.label, action: () => runAction(a) }));
+    const folded = level === 2 ? [p?.build, p?.test].filter((a) => !!a).map((a) => ({ label: a!.label, action: () => runAction(a!) })) : [];
     ui.openMenu(new MouseEvent("contextmenu", { clientX: r.right - 240, clientY: r.bottom + 8 }), [
+      ...folded,
       ...more,
       ...(more.length ? [{ label: "", separator: true }] : []),
       ...runner.versions.map((s) => ({ label: `${s.label}: ${s.current ?? t("code.ver.default")}…`, action: () => chooseVersion(s) })),
@@ -76,26 +82,26 @@
       {/if}
     </div>
 
-    {#if runner.versions.length}
+    {#if runner.versions.length && level < 2}
       <div class="gcap">
-        <button class="gbtn neutral" title={t("code.ver.chipTitle")} onclick={versionClick}>
-          {runner.versions.map((s) => s.chip).join(" · ")}
+        <button class="gbtn neutral ver" class:compact={level === 1} title={t("code.ver.chipTitle")} onclick={versionClick}>
+          <span>{runner.versions.map((s) => s.chip).join(" · ")}</span>
         </button>
       </div>
     {/if}
 
-    {#if p.build || p.test}
+    {#if (p.build || p.test) && level < 2}
       <div class="gcap">
         {#if p.build}
-          <button class="gbtn neutral" title={t("code.rb.buildTitle", { label: p.build.label })} onclick={() => runAction(p.build)}>
+          <button class="gbtn neutral" class:icon={level === 1} title={t("code.rb.buildTitle", { label: p.build.label })} onclick={() => runAction(p.build)}>
             <svg class="ico" width="13" height="13" viewBox="0 0 14 14"><path d="M8.6 1.6a3.4 3.4 0 0 0-3.9 4.6L1.4 9.5a1.4 1.4 0 0 0 2 2l3.3-3.3a3.4 3.4 0 0 0 4.6-3.9L9.4 6.2 7.8 6.1 7.7 4.5z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>
-            {p.build.label}
+            {#if level === 0}{p.build.label}{/if}
           </button>
         {/if}
         {#if p.test}
-          <button class="gbtn neutral" title={p.test.label} onclick={() => runAction(p.test)}>
+          <button class="gbtn neutral" class:icon={level === 1} title={p.test.label} onclick={() => runAction(p.test)}>
             <svg class="ico" width="13" height="13" viewBox="0 0 14 14"><path d="M5 1.5h4M6 1.5v4L2.3 11a1 1 0 0 0 .8 1.5h7.8a1 1 0 0 0 .8-1.5L8 5.5v-4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
-            {p.test.label}
+            {#if level === 0}{p.test.label}{/if}
           </button>
         {/if}
       </div>
@@ -120,5 +126,7 @@
 </div>
 
 <style>
-  .runbar { display: flex; align-items: center; gap: 8px; margin-left: auto; padding-left: 12px; flex-shrink: 0; }
+  .runbar { display: flex; align-items: center; gap: 8px; margin-left: auto; padding-left: 8px; flex-shrink: 0; }
+  .ver span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ver.compact { max-width: 110px; }
 </style>

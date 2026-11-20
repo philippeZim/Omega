@@ -75,7 +75,7 @@ export class LspClient {
       rootUri: fileUri(this.root),
       rootPath: this.root,
       workspaceFolders: [{ uri: fileUri(this.root), name: this.root.split("/").pop() }],
-      clientInfo: { name: "Studio" },
+      clientInfo: { name: "Omega" },
       capabilities: {
         general: { positionEncodings: ["utf-16"] },
         textDocument: {
@@ -292,7 +292,7 @@ async function resolveCommand(kind: ServerKind, root: string): Promise<{ cmd: st
       const data = `${tools}/jdtls-workspace/${(h >>> 0).toString(16)}`;
       const bundles = await javaDebugBundles();
       const init = bundles.length ? { bundles } : undefined;
-      // Studio's own jdtls is started with `java -jar` directly (its bin/jdtls wrapper needs Python).
+      // Omega's own jdtls is started with `java -jar` directly (its bin/jdtls wrapper needs Python).
       const home = `${tools}/jdtls`;
       const launcher = (await fsApi.listDir(`${home}/plugins`).catch(() => [])).find((e) => /^org\.eclipse\.equinox\.launcher_.*\.jar$/.test(e.name));
       const java = await which("java");

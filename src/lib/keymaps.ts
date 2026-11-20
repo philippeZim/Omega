@@ -1,13 +1,13 @@
 /**
  * Keymap presets ("import the defaults of another IDE"). A preset only lists the commands whose keys
- * differ from Studio's defaults; every other command keeps its default keys, minus any key the preset
+ * differ from Omega's defaults; every other command keeps its default keys, minus any key the preset
  * gives to another command in an overlapping mode (see `presetBase` in commands.svelte.ts).
  *
  * Bindings follow each IDE's Windows/Linux keymap; "Mod" is Cmd on macOS. Chords (Ctrl+K Ctrl+…) are not
- * supported and left out. Mod-1…Mod-4 stay reserved for Studio's mode switch.
+ * supported and left out. Mod-1…Mod-4 stay reserved for Omega's mode switch.
  */
 
-export type KeymapId = "studio" | "vscode" | "jetbrains" | "sublime" | "eclipse";
+export type KeymapId = "omega" | "vscode" | "jetbrains" | "sublime" | "eclipse";
 
 export interface KeymapPreset {
   id: KeymapId;
@@ -209,7 +209,7 @@ const ECLIPSE: Record<string, string[]> = {
 };
 
 export const KEYMAPS: KeymapPreset[] = [
-  { id: "studio", name: "Studio", keys: {} },
+  { id: "omega", name: "Omega", keys: {} },
   { id: "vscode", name: "VS Code", keys: VSCODE },
   { id: "jetbrains", name: "JetBrains (IntelliJ, PyCharm …)", keys: JETBRAINS },
   { id: "sublime", name: "Sublime Text", keys: SUBLIME },

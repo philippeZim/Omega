@@ -258,7 +258,7 @@ const CXX_COMPILER = OS === "linux" ? "g++" : "clang++";
 
 async function singleFileRun(lang: LangId | undefined, file: string): Promise<[string, ToolId[]] | null> {
   const f = q(file);
-  const out = q(await tmpPath(exe(`studio-${basename(file).replace(/\.\w+$/, "")}`)));
+  const out = q(await tmpPath(exe(`omega-${basename(file).replace(/\.\w+$/, "")}`)));
   switch (lang) {
     case "python": return [`uv run ${f}`, ["uv"]];
     case "c": return [`${C_COMPILER} -g -Wall ${f} -o ${out}${OS === "linux" ? " -lm" : ""} && ${out}`, ["cc"]];
@@ -308,7 +308,7 @@ export interface Template {
 
 /**
  * Starter document for Tectonic (XeLaTeX engine): fontspec instead of inputenc/fontenc, babel in
- * the UI language. The build output goes to Studio's cache, so the folder stays clean.
+ * the UI language. The build output goes to Omega's cache, so the folder stays clean.
  */
 function latexMain(name: string): string {
   const [babel, intro, hello] = ({ en: ["english", "Introduction", "Hello, world!"], de: ["ngerman", "Einleitung", "Hallo, Welt!"], fr: ["french", "Introduction", "Bonjour, le monde\\,!"] } as const)[i18n.locale];

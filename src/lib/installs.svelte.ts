@@ -1,5 +1,5 @@
 /**
- * The "Installations" settings tab: everything Studio installs on demand (tools, language servers,
+ * The "Installations" settings tab: everything Omega installs on demand (tools, language servers,
  * debug adapters). Status, versions and uninstalling come from src-tauri/src/installs.rs;
  * installing/updating reuses the regular install paths. System installations are only shown.
  */
@@ -15,7 +15,7 @@ import { stopServers, type ServerKind } from "./code/lsp.svelte";
 export type Group = "tool" | "lsp" | "debug";
 export interface Item { id: string; group: Group; label: string }
 export interface Owner { manager: string; package: string }
-export interface Status { id: string; source: "studio" | "system" | "missing"; path: string | null; version: string | null; owner: Owner | null }
+export interface Status { id: string; source: "omega" | "system" | "missing"; path: string | null; version: string | null; owner: Owner | null }
 export interface SysUpdate { available: string | null; command: string | null; full_system: boolean }
 
 const TOOL_IDS: ToolId[] = ["uv", "tectonic", "node", "pnpm", "cmake", "ninja", "jdk", "gradle", "rust", "git", "cc"];
@@ -60,12 +60,12 @@ export async function refreshInstalls() {
 }
 
 /**
- * Looks up updates: Studio's own copies against upstream releases, system installations against
+ * Looks up updates: Omega's own copies against upstream releases, system installations against
  * what their package manager offers.
  */
 export async function checkUpdates() {
   const all = Object.values(installs.status);
-  const ids = all.filter((s) => s.source === "studio" && hasLatest(s.id)).map((s) => s.id);
+  const ids = all.filter((s) => s.source === "omega" && hasLatest(s.id)).map((s) => s.id);
   const items = Object.fromEntries(all.filter((s) => s.source === "system" && s.owner).map((s) => [s.id, s.owner]));
   installs.checking = true;
   try {
@@ -102,7 +102,7 @@ export function isNewer(latest: string, installed: string) {
 export function updateAvailable(id: string): string | null {
   const s = installs.status[id], l = installs.latest[id];
   if (s?.source === "system") return installs.sys[id]?.command ? installs.sys[id].available : null;
-  if (!s || s.source !== "studio" || !l) return null;
+  if (!s || s.source !== "omega" || !l) return null;
   return !s.version || isNewer(l, s.version) ? l : null;
 }
 
@@ -112,7 +112,7 @@ export function canInstall(id: string): boolean {
   return true;
 }
 
-/** Package-manager hint for things Studio can't install on this OS (Linux compilers, Git). */
+/** Package-manager hint for things Omega can't install on this OS (Linux compilers, Git). */
 export function manualHint(id: string): string {
   if (OS !== "linux") return "";
   if (id === "tool:cc") return "sudo pacman -S base-devel · sudo apt install build-essential";

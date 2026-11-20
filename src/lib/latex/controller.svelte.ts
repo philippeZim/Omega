@@ -86,7 +86,7 @@ let again = false;
 let current: { id: string; path: string | null } | null = null;
 let outlineTimer: number | undefined;
 
-/** Installs Tectonic (into Studio's tools folder) and recompiles the current document. */
+/** Installs Tectonic (into Omega's tools folder) and recompiles the current document. */
 export async function installLatex() {
   if (!(await ensureTools(["tectonic"], t("tools.purpose.latex")))) return;
   await checkAvailable();

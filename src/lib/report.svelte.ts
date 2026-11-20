@@ -35,7 +35,7 @@ export async function toPngBytes(blob: Blob): Promise<Uint8Array> {
 
 async function environment(withErrors: boolean) {
   const [version, p] = await Promise.all([getVersion().catch(() => "?"), platform().catch(() => null)]);
-  const lines = [`- Studio: ${version}`, `- OS: ${p ? `${p.os} (${p.arch})` : navigator.userAgent}`, `- Mode: ${app.mode}`];
+  const lines = [`- Omega: ${version}`, `- OS: ${p ? `${p.os} (${p.arch})` : navigator.userAgent}`, `- Mode: ${app.mode}`];
   let errors = "";
   if (withErrors) {
     const home = p?.home;
