@@ -24,7 +24,16 @@ import { abortOperation, branches, commit, git, pull, push, refresh } from "./gi
 // ---------------------------------------------------------------- scripted fake repository
 
 /** State of the fake repo; git commands change it the way real git would. */
-let repo: { branch: string; operation: "rebase" | "merge" | null; changes: { path: string; x: string; y: string; orig: null }[]; files: Record<string, string> };
+let repo: {
+  branch: string;
+  operation: "rebase" | "rebase-apply" | "merge" | null;
+  changes: { path: string; x: string; y: string; orig: null }[];
+  files: Record<string, string>;
+  /** Paths read_file rejects (binary / not UTF-8). */
+  unreadable: string[];
+  /** How many more replayed commits conflict after a `rebase --continue`. */
+  moreConflicts: number;
+};
 let calls: string[][];
 
 function fakeRepo() {
@@ -32,7 +41,10 @@ function fakeRepo() {
     const p = payload as { args: string[]; path: string };
     if (cmd === "git_status")
       return { repo: true, top: "/repo", branch: repo.branch, upstream: repo.operation ? null : "origin/main", ahead: 0, behind: 0, changes: repo.changes, operation: repo.operation };
-    if (cmd === "read_file") return repo.files[p.path] ?? "";
+    if (cmd === "read_file") {
+      if (repo.unreadable.includes(p.path)) throw "not_utf8";
+      return repo.files[p.path] ?? "";
+    }
     if (cmd !== "git") return null;
     const a = p.args;
     calls.push(a);
@@ -45,6 +57,11 @@ function fakeRepo() {
     if (a[0] === "branch") return { ...ok, stdout: "(no branch, rebasing main)\nmain\norigin/main\n" };
     if (a[0] === "diff") return { code: 1, stdout: "", stderr: "" }; // something staged
     if (a[0] === "rebase" && a[1] === "--continue") {
+      if (repo.moreConflicts > 0) {
+        repo.moreConflicts--;
+        repo.changes = [{ path: "c.txt", x: "U", y: "U", orig: null }];
+        return { code: 1, stdout: "", stderr: "error: could not apply b2b2b2b... second local c" };
+      }
       Object.assign(repo, { operation: null, changes: [] });
       return ok;
     }
@@ -59,7 +76,7 @@ function fakeRepo() {
 beforeEach(async () => {
   m.toast = [];
   calls = [];
-  repo = { branch: "main", operation: null, changes: [], files: {} };
+  repo = { branch: "main", operation: null, changes: [], files: {}, unreadable: [], moreConflicts: 0 };
   fakeRepo();
   git.message = "";
   git.excluded = [];
@@ -125,5 +142,46 @@ describe("pull stopped at a rebase conflict (#67)", () => {
 
   test("the branch list leaves out the detached '(no branch, rebasing main)' entry", async () => {
     expect(await branches()).toEqual({ local: ["main"], remote: [] });
+  });
+
+  test("an unreadable (binary) conflicted file counts as unresolved", async () => {
+    await pull();
+    repo.unreadable = ["/repo/c.txt"];
+    calls = [];
+    await commit(false);
+    expect(calls.some((a) => a[0] === "add" || a[0] === "rebase")).toBe(false);
+    expect(lastToast()).toEqual([expect.stringContaining("git.conflictUnreadable"), "error"]);
+    expect(git.operation).toBe("rebase");
+  });
+
+  test("a typed message is used for one replayed commit only, not for the next conflicting one", async () => {
+    repo.moreConflicts = 1;
+    await pull();
+    repo.files["/repo/c.txt"] = "resolved\n";
+    git.message = "resolve conflict";
+    calls = [];
+    await commit(false);
+    expect(calls).toContainEqual(["commit", "-q", "-m", "resolve conflict"]);
+    expect(git.operation).toBe("rebase"); // stopped at the second commit
+    expect(lastToast()?.[0]).toContain("git.stillConflict");
+    expect(git.message).toBe("");
+    calls = [];
+    await commit(false);
+    expect(calls.some((a) => a[0] === "commit")).toBe(false);
+    expect(calls).toContainEqual(["rebase", "--continue"]);
+    expect(git.operation).toBe("");
+  });
+
+  test("apply-backend rebase: only --continue, never a commit in between", async () => {
+    await pull();
+    repo.operation = "rebase-apply";
+    await refresh();
+    expect(git.operation).toBe("rebase");
+    repo.files["/repo/c.txt"] = "resolved\n";
+    git.message = "resolve conflict";
+    calls = [];
+    await commit(false);
+    expect(calls.some((a) => a[0] === "commit")).toBe(false);
+    expect(calls).toContainEqual(["rebase", "--continue"]);
   });
 });

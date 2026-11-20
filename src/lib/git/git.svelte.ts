@@ -58,6 +58,8 @@ async function runOk(args: string[], what: Key): Promise<Out | null> {
 }
 
 let refreshing = false;
+/** The running rebase uses the apply backend: it only takes `--continue`, no commit in between. */
+let rebaseApply = false;
 /** HEAD commit seen by the last refresh ("" = none yet). */
 let headSha = "";
 export async function refresh() {
@@ -69,9 +71,10 @@ export async function refresh() {
   }
   refreshing = true;
   try {
-    const s = await invoke<{ repo: boolean; top: string; branch: string; upstream: string | null; ahead: number; behind: number; changes: Change[]; operation?: "rebase" | "merge" | null }>("git_status", { root: app.root });
+    const s = await invoke<{ repo: boolean; top: string; branch: string; upstream: string | null; ahead: number; behind: number; changes: Change[]; operation?: "rebase" | "rebase-apply" | "merge" | null }>("git_status", { root: app.root });
+    rebaseApply = s.operation === "rebase-apply";
     let headChanged = s.branch !== git.branch || s.top !== git.top;
-    Object.assign(git, { repo: s.repo, top: s.top, branch: s.branch, upstream: s.upstream, ahead: s.ahead, behind: s.behind, changes: s.changes, operation: s.operation ?? "" });
+    Object.assign(git, { repo: s.repo, top: s.top, branch: s.branch, upstream: s.upstream, ahead: s.ahead, behind: s.behind, changes: s.changes, operation: s.operation === "rebase-apply" ? "rebase" : (s.operation ?? "") });
     git.excluded = git.excluded.filter((p) => s.changes.some((c) => c.path === p));
     if (s.repo) {
       const [remote, head] = await Promise.all([run(["remote", "get-url", "origin"], s.top), run(["rev-parse", "--verify", "-q", "HEAD"], s.top)]);
@@ -188,13 +191,17 @@ function conflictToast(key: "git.pullConflict" | "git.stillConflict") {
   ui.toast(t(key, { files: files.join(", ") || "?", op }), "error");
 }
 
-/** Conflicted files among `files` that still contain conflict markers (not resolved yet). */
-async function unresolved(files: Change[]): Promise<string[]> {
-  const out: string[] = [];
+/**
+ * Conflicted files among `files` that are not resolved yet: still containing conflict markers, or
+ * unreadable as text (binary): those `add -A` would stage as they are, so they need resolving by hand.
+ */
+async function unresolved(files: Change[]): Promise<{ markers: string[]; unreadable: string[] }> {
+  const out = { markers: [] as string[], unreadable: [] as string[] };
   for (const c of files) {
     if (kind(c) !== "conflict") continue;
-    const text = await fsApi.readFile(absPath(c.path)).catch(() => "");
-    if (/^<{7}(?: |$)/m.test(text) && /^>{7}(?: |$)/m.test(text)) out.push(c.path);
+    const text = await fsApi.readFile(absPath(c.path)).catch(() => null);
+    if (text === null) out.unreadable.push(c.path);
+    else if (/^<{7}(?: |$)/m.test(text) && /^>{7}(?: |$)/m.test(text)) out.markers.push(c.path);
   }
   return out;
 }
@@ -209,7 +216,8 @@ export async function continueOperation(andPush = false) {
   await saveAll();
   const files = git.changes.filter((c) => !git.excluded.includes(c.path));
   const open = await unresolved(files);
-  if (open.length) return ui.toast(t("git.conflictMarkers", { files: open.join(", ") }), "error");
+  if (open.unreadable.length) return ui.toast(t("git.conflictUnreadable", { files: open.unreadable.join(", ") }), "error");
+  if (open.markers.length) return ui.toast(t("git.conflictMarkers", { files: open.markers.join(", ") }), "error");
   git.busy = t("git.busy.commit");
   let finished = false;
   try {
@@ -220,9 +228,13 @@ export async function continueOperation(andPush = false) {
     let r: Out;
     if (op === "merge") r = await run(msg ? ["commit", "-q", "-m", msg] : ["commit", "-q", "--no-edit"]);
     else {
-      // A typed message replaces the one of the commit being replayed; empty keeps it.
-      const staged = await run(["diff", "--cached", "--quiet"]);
-      if (msg && staged.code === 1 && !(await runOk(["commit", "-q", "-m", msg], "git.op.commit"))) return;
+      // A typed message replaces the one of the commit being replayed; empty keeps it. It is used
+      // once: the next replayed commit (if that conflicts too) keeps its own message again.
+      // The apply backend only takes `--continue` (a commit in between makes it stop with "No changes").
+      if (msg && !rebaseApply && (await run(["diff", "--cached", "--quiet"])).code === 1) {
+        if (!(await runOk(["commit", "-q", "-m", msg], "git.op.commit"))) return;
+        git.message = "";
+      }
       r = await run(["rebase", "--continue"]);
     }
     git.headVersion++;

@@ -86,14 +86,19 @@ pub async fn git_status(root: String) -> Result<Status, String> {
     .map_err(|e| e.to_string())?
 }
 
-/// Rebase/merge in progress in `git_dir`: ("rebase" | "merge", branch being rebased).
+/// Rebase/merge in progress in `git_dir`: ("rebase" | "rebase-apply" | "merge", branch being rebased).
+/// "rebase-apply" is the older apply backend (`--continue` only, no manual commit in between);
+/// a `git am` session also lives in rebase-apply/ (marked by "applying") and is not reported.
 fn operation_in(git_dir: &std::path::Path) -> (Option<String>, Option<String>) {
     for d in ["rebase-merge", "rebase-apply"] {
         let dir = git_dir.join(d);
         if dir.is_dir() {
+            if dir.join("applying").exists() {
+                return (None, None);
+            }
             let head = std::fs::read_to_string(dir.join("head-name")).ok();
             let branch = head.map(|h| h.trim().trim_start_matches("refs/heads/").to_string()).filter(|h| !h.is_empty() && h != "detached HEAD");
-            return (Some("rebase".into()), branch);
+            return (Some(if d == "rebase-merge" { "rebase" } else { "rebase-apply" }.into()), branch);
         }
     }
     if git_dir.join("MERGE_HEAD").is_file() {
@@ -268,6 +273,14 @@ mod tests {
         std::fs::create_dir(dir.join("rebase-merge")).unwrap();
         std::fs::write(dir.join("rebase-merge/head-name"), "refs/heads/feature/x\n").unwrap();
         assert_eq!(operation_in(&dir), (Some("rebase".into()), Some("feature/x".into())));
+        std::fs::remove_dir_all(dir.join("rebase-merge")).unwrap();
+        std::fs::remove_file(dir.join("MERGE_HEAD")).unwrap();
+        std::fs::create_dir(dir.join("rebase-apply")).unwrap();
+        std::fs::write(dir.join("rebase-apply/head-name"), "refs/heads/main\n").unwrap();
+        assert_eq!(operation_in(&dir), (Some("rebase-apply".into()), Some("main".into())));
+        // `git am` uses rebase-apply/ too: not a rebase, nothing to continue from the branch menu.
+        std::fs::write(dir.join("rebase-apply/applying"), "").unwrap();
+        assert_eq!(operation_in(&dir), (None, None));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
