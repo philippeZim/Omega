@@ -1,5 +1,8 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { readImage } from "@tauri-apps/plugin-clipboard-manager";
+  import { getCurrentWebview } from "@tauri-apps/api/webview";
+  import { convertFileSrc } from "@tauri-apps/api/core";
   import { report, submitReport, toPngBytes, type ReportKind } from "../lib/report.svelte";
   import { ui } from "../lib/ui.svelte";
   import { t } from "../lib/i18n/index.svelte";
@@ -14,8 +17,33 @@
   let area: HTMLTextAreaElement;
   let fileInput: HTMLInputElement;
 
-  onMount(() => area?.focus());
-  $effect(() => () => preview && URL.revokeObjectURL(preview));
+  const IMAGE_FILE = /\.(png|jpe?g|gif|webp|bmp)$/i;
+
+  onMount(() => {
+    area?.focus();
+    // Files dragged in from the file manager arrive as Tauri drag-drop events (the webview never
+    // sees them as HTML drops), so the drop zone listens here.
+    let unlisten: (() => void) | undefined;
+    let alive = true;
+    getCurrentWebview()
+      .onDragDropEvent(async ({ payload }) => {
+        if (payload.type === "enter") dragging = payload.paths.some((p) => IMAGE_FILE.test(p));
+        else if (payload.type === "leave") dragging = false;
+        else if (payload.type === "drop") {
+          dragging = false;
+          const path = payload.paths.find((p) => IMAGE_FILE.test(p));
+          if (path) setImage(await (await fetch(convertFileSrc(path))).blob());
+        }
+      })
+      .then((fn) => (alive ? (unlisten = fn) : fn()));
+    return () => {
+      alive = false;
+      unlisten?.();
+      // Free the preview only when the dialog closes (an $effect reading `preview` would re-run on
+      // every new image and revoke the URL it just created).
+      if (preview) URL.revokeObjectURL(preview);
+    };
+  });
 
   async function setImage(blob: Blob) {
     try {
@@ -34,12 +62,40 @@
     preview = null;
   }
 
+  // Ctrl+V: macOS and Windows put a pasted screenshot into the paste event, but WebKitGTK (Linux)
+  // usually doesn't. So the paste event is tried first and, if it brought no image, the clipboard
+  // is read through the Tauri plugin. Text still pastes into the field as usual.
+  let pastedImage = false;
+
   function onPaste(e: ClipboardEvent) {
     const item = [...(e.clipboardData?.items ?? [])].find((i) => i.type.startsWith("image/"));
     const file = item?.getAsFile();
     if (file) {
+      pastedImage = true;
       e.preventDefault();
       setImage(file);
+    }
+  }
+
+  async function imageFromClipboard() {
+    let img;
+    try {
+      img = await readImage();
+    } catch {
+      return; // no image on the clipboard (e.g. plain text)
+    }
+    try {
+      const [{ width, height }, rgba] = await Promise.all([img.size(), img.rgba()]);
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      canvas.getContext("2d")!.putImageData(new ImageData(new Uint8ClampedArray(rgba), width, height), 0, 0);
+      const blob = await new Promise<Blob | null>((res) => canvas.toBlob(res, "image/png"));
+      if (blob && !pastedImage) setImage(blob);
+    } catch {
+      ui.toast(t("app.report.badImage"), "error");
+    } finally {
+      img.close?.();
     }
   }
 
@@ -80,6 +136,10 @@
     } else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
       e.preventDefault();
       send();
+    } else if (e.key.toLowerCase() === "v" && (e.ctrlKey || e.metaKey) && !e.altKey) {
+      // Give the paste event a moment; only fall back to reading the clipboard if it had no image.
+      pastedImage = false;
+      setTimeout(() => !pastedImage && imageFromClipboard(), 60);
     }
   }
 </script>

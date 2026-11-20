@@ -612,7 +612,9 @@ if (!control.token) {
   localStorage.setItem("mcp.token", control.token);
 }
 
+let retryTimer = 0;
 export async function startControl() {
+  clearTimeout(retryTimer);
   control.error = "";
   try {
     await invoke("mcp_control_start", { port: control.port, token: control.token, tools: TOOLS.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })) });
@@ -620,6 +622,9 @@ export async function startControl() {
   } catch (e) {
     control.running = false;
     control.error = String(e);
+    // Usually the port is still taken (another Omega instance, or the previous one during a
+    // restart): keep trying in the background instead of staying off until the next launch.
+    retryTimer = window.setTimeout(() => control.enabled && !control.running && startControl(), 5000);
   }
 }
 
