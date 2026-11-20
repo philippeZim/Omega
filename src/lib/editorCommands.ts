@@ -92,10 +92,15 @@ const joinLines: Command = (view) => {
 const sortLines: Command = (view) => {
   const { state } = view;
   const r = state.selection.main;
-  const from = state.doc.lineAt(r.from).from, to = state.doc.lineAt(r.to).to;
+  const first = state.doc.lineAt(r.from);
+  let last = state.doc.lineAt(r.to);
+  // A selection ending at the start of a line (Shift+Down, or Select All with a final newline) doesn't include it.
+  if (last.number > first.number && r.to === last.from) last = state.doc.line(last.number - 1);
+  const from = first.from, to = last.to;
   if (from === to) return false;
   const sorted = state.sliceDoc(from, to).split("\n").sort((a, b) => a.localeCompare(b)).join("\n");
-  view.dispatch({ changes: { from, to, insert: sorted } });
+  // Same length, so the selection stays where it was.
+  view.dispatch({ changes: { from, to, insert: sorted }, selection: EditorSelection.range(r.anchor, r.head) });
   return true;
 };
 
