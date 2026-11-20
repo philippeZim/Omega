@@ -35,6 +35,8 @@
   --label-3: rgba(235, 235, 245, 0.3);
   --accent: #6b9be0;
   --accent-soft: rgba(107, 155, 224, 0.22);
+  /* Background of filled accent buttons with white text (>= 4.5:1, WCAG AA). */
+  --accent-fill: #3a6fc4;
   --green: #7bbf8e;
   --red: #df7067;
   --orange: #d6a35f;
@@ -82,6 +84,7 @@
   --label-3: rgba(60, 60, 67, 0.38);
   --accent: #3478f6;
   --accent-soft: rgba(52, 120, 246, 0.16);
+  --accent-fill: #2d6ae0;
   --green: #2f9e55;
   --red: #d9443a;
   --orange: #c77c12;
@@ -172,7 +175,7 @@ input:focus { box-shadow: var(--recess-shadow), 0 0 0 1px rgba(var(--fg-rgb), 0.
   transition: background 0.12s;
 }
 .btn:hover { background: rgba(var(--fg-rgb), 0.13); }
-.btn.primary { background: var(--accent); color: white; }
+.btn.primary { background: var(--accent-fill); color: white; }
 .btn.primary:hover { filter: brightness(1.1); }
 .btn.danger { color: var(--red); }
 
