@@ -28,9 +28,23 @@ describe("fuzzy", () => {
     expect(inName.score).toBeGreaterThan(inDir.score);
   });
 
-  // bug: the word-start bonus (+8 per char) outweighs the run bonus (+5), so "t_e_s_t.ts" (51.5) beats the exact "test.ts" (42.65).
-  test.fails("a consecutive exact match ranks above a scattered word-start match", () => {
+  test("a consecutive exact match ranks above a scattered word-start match", () => {
     expect(fuzzy("test", "test.ts")!.score).toBeGreaterThan(fuzzy("test", "t_e_s_t.ts")!.score);
+    expect(fuzzy("testing", "testing.ts")!.score).toBeGreaterThan(fuzzy("testing", "t_e_s_t_i_n_g.ts")!.score);
+  });
+
+  test("a prefix of the file name ranks above a match scattered over word starts", () => {
+    expect(fuzzy("lay", "src/lib/layout.svelte.ts")!.score).toBeGreaterThan(fuzzy("lay", "src/l_a_y.ts")!.score);
+  });
+
+  test("command labels: a contiguous prefix ranks above word starts spread over the label", () => {
+    expect(fuzzy("save", "Save All")!.score).toBeGreaterThan(fuzzy("save", "Show All Version Entries")!.score);
+  });
+
+  test("camelCase humps still match and rank above a plain scattered match", () => {
+    const m = fuzzy("qo", "QuickOpen.svelte")!;
+    expect(m.positions).toEqual([0, 5]);
+    expect(m.score).toBeGreaterThan(fuzzy("qo", "quota.ts")!.score);
   });
 
   test("shorter candidates rank higher for the same match", () => {

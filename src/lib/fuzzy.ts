@@ -54,7 +54,8 @@ function smart(query: string, text: string, start = 0): { score: number; positio
     }
     if (found < 0) return null;
     score += 1;
-    if (found === prev + 1) score += 5;
+    // The run bonus must exceed the word-start bonus, so a contiguous match beats one scattered over word starts.
+    if (found === prev + 1) score += 9;
     if (isWordStart(text, found)) score += 8;
     if (found === 0) score += 6;
     positions.push(found);
@@ -64,6 +65,8 @@ function smart(query: string, text: string, start = 0): { score: number; positio
   // Shorter candidates and matches in the file name (after the last /) rank higher.
   const slash = text.lastIndexOf("/");
   if (positions.length && positions[0] > slash) score += 10;
+  // Extra bonus when the whole query is one run at the start of the file name.
+  if (positions.length && positions[0] === slash + 1 && positions[positions.length - 1] - positions[0] === positions.length - 1) score += 10;
   score -= text.length * 0.05;
   return { score, positions };
 }
