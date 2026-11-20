@@ -21,9 +21,11 @@
   let view: MergeView | null = null;
   let writeTimer: number | undefined;
   let eol: Eol = "\n";
-  let info = $state<"git.diff.deleted" | "git.diff.newFile" | null>(null);
+  let info = $state<"git.diff.deleted" | "git.diff.newFile" | "git.diff.renamedFrom" | null>(null);
   const file = diffState.file!;
   const rel = git.top && file.startsWith(git.top + "/") ? file.slice(git.top.length + 1) : file;
+  // A renamed/copied file has no HEAD version under its new path: compare against the source (#70).
+  const orig = git.changes.find((c) => c.path === rel)?.orig ?? null;
 
   function close() {
     diffState.file = null;
@@ -32,7 +34,8 @@
   }
 
   onMount(async () => {
-    const head = (await invoke<string | null>("git_head_file", { root: git.top || app.root, path: file })) ?? "";
+    const headPath = orig && git.top ? git.top + "/" + orig : file;
+    const head = (await invoke<string | null>("git_head_file", { root: git.top || app.root, path: headPath })) ?? "";
     const tab = app.tabs.find((t) => t.path === file);
     let current = "";
     try {
@@ -42,6 +45,7 @@
       info = "git.diff.deleted";
     }
     if (!head) info = "git.diff.newFile";
+    else if (orig) info = "git.diff.renamedFrom";
     const lang = langFor(file);
     const common = [lineNumbers(), lang ? lang.ext() : [], syntaxHighlighting(codeHighlight), baseTheme, EditorView.editorAttributes.of({ class: "mode-code" })];
     view = new MergeView({
@@ -89,7 +93,7 @@
     <header>
       <span class="title">{basename(file)}</span>
       <span class="path">{rel}</span>
-      {#if info}<span class="info">{t(info)}</span>{/if}
+      {#if info}<span class="info">{info === "git.diff.renamedFrom" ? t(info, { orig: orig ?? "" }) : t(info)}</span>{/if}
       <span class="spacer"></span>
       <button class="close" onclick={close} aria-label={t("common.close")}>
         <svg width="10" height="10" viewBox="0 0 10 10"><path d="M1.5 1.5l7 7M8.5 1.5l-7 7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>

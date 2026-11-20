@@ -102,7 +102,7 @@
     <div class="list">
       {#each git.changes as c (c.path)}
         {@const k = kind(c)}
-        <div class="row" role="button" tabindex="-1" ondblclick={() => openDiff(absPath(c.path))} oncontextmenu={(e) => menu(e, c)} onkeydown={() => {}} title={t("git.rowTitle", { status: t(LABEL[k]), path: c.path })}>
+        <div class="row" role="button" tabindex="-1" ondblclick={() => openDiff(absPath(c.path))} oncontextmenu={(e) => menu(e, c)} onkeydown={() => {}} title={t("git.rowTitle", { status: t(LABEL[k]), path: c.orig ? `${c.orig} → ${c.path}` : c.path })}>
           <button class="check" class:on={!git.excluded.includes(c.path)} onclick={() => toggle(c)} aria-label={t("git.select")}></button>
           <span class="name {k}">{basename(c.path)}</span>
           <span class="dir">{c.path.includes("/") ? c.path.slice(0, c.path.lastIndexOf("/")) : ""}</span>

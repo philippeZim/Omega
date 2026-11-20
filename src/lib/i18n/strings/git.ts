@@ -123,6 +123,7 @@ export const en = {
   "git.search.replaced": "{n} replacements in {files}",
   "git.search.qOpen": "\"",
   "git.search.qClose": "\"",
+  "git.diff.renamedFrom": "Renamed from {orig}",
 };
 export const de: Record<keyof typeof en, string> = {
   "git.noFolderOpen": "Kein Ordner geöffnet",
@@ -248,6 +249,7 @@ export const de: Record<keyof typeof en, string> = {
   "git.search.replaced": "{n} Ersetzungen in {files}",
   "git.search.qOpen": "„",
   "git.search.qClose": "“",
+  "git.diff.renamedFrom": "Umbenannt von {orig}",
 };
 export const fr: Record<keyof typeof en, string> = {
   "git.noFolderOpen": "Aucun dossier ouvert",
@@ -373,4 +375,5 @@ export const fr: Record<keyof typeof en, string> = {
   "git.search.replaced": "{n} remplacements dans {files}",
   "git.search.qOpen": "« ",
   "git.search.qClose": " »",
+  "git.diff.renamedFrom": "Renommé depuis {orig}",
 };
