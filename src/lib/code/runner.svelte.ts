@@ -4,7 +4,8 @@ import { versionSettings, type VersionSetting } from "./versions";
 import { runCommand, runTask, cancelTask, interruptRun } from "../terminal.svelte";
 import { app, activeTab, save, setRoot, openFile, setMode } from "../state.svelte";
 import { ui } from "../ui.svelte";
-import { fsApi, joinPath } from "../api";
+import { fsApi, joinPath, basename } from "../api";
+import { onFilesChanged } from "../fsWatch.svelte";
 import { t } from "../i18n/index.svelte";
 import { ensureTools } from "../tools.svelte";
 import { cd, q } from "../platform";
@@ -24,6 +25,12 @@ export const runnerRemote = {
   project: null as (() => Project | null) | null,
   run: null as ((a: Action) => void) | null,
 };
+
+// Editing a project file outside the editor (or git) can change the actions too.
+const PROJECT_FILES = new Set(["Cargo.toml", "pyproject.toml", "package.json", "CMakeLists.txt", "settings.gradle.kts", "settings.gradle", "build.gradle.kts", "build.gradle"]);
+onFilesChanged((files) => {
+  if (files.some((f) => PROJECT_FILES.has(basename(f)))) refreshProject();
+});
 
 let seq = 0;
 export async function refreshProject() {
@@ -114,10 +121,25 @@ async function saveAll() {
 /** Actions whose output belongs in the Build tab. */
 const BUILD_ACTIONS = new Set(["build", "release", "check", "clippy", "jar"]);
 
-export async function runAction(a: Action | null | undefined) {
-  const p = runner.project;
+/**
+ * The project's run/build/test after saving and detecting the project again: a just-saved
+ * CMakeLists.txt, package.json or pyproject.toml can change them (e.g. a renamed executable).
+ * Other actions (menu entries, ad-hoc ones) come back unchanged.
+ */
+async function current(a: Action, p: Project): Promise<[Action | null | undefined, Project | null]> {
+  const slot = (["run", "build", "test"] as const).find((k) => p[k] === a);
+  if (!slot) return [a, p];
+  await saveAll();
+  await refreshProject();
+  const fresh = runner.project;
+  return fresh?.root === p.root ? [fresh[slot], fresh] : [a, p];
+}
+
+export async function runAction(action: Action | null | undefined) {
+  if (!action?.cmd || !runner.project) return;
+  if (runnerRemote.run) return runnerRemote.run(action);
+  const [a, p] = await current(action, runner.project);
   if (!a?.cmd || !p) return;
-  if (runnerRemote.run) return runnerRemote.run(a);
   let cmd = a.cmd;
   if (a.ask) {
     const v = await ui.prompt(a.label.replace("…", ""), "", a.ask, undefined, a.suggest);
