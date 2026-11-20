@@ -158,6 +158,9 @@ function completionSource(getClient: () => LspClient | null, uri: string, flush:
 
 // ---------------------------------------------------------- extension
 
+/** Delay before an editor reconnects to a restarted language server. */
+const RECONNECT_MS = 1000;
+
 export function lspExtension(path: string, lang: LangInfo): Extension {
   const uri = fileUri(path);
   let client: LspClient | null = null;
@@ -240,13 +243,29 @@ export function lspExtension(path: string, lang: LangInfo): Extension {
   const plugin = ViewPlugin.fromClass(
     class {
       listener = (u: string) => u === uri && applyDiags();
+      /** Reconnects left after a server exit (a crashing server is not restarted forever). */
+      retries = 3;
+      onExit = () => {
+        const view = viewRef;
+        client?.diagnosticListeners.delete(this.listener);
+        client?.exitListeners.delete(this.onExit);
+        client = null;
+        if (!view) return;
+        // The dead server's diagnostics are stale.
+        view.dispatch(setDiagnostics(view.state, []));
+        if (this.retries-- > 0) setTimeout(() => viewRef === view && !client && this.connect(view), RECONNECT_MS);
+      };
       constructor(view: EditorView) {
         viewRef = view;
+        this.connect(view);
+      }
+      connect(view: EditorView) {
         clientFor(lang, path, hooks.workspace(), hooks.askInstall).then((c) => {
           if (!c || viewRef !== view) return;
           client = c;
           c.open(uri, lang.lspId, view.state.doc.toString());
           c.diagnosticListeners.add(this.listener);
+          c.exitListeners.add(this.onExit);
           applyDiags();
         });
       }
@@ -259,6 +278,8 @@ export function lspExtension(path: string, lang: LangInfo): Extension {
       destroy() {
         flush();
         client?.diagnosticListeners.delete(this.listener);
+        client?.exitListeners.delete(this.onExit);
+        viewRef = null;
       }
     },
   );
