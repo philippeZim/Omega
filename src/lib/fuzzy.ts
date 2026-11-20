@@ -54,9 +54,11 @@ function smart(query: string, text: string, start = 0): { score: number; positio
     }
     if (found < 0) return null;
     score += 1;
-    // The run bonus must exceed the word-start bonus, so a contiguous match beats one scattered over word starts.
+    // A character gets the run bonus or the word-start bonus, not both. The run bonus is larger, so a
+    // contiguous match beats one scattered over word starts, but a run across a camelCase hump
+    // ("DiffView" for "fv") doesn't outrank real word starts ("FilesView").
     if (found === prev + 1) score += 9;
-    if (isWordStart(text, found)) score += 8;
+    else if (isWordStart(text, found)) score += 8;
     if (found === 0) score += 6;
     positions.push(found);
     prev = found;

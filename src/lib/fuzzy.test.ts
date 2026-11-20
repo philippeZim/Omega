@@ -41,6 +41,12 @@ describe("fuzzy", () => {
     expect(fuzzy("save", "Save All")!.score).toBeGreaterThan(fuzzy("save", "Show All Version Entries")!.score);
   });
 
+  test("a run across a camelCase hump doesn't outrank real word starts", () => {
+    expect(fuzzy("fv", "src/components/views/FilesView.svelte")!.score).toBeGreaterThan(fuzzy("fv", "src/components/DiffView.svelte")!.score);
+    expect(fuzzy("ep", "src/components/views/EditorPane.svelte")!.score).toBeGreaterThan(fuzzy("ep", "src/components/views/SidePanel.svelte")!.score);
+    expect(fuzzy("ev", "src/components/views/EditorView.svelte")!.score).toBeGreaterThan(fuzzy("ev", "src/components/views/OutlineView.svelte")!.score);
+  });
+
   test("camelCase humps still match and rank above a plain scattered match", () => {
     const m = fuzzy("qo", "QuickOpen.svelte")!;
     expect(m.positions).toEqual([0, 5]);
