@@ -6,8 +6,9 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn() }));
 vi.mock("../lib/fsWatch.svelte", () => ({ onFilesChanged: vi.fn() }));
 vi.mock("../lib/tools.svelte", () => ({ ensureTools: vi.fn() }));
 vi.mock("../lib/native", () => ({ openUrl: vi.fn() }));
-vi.mock("../lib/state.svelte", () => ({ app: {}, activeTab: () => null, openFile: vi.fn() }));
-vi.mock("../lib/editor", () => ({ getView: () => null, getText: () => "" }));
+const st = vi.hoisted(() => ({ active: null as string | null, view: null as unknown, openFile: async (_p: string) => {} }));
+vi.mock("../lib/state.svelte", () => ({ app: {}, activeTab: () => (st.active ? { path: st.active } : null), openFile: (p: string) => st.openFile(p) }));
+vi.mock("../lib/editor", () => ({ getView: () => st.view, getText: () => "" }));
 vi.mock("pdfjs-dist/build/pdf.worker.min.mjs?url", () => ({ default: "" }));
 
 /** Fake pdf.js: every getDocument() gives a new doc; destroying it rejects its pending renders. */
@@ -64,6 +65,37 @@ describe("PdfPanel", () => {
   beforeEach(() => {
     pdf.hang = false;
     pdf.docs.length = 0;
+    st.active = null;
+    st.view = null;
+    st.openFile = async () => {};
+  });
+
+  test("a diagnostic whose file fails to open doesn't jump in the current file (#141)", async () => {
+    const dispatch = vi.fn();
+    const doc = { lines: 10, line: (n: number) => ({ from: n * 10 }) };
+    st.view = { state: { doc }, dispatch, focus: () => {} };
+    st.active = "/p/main.tex";
+    const { target, c } = setup();
+    latex.diagnostics = [
+      { file: "/p/chapters/missing", line: 2, message: "Undefined control sequence", severity: "error" },
+      { file: "/p/chapters/one.tex", line: 3, message: "Overfull", severity: "warning" },
+    ];
+    await settle();
+    target.querySelector<HTMLButtonElement>("button.status")!.click();
+    await settle();
+    const diags = target.querySelectorAll<HTMLButtonElement>("button.diag");
+    // Opening fails (toast in openFile), the active tab stays main.tex: no jump.
+    diags[0].click();
+    await settle();
+    expect(dispatch).not.toHaveBeenCalled();
+    // Opening works: the jump happens in the newly active file.
+    st.openFile = async (p) => void (st.active = p);
+    diags[1].click();
+    await settle();
+    expect(st.active).toBe("/p/chapters/one.tex");
+    expect(dispatch).toHaveBeenCalledWith({ selection: { anchor: 30 }, scrollIntoView: true });
+    latex.diagnostics = [];
+    unmount(c);
   });
 
   test("clears the old pages when the PDF goes away (#53)", async () => {

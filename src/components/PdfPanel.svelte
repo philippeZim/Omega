@@ -169,8 +169,16 @@
     const s = r.width / pageSizes[page - 1].w;
     const hit = reverseSync(page, (e.clientX - r.left) / s, (e.clientY - r.top) / s);
     if (!hit) return;
-    if (hit.file && hit.file !== activeTab()?.path) await openFile(hit.file);
-    gotoLine(hit.line);
+    await openAt(hit.file, hit.line);
+  }
+
+  /** Opens `file` (if it isn't the active tab) and jumps to `line` there; nothing if it failed to open. */
+  async function openAt(file: string, line: number) {
+    if (file && file !== activeTab()?.path && !file.endsWith("untitled.tex")) {
+      await openFile(file);
+      if (activeTab()?.path !== file) return;
+    }
+    gotoLine(line);
   }
 
   function gotoLine(line: number) {
@@ -288,7 +296,7 @@
       </div>
       <div class="log-list">
         {#each latex.diagnostics as d, i (i)}
-          <button class="diag {d.severity}" onclick={async () => { if (d.file && d.file !== activeTab()?.path && !d.file.endsWith("untitled.tex")) await openFile(d.file); gotoLine(d.line); }}>
+          <button class="diag {d.severity}" onclick={() => openAt(d.file, d.line)}>
             <span class="sev"></span>
             <span class="msg">{d.message}</span>
             {#if d.line}<span class="ln">{t("code.pdf.line", { n: d.line })}</span>{/if}
