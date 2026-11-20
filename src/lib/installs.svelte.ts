@@ -3,6 +3,7 @@
  * debug adapters). Status, versions and uninstalling come from src-tauri/src/installs.rs;
  * installing/updating reuses the regular install paths. System installations are only shown.
  */
+import { backendErrorText } from "./backendError";
 import { invoke } from "@tauri-apps/api/core";
 import { t } from "./i18n/index.svelte";
 import { ui } from "./ui.svelte";
@@ -152,7 +153,7 @@ async function run(id: string, action: "install" | "update" | "remove", fn: () =
   try {
     if (await fn()) ui.toast(t(`installs.done.${action}`, { name: label }));
   } catch (e) {
-    ui.toast(t("installs.failed", { name: label, err: String(e) }), "error");
+    ui.toast(t("installs.failed", { name: label, err: backendErrorText(e) }), "error");
   } finally {
     delete installs.busy[id];
     delete installs.latest[id];

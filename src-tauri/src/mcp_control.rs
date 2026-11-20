@@ -61,7 +61,7 @@ fn handle(app: &AppHandle, msg: &Value) -> Option<Value> {
                 Ok(result) => rpc_result(&id, result),
                 Err(_) => {
                     state.pending.lock().unwrap().remove(&call);
-                    rpc_result(&id, json!({ "content": [{ "type": "text", "text": "Zeitüberschreitung: die App hat nicht geantwortet" }], "isError": true }))
+                    rpc_result(&id, json!({ "content": [{ "type": "text", "text": "Timeout: the app did not answer" }], "isError": true }))
                 }
             }
         }
@@ -126,7 +126,7 @@ pub async fn mcp_control_start(app: AppHandle, port: u16, token: String, tools: 
             std::thread::spawn(move || {
                 let st = app.state::<McpControlState>();
                 if !st.enabled.load(Ordering::SeqCst) {
-                    return respond(req, 503, Some(json!({ "error": "Steuerungs-MCP ist ausgeschaltet" })), &[]);
+                    return respond(req, 503, Some(json!({ "error": "The control MCP is turned off" })), &[]);
                 }
                 let token = st.token.lock().unwrap().clone();
                 let authorized = req

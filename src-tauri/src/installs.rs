@@ -337,7 +337,7 @@ fn sys_available(o: &Owner, pacman_updates: &Option<std::collections::HashMap<St
             // No checkupdates: compare with the (possibly stale) sync database.
             let (ok, info) = out(env::command("pacman").args(["-Si", p])).ok_or_else(none)?;
             if !ok {
-                return Err("nicht in den Repos (AUR?)".into());
+                return Err("installs:not_in_repos".into());
             }
             let repo = info.lines().find(|l| l.starts_with("Version")).and_then(|l| l.split(':').nth(1)).map(|v| v.trim().to_string()).ok_or_else(none)?;
             let (_, inst) = out(env::command("pacman").args(["-Q", p])).ok_or_else(none)?;
@@ -377,7 +377,7 @@ fn sys_available(o: &Owner, pacman_updates: &Option<std::collections::HashMap<St
             let (_, o) = out(env::tool("scoop")?.arg("status")).ok_or_else(none)?;
             parse_scoop_status(&o, p)
         }
-        _ => Err("unknown package manager".into()),
+        _ => Err("installs:unknown_manager".into()),
     }
 }
 
@@ -464,11 +464,11 @@ fn json(url: &str) -> Result<serde_json::Value, String> {
 
 fn gh_latest(repo: &str) -> Result<String, String> {
     let r = json(&format!("https://api.github.com/repos/{repo}/releases/latest"))?;
-    r["tag_name"].as_str().and_then(extract_version).ok_or_else(|| format!("{repo}: keine Version"))
+    r["tag_name"].as_str().and_then(extract_version).ok_or_else(|| format!("installs:no_version:{repo}"))
 }
 
 fn npm_latest(pkg: &str) -> Result<String, String> {
-    json(&format!("https://registry.npmjs.org/{pkg}/latest"))?["version"].as_str().map(String::from).ok_or_else(|| format!("{pkg}: keine Version"))
+    json(&format!("https://registry.npmjs.org/{pkg}/latest"))?["version"].as_str().map(String::from).ok_or_else(|| format!("installs:no_version:{pkg}"))
 }
 
 fn latest(id: &str) -> Result<Option<String>, String> {
@@ -477,7 +477,7 @@ fn latest(id: &str) -> Result<Option<String>, String> {
         "tool:tectonic" => gh_latest("tectonic-typesetting/tectonic")?,
         "tool:node" => {
             let index = json("https://nodejs.org/dist/index.json")?;
-            index.as_array().and_then(|a| a.iter().find(|r| r["lts"].is_string())).and_then(|r| r["version"].as_str()).and_then(extract_version).ok_or("Node.js: keine Version")?
+            index.as_array().and_then(|a| a.iter().find(|r| r["lts"].is_string())).and_then(|r| r["version"].as_str()).and_then(extract_version).ok_or("installs:no_version:Node.js")?
         }
         "tool:pnpm" => gh_latest("pnpm/pnpm")?,
         "tool:cmake" => gh_latest("Kitware/CMake")?,
@@ -487,9 +487,9 @@ fn latest(id: &str) -> Result<Option<String>, String> {
             let os = if cfg!(windows) { "windows" } else if cfg!(target_os = "macos") { "mac" } else { "linux" };
             let arch = if cfg!(target_arch = "aarch64") { "aarch64" } else { "x64" };
             let r = json(&format!("https://api.adoptium.net/v3/assets/latest/21/hotspot?architecture={arch}&image_type=jdk&os={os}&vendor=eclipse"))?;
-            r[0]["version"]["semver"].as_str().and_then(extract_version).ok_or("JDK: keine Version")?
+            r[0]["version"]["semver"].as_str().and_then(extract_version).ok_or("installs:no_version:JDK")?
         }
-        "tool:gradle" => json("https://services.gradle.org/versions/current")?["version"].as_str().map(String::from).ok_or("Gradle: keine Version")?,
+        "tool:gradle" => json("https://services.gradle.org/versions/current")?["version"].as_str().map(String::from).ok_or("installs:no_version:Gradle")?,
         "tool:git" if cfg!(windows) => gh_latest("git-for-windows/git")?,
         "tool:cc" if cfg!(windows) => gh_latest("mstorsjo/llvm-mingw")?,
         "tool:rust" => {
@@ -499,20 +499,20 @@ fn latest(id: &str) -> Result<Option<String>, String> {
             let line = text.lines().find(|l| l.starts_with("stable")).unwrap_or_default();
             let tail = line.rsplit("->").next().unwrap_or(line);
             let tail = tail.rsplit(':').next().unwrap_or(tail);
-            extract_version(tail).ok_or("rustup check: keine Version")?
+            extract_version(tail).ok_or("installs:no_version:rustup")?
         }
         "lsp:python" => npm_latest("basedpyright")?,
         "lsp:typescript" => npm_latest("typescript-language-server")?,
         "lsp:java" => {
             let name = crate::tools::http_text("https://download.eclipse.org/jdtls/snapshots/latest.txt")?;
-            extract_version(name.trim().trim_start_matches("jdt-language-server-")).ok_or("jdtls: keine Version")?
+            extract_version(name.trim().trim_start_matches("jdt-language-server-")).ok_or("installs:no_version:jdtls")?
         }
         "debug:codelldb" => gh_latest("vadimcn/codelldb")?,
-        "debug:debugpy" => json("https://pypi.org/pypi/debugpy/json")?["info"]["version"].as_str().map(String::from).ok_or("debugpy: keine Version")?,
+        "debug:debugpy" => json("https://pypi.org/pypi/debugpy/json")?["info"]["version"].as_str().map(String::from).ok_or("installs:no_version:debugpy")?,
         "debug:jsdebug" => gh_latest("microsoft/vscode-js-debug")?,
         "debug:javadebug" => {
             let meta = crate::tools::http_text("https://repo1.maven.org/maven2/com/microsoft/java/com.microsoft.java.debug.plugin/maven-metadata.xml")?;
-            meta.split("<release>").nth(1).and_then(|s| s.split("</release>").next()).map(String::from).ok_or("java-debug: keine Version")?
+            meta.split("<release>").nth(1).and_then(|s| s.split("</release>").next()).map(String::from).ok_or("installs:no_version:java-debug")?
         }
         _ => return Ok(None),
     };
@@ -557,21 +557,21 @@ fn uninstall(id: &str) -> Result<(), String> {
     match id.split_once(':').unwrap_or(("", id)) {
         ("tool", "rust") => {
             if !manifest.contains_key("rust") {
-                return Err("Rust wurde nicht von Omega installiert".into());
+                return Err("installs:not_ours:Rust".into());
             }
             run_ok(env::tool("rustup")?.args(["self", "uninstall", "-y"]))?;
             crate::tools::forget("rust")
         }
         ("tool", name) | ("lsp", name @ "clangd") => {
             if !manifest.contains_key(name) {
-                return Err(format!("{name} wurde nicht von Omega installiert"));
+                return Err(format!("installs:not_ours:{name}"));
             }
             remove_dir(&t.join(name))?;
             crate::tools::forget(name)
         }
         ("lsp", "rust") => {
             if !manifest.contains_key("rust") {
-                return Err("rust-analyzer gehört zur Rust-Installation des Systems".into());
+                return Err("installs:system_rust_analyzer".into());
             }
             run_ok(env::tool("rustup")?.args(["component", "remove", "rust-analyzer"]))
         }
@@ -585,7 +585,7 @@ fn uninstall(id: &str) -> Result<(), String> {
         ("debug", "debugpy") => remove_dir(&t.join("debugpy")),
         ("debug", "jsdebug") => remove_dir(&t.join("js-debug")),
         ("debug", "javadebug") => remove_dir(&t.join("java-debug")),
-        _ => Err(format!("Unbekannt: {id}")),
+        _ => Err(format!("installs:unknown:{id}")),
     }
 }
 
@@ -600,7 +600,7 @@ pub async fn installs_remove(id: String) -> Result<(), String> {
 pub async fn installs_update_rust() -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(|| {
         if !crate::tools::manifest().contains_key("rust") {
-            return Err("Rust wurde nicht von Omega installiert".into());
+            return Err("installs:not_ours:Rust".into());
         }
         run_ok(env::tool("rustup")?.arg("update"))
     })

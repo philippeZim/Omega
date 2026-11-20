@@ -45,7 +45,7 @@ pub fn tools_dir() -> Result<String, String> {
 }
 
 fn command(cmd: &str, args: &[String], cwd: Option<String>, env: Option<HashMap<String, String>>) -> Result<Command, String> {
-    let exe = which(cmd).ok_or_else(|| format!("{cmd} nicht gefunden"))?;
+    let exe = which(cmd).ok_or_else(|| format!("proc:not_found:{cmd}"))?;
     let mut c = crate::env::command(exe);
     c.args(args).current_dir(cwd.map(PathBuf::from).filter(|d| d.is_dir()).unwrap_or_else(crate::env::home));
     if let Some(env) = env {
@@ -165,7 +165,7 @@ pub async fn proc_connect(app: AppHandle, id: String, port: u16) -> Result<(), S
             }
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
-        Err(format!("Verbindung zu Port {port} fehlgeschlagen: {last}"))
+        Err(format!("proc:connect_failed:{port}: {last}"))
     })
     .await
     .map_err(|e| e.to_string())??;
@@ -179,7 +179,7 @@ pub async fn proc_connect(app: AppHandle, id: String, port: u16) -> Result<(), S
 pub fn proc_send(app: AppHandle, id: String, msg: String) -> Result<(), String> {
     let state = app.state::<ProcState>();
     let mut conns = state.conns.lock().unwrap();
-    let w = conns.get_mut(&id).ok_or("Verbindung besteht nicht")?;
+    let w = conns.get_mut(&id).ok_or("proc:not_connected")?;
     write!(w, "Content-Length: {}\r\n\r\n{}", msg.len(), msg).map_err(|e| e.to_string())?;
     w.flush().map_err(|e| e.to_string())
 }
@@ -255,7 +255,7 @@ pub async fn install_server(app: AppHandle, kind: String) -> Result<String, Stri
                 Ok("rust-analyzer".into())
             }
             "clangd" => crate::tools::tool_install_blocking(&app, "clangd"),
-            _ => Err(format!("Keine automatische Installation für {kind}")),
+            _ => Err(format!("proc:no_auto_install:{kind}")),
         }
     })
     .await
@@ -307,10 +307,10 @@ pub async fn install_debugger(app: AppHandle, kind: String) -> Result<String, St
                 crate::env::command(uv).args(["pip", "install", "--quiet", "--upgrade", "--target"]).arg(&target).arg("debugpy").status().is_ok_and(|s| s.success())
             });
             if !ok {
-                let py = which("python3").or_else(|| which("python")).ok_or("Python nicht gefunden")?;
+                let py = which("python3").or_else(|| which("python")).ok_or("proc:not_found:Python")?;
                 let st = crate::env::command(py).args(["-m", "pip", "install", "--quiet", "--upgrade", "--target"]).arg(&target).arg("debugpy").status().map_err(|e| e.to_string())?;
                 if !st.success() {
-                    return Err("debugpy konnte nicht installiert werden".into());
+                    return Err("proc:debugpy_failed".into());
                 }
             }
             Ok(crate::env::norm(target))
@@ -321,7 +321,7 @@ pub async fn install_debugger(app: AppHandle, kind: String) -> Result<String, St
                 .as_array()
                 .and_then(|a| a.iter().find(|x| x["name"].as_str().is_some_and(|n| n.starts_with("js-debug-dap-") && n.ends_with(".tar.gz"))))
                 .and_then(|x| x["browser_download_url"].as_str())
-                .ok_or("js-debug-Release nicht gefunden")?
+                .ok_or("proc:no_version:js-debug")?
                 .to_string();
             let archive = dir.join(".js-debug.tar.gz");
             crate::tools::download(&app, "jsdebug", &url, &archive)?;
@@ -341,7 +341,7 @@ pub async fn install_debugger(app: AppHandle, kind: String) -> Result<String, St
                 .split("<release>")
                 .nth(1)
                 .and_then(|s| s.split("</release>").next())
-                .ok_or("Version nicht gefunden")?
+                .ok_or("proc:no_version:java-debug")?
                 .to_string();
             let target = dir.join("java-debug");
             // Old plugin jars would be loaded into jdtls next to the new one.
@@ -351,7 +351,7 @@ pub async fn install_debugger(app: AppHandle, kind: String) -> Result<String, St
             crate::tools::download(&app, "javadebug", &format!("{base}/{version}/com.microsoft.java.debug.plugin-{version}.jar"), &jar)?;
             Ok(crate::env::norm(jar))
         }
-        _ => Err(format!("Unbekannter Debugger: {kind}")),
+        _ => Err(format!("proc:unknown_debugger:{kind}")),
     })
     .await
     .map_err(|e| e.to_string())?
