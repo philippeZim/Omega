@@ -13,10 +13,14 @@
   });
   import { writeText } from "@tauri-apps/plugin-clipboard-manager";
   import { ui } from "../lib/ui.svelte";
+  import { app } from "../lib/state.svelte";
   import { share, follow } from "../lib/collab/share.svelte";
   import { t } from "../lib/i18n/index.svelte";
 
   /** Presence key of a participant ("host" for the host as seen by guests). */
+  // Shared tabs that aren't project files have keys like "tab:<id>" – show their name instead.
+  const fileLabel = (key: string) =>
+    key.startsWith("tab:") ? (share.hostTabs.find((x) => x.key === key)?.name ?? app.tabs.find((x) => x.id === key.slice(4))?.name ?? "…") : key;
   const presenceKey = (p: { peer: string; role: string }) => (p.role === "host" && collab.role === "guest" ? "host" : p.peer);
 
   let code = $state("");
@@ -89,7 +93,7 @@
           <span class="avatar" style="background: {p.color}">{p.name.slice(0, 1).toUpperCase()}</span>
           <span class="pinfo">
             <span class="pname">{p.name}{isMe ? t("ai.collab.you") : ""}</span>
-            {#if !isMe && where?.file}<span class="pfile">{where.file}:{where.line}</span>{/if}
+            {#if !isMe && where?.file}<span class="pfile">{fileLabel(where.file)}:{where.line}</span>{/if}
           </span>
           {#if p.role === "host"}<span class="tag">{t("ai.collab.host")}</span>{/if}
           <span class="spacer"></span>
