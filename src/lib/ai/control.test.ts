@@ -21,7 +21,7 @@ vi.mock("../state.svelte", () => ({
 }));
 vi.mock("../ui.svelte", async () => ({ ui: (await import("../../test/fakes")).fakeUi() }));
 vi.mock("../editor", async () => (await import("../../test/fakes")).fakeEditor());
-vi.mock("html-to-image", () => ({ toPng: vi.fn() }));
+vi.mock("./snapshot", () => ({ snapshotPng: vi.fn() }));
 vi.mock("../commands.svelte", () => ({
   COMMANDS: [],
   keysFor: () => [],
