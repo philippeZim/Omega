@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
+import { forceParsing } from "@codemirror/language";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { livePreview, resolvePath, toggleWrap } from "./livePreview";
 
@@ -91,8 +92,7 @@ describe("toggleWrap", () => {
   });
 });
 
-// ------------------------------------------------------------ // ------------------------------------------------------------ rendered links
-
+// ------------------------------------------------------------ rendered links
 
 /** Renders `doc` with the cursor on an extra last line, returns the data-href of every rendered link. */
 function hrefs(doc: string): string[] {
@@ -118,5 +118,27 @@ describe("rendered links", () => {
   // #43: the <…> brackets of a CommonMark angle destination ended up in the path.
   test("angle-bracket destination drops the brackets", () => {
     expect(hrefs("[Angle](<notes/with space.md>)")).toEqual(["notes/with space.md"]);
+  });
+});
+
+// ------------------------------------------------------------ blockquotes
+
+/** Renders `doc` with the cursor on an extra last line; the --qd style of every quoted line ("" for level 1). */
+function quoteLines(doc: string): string[] {
+  const text = doc + "\n\nend";
+  const view = new EditorView({
+    state: EditorState.create({ doc: text, selection: { anchor: text.length }, extensions: [markdown({ base: markdownLanguage }), livePreview(null)] }),
+    parent: document.body,
+  });
+  forceParsing(view, text.length, 5000);
+  const out = [...view.dom.querySelectorAll<HTMLElement>(".cm-line.md-quote")].map((e) => e.style.getPropertyValue("--qd").trim());
+  view.destroy();
+  return out;
+}
+
+describe("blockquotes", () => {
+  // #47: a nested quote got the same single-level styling as its parent.
+  test("nested quote lines carry their depth", () => {
+    expect(quoteLines("> A quote\n> > nested quote\n> > > deeper")).toEqual(["", "2", "3"]);
   });
 });
