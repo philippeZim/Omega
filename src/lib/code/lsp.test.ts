@@ -490,6 +490,48 @@ describe("client registry", () => {
     expect(L.allClients()).toEqual([b]);
   });
 
+  // #114: a server that answered initialize with an error kept running, and every new tab
+  // of the project spawned another one (plus another toast).
+  test("a failed start kills the process and is not retried for the next file", async () => {
+    const { ui } = await import("../ui.svelte");
+    const toast = vi.mocked(ui.toast);
+    toast.mockClear();
+    const spawned: string[] = [];
+    const killed: string[] = [];
+    mockIPC(
+      (cmd, args: any) => {
+        if (cmd === "tools_dir") return "/tools";
+        if (cmd === "which_cmd") return args.cmd === "basedpyright-langserver" ? "/usr/bin/basedpyright-langserver" : null;
+        if (cmd === "path_exists") return false;
+        if (cmd === "proc_spawn") spawned.push(args.id);
+        if (cmd === "proc_kill") killed.push(args.id);
+        if (cmd === "proc_send") {
+          const msg = JSON.parse(args.msg);
+          if (msg.method === "initialize")
+            setTimeout(() => emit("proc-msg", { id: args.id, msg: JSON.stringify({ jsonrpc: "2.0", id: msg.id, error: { code: -32603, message: "no tsserver" } }) }), 0);
+        }
+        return null;
+      },
+      { shouldMockEvents: true },
+    );
+    vi.resetModules();
+    L = await import("./lsp.svelte");
+    await settle();
+    expect(await L.clientFor(PY, "/w/a.py", "/w", no)).toBeNull();
+    expect(await L.clientFor(PY, "/w/b.py", "/w", no)).toBeNull();
+    expect(spawned.length).toBe(1);
+    expect(killed).toEqual(spawned);
+    expect(toast).toHaveBeenCalledTimes(1);
+    expect(L.lspState.status["python|/w"]).toBe("error");
+    // The late exit of the killed process leaves the error status alone.
+    await emit("proc-exit", spawned[0]);
+    expect(L.lspState.status["python|/w"]).toBe("error");
+    // After an update (stopServers) the server is tried again.
+    L.stopServers("python");
+    await L.clientFor(PY, "/w/a.py", "/w", no);
+    expect(spawned.length).toBe(2);
+  });
+
   test("missing server: status missing, askInstall declined → null", async () => {
     mockIPC((cmd) => (cmd === "tools_dir" ? "/tools" : cmd === "path_exists" ? false : null), { shouldMockEvents: true });
     const ask = vi.fn(async () => false);
