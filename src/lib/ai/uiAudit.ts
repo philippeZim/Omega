@@ -120,7 +120,8 @@ const rectOf = (el: Element) => {
 
 const label = (el: Element) => {
   const h = el as HTMLElement;
-  return (h.getAttribute("aria-label") || h.dataset.tip || h.getAttribute("title") || (h as HTMLInputElement).placeholder || h.innerText || "").replace(/\s+/g, " ").trim();
+  // title before data-tip: Tooltip.svelte keeps a copy in data-tip that can be stale.
+  return (h.getAttribute("aria-label") || h.getAttribute("title") || h.dataset.tip || (h as HTMLInputElement).placeholder || h.innerText || "").replace(/\s+/g, " ").trim();
 };
 
 /** Effective background behind `el`: semi-transparent layers composited up to the page colour. */
@@ -228,7 +229,7 @@ export function audit(opts: { checks?: Check[]; selector?: string; minContrast?:
 
   if (checks.has("unlabeled")) {
     for (const el of controls) {
-      if (label(el) || el.getAttribute("aria-labelledby")) continue;
+      if (label(el) || el.getAttribute("aria-labelledby") || el.closest("label") || (el.id && document.querySelector(`label[for="${CSS.escape(el.id)}"]`))) continue;
       add("unlabeled", "medium", el, "bedienbares Element ohne Text, aria-label oder Tooltip");
     }
   }

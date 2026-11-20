@@ -22,6 +22,7 @@ import { settings } from "../settings.svelte";
 import type { Mode } from "../modes";
 import { audit, CHECKS, type Check } from "./uiAudit";
 import { sandboxNative } from "../native";
+import { report } from "../report.svelte";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 
 // ------------------------------------------------------------------ console capture
@@ -73,17 +74,24 @@ function visible(el: Element) {
   return st.visibility !== "hidden" && st.display !== "none" && st.opacity !== "0";
 }
 
-function labelOf(el: Element): string {
+/** All names an element goes by. Tooltip.svelte moves `title` into `data-tip` on hover, so
+ *  `data-tip` can be stale after a language switch: the live `title` wins. */
+function labelsOf(el: Element): string[] {
   const h = el as HTMLElement;
-  return (
-    h.getAttribute("aria-label") ||
-    h.dataset.tip ||
-    h.getAttribute("title") ||
-    (h as HTMLInputElement).placeholder ||
-    h.innerText ||
-    h.textContent ||
-    ""
-  ).replace(/\s+/g, " ").trim();
+  const norm = (s: string | null | undefined) => (s ?? "").replace(/\s+/g, " ").trim();
+  return [h.getAttribute("aria-label"), h.getAttribute("title"), h.dataset.tip, (h as HTMLInputElement).placeholder, h.innerText || h.textContent]
+    .map(norm)
+    .filter(Boolean);
+}
+
+function labelOf(el: Element): string {
+  return labelsOf(el)[0] ?? "";
+}
+
+/** The topmost open modal, if any: controls behind it aren't reachable for a user either. */
+function topModal(): Element | null {
+  const modals = [...document.querySelectorAll("[role=dialog], [aria-modal=true], dialog[open]")].filter(visible);
+  return modals[modals.length - 1] ?? null;
 }
 
 /** Finds elements by visible text / aria-label / tooltip (case-insensitive) or CSS selector. */
@@ -92,17 +100,17 @@ function findElements(opts: { text?: string; selector?: string; exact?: boolean 
   if (opts.selector) els = [...document.querySelectorAll<HTMLElement>(opts.selector)];
   else els = [...document.querySelectorAll<HTMLElement>(INTERACTIVE)];
   els = els.filter(visible);
+  const modal = topModal();
+  if (modal) els = els.filter((el) => modal.contains(el));
   if (opts.text) {
     const q = opts.text.toLowerCase().trim();
-    const match = (el: HTMLElement) => {
-      const l = labelOf(el).toLowerCase();
-      return opts.exact ? l === q : l.includes(q);
-    };
+    const exactHit = (el: HTMLElement) => labelsOf(el).some((l) => l.toLowerCase() === q);
+    const match = (el: HTMLElement) => (opts.exact ? exactHit(el) : labelsOf(el).some((l) => l.toLowerCase().includes(q)));
     els = els.filter(match);
     // Prefer the innermost matching element (a button inside a matching row, not the row).
     els = els.filter((el) => !els.some((o) => o !== el && el.contains(o)));
     // Exact matches first.
-    els.sort((a, b) => Number(labelOf(b).toLowerCase() === q) - Number(labelOf(a).toLowerCase() === q));
+    els.sort((a, b) => Number(exactHit(b)) - Number(exactHit(a)));
   }
   return els;
 }
@@ -200,6 +208,7 @@ export const TOOLS: Tool[] = [
         dialog: ui.dialog ? { title: ui.dialog.title, message: ui.dialog.message, buttons: ui.dialog.options.map((o) => o.label), input: ui.dialog.input?.value } : null,
         contextMenu: ui.menu ? ui.menu.items.filter((i) => !i.separator).map((i) => i.label) : null,
         collabPanel: collab.open,
+        report: report.open,
       },
       project: runner.project ? { tool: runner.project.label, root: runner.project.root, run: runner.project.run?.cmd, build: runner.project.build?.cmd } : null,
       git: git.repo ? { branch: git.branch, ahead: git.ahead, behind: git.behind, remote: git.remoteUrl, changes: git.changes.map((c) => `${c.x}${c.y} ${c.path}`) } : null,
@@ -415,7 +424,7 @@ export const TOOLS: Tool[] = [
       const v = ed.getView();
       const tid = focusedTerminal();
       if (tid) await invoke("pty_write", { id: tid, data: text });
-      else if (v && el && v.dom.contains(el)) {
+      else if (v && el && v.dom.contains(el) && !(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) {
         const at = v.state.selection.main;
         v.dispatch({ changes: { from: at.from, to: at.to, insert: text }, selection: { anchor: at.from + text.length }, userEvent: "input.type" });
       } else if (el && (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) {
@@ -616,8 +625,14 @@ function focusedTerminal(): string | null {
   return host?.dataset.tid ?? null;
 }
 
+/** `code` values of a US layout for punctuation keys (synthetic events need both key and code). */
+const PUNCT_CODES: Record<string, string> = {
+  ",": "Comma", ".": "Period", "/": "Slash", ";": "Semicolon", "'": "Quote", "[": "BracketLeft", "]": "BracketRight",
+  "\\": "Backslash", "`": "Backquote", "-": "Minus", "=": "Equal", "+": "Equal", " ": "Space", "^": "Backquote",
+};
+
 async function pressKey({ key, ctrl, shift, alt }: Args) {
-  const code = /^[0-9]$/.test(key) ? `Digit${key}` : key.length === 1 ? `Key${key.toUpperCase()}` : key;
+  const code = /^[0-9]$/.test(key) ? `Digit${key}` : /^[a-z]$/i.test(key) ? `Key${key.toUpperCase()}` : (PUNCT_CODES[key] ?? key);
   const init = { key, bubbles: true, cancelable: true, composed: true, ctrlKey: !!ctrl, shiftKey: !!shift, altKey: !!alt, code };
   const label = [ctrl && "Strg", shift && "Umschalt", alt && "Alt", key].filter(Boolean).join("+");
   const tid = focusedTerminal();
