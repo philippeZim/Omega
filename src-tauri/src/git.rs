@@ -16,7 +16,9 @@ fn git_cmd(root: &str) -> Command {
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_EDITOR", "true")
         .env("GIT_MERGE_AUTOEDIT", "no")
-        .env("LANG", "C");
+        // Untranslated messages: the toasts look for "fatal:"/"error:" (LC_ALL beats LANG/LC_MESSAGES).
+        .env("LANG", "C")
+        .env("LC_ALL", "C");
     c
 }
 
@@ -226,6 +228,13 @@ fn parse_blame(s: &str) -> Blame {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn git_runs_with_untranslated_messages() {
+        let c = git_cmd(".");
+        let env: Vec<_> = c.get_envs().filter_map(|(k, v)| Some((k.to_str()?.to_string(), v?.to_str()?.to_string()))).collect();
+        assert!(env.contains(&("LC_ALL".into(), "C".into())));
+    }
 
     const H1: &str = "1111111111111111111111111111111111111111";
     const H2: &str = "2222222222222222222222222222222222222222";
