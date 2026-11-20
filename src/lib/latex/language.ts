@@ -213,13 +213,25 @@ function groupBody(text: string, from: number): string | null {
   return null;
 }
 
+/** Whether `pos` lies after an unescaped "%" on its line. */
+function inComment(text: string, pos: number): boolean {
+  for (let i = text.lastIndexOf("\n", pos - 1) + 1; i < pos; i++) {
+    if (text[i] === "\\") i++;
+    else if (text[i] === "%") return true;
+  }
+  return false;
+}
+
 export function outline(text: string): OutlineItem[] {
   const out: OutlineItem[] = [];
-  const re = /^[^%\n]*?\\(part|chapter|section|subsection|subsubsection|paragraph)\*?(?:\[[^\]]*\])?\{/gm;
+  const re = /\\(part|chapter|section|subsection|subsubsection|paragraph)\*?(?:\[[^\]]*\])?\{/g;
   for (let m; (m = re.exec(text)); ) {
-    const pos = m.index + m[0].indexOf("\\" + m[1]);
-    const title = groupBody(text, m.index + m[0].length);
+    const pos = m.index;
+    if (inComment(text, pos)) continue;
+    const start = m.index + m[0].length;
+    const title = groupBody(text, start);
     if (title === null) continue;
+    re.lastIndex = start + title.length + 1;
     out.push({ level: LEVELS[m[1]], title: title.trim() || t("commands.tex.empty"), line: text.slice(0, pos).split("\n").length, pos });
   }
   return out;
