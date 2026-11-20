@@ -57,6 +57,7 @@ export const en = {
   "ai.collab.remove": "Remove",
   "ai.collab.end": "End session",
   "ai.collab.leave": "Leave session",
+  "ai.collab.fileDeleted": "{name} was deleted by the host – your text stays here as an unsaved tab",
 };
 export const de: Record<keyof typeof en, string> = {
   "ai.noActiveFile": "Keine Datei aktiv",
@@ -116,6 +117,7 @@ export const de: Record<keyof typeof en, string> = {
   "ai.collab.remove": "Entfernen",
   "ai.collab.end": "Session beenden",
   "ai.collab.leave": "Session verlassen",
+  "ai.collab.fileDeleted": "{name} wurde vom Host gelöscht – dein Text bleibt hier als ungespeicherter Tab",
 };
 export const fr: Record<keyof typeof en, string> = {
   "ai.noActiveFile": "Aucun fichier actif",
@@ -175,4 +177,5 @@ export const fr: Record<keyof typeof en, string> = {
   "ai.collab.remove": "Retirer",
   "ai.collab.end": "Terminer la session",
   "ai.collab.leave": "Quitter la session",
+  "ai.collab.fileDeleted": "{name} a été supprimé par l’hôte – votre texte reste ici dans un onglet non enregistré",
 };

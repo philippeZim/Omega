@@ -171,3 +171,52 @@ test("an outside change the watcher hasn't reported yet isn't overwritten by a g
     vi.useRealTimers();
   }
 });
+
+test("host deletes a shared file it has open: guests are told, the host tab is unshared (#134)", async () => {
+  fakeFs({ "/p/src/x.rs": "fn x() {}\n" });
+  app.tabs.push({ id: "t1", path: "/p/src/x.rs", name: "x.rs" });
+  texts.set("t1", "fn x() {}\n");
+  await receive("g1", { t: "doc.open", path: "src/x.rs" });
+  expect(bindings.has("t1")).toBe(true);
+
+  collabHooks.pathMoved("/p/src/x.rs", null);
+  expect(sent.find((s) => s.msg.t === "doc.gone")).toEqual({ peer: "g1", msg: { t: "doc.gone", path: "src/x.rs", reason: "deleted" } });
+  expect(bindings.has("t1")).toBe(false);
+});
+
+test("a background doc whose file is deleted outside Omega isn't recreated by guest edits (#134)", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    const fs = fakeFs({ "/p/a.txt": "a\n" });
+    await receive("g1", { t: "doc.open", path: "a.txt" });
+    fs.files.delete("/p/a.txt");
+    for (const f of fileListeners) f(["/p/a.txt"]);
+    await vi.advanceTimersByTimeAsync(10);
+    expect(sent.some((s) => s.msg.t === "doc.gone" && s.msg.reason === "deleted")).toBe(true);
+
+    await guestInsert("a.txt", 0, "more");
+    await vi.advanceTimersByTimeAsync(800);
+    expect(fs.files.has("/p/a.txt")).toBe(false);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("guest: a file the host deleted stays open as an unsaved tab with its text (#134)", async () => {
+  collab.role = "guest";
+  const h = new Y.Doc();
+  h.getText("content").insert(0, "fn x() {}\n// guest\n");
+  await receive("host-peer", { t: "doc.state", path: "src/x.rs", name: "x.rs", update: b64(Y.encodeStateAsUpdate(h)) });
+  const tab = await vi.waitFor(() => {
+    const x = app.tabs.find((y) => y.path === "collab:src/x.rs");
+    if (!x || !bindings.has(x.id)) throw new Error("not open yet");
+    return x;
+  });
+  expect(bindings.has(tab.id)).toBe(true);
+
+  await receive("host-peer", { t: "doc.gone", path: "src/x.rs", reason: "deleted" });
+  expect(app.tabs).toContainEqual({ id: tab.id, path: null, name: "x.rs", dirty: true });
+  expect(bindings.has(tab.id)).toBe(false);
+  expect(closeTab).not.toHaveBeenCalled();
+  expect(ui.toasts[0]?.kind).toBe("error");
+});
