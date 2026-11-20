@@ -29,3 +29,6 @@ dist-ssr
 .claude/settings.local.json
 *.key
 coverage/
+
+# Claude Code agent worktrees
+.claude/worktrees/

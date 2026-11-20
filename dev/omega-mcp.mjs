@@ -23,6 +23,9 @@ import readline from "node:readline";
 
 // ------------------------------------------------------------------ registry
 
+/** Per call: worktree given explicitly (subagents run in the orchestrator's directory). */
+let worktreeOverride = "";
+
 const runtimeBase = () => {
   const x = process.env.XDG_RUNTIME_DIR;
   return x && fs.existsSync(x) ? x : os.tmpdir();
@@ -63,6 +66,7 @@ function readJsonDir(dir) {
 
 /** Worktree of the agent: OMEGA_WORKTREE or the git toplevel around the working directory. */
 function myWorktree() {
+  if (worktreeOverride) return real(worktreeOverride);
   if (process.env.OMEGA_WORKTREE) return real(process.env.OMEGA_WORKTREE);
   try {
     return real(execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim());
@@ -157,6 +161,43 @@ const tail = (file, n = 30) => {
 
 const validName = (n) => /^[A-Za-z0-9_-]{1,40}$/.test(n);
 
+// ------------------------------------------------------------------ Hyprland: own desktop
+
+/** Test instances open on their own desktop (Hyprland workspace, default 5), so they never land
+ *  on the one you are working on. OMEGA_TEST_WORKSPACE overrides it; "" disables it. */
+const testWorkspace = () => (process.env.HYPRLAND_INSTANCE_SIGNATURE ? (process.env.OMEGA_TEST_WORKSPACE ?? "5") : "");
+
+function hypr(...args) {
+  try {
+    return execFileSync("hyprctl", args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 3000 });
+  } catch {
+    return "";
+  }
+}
+const hyprJson = (...args) => {
+  try {
+    return JSON.parse(hypr(...args, "-j"));
+  } catch {
+    return null;
+  }
+};
+
+/** Moves the window of `pid` to the test desktop without following it; gives the focus back to
+ *  `prevAddr` if the new window took it. Returns true once the window was found. */
+function toTestWorkspace(pid, prevAddr) {
+  const ws = testWorkspace();
+  if (!ws) return true;
+  const win = (hyprJson("clients") ?? []).find((c) => c.pid === pid);
+  if (!win) return false;
+  if (String(win.workspace?.id) !== ws && win.workspace?.name !== ws) {
+    hypr("dispatch", `hl.dsp.window.move({ workspace = "${ws}", follow = false, window = "address:${win.address}" })`);
+  }
+  if (prevAddr && hyprJson("activewindow")?.address !== prevAddr) {
+    hypr("dispatch", `hl.dsp.focus({ window = "address:${prevAddr}" })`);
+  }
+  return true;
+}
+
 /** Builds (cargo) and starts an instance of `root`; resolves when its control MCP is up. */
 async function launch(name = "agent", paths = [], log = () => {}) {
   if (!validName(name)) throw new Error(`Ungültiger Name "${name}" (erlaubt: A-Z a-z 0-9 _ -)`);
@@ -211,6 +252,7 @@ async function launch(name = "agent", paths = [], log = () => {}) {
   }
 
   // 3. The app.
+  const prevAddr = testWorkspace() ? hyprJson("activewindow")?.address : undefined;
   const app = spawn(exe, paths, {
     cwd: root,
     env: { ...env, OMEGA_INSTANCE: name, OMEGA_DEV_URL: devUrl, OMEGA_WORKTREE: root },
@@ -221,15 +263,17 @@ async function launch(name = "agent", paths = [], log = () => {}) {
   fs.writeFileSync(omegaDir("launched", `${app.pid}.json`), JSON.stringify({ name, worktree: root, appPid: app.pid, vitePid: vite.pid, devUrl, log: appLog }), { mode: 0o600 });
   log(`Omega „${name}“ startet (pid ${app.pid}) …`);
 
-  // 4. Ready when the control MCP announces itself.
-  for (let t = 0; t < 240; t++) {
+  // 4. Ready when the control MCP announces itself; meanwhile move the window to its desktop.
+  let placed = false;
+  for (let t = 0; t < 600; t++) {
+    if (!placed) placed = toTestWorkspace(app.pid, prevAddr);
     const inst = instances().find((i) => i.pid === app.pid);
-    if (inst) return { ...publicInfo(inst), log: appLog };
+    if (inst && (placed || t > 50)) return { ...publicInfo(inst), log: appLog, ...(testWorkspace() ? { workspace: testWorkspace() } : {}) };
     if (app.exitCode !== null || !alive(app.pid)) {
       killTree(vite.pid);
       throw new Error(`Omega wurde beendet:\n${tail(appLog)}`);
     }
-    await sleep(500);
+    await sleep(200);
   }
   throw new Error(`Omega meldet keinen Steuerungs-MCP (Log: ${appLog})`);
 }
@@ -318,13 +362,14 @@ const MGMT = [
       properties: {
         name: { type: "string", description: "Name der Instanz (A-Z a-z 0-9 _ -), Standard: agent" },
         paths: { type: "array", items: { type: "string" }, description: "Ordner/Dateien, die direkt geöffnet werden (relativ zum Worktree)" },
+        worktree: { type: "string", description: "Absoluter Pfad des Worktrees, aus dem gebaut wird (Standard: Arbeitsordner des Agents). Für Subagents, die im Ordner des Orchestrators laufen." },
       },
     },
   },
   {
     name: "instance_stop",
     description: "Beendet eine mit instance_launch gestartete Instanz dieses Worktrees (samt ihrem Vite). name = \"all\" beendet alle.",
-    inputSchema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] },
+    inputSchema: { type: "object", properties: { name: { type: "string" }, worktree: { type: "string", description: "Absoluter Pfad des Worktrees (Standard: Arbeitsordner des Agents)" } }, required: ["name"] },
   },
 ];
 
@@ -354,6 +399,7 @@ const send = (m) => process.stdout.write(JSON.stringify(m) + "\n");
 
 let knownApp = false;
 async function callTool(name, args = {}) {
+  worktreeOverride = name.startsWith("instance_") ? (args.worktree ?? "") : "";
   switch (name) {
     case "instance_list":
       return text(instances().map(publicInfo));

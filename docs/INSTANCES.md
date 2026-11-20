@@ -14,7 +14,7 @@ The MCP server is `dev/omega-mcp.mjs`, a stdio proxy with no dependencies.
 
 | Tool | What it does |
 |---|---|
-| `instance_launch {name?, paths?}` | Runs `cargo build`, starts its own Vite and the app with `OMEGA_INSTANCE=<name>`, and returns once the control MCP is up. The new instance becomes the default target. |
+| `instance_launch {name?, paths?, worktree?}` | Runs `cargo build` in `worktree` (default: the agent's working directory; subagents running in the orchestrator's directory pass it), starts its own Vite and the app with `OMEGA_INSTANCE=<name>`, and returns once the control MCP is up. The new instance becomes the default target. |
 | `instance_list` | Lists running instances (name, pid, worktree, default target). |
 | `instance_stop {name \| "all"}` | Exits cleanly and also stops the instance's Vite. Only instances this worktree launched can be stopped. |
 | all app tools (`get_state`, `click`, `screenshot`, …) | Forwarded to the instance. The optional `instance` argument picks a specific one. |
@@ -22,6 +22,8 @@ The MCP server is `dev/omega-mcp.mjs`, a stdio proxy with no dependencies.
 Without an `instance` argument, a call goes to the last launched instance, or to the only one in this worktree. The proxy never picks your own Omega on its own.
 
 From a terminal: `node dev/omega-mcp.mjs list | launch [name] [paths…] | stop <name|all>`.
+
+**Test instances open on desktop 5.** On Hyprland the launcher moves each new instance window to workspace 5 and gives the focus back to the window that had it, so tests never land on the desktop you are working on. `OMEGA_TEST_WORKSPACE=<n>` picks another desktop, and `OMEGA_TEST_WORKSPACE=` turns it off.
 
 ## How it works
 
