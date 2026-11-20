@@ -24,15 +24,17 @@ interface DialogState {
   resolve: (v: string | null, input?: string) => void;
 }
 
+/** Dialogs waiting for the open one to close. */
+const queue: DialogState[] = [];
+
 /**
- * Shows a dialog. A dialog that is still open gets cancelled (resolved with null) first, so its
- * caller is never left waiting forever.
+ * Shows a dialog. If one is already open, the new one waits in a queue and is shown once the open
+ * one closes: a background question (e.g. "changed on disk") must not cancel a prompt the user is
+ * typing into, and every caller still gets an answer.
  */
 function openDialog(d: DialogState) {
-  const old = ui.dialog;
-  ui.dialog = null;
-  old?.resolve(null);
-  ui.dialog = d;
+  if (ui.dialog) queue.push(d);
+  else ui.dialog = d;
 }
 
 export const ui = $state({
@@ -74,6 +76,13 @@ export const ui = $state({
       { label: confirmLabel, value: "ok", primary: !danger, danger },
     ]);
     return r === "ok";
+  },
+
+  /** Closes the open dialog with the chosen option (null: dismissed) and shows the next queued one. */
+  closeDialog(value: string | null, input?: string) {
+    const d = ui.dialog;
+    ui.dialog = queue.shift() ?? null;
+    d?.resolve(value, input);
   },
 
   openMenu(e: MouseEvent, items: MenuItem[]) {

@@ -68,9 +68,7 @@
   });
 
   function close(v: string | null) {
-    const d = ui.dialog;
-    ui.dialog = null;
-    d?.resolve(v, value);
+    ui.closeDialog(v, value);
     queueMicrotask(() => { if (!ui.dialog) ed.focus(); });
   }
 
