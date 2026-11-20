@@ -85,11 +85,20 @@
   function close() {
     if (!cloning) runner.newProject = false;
   }
+
+  // Focus the dialog when it opens, so typing and Enter work without clicking into it first.
+  let sheet = $state<HTMLElement>();
+  $effect(() => {
+    if (runner.newProject && sheet) (sheet.querySelector<HTMLInputElement>("input:not([readonly])") ?? sheet).focus();
+  });
 </script>
+
+<!-- Escape closes the dialog wherever the focus is (e.g. after the folder picker closed), like Settings. -->
+<svelte:window onkeydown={(e) => e.key === "Escape" && runner.newProject && !e.defaultPrevented && (e.preventDefault(), close())} />
 
 {#if runner.newProject}
   <div class="backdrop" role="presentation" onclick={close}>
-    <div class="sheet" role="dialog" tabindex="-1" onclick={(e) => e.stopPropagation()} onkeydown={(e) => { if (e.key === "Escape") close(); if (e.key === "Enter" && !(e.target as HTMLElement).closest(".repos")) submit(); }}>
+    <div class="sheet" role="dialog" tabindex="-1" bind:this={sheet} onclick={(e) => e.stopPropagation()} onkeydown={(e) => { if (e.key === "Enter" && !(e.target as HTMLElement).closest(".repos")) submit(); }}>
       <div class="seg">
         <button class:on={tab === "new"} onclick={() => (tab = "new")}>{t("code.np.newProject")}</button>
         <button class:on={tab === "clone"} onclick={() => (tab = "clone")}>{t("code.np.cloneFromGit")}</button>
