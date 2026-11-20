@@ -30,9 +30,10 @@ describe("==highlight==", () => {
   test("whitespace inside the delimiters is not a highlight", () => {
     expect(nodes("a == b == c", "Highlight")).toEqual([]);
   });
-  // bug: the "===" guard only looks forward, so the parser retries one char later and "===x===" yields Highlight "==x===".
-  test.fails("=== is not a delimiter", () => {
+  // regression #31: the guard only looked forward, so the retry one char later made "===x===" a Highlight "==x===".
+  test("=== is not a delimiter", () => {
     expect(nodes("a ===x=== b", "Highlight")).toEqual([]);
+    expect(nodes("a ===x== b", "Highlight")).toEqual([]);
   });
   test("nests with emphasis", () => {
     expect(nodes("==**bold**==", "Highlight", "StrongEmphasis")).toEqual([
@@ -54,9 +55,11 @@ describe("$inline math$", () => {
     expect(nodes("\\$a$ b", "InlineMath")).toEqual([]);
     expect(nodes("$a\\$b$", "InlineMath")).toEqual([["InlineMath", "$a\\$b$"]]);
   });
-  // bug: the "$$" guard only rejects at the first "$"; the parser retries at the second one, so "$$y$$" mid-line parses as "$" + InlineMath "$y$" + "$".
-  test.fails("$$ inline is not inline math", () => {
+  // regression #31: the guard only rejected at the first "$"; the retry at the second one parsed "$$y$$" as "$" + InlineMath "$y$" + "$".
+  // Inline "$$" is not math at all: display math is only the $$ block at line start.
+  test("$$ inline is not inline math", () => {
     expect(nodes("x $$y$$ z", "InlineMath")).toEqual([]);
+    expect(nodes("x $$y$ z", "InlineMath")).toEqual([]);
   });
   test("unclosed", () => {
     expect(nodes("$abc", "InlineMath")).toEqual([]);
