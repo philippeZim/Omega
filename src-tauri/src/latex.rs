@@ -53,7 +53,8 @@ pub fn latex_available() -> bool {
 }
 
 /// Finds the root document for `path`: `% !TEX root = …`, the file itself if it has
-/// `\documentclass`, or a sibling main.tex.
+/// `\documentclass`, else the nearest document in this or a parent folder that `\input`s /
+/// `\include`s it, else the nearest main.tex.
 fn find_root(path: &Path, content: &str) -> PathBuf {
     for line in content.lines().take(10) {
         let l = line.trim_start_matches('%').trim();
@@ -67,13 +68,64 @@ fn find_root(path: &Path, content: &str) -> PathBuf {
     if content.contains("\\documentclass") {
         return path.to_path_buf();
     }
-    if let Some(dir) = path.parent() {
-        let main = dir.join("main.tex");
-        if main.exists() {
-            return main;
+    let home = crate::env::home();
+    let mut main = None;
+    for dir in path.ancestors().skip(1).take(ROOT_SEARCH_DEPTH) {
+        if dir.as_os_str().is_empty() {
+            break;
+        }
+        if let Some(root) = including_document(dir, path) {
+            return root;
+        }
+        if main.is_none() && dir.join("main.tex").is_file() {
+            main = Some(dir.join("main.tex"));
+        }
+        // Don't climb out of the project (git root) or above the home folder.
+        if dir.join(".git").exists() || dir == home {
+            break;
         }
     }
-    path.to_path_buf()
+    main.unwrap_or_else(|| path.to_path_buf())
+}
+
+/// How many folders (the file's own and its parents) `find_root` searches.
+const ROOT_SEARCH_DEPTH: usize = 6;
+
+/// A `.tex` file directly in `dir` that has `\documentclass` and includes `file`
+/// (`\input`, `\include` or `\subfile`, with or without `.tex`).
+fn including_document(dir: &Path, file: &Path) -> Option<PathBuf> {
+    let rel = file.strip_prefix(dir).ok()?;
+    let mut docs: Vec<PathBuf> = std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p != file && p.is_file() && p.extension().is_some_and(|e| e == "tex"))
+        .collect();
+    docs.sort();
+    docs.into_iter().find(|p| {
+        let Ok(text) = std::fs::read_to_string(p) else { return false };
+        text.contains("\\documentclass") && includes(&text, rel)
+    })
+}
+
+/// Whether `text` has an uncommented `\input{…}`, `\include{…}` or `\subfile{…}` naming `rel`.
+fn includes(text: &str, rel: &Path) -> bool {
+    let want = rel.with_extension("");
+    for line in text.lines() {
+        let code = line.split('%').next().unwrap_or("");
+        for cmd in ["\\input{", "\\include{", "\\subfile{"] {
+            for (i, _) in code.match_indices(cmd) {
+                let arg = &code[i + cmd.len()..];
+                let Some(end) = arg.find('}') else { continue };
+                let name = arg[..end].trim().trim_start_matches("./");
+                let name = Path::new(name.strip_suffix(".tex").unwrap_or(name));
+                if name == want {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 #[tauri::command]
@@ -469,5 +521,37 @@ mod tests {
         std::fs::write(dir.path().join("main.tex"), "\\documentclass{article}").unwrap();
         assert_eq!(find_root(&ch, "\\section{A}"), dir.path().join("main.tex"));
         assert_eq!(find_root(&ch, "\\documentclass{article}"), ch);
+    }
+
+    #[test]
+    fn root_in_parent_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let proj = dir.path();
+        std::fs::create_dir_all(proj.join("chapters/deep")).unwrap();
+        std::fs::create_dir(proj.join(".git")).unwrap();
+        let one = proj.join("chapters/one.tex");
+        // A parent main.tex is found even without an \input of the file.
+        std::fs::write(proj.join("main.tex"), "\\documentclass{article}").unwrap();
+        assert_eq!(find_root(&one, "\\section{A}"), proj.join("main.tex"));
+        // A document that includes the file wins over main.tex.
+        std::fs::write(proj.join("thesis.tex"), "\\documentclass{book}\n% \\input{chapters/two}\n\\input{./chapters/one}\n").unwrap();
+        assert_eq!(find_root(&one, "\\section{A}"), proj.join("thesis.tex"));
+        assert_eq!(find_root(&proj.join("chapters/deep/x.tex"), ""), proj.join("main.tex"));
+        // Commented-out includes don't count.
+        assert_eq!(find_root(&proj.join("chapters/two.tex"), ""), proj.join("main.tex"));
+        // The search stops at the git root.
+        let sub = proj.join("sub");
+        std::fs::create_dir_all(sub.join(".git")).unwrap();
+        assert_eq!(find_root(&sub.join("a.tex"), ""), sub.join("a.tex"));
+    }
+
+    #[test]
+    fn include_matching() {
+        let rel = Path::new("chapters/one.tex");
+        assert!(includes("\\input{chapters/one}", rel));
+        assert!(includes("x \\include{ chapters/one.tex }", rel));
+        assert!(includes("\\subfile{./chapters/one}", rel));
+        assert!(!includes("\\input{chapters/one2}", rel));
+        assert!(!includes("% \\input{chapters/one}", rel));
     }
 }
