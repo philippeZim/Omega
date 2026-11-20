@@ -202,6 +202,7 @@ function cleanup() {
 
 export async function restartDebugging() {
   if (root?.capabilities.supportsRestartRequest && active === root) {
+    runGen++;
     await root.request("restart", {}).catch(() => {});
     return;
   }
@@ -215,7 +216,7 @@ export async function restartDebugging() {
 
 const threadArgs = () => ({ threadId: dbg.threadId ?? dbg.threads[0]?.id ?? 1 });
 
-/** Bumped whenever run state changes (step, stopped/continued event, cleanup), so a late
+/** Bumped whenever run state changes (step, restart, stopped/continued event, cleanup), so a late
  *  step rejection can tell whether newer state has arrived in the meantime. */
 let runGen = 0;
 
@@ -231,11 +232,14 @@ async function step(cmd: "continue" | "next" | "stepIn" | "stepOut") {
     await s.request(cmd, threadArgs());
   } catch (e) {
     log(String(e), "error");
-    // The adapter refused, so the program is still paused where it was. Restore that state
-    // unless a stopped/continued event (or the session's end) has replaced it already.
-    if (gen === runGen && active === s && dbg.status === "running") {
+    // The adapter refused (or the request never reached it), so the program is still paused
+    // where it was. A timeout says nothing about that: the program may be running, so keep
+    // "running" and let Pause work. Don't overwrite newer state from a stopped/continued
+    // event or the session's end either.
+    const timedOut = (e as { timeout?: boolean })?.timeout === true;
+    if (!timedOut && s.alive && gen === runGen && active === s && dbg.status === "running") {
       dbg.status = "stopped";
-      dbg.exec = prevExec;
+      if (dbg.exec === null) dbg.exec = prevExec;
       refreshEditor();
     }
   }

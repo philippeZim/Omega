@@ -245,15 +245,52 @@ describe("debugger controller with a fake adapter", () => {
 
   test("a rejected step does not overwrite a continued event that arrived first", async () => {
     await startAndStop();
-    fake.replies.continue = () => {
-      fake.event("continued", { threadId: 1 });
-      throw new Error("late failure");
-    };
-    await D.continueRun();
-    await settle();
+    fake.noReply.add("continue");
+    const done = D.continueRun();
+    await vi.waitFor(() => expect(fake.last("continue")).toBeTruthy());
+    const v = S.dbg.version;
+    await fake.event("continued", { threadId: 1 });
+    expect(S.dbg.version).toBeGreaterThan(v); // the continued event was handled first
+    await emit("proc-msg", {
+      id: fake.id,
+      msg: JSON.stringify({ seq: 3000, type: "response", request_seq: fake.last("continue").seq, command: "continue", success: false, message: "late failure" }),
+    });
+    await done;
     expect(S.dbg.console.some((l) => l.kind === "error" && l.text.includes("late failure"))).toBe(true);
     expect(S.dbg.status).toBe("running");
     expect(S.dbg.exec).toBeNull();
+  });
+
+  test("a rejected step keeps an execution line set in the meantime", async () => {
+    await startAndStop();
+    fake.noReply.add("next");
+    const done = D.stepOver();
+    await vi.waitFor(() => expect(fake.last("next")).toBeTruthy());
+    await D.selectFrame(S.dbg.frames[0]);
+    await emit("proc-msg", {
+      id: fake.id,
+      msg: JSON.stringify({ seq: 3000, type: "response", request_seq: fake.last("next").seq, command: "next", success: false, message: "nope" }),
+    });
+    await done;
+    expect(S.dbg.status).toBe("stopped");
+    expect(S.dbg.exec).toEqual({ path: "/usr/lib/runpy.py", line: 5 });
+  });
+
+  test("a timed-out step stays running so Pause still works", async () => {
+    await startAndStop();
+    fake.noReply.add("next");
+    vi.useFakeTimers();
+    try {
+      const done = D.stepOver();
+      await vi.advanceTimersByTimeAsync(30_001);
+      await done;
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(S.dbg.console.some((l) => l.kind === "error" && l.text.includes("next"))).toBe(true);
+    expect(S.dbg.status).toBe("running");
+    await D.pause();
+    expect(fake.last("pause")).toBeTruthy();
   });
 
   test("watches and REPL evaluate in the selected frame", async () => {

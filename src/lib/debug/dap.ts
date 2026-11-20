@@ -61,7 +61,7 @@ export class DapSession {
       });
       if (timeoutMs > 0)
         setTimeout(() => {
-          if (this.pending.delete(seq)) reject(new Error(t("code.dap.noResponse", { command })));
+          if (this.pending.delete(seq)) reject(Object.assign(new Error(t("code.dap.noResponse", { command })), { timeout: true }));
         }, timeoutMs);
     });
   }
