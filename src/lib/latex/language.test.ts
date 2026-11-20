@@ -36,8 +36,12 @@ describe("latex outline", () => {
     expect(outline("Hello \\textbf{world}")).toEqual([]);
   });
 
-  // bug: the title regex is `\{([^}]*)\}`, so a nested group ends the title at the first "}".
-  test.fails("titles with nested braces are complete", () => {
+  test("titles with nested braces are complete", () => {
     expect(outline("\\section{Intro to \\LaTeX{} and \\emph{more}}")[0].title).toBe("Intro to \\LaTeX{} and \\emph{more}");
+    expect(outline("\\section{a \\} b}")[0].title).toBe("a \\} b");
+    expect(outline("\\section{Open\n\nnot closed}")).toEqual([]);
+    expect(outline("\\section{Open\r\n\r\nnot closed}")).toEqual([]);
+    expect(outline("\\section{Open\n  \t\nnot closed}")).toEqual([]);
+    expect(outline("\\section{Two\n lines}")[0].title).toBe("Two\n lines");
   });
 });

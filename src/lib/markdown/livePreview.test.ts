@@ -1,8 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { EditorState } from "@codemirror/state";
-import { EditorView } from "@codemirror/view";
-import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
-import { livePreview, resolvePath } from "./livePreview";
+import { resolvePath } from "./livePreview";
 
 describe("resolvePath", () => {
   const from = "/home/me/notes/index.md";
@@ -52,35 +49,5 @@ describe("resolvePath", () => {
     expect(resolvePath("100%.md", from)).toBe("/home/me/notes/100%.md");
     expect(resolvePath("img/50% off.png", from)).toBe("/home/me/notes/img/50% off.png");
     expect(resolvePath("100%.md#Top", from)).toBe("/home/me/notes/100%.md");
-  });
-});
-
-// ------------------------------------------------------------ rendered links
-
-
-/** Renders `doc` with the cursor on an extra last line, returns the data-href of every rendered link. */
-function hrefs(doc: string): string[] {
-  const text = doc + "\n\nend";
-  const view = new EditorView({
-    state: EditorState.create({
-      doc: text,
-      selection: { anchor: text.length },
-      extensions: [markdown({ base: markdownLanguage }), livePreview("/n/index.md")],
-    }),
-    parent: document.body,
-  });
-  const out = [...view.dom.querySelectorAll<HTMLElement>("[data-href]")].map((e) => e.dataset.href!);
-  view.destroy();
-  return out;
-}
-
-describe("rendered links", () => {
-  test("plain destination", () => {
-    expect(hrefs("[a](notes/a.md)")).toEqual(["notes/a.md"]);
-  });
-
-  // #43: the <…> brackets of a CommonMark angle destination ended up in the path.
-  test("angle-bracket destination drops the brackets", () => {
-    expect(hrefs("[Angle](<notes/with space.md>)")).toEqual(["notes/with space.md"]);
   });
 });

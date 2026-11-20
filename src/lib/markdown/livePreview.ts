@@ -60,11 +60,6 @@ export function resolvePath(href: string, fromPath: string | null): string | nul
   return prefix + "/" + parts.join("/");
 }
 
-/** A link destination as written, without the CommonMark `<…>` brackets (`[x](<a b.md>)`). */
-export function linkDest(raw: string) {
-  return /^<.*>$/.test(raw) ? raw.slice(1, -1) : raw;
-}
-
 function imageSrc(url: string, fromPath: string | null) {
   if (/^(https?|data):/i.test(url)) return url;
   const abs = resolvePath(url, fromPath);
@@ -265,7 +260,7 @@ function buildInline(view: EditorView, path: string | null): DecorationSet {
         if (name === "Link") {
           const marks = node.getChildren("LinkMark");
           const urlNode = node.getChild("URL");
-          const url = urlNode ? linkDest(slice(urlNode.from, urlNode.to)) : "";
+          const url = urlNode ? slice(urlNode.from, urlNode.to) : "";
           if (marks.length >= 2) {
             const tFrom = marks[0].to, tTo = marks[1].from;
             if (touches(sel, n.from, n.to)) {
@@ -286,7 +281,7 @@ function buildInline(view: EditorView, path: string | null): DecorationSet {
             const urlNode = node.getChild("URL");
             const marks = node.getChildren("LinkMark");
             const alt = marks.length >= 2 ? slice(marks[0].to, marks[1].from) : "";
-            if (urlNode) widget(n.from, n.to, new ImageWidget(imageSrc(linkDest(slice(urlNode.from, urlNode.to)), path), alt));
+            if (urlNode) widget(n.from, n.to, new ImageWidget(imageSrc(slice(urlNode.from, urlNode.to), path), alt));
           } else mark(n.from, n.to, "md-formatting");
           return false;
         }
