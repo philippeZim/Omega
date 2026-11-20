@@ -144,8 +144,9 @@ async function stashOwnWorkspace() {
   const snap: Snapshot = { root: app.root, mode: app.mode, active: activeTab()?.path ?? null, tabs: [] };
   for (const tab of [...app.tabs]) {
     if (isRemote(tab.path)) continue;
-    // Files on disk are autosaved; unsaved "Untitled" tabs keep their text in the snapshot.
-    snap.tabs.push(tab.path ? { path: tab.path, name: tab.name } : { path: null, name: tab.name, content: ed.getText(tab.id) });
+    // Files on disk are autosaved. Unsaved "Untitled" tabs and files whose autosave failed (e.g.
+    // read-only) keep their text in the snapshot (#129).
+    snap.tabs.push(tab.path && !tab.dirty ? { path: tab.path, name: tab.name } : { path: tab.path, name: tab.name, content: ed.getText(tab.id) });
   }
   try {
     localStorage.setItem(SNAP_KEY, JSON.stringify(snap));
@@ -165,15 +166,19 @@ async function restoreOwnWorkspace() {
   setRoot(snap.root);
   setMode(snap.mode);
   for (const tab of snap.tabs) {
-    if (tab.path) {
-      if (await fsApi.exists(tab.path)) await openFile(tab.path);
-    } else if (tab.content) {
+    const onDisk = !!tab.path && (await fsApi.exists(tab.path));
+    if (onDisk) await openFile(tab.path!);
+    if (tab.content === undefined || (!tab.path && !tab.content)) continue;
+    // Unsaved text: back into the reopened file's tab (still unsaved), or a new tab.
+    let x = onDisk ? app.tabs.find((y) => y.path === tab.path) : undefined;
+    if (!x) {
       newFile();
-      const id = app.activeId!;
-      ed.replaceDocText(id, tab.content);
-      const t = app.tabs.find((x) => x.id === id);
-      if (t) Object.assign(t, { name: tab.name, dirty: true });
+      x = app.tabs.find((y) => y.id === app.activeId);
+      if (x) x.name = tab.name;
     }
+    if (!x || ed.getText(x.id) === tab.content) continue;
+    ed.replaceDocText(x.id, tab.content);
+    x.dirty = true;
   }
   const active = snap.active && app.tabs.find((x) => x.path === snap!.active);
   if (active) activate(active.id);
