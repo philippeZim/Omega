@@ -248,6 +248,20 @@ describe("lspExtension diagnostics", () => {
     expect(c.exitListeners.size).toBe(0);
   });
 
+  // #116: an editor without a client (server failed or was missing) connects after a manual restart.
+  test("an editor without a client connects after restartServer", async () => {
+    const { restartListeners } = await import("./lsp.svelte");
+    m.client = null;
+    const v = view("x = 1\n", [lspExtension(PATH, LANG)]);
+    await new Promise((r) => setTimeout(r, 10));
+    const c = fakeClient();
+    m.client = c;
+    for (const l of restartListeners) l();
+    await vi.waitFor(() => expect(c.open).toHaveBeenCalledWith(URI, "python", "x = 1\n"));
+    v.destroy();
+    expect(restartListeners.size).toBe(0);
+  });
+
   // #111: after a server crash the editor kept the dead client (and its diagnostics) until the tab was switched.
   test("server exit clears stale diagnostics and reconnects to the restarted server", async () => {
     const c = fakeClient();

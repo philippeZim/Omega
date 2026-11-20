@@ -532,6 +532,61 @@ describe("client registry", () => {
     expect(spawned.length).toBe(2);
   });
 
+  // #116: the status indicator restarts the server of the active file.
+  test("restartServer replaces the running client and notifies editors", async () => {
+    const spawned = await multiServer();
+    const old = (await L.clientFor(PY, "/w/a.py", "/w", no))!;
+    const notified = vi.fn();
+    L.restartListeners.add(notified);
+    const fresh = await L.restartServer(PY, "/w/a.py", "/w", no);
+    L.restartListeners.delete(notified);
+    expect(fresh).not.toBe(old);
+    expect(old.stopping).toBe(true);
+    expect(L.allClients()).toEqual([fresh]);
+    expect(L.lspState.status["python|/w"]).toBe("ready");
+    expect(notified).toHaveBeenCalledTimes(1);
+    expect(spawned.length).toBe(2);
+  });
+
+  test("restartServer asks to install again after the prompt was cancelled", async () => {
+    mockIPC((cmd) => (cmd === "tools_dir" ? "/tools" : cmd === "path_exists" ? false : null), { shouldMockEvents: true });
+    const ask = vi.fn(async () => false);
+    await L.clientFor(PY, "/w/a.py", "/w", ask);
+    await L.clientFor(PY, "/w/a.py", "/w", ask);
+    expect(ask).toHaveBeenCalledTimes(1);
+    await L.restartServer(PY, "/w/a.py", "/w", ask);
+    expect(ask).toHaveBeenCalledTimes(2);
+  });
+
+  test("restartServer retries a server whose start failed (#114)", async () => {
+    let fail = true;
+    const spawned: string[] = [];
+    mockIPC(
+      (cmd, args: any) => {
+        if (cmd === "tools_dir") return "/tools";
+        if (cmd === "which_cmd") return args.cmd === "basedpyright-langserver" ? "/usr/bin/basedpyright-langserver" : null;
+        if (cmd === "path_exists") return false;
+        if (cmd === "proc_spawn") spawned.push(args.id);
+        if (cmd === "proc_send") {
+          const msg = JSON.parse(args.msg);
+          if (msg.id !== undefined && msg.method) {
+            const body = msg.method === "initialize" && fail ? { error: { code: -32603, message: "boom" } } : { result: msg.method === "initialize" ? { capabilities: {} } : null };
+            setTimeout(() => emit("proc-msg", { id: args.id, msg: JSON.stringify({ jsonrpc: "2.0", id: msg.id, ...body }) }), 0);
+          }
+        }
+        return null;
+      },
+      { shouldMockEvents: true },
+    );
+    vi.resetModules();
+    L = await import("./lsp.svelte");
+    await settle();
+    expect(await L.clientFor(PY, "/w/a.py", "/w", no)).toBeNull();
+    fail = false;
+    expect(await L.restartServer(PY, "/w/a.py", "/w", no)).not.toBeNull();
+    expect(spawned.length).toBe(2);
+  });
+
   test("missing server: status missing, askInstall declined → null", async () => {
     mockIPC((cmd) => (cmd === "tools_dir" ? "/tools" : cmd === "path_exists" ? false : null), { shouldMockEvents: true });
     const ask = vi.fn(async () => false);

@@ -6,7 +6,7 @@ import { autocompletion, insertCompletionText, snippet, type Completion, type Co
 import { setDiagnostics, forEachDiagnostic, type Diagnostic, type Action } from "@codemirror/lint";
 import { ui } from "../ui.svelte";
 import { t } from "../i18n/index.svelte";
-import { clientFor, fileUri, setLspWorkspace, uriPath, type LspClient, type ServerKind } from "./lsp.svelte";
+import { clientFor, fileUri, restartListeners, restartServer, setLspWorkspace, uriPath, type LspClient, type ServerKind } from "./lsp.svelte";
 import type { LangInfo } from "./languages";
 
 // ---------------------------------------------------------- app hooks
@@ -19,6 +19,11 @@ let hooks = {
 export function setLspHooks(h: typeof hooks) {
   hooks = h;
   setLspWorkspace(h.workspace);
+}
+
+/** Restarts the language server of this file with the app's hooks (status indicator). */
+export function restartLanguageServer(lang: LangInfo, path: string) {
+  return restartServer(lang, path, hooks.workspace(), hooks.askInstall);
 }
 
 // ---------------------------------------------------------- positions
@@ -256,8 +261,14 @@ export function lspExtension(path: string, lang: LangInfo): Extension {
         view.dispatch(setDiagnostics(view.state, []));
         if (this.retries-- > 0) setTimeout(() => viewRef === view && !client && this.connect(view), RECONNECT_MS);
       };
+      /** After a manual restart: editors without a client (failed or missing server) try again. */
+      onRestart = () => {
+        this.retries = 3;
+        if (!client && viewRef) this.connect(viewRef);
+      };
       constructor(view: EditorView) {
         viewRef = view;
+        restartListeners.add(this.onRestart);
         this.connect(view);
       }
       connect(view: EditorView) {
@@ -280,6 +291,7 @@ export function lspExtension(path: string, lang: LangInfo): Extension {
         flush();
         client?.diagnosticListeners.delete(this.listener);
         client?.exitListeners.delete(this.onExit);
+        restartListeners.delete(this.onRestart);
         viewRef = null;
       }
     },
