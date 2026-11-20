@@ -57,7 +57,9 @@ async function runOk(args: string[], what: Key): Promise<Out | null> {
 let refreshing = false;
 export async function refresh() {
   if (!app.root || refreshing) {
-    if (!app.root) git.repo = false;
+    // No folder (closed, or a collab guest showing the host's workspace): nothing of the previous
+    // repo may linger in the top bar or the Changes view.
+    if (!app.root) Object.assign(git, { repo: false, top: "", branch: "", upstream: null, ahead: 0, behind: 0, changes: [], remoteUrl: null });
     return;
   }
   refreshing = true;
