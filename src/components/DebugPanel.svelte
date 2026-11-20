@@ -132,7 +132,7 @@
           </div>
         {/if}
         {#each dbg.frames as f (f.id)}
-          <button class="frame" class:on={f.id === dbg.frameId} class:subtle={f.subtle} onclick={() => selectFrame(f)}>
+          <button class="frame" class:on={f.id === dbg.frameId} class:subtle={f.subtle} title={f.path ? `${f.name} · ${f.path}:${f.line}` : f.name} onclick={() => selectFrame(f)}>
             <span class="fname">{f.name}</span>
             {#if f.path}<span class="floc">{f.path.split("/").pop()}:{f.line}</span>{/if}
           </button>
