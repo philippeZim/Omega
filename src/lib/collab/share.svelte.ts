@@ -129,6 +129,14 @@ function makeDoc(rel: string, isHost: boolean): SharedDoc {
   return d;
 }
 
+/**
+ * Frees a doc's handlers and Yjs objects. Safe to call twice (closing a guest tab during teardown
+ * already disposes it; a second run made yjs log "Tried to remove event handler…", #135).
+ */
+function dispose(d: SharedDoc) {
+  for (const f of d.cleanup.splice(0)) f();
+}
+
 /** yCollab + undo actions for one tab. */
 function binding(d: SharedDoc) {
   return [
@@ -245,7 +253,7 @@ function onHostTabClosed(tabId: string) {
     d.tabId = null;
     if (d.rel.startsWith("tab:")) {
       for (const p of d.subscribers) send(p, { t: "doc.gone", path: d.rel });
-      d.cleanup.forEach((f) => f());
+      dispose(d);
       docs.delete(d.rel);
     } else {
       // From now on the file on disk is the reference (the tab was saved or discarded).
@@ -263,7 +271,7 @@ function hostFileGone(d: SharedDoc) {
   for (const p of d.subscribers) send(p, { t: "doc.gone", path: d.rel, reason: "deleted" });
   clearTimeout(d.writeTimer);
   if (d.tabId) ed.setCollab(d.tabId, null);
-  d.cleanup.forEach((f) => f());
+  dispose(d);
   docs.delete(d.rel);
 }
 
@@ -325,7 +333,8 @@ function scrollToLine(line: number) {
 }
 
 async function guestReceiveState(rel: string, update: Uint8Array, name?: string) {
-  docs.get(rel)?.cleanup.forEach((f) => f());
+  const old = docs.get(rel);
+  if (old) dispose(old);
   const d = makeDoc(rel, false);
   Y.applyUpdate(d.ydoc, update, "remote");
   const { openVirtual } = await import("../state.svelte");
@@ -344,7 +353,7 @@ export function onTabClosed(path: string | null) {
   const d = docs.get(rel);
   if (!d) return;
   send(collab.hostPeer!, { t: "doc.close", path: rel });
-  d.cleanup.forEach((f) => f());
+  dispose(d);
   docs.delete(rel);
 }
 
@@ -473,7 +482,7 @@ onCollabMessage(async (peer, msg) => {
       tab.dirty = true;
       ui.toast(t("ai.collab.fileDeleted", { name: tab.name }), "error");
     }
-    d.cleanup.forEach((f) => f());
+    dispose(d);
     docs.delete(msg.path);
   } else if (msg.t === "doc.gone") {
     const d = docs.get(msg.path);
@@ -511,7 +520,7 @@ export async function teardownShare() {
       const tab = app.tabs.find((t) => t.id === d.tabId);
       if (tab && isRemote(tab.path)) await closeTab(tab.id, true);
     }
-    d.cleanup.forEach((f) => f());
+    dispose(d);
   }
   docs.clear();
   renamed.clear();

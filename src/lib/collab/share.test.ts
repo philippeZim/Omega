@@ -274,3 +274,23 @@ test("guest: the tab of a file the host renamed follows the new name (#127)", as
   expect(sent.map((s) => [s.peer, s.msg.t, s.msg.path])).toContainEqual(["host-peer", "doc.update", "b.txt"]);
   view.destroy();
 });
+
+test("leaving a session with an open shared tab logs no yjs errors (#135)", async () => {
+  collab.role = "guest";
+  // Like the real closeTab: closing a tab reports it to the collab layer.
+  closeTab.mockImplementation(async (id: string) => {
+    const tab = app.tabs.find((t) => t.id === id);
+    app.tabs = app.tabs.filter((t) => t.id !== id);
+    collabHooks.tabClosed(tab?.path ?? null, id);
+  });
+  const h = new Y.Doc();
+  h.getText("content").insert(0, "text\n");
+  await receive("host-peer", { t: "doc.state", path: "a.txt", name: "a.txt", update: b64(Y.encodeStateAsUpdate(h)) });
+  await vi.waitFor(() => {
+    if (!app.tabs.some((t) => bindings.has(t.id))) throw new Error("not open yet");
+  });
+  const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+  await share.teardownShare();
+  expect(errors).not.toHaveBeenCalled();
+  expect(app.tabs).toEqual([]);
+});
