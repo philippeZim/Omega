@@ -63,6 +63,9 @@ export const en = {
   "ai.collab.err.timeout": "Timed out – the host can't be reached",
   "ai.collab.err.connect_failed": "Connection failed: {detail}",
   "ai.collab.err.not_connected": "Participant not connected",
+  "ai.collab.guestRenamed": "{name} renamed {file} to {to}",
+  "ai.collab.guestDeleted": "{name} deleted {file}",
+  "ai.collab.fileOpTimeout": "The host didn't answer",
 };
 export const de: Record<keyof typeof en, string> = {
   "ai.noActiveFile": "Keine Datei aktiv",
@@ -127,6 +130,9 @@ export const de: Record<keyof typeof en, string> = {
   "ai.collab.err.timeout": "Zeitüberschreitung – der Host ist nicht erreichbar",
   "ai.collab.err.connect_failed": "Verbindung fehlgeschlagen: {detail}",
   "ai.collab.err.not_connected": "Teilnehmer nicht verbunden",
+  "ai.collab.guestRenamed": "{name} hat {file} in {to} umbenannt",
+  "ai.collab.guestDeleted": "{name} hat {file} gelöscht",
+  "ai.collab.fileOpTimeout": "Der Host hat nicht geantwortet",
 };
 export const fr: Record<keyof typeof en, string> = {
   "ai.noActiveFile": "Aucun fichier actif",
@@ -191,4 +197,7 @@ export const fr: Record<keyof typeof en, string> = {
   "ai.collab.err.timeout": "Délai dépassé – l’hôte est injoignable",
   "ai.collab.err.connect_failed": "Échec de la connexion : {detail}",
   "ai.collab.err.not_connected": "Participant non connecté",
+  "ai.collab.guestRenamed": "{name} a renommé {file} en {to}",
+  "ai.collab.guestDeleted": "{name} a supprimé {file}",
+  "ai.collab.fileOpTimeout": "L’hôte n’a pas répondu",
 };
