@@ -191,6 +191,20 @@ describe("debugger controller with a fake adapter", () => {
     expect(S.dbg.scopes[0].children!.some((v) => v.changed)).toBe(false);
   });
 
+  test("restart stops and starts a new session even if the adapter supports restart (#101)", async () => {
+    const init = fake.replies.initialize;
+    fake.replies.initialize = (a, r) => ({ ...init(a, r), supportsRestartRequest: true });
+    await startAndStop();
+    const first = fake.id;
+    await D.restartDebugging();
+    expect(fake.commands()).not.toContain("restart");
+    expect(fake.commands()).toContain("disconnect");
+    expect(ipc.some(([c, a]) => c === "proc_kill" && a.id === first)).toBe(true);
+    await vi.waitFor(() => expect(S.dbg.status).toBe("stopped"));
+    expect(fake.id).not.toBe(first);
+    expect(ipc.filter(([c]) => c === "proc_spawn").length).toBe(2);
+  });
+
   test("selecting a frame in another file opens it", async () => {
     await startAndStop();
     await D.selectFrame(S.dbg.frames[0]);
