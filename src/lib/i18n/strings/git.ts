@@ -155,6 +155,8 @@ export const en = {
   "git.search.qOpen": "\"",
   "git.search.qClose": "\"",
   "git.diff.renamedFrom": "Renamed from {orig}",
+  "git.diff.binary": "Binary file",
+  "git.diff.binaryHint": "Binary file – no text diff. Use \"Discard Changes\" in the Changes list to restore the committed version.",
 };
 export const de: Record<keyof typeof en, string> = {
   "git.noFolderOpen": "Kein Ordner geöffnet",
@@ -312,6 +314,8 @@ export const de: Record<keyof typeof en, string> = {
   "git.search.qOpen": "„",
   "git.search.qClose": "“",
   "git.diff.renamedFrom": "Umbenannt von {orig}",
+  "git.diff.binary": "Binärdatei",
+  "git.diff.binaryHint": "Binärdatei – kein Textvergleich. Mit „Änderungen verwerfen“ in der Änderungsliste stellst du die committete Version wieder her.",
 };
 export const fr: Record<keyof typeof en, string> = {
   "git.noFolderOpen": "Aucun dossier ouvert",
@@ -469,4 +473,6 @@ export const fr: Record<keyof typeof en, string> = {
   "git.search.qOpen": "« ",
   "git.search.qClose": " »",
   "git.diff.renamedFrom": "Renommé depuis {orig}",
+  "git.diff.binary": "Fichier binaire",
+  "git.diff.binaryHint": "Fichier binaire – pas de comparaison de texte. Utilisez « Abandonner les modifications » dans la liste des modifications pour restaurer la version validée.",
 };
