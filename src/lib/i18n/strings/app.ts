@@ -202,6 +202,7 @@ export const en = {
   "app.fsErr.outside_project": "\"{name}\" would be created outside the project through a linked folder",
   "app.deletedOnDisk": "\"{name}\" was deleted on disk. The tab keeps its content; Ctrl+S writes the file again.",
   "app.invalidRenameName": "Invalid name \"{name}\": it can't contain \"/\" or \"\\\" and can't be empty, \".\" or \"..\"",
+  "app.linkIsFolder": "The link points to a folder, not a file: {path}",
 };
 export const de: Record<keyof typeof en, string> = {
   "app.report.button": "Problem oder Idee melden",
@@ -401,6 +402,7 @@ export const de: Record<keyof typeof en, string> = {
   "app.fsErr.outside_project": "„{name}“ würde über einen verlinkten Ordner außerhalb des Projekts angelegt",
   "app.deletedOnDisk": "„{name}“ wurde auf der Festplatte gelöscht. Der Tab behält den Inhalt; Strg+S schreibt die Datei neu.",
   "app.invalidRenameName": "Ungültiger Name „{name}“: kein „/“ oder „\\“, nicht leer und nicht „.“ oder „..“",
+  "app.linkIsFolder": "Der Link zeigt auf einen Ordner, nicht auf eine Datei: {path}",
 };
 export const fr: Record<keyof typeof en, string> = {
   "app.report.button": "Signaler un problème ou une idée",
@@ -600,4 +602,5 @@ export const fr: Record<keyof typeof en, string> = {
   "app.fsErr.outside_project": "« {name} » serait créé hors du projet via un dossier lié",
   "app.deletedOnDisk": "« {name} » a été supprimé du disque. L'onglet garde son contenu ; Ctrl+S réécrit le fichier.",
   "app.invalidRenameName": "Nom invalide « {name} » : sans « / » ni « \\ », ni vide, ni « . » ou « .. »",
+  "app.linkIsFolder": "Le lien pointe vers un dossier, pas vers un fichier : {path}",
 };

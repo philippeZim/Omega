@@ -36,6 +36,8 @@ setLinkHandler(async (href, fromPath) => {
   if (!p) return ui.toast(t("app.relativeLinkUnsaved"), "error");
   if (!(await fsApi.exists(p)) && (await fsApi.exists(p + ".md"))) p += ".md";
   if (!(await fsApi.exists(p))) return ui.toast(t("app.fileNotFound", { path: p }), "error");
+  // A folder can't be opened as a tab: say so instead of the raw OS error (#48).
+  if (await fsApi.listDir(p).then(() => true, () => false)) return ui.toast(t("app.linkIsFolder", { path: p }), "error");
   await openFile(p);
   const hash = href.indexOf("#");
   if (hash >= 0 && href.length > hash + 1 && activeTab()?.path === p) jumpToHeading(href.slice(hash + 1));
