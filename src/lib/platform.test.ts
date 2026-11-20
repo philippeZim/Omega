@@ -28,6 +28,7 @@ describe("POSIX", () => {
     expect(p.cd("/my dir")).toBe("cd '/my dir'");
     expect(p.rmrf("build")).toBe("rm -rf build");
     expect(p.runRel("build/app")).toBe("./build/app");
+    expect(p.runRel("build/my app")).toBe("'./build/my app'");
     expect(p.exe("python")).toBe("python");
     expect(p.venvPython(".venv")).toBe(".venv/bin/python");
   });
