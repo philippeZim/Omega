@@ -139,6 +139,33 @@ function loadPypiNames(): Promise<string[]> {
   return pypiNames;
 }
 
+/**
+ * Top-level string items of a TOML array body (the text between `[` and `]`).
+ * Skips `#` comments (a `#` inside a string is not a comment) and inline tables
+ * such as `{ include-group = "test" }`.
+ */
+function arrayStrings(body: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  for (let i = 0; i < body.length; i++) {
+    const c = body[i];
+    if (c === "#") {
+      while (i < body.length && body[i] !== "\n") i++;
+    } else if (c === "{") depth++;
+    else if (c === "}") depth = Math.max(0, depth - 1);
+    else if (c === '"' || c === "'") {
+      let v = "";
+      for (i++; i < body.length && body[i] !== c && body[i] !== "\n"; i++) {
+        // Basic strings support backslash escapes; literal ('...') strings don't.
+        if (c === '"' && body[i] === "\\" && i + 1 < body.length) i++;
+        v += body[i];
+      }
+      if (depth === 0) out.push(v);
+    }
+  }
+  return out;
+}
+
 /** Dependency names declared in pyproject.toml, with the group they belong to ("" = main). */
 export async function pythonDeps(root: string): Promise<{ name: string; group: string }[]> {
   let text: string;
@@ -149,7 +176,7 @@ export async function pythonDeps(root: string): Promise<{ name: string; group: s
   }
   const out: { name: string; group: string }[] = [];
   const names = (arr: string) =>
-    [...arr.matchAll(/["']([^"']+)["']/g)].map((m) => m[1].match(/^\s*([A-Za-z0-9][A-Za-z0-9._-]*)/)?.[1]).filter((x): x is string => !!x);
+    arrayStrings(arr).map((v) => v.match(/^\s*([A-Za-z0-9][A-Za-z0-9._-]*)/)?.[1]).filter((x): x is string => !!x);
   let section = "";
   // Arrays may span lines: walk "key = [ ... ]" blocks per section.
   const re = /^\s*\[([^\]]+)\]\s*$|^\s*([A-Za-z0-9_.-]+|"[^"]+")\s*=\s*\[((?:"[^"]*"|'[^']*'|#[^\n]*|[^\]"'#])*)\]/gm;
