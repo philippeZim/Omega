@@ -272,6 +272,8 @@ const ROOT_MARKERS: Record<ServerKind, string[]> = {
   rust: ["Cargo.toml"],
 };
 
+const within = (path: string, dir: string) => path === dir || path.startsWith(dir.endsWith("/") ? dir : dir + "/");
+
 /** Walks up from the file to find the project root (stops at the workspace root's parent). */
 export async function findRoot(file: string, markers: string[], workspace: string | null): Promise<string> {
   let dir = dirname(file);
@@ -417,6 +419,14 @@ export async function clientFor(
   const kind = lang.server;
   if (!kind) return null;
   stopIdle();
+  // A file outside the open folder (Go to Definition into a library, the Rust std sources, system
+  // headers) is served by the server already running for the folder, not a new one rooted there.
+  if (workspace && !within(file, workspace)) {
+    const own = [...clients.values()].find((c) => c.kind === kind && !c.stopping && within(c.root, workspace)) ?? [...clients.values()].find((c) => c.kind === kind && !c.stopping);
+    if (own) return own.ready.then(() => own);
+    // Never index the toolchain itself (rust-analyzer's flycheck writes target/ into it).
+    if (kind === "rust" && /\/lib\/rustlib\/src\//.test(file)) return null;
+  }
   const root = await findRoot(file, ROOT_MARKERS[kind], workspace);
   const key = `${kind}|${root}`;
   const existing = clients.get(key);

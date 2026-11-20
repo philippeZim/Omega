@@ -372,11 +372,13 @@ describe("statusFor", () => {
 
 describe("client registry", () => {
   /** Fake servers for every spawned id: answer initialize/shutdown right away. */
-  async function multiServer() {
+  async function multiServer(files: string[] = []) {
     const spawned: string[] = [];
     mockIPC(
       (cmd, args: any) => {
         if (cmd === "tools_dir") return "/tools";
+        if (cmd === "cmd_works") return true;
+        if (cmd === "path_exists" && files.includes(args.path)) return true;
         if (cmd === "which_cmd") return args.cmd === "basedpyright-langserver" ? "/usr/bin/basedpyright-langserver" : null;
         if (cmd === "path_exists") return false;
         if (cmd === "proc_spawn") spawned.push(args.id);
@@ -585,6 +587,21 @@ describe("client registry", () => {
     fail = false;
     expect(await L.restartServer(PY, "/w/a.py", "/w", no)).not.toBeNull();
     expect(spawned.length).toBe(2);
+  });
+
+  // #109: Go to Definition into the std library started a second rust-analyzer rooted in ~/.rustup.
+  test("a file outside the open folder uses the folder's running server", async () => {
+    const spawned = await multiServer(["/usr/lib/python3/setup.py"]);
+    const own = await L.clientFor(PY, "/w/a.py", "/w", no);
+    expect(await L.clientFor(PY, "/usr/lib/python3/os.py", "/w", no)).toBe(own);
+    expect(spawned.length).toBe(1);
+  });
+
+  test("Rust std sources never get a server of their own", async () => {
+    const spawned = await multiServer(["/home/me/.rustup/toolchains/stable/lib/rustlib/src/rust/library/Cargo.toml"]);
+    const RS = { server: "rust", lspId: "rust" } as any;
+    expect(await L.clientFor(RS, "/home/me/.rustup/toolchains/stable/lib/rustlib/src/rust/library/std/src/macros.rs", "/w", no)).toBeNull();
+    expect(spawned.length).toBe(0);
   });
 
   test("missing server: status missing, askInstall declined → null", async () => {
