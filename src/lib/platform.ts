@@ -53,7 +53,7 @@ export function q(s: string): string {
 export const cd = (dir: string) => (IS_WIN ? `cd /d ${q(dir)}` : `cd ${q(dir)}`);
 
 /** Runs a program given by a path relative to the cwd (e.g. "build/app"). */
-export const runRel = (rel: string) => (IS_WIN ? q(`./${rel}`) : `./${rel}`);
+export const runRel = (rel: string) => q(`./${rel}`);
 
 /** Runs `cmd` only if `file` (relative to cwd) does not exist. */
 export const unlessExists = (file: string, cmd: string) =>

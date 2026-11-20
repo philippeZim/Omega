@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, test } from "vitest";
 import { mockIPC } from "@tauri-apps/api/mocks";
-import { detectProject, pyprojectScripts, pythonEntry } from "./projects";
+import { cmakeExecutable, detectProject, pyprojectScripts, pythonEntry } from "./projects";
 
 let files: Record<string, string> = {};
 beforeEach(() => {
@@ -115,6 +115,21 @@ describe("detectProject", () => {
     expect(p.needs).toEqual(["cmake", "cc"]);
   });
 
+  test("CMake: add_executable(${PROJECT_NAME}) runs the project() name, not the folder name", async () => {
+    files["/work/c/CMakeLists.txt"] = "cmake_minimum_required(VERSION 3.20)\nproject(hello C)\nadd_executable(${PROJECT_NAME} main.c)\n";
+    expect((await detectProject("/work/c/main.c", "/work/c"))!.run?.cmd).toBe("./build/hello");
+  });
+
+  test("CMake: a commented-out add_executable above the real one is ignored", async () => {
+    files["/c/CMakeLists.txt"] = "project(x)\n# add_executable(old old.c)\nadd_executable(app main.c)\n";
+    expect((await detectProject("/c/main.c", "/c"))!.run?.cmd).toBe("./build/app");
+  });
+
+  test("CMake: the folder-name fallback is quoted when it has spaces", async () => {
+    files["/w/my project/CMakeLists.txt"] = "cmake_minimum_required(VERSION 3.20)\n";
+    expect((await detectProject("/w/my project/main.c", "/w/my project"))!.run?.cmd).toBe("'./build/my project'");
+  });
+
   test("Gradle with and without wrapper", async () => {
     files["/g/settings.gradle.kts"] = "";
     expect((await detectProject(null, "/g"))!).toMatchObject({ kind: "gradle", needs: ["jdk", "gradle"], build: { cmd: "gradle build" } });
@@ -135,5 +150,27 @@ describe("detectProject", () => {
   test("unknown file type / nothing open → null", async () => {
     expect(await detectProject("/x/notes.txt", null)).toBeNull();
     expect(await detectProject(null, null)).toBeNull();
+  });
+});
+
+describe("cmakeExecutable", () => {
+  test("plain name", () => expect(cmakeExecutable("add_executable(hello main.c)")).toBe("hello"));
+  test("${PROJECT_NAME} and ${CMAKE_PROJECT_NAME}", () => {
+    expect(cmakeExecutable("project(demo VERSION 1.0 LANGUAGES CXX)\nadd_executable(${PROJECT_NAME} main.cpp)")).toBe("demo");
+    expect(cmakeExecutable("PROJECT(demo)\nADD_EXECUTABLE(${CMAKE_PROJECT_NAME}_cli main.cpp)")).toBe("demo_cli");
+  });
+  test("set() variables", () => {
+    expect(cmakeExecutable('project(p)\nset(APP "tool")\nadd_executable(${APP} main.c)')).toBe("tool");
+  });
+  test("line and bracket comments", () => {
+    expect(cmakeExecutable("# add_executable(a a.c)\nadd_executable(b b.c) # add_executable(c)")).toBe("b");
+    expect(cmakeExecutable("#[[\nadd_executable(a a.c)\n]]\nadd_executable(b b.c)")).toBe("b");
+    expect(cmakeExecutable("#[==[ add_executable(a a.c) ]] ]==]\nadd_executable(b b.c)")).toBe("b");
+    expect(cmakeExecutable('message("#not a comment")\nadd_executable(b b.c)')).toBe("b");
+  });
+  test("skips IMPORTED / ALIAS and unresolvable names, falls back to project()", () => {
+    expect(cmakeExecutable("project(p)\nadd_executable(ext IMPORTED)\nadd_executable(real main.c)")).toBe("real");
+    expect(cmakeExecutable("project(p)\nadd_executable(${UNKNOWN} main.c)")).toBe("p");
+    expect(cmakeExecutable("cmake_minimum_required(VERSION 3.20)")).toBeNull();
   });
 });
