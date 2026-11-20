@@ -66,7 +66,9 @@ function makeDoc(rel: string, isHost: boolean): SharedDoc {
   const ytext = ydoc.getText("content");
   const awareness = new Awareness(ydoc);
   awareness.setLocalStateField("user", { name: collab.me.name, color: collab.me.color, colorLight: lighten(collab.me.color) });
-  const undo = new Y.UndoManager(ytext);
+  // Undo only covers edits made in this editor (yCollab adds its origin when bound): not the
+  // initial load of the text (origin null), which would otherwise be the first undo step (#126).
+  const undo = new Y.UndoManager(ytext, { trackedOrigins: new Set() });
   const d: SharedDoc = { rel, ydoc, ytext, awareness, undo, tabId: null, subscribers: new Set(), cleanup: [] };
 
   // Local Yjs changes → network. Origin = peer id for remote updates, so they aren't echoed back.
