@@ -6,6 +6,8 @@ agent. Confirmed bugs that aren't already reported become GitHub issues.
 
 - `CHARTER.md`: rules, tools and output format for testers and verifiers. Give it to every agent.
 - `fixture.sh <name> [dir]`: fresh copy of a workspace from `dev/fixtures/`.
+- `HANDOFF.md`: state of the QA runs and how to continue them.
+- `file-issues.py <findings.json> <spec.json>`: files issues from a tester's findings.
 - `publish-shots.sh <subdir> <png>…`: pushes screenshots to the `test-artifacts` branch and
   prints raw URLs for issue bodies.
 - `node dev/omega-mcp.mjs call [-i instance] [-o shot.png] <tool> [json]`: app tools from a shell.
