@@ -17,15 +17,18 @@ import { diffState } from "../lib/git/diff.svelte";
 let cmp: ReturnType<typeof mount> | null = null;
 let ipc: { cmd: string; args: Record<string, unknown> }[] = [];
 
-async function open(file: string, head: Record<string, string>, disk: Record<string, string>) {
+/** `disk`: path → text, or null for a file that exists but is not UTF-8 (read_file rejects). */
+async function open(file: string, head: Record<string, string>, disk: Record<string, string | null>) {
   ipc = [];
   mockIPC((cmd, args) => {
     const a = (args ?? {}) as Record<string, unknown>;
+    const p = a.path as string;
     ipc.push({ cmd, args: a });
-    if (cmd === "git_head_file") return head[a.path as string] ?? null;
+    if (cmd === "git_head_file") return head[p] ?? null;
+    if (cmd === "path_exists") return p in disk;
     if (cmd === "read_file") {
-      if (a.path as string in disk) return disk[a.path as string];
-      throw new Error("not found");
+      if (typeof disk[p] === "string") return disk[p];
+      throw new Error(p in disk ? "not UTF-8" : "not found");
     }
     return null;
   });
@@ -73,5 +76,29 @@ describe("large diff (#74)", () => {
     await open("/r/big.txt", { "/r/big.txt": head }, { "/r/big.txt": cur });
     const b = EditorView.findFromDOM(document.querySelector(".cm-merge-b") as HTMLElement)!;
     expect(getChunks(b.state)!.chunks.length).toBe(714);
+  });
+});
+
+describe("binary file (#66)", () => {
+  const bytes = Array.from({ length: 256 }, (_, i) => String.fromCharCode(i)).join("");
+
+  test("non-UTF-8 working copy: binary notice, no editors, no revert arrows, nothing written", async () => {
+    await open("/r/bin.dat", { "/r/bin.dat": bytes }, { "/r/bin.dat": null });
+    expect(info()).toBe("git.diff.binary");
+    expect(document.querySelector(".cm-mergeView")).toBeNull();
+    expect(document.querySelector(".cm-merge-revert")).toBeNull();
+    expect(ipc.some((c) => c.cmd === "write_file")).toBe(false);
+  });
+
+  test("NUL bytes in HEAD count as binary", async () => {
+    await open("/r/bin.dat", { "/r/bin.dat": "a\0b" }, { "/r/bin.dat": "a\0c" });
+    expect(info()).toBe("git.diff.binary");
+    expect(document.querySelector(".cm-mergeView")).toBeNull();
+  });
+
+  test("a file that is really gone still says deleted", async () => {
+    await open("/r/gone.txt", { "/r/gone.txt": "x\n" }, {});
+    expect(info()).toBe("git.diff.deleted");
+    expect(document.querySelector(".cm-mergeView")).not.toBeNull();
   });
 });

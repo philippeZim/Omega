@@ -21,7 +21,8 @@
   let view: MergeView | null = null;
   let writeTimer: number | undefined;
   let eol: Eol = "\n";
-  let info = $state<"git.diff.deleted" | "git.diff.newFile" | "git.diff.renamedFrom" | null>(null);
+  let info = $state<"git.diff.deleted" | "git.diff.newFile" | "git.diff.renamedFrom" | "git.diff.binary" | null>(null);
+  let binary = $state(false);
   const file = diffState.file!;
   const rel = git.top && file.startsWith(git.top + "/") ? file.slice(git.top.length + 1) : file;
   // A renamed/copied file has no HEAD version under its new path: compare against the source (#70).
@@ -38,14 +39,24 @@
     const head = (await invoke<string | null>("git_head_file", { root: git.top || app.root, path: headPath })) ?? "";
     const tab = app.tabs.find((t) => t.path === file);
     let current = "";
+    let unreadable = false;
     try {
       current = tab ? ed.getText(tab.id) : await fsApi.readFile(file);
       eol = detectEol(current);
     } catch {
-      info = "git.diff.deleted";
+      // Not readable as UTF-8 text is not the same as gone (#66).
+      unreadable = await fsApi.exists(file).catch(() => false);
+      if (!unreadable) info = "git.diff.deleted";
     }
     if (!head) info = "git.diff.newFile";
     else if (orig) info = "git.diff.renamedFrom";
+    // Binary content (NUL bytes, or not UTF-8): a text diff would show lossily decoded bytes, and
+    // reverting a chunk would write them back and corrupt the file (#66). No editor, no revert arrows.
+    if (unreadable || head.includes("\0") || current.includes("\0")) {
+      binary = true;
+      info = "git.diff.binary";
+      return;
+    }
     const lang = langFor(file);
     const common = [lineNumbers(), lang ? lang.ext() : [], syntaxHighlighting(codeHighlight), baseTheme, EditorView.editorAttributes.of({ class: "mode-code" })];
     view = new MergeView({
@@ -101,8 +112,12 @@
         <svg width="10" height="10" viewBox="0 0 10 10"><path d="M1.5 1.5l7 7M8.5 1.5l-7 7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
       </button>
     </header>
-    <div class="labels"><span>{t("git.diff.head")}</span><span>{t("git.diff.current")}</span></div>
-    <div class="merge" bind:this={host}></div>
+    {#if !binary}<div class="labels"><span>{t("git.diff.head")}</span><span>{t("git.diff.current")}</span></div>{/if}
+    {#if binary}
+      <div class="binary">{t("git.diff.binaryHint")}</div>
+    {:else}
+      <div class="merge" bind:this={host}></div>
+    {/if}
   </div>
 </div>
 
@@ -117,6 +132,7 @@
   .close { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 50%; color: var(--label-2); align-self: center; }
   .close:hover { background: var(--fill-hover); color: var(--label); }
   .labels { display: grid; grid-template-columns: 1fr 1fr; padding: 0 22px 6px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--label-3); }
+  .binary { flex: 1; display: grid; place-items: center; padding: 24px; text-align: center; font-size: 13px; color: var(--label-3); background: var(--well); }
   .merge { flex: 1; min-height: 0; overflow: auto; background: var(--well); }
   .merge :global(.cm-mergeView) { height: 100%; }
   .merge :global(.cm-mergeViewEditors) { min-height: 100%; }
