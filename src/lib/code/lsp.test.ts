@@ -30,6 +30,23 @@ describe("fileUri / uriPath", () => {
   });
 });
 
+// #113: the toast used the last stderr line, often unrelated debug output.
+describe("exitReason", () => {
+  test("picks the last error-like line, not trailing debug output", () => {
+    expect(L.exitReason(["thread 'main' panicked at src/x.rs:1", "                (garbage collection took Some(325.805208ms))"])).toBe(": thread 'main' panicked at src/x.rs:1");
+    expect(L.exitReason(["Could not find a valid TypeScript installation. Exiting."])).toBe(": Could not find a valid TypeScript installation. Exiting.");
+  });
+
+  test("no error-like line → no reason", () => {
+    expect(L.exitReason(["                (garbage collection took Some(325.805208ms))"])).toBe("");
+    expect(L.exitReason([])).toBe("");
+  });
+
+  test("long lines are shortened", () => {
+    expect(L.exitReason(["error: " + "x".repeat(300)]).length).toBeLessThanOrEqual(202);
+  });
+});
+
 // ---------------------------------------------------------------- LspClient with a fake server
 
 class FakeServer {
@@ -205,6 +222,17 @@ describe("LspClient", () => {
     expect(L.lspState.message[c.key]).toBeUndefined();
     await srv.send({ jsonrpc: "2.0", method: "window/showMessage", params: { type: 1, message: "Failed to load project" } });
     expect(L.lspState.message[c.key]).toBe("Failed to load project");
+  });
+
+  test("exit toast names the error line, not trailing debug output (#113)", async () => {
+    const { ui } = await import("../ui.svelte");
+    const toast = vi.mocked(ui.toast);
+    toast.mockClear();
+    const c = await readyClient();
+    await emit("proc-stderr", { id: c.id, msg: "error: index corrupted" });
+    await emit("proc-stderr", { id: c.id, msg: "   (garbage collection took Some(3ms))" });
+    await emit("proc-exit", c.id);
+    expect(toast).toHaveBeenCalledWith("Language server (python) exited: error: index corrupted", "error");
   });
 
   test("proc-exit marks the client stopped and keeps the stderr tail", async () => {

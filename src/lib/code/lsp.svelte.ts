@@ -30,6 +30,16 @@ export const uriPath = (uri: string) => {
   return /^\/[A-Za-z]:/.test(p) ? p[1].toUpperCase() + p.slice(2) : p;
 };
 
+/**
+ * The part of a server's stderr tail worth showing in a toast: the last line that looks like an
+ * error. Servers also log unrelated debug output there (rust-analyzer: "garbage collection took …").
+ */
+export function exitReason(tail: string[]): string {
+  const line = [...tail].reverse().find((l) => /\b(error|panic|panicked|fatal|exception|failed|cannot|could not|abort(ed)?)\b/i.test(l))?.trim();
+  if (!line) return "";
+  return ": " + (line.length > 200 ? line.slice(0, 199) + "…" : line);
+}
+
 export class LspClient {
   readonly id: string;
   private seq = 1;
@@ -57,7 +67,7 @@ export class LspClient {
       exit: () => {
         this.alive = false;
         // Fail in-flight requests now instead of letting them hang until their timeout.
-        const err = new Error(t("code.lsp.exited", { kind: this.kind, tail: tail.length ? ": " + tail[tail.length - 1] : "" }));
+        const err = new Error(t("code.lsp.exited", { kind: this.kind, tail: exitReason(tail) }));
         for (const p of this.pending.values()) {
           clearTimeout(p.timer);
           p.reject(err);
@@ -70,7 +80,7 @@ export class LspClient {
           clients.delete(this.key);
         }
         for (const l of this.exitListeners) l();
-        if (!this.stopping) ui.toast(t("code.lsp.exited", { kind: this.kind, tail: tail.length ? ": " + tail[tail.length - 1] : "" }), "error");
+        if (!this.stopping) ui.toast(t("code.lsp.exited", { kind: this.kind, tail: exitReason(tail) }), "error");
       },
     });
     this.ready = this.start(cmd, args);
