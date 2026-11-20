@@ -74,4 +74,13 @@ describe("layout load()", () => {
     expect(zones.bottom.active).toBeNull();
     expect(new Set(allViews(zones)).size).toBe(VIEWS.length);
   });
+
+  test("corrupt open state is dropped, valid entries kept (#92)", () => {
+    save({ open: 5 });
+    expect(load().open).toEqual({});
+    save({ open: [true] });
+    expect(load().open).toEqual({});
+    save({ open: { code: "x", markdown: { left: true, bottom: "yes", nowhere: false }, latex: null, text: { right: false } } });
+    expect(load().open).toEqual({ markdown: { left: true }, text: { right: false } });
+  });
 });

@@ -78,7 +78,20 @@ export function load(): { zones: Record<Zone, ZoneState>; open: OpenState } {
     zones.right.size = num("pdfWidth") ?? 560;
     zones.bottom.size = num("termHeight") ?? 260;
   }
-  return { zones, open: saved?.open ?? {} };
+  return { zones, open: sanitizeOpen(saved?.open) };
+}
+
+/** Keeps only `{ <mode>: { <zone>: boolean } }` entries of saved open state; anything else is dropped. */
+function sanitizeOpen(raw: unknown): OpenState {
+  const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
+  const out: Record<string, Partial<Record<Zone, boolean>>> = {};
+  if (!isObj(raw)) return out;
+  for (const [mode, zones] of Object.entries(raw)) {
+    if (!isObj(zones)) continue;
+    const z = Object.fromEntries(ZONES.filter((k) => typeof zones[k] === "boolean").map((k) => [k, zones[k] as boolean]));
+    if (Object.keys(z).length) out[mode] = z;
+  }
+  return out as OpenState;
 }
 
 const initial = load();
