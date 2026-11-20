@@ -12,6 +12,7 @@ import { setLspHooks } from "./code/lspExtension";
 import { allClients, fileUri } from "./code/lsp.svelte";
 import { t } from "./i18n/index.svelte";
 import { watchRoot } from "./fsWatch.svelte";
+import { detectEol, fromDisk, toDisk, type Eol } from "./eol";
 
 setLspHooks({
   workspace: () => app.root,
@@ -47,6 +48,8 @@ export interface Tab {
   dirty: boolean;
   /** Project folder that was open when the tab was opened (for the "other project" hint). */
   root?: string | null;
+  /** Line ending of the file on disk (the editor always uses "\n"); undefined = "\n". */
+  eol?: Eol;
 }
 
 export const app = $state({
@@ -165,6 +168,8 @@ export async function syncFromDisk() {
       }
       if (t.dirty) continue; // user typed meanwhile
       const doc = ed.getDoc(t.id);
+      t.eol = detectEol(disk);
+      disk = fromDisk(disk);
       if (!doc || doc.toString() === disk) continue;
       ed.replaceDocText(t.id, disk);
       ed.markSaved(t.id);
@@ -252,7 +257,7 @@ export async function openFile(path: string) {
   }
   const id = uid();
   ed.createDoc(id, content);
-  app.tabs.push({ id, path, name: basename(path), dirty: false, root: inRoot(path, app.root) ? app.root : null });
+  app.tabs.push({ id, path, name: basename(path), dirty: false, root: inRoot(path, app.root) ? app.root : null, eol: detectEol(content) });
   const suggested = modeForExtension(extname(path));
   if (suggested && suggested !== app.mode) {
     app.mode = suggested;
@@ -349,7 +354,7 @@ export async function save(id = app.activeId, forceDialog = false): Promise<bool
   // Never write without a live document (e.g. after an editor reset) – that would empty the file.
   if (!snapshot) return false;
   try {
-    await fsApi.writeFile(path, snapshot.toString());
+    await fsApi.writeFile(path, toDisk(snapshot.toString(), tab.eol));
   } catch (e) {
     ui.toast(t("app.saveFailed", { error: String(e) }), "error");
     return false;
