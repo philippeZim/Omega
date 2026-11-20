@@ -420,8 +420,16 @@ export function toggleWrap(marker: string) {
     const len = marker.length;
     view.dispatch(
       state.changeByRange((r) => {
-        const before = state.sliceDoc(r.from - len, r.from), after = state.sliceDoc(r.to, r.to + len);
-        if (before === marker && after === marker)
+        // Length of the run of marker characters right before / after the selection: with "*" a run of
+        // two is bold only (`**x**`), so italic must add its own marker instead of eating half of it.
+        const run = (pos: number, dir: -1 | 1) => {
+          let n = 0;
+          while (state.sliceDoc(pos + (dir < 0 ? -n - 1 : n), pos + (dir < 0 ? -n : n + 1)) === marker[0]) n++;
+          return n;
+        };
+        const n = marker.split("").every((c) => c === marker[0]) ? Math.min(run(r.from, -1), run(r.to, 1)) : 0;
+        const wrapped = len === 1 && (marker === "*" || marker === "_") ? n === 1 || n >= 3 : n >= len;
+        if (wrapped)
           return {
             changes: [{ from: r.from - len, to: r.from }, { from: r.to, to: r.to + len }],
             range: EditorSelection.range(r.from - len, r.to - len),
