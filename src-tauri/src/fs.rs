@@ -127,21 +127,24 @@ pub async fn list_files(root: String) -> Result<Vec<String>, String> {
         let mut out = Vec::new();
         // Symlinks are followed, but every real directory is visited only once (tracked by its
         // canonical path), so loops and webs of links can't make the walk explode. Entries are
-        // walked in sorted order, so when a directory is reachable by several paths the same one
-        // wins every time. Only symlinks are canonicalized: a real directory's canonical path is
+        // walked in sorted order, and symlinked folders are deferred until all real folders are
+        // done, so a folder inside the root appears under its real path and links only add what
+        // isn't reachable otherwise. Only symlinks are canonicalized: a real directory's canonical path is
         // its parent's plus its name. If canonicalizing fails (RAM disks, network or shared
         // folders), the raw path stands in.
         let base_canon = base.canonicalize().unwrap_or_else(|_| base.clone());
         let mut visited = std::collections::HashSet::new();
         let mut stack = vec![(base.clone(), base_canon)];
-        while let Some((dir, canon)) = stack.pop() {
+        let mut deferred = std::collections::VecDeque::new();
+        loop {
+            let Some((dir, canon)) = stack.pop().or_else(|| deferred.pop_front()) else { break };
             if !visited.insert(canon.clone()) {
                 continue;
             }
             let Ok(rd) = fs::read_dir(&dir) else { continue };
             let mut entries: Vec<_> = rd.flatten().collect();
             entries.sort_by_key(|e| e.file_name());
-            let mut subdirs = Vec::new();
+            let (mut subdirs, mut links) = (Vec::new(), Vec::new());
             for e in entries {
                 let name = e.file_name().to_string_lossy().to_string();
                 let Ok(mut ft) = e.file_type() else { continue };
@@ -155,7 +158,7 @@ pub async fn list_files(root: String) -> Result<Vec<String>, String> {
                     if !SKIP.contains(&name.as_str()) && !(name.starts_with('.') && name != ".github") {
                         let c = if link { e.path().canonicalize().unwrap_or_else(|_| e.path()) } else { canon.join(e.file_name()) };
                         if !visited.contains(&c) {
-                            subdirs.push((e.path(), c));
+                            if link { links.push((e.path(), c)) } else { subdirs.push((e.path(), c)) }
                         }
                     }
                 } else if ft.is_file() {
@@ -168,6 +171,7 @@ pub async fn list_files(root: String) -> Result<Vec<String>, String> {
                 }
             }
             stack.extend(subdirs.into_iter().rev());
+            deferred.extend(links);
         }
         out.sort();
         Ok(out)
@@ -349,8 +353,8 @@ mod tests {
         fs::write(r.join("b/y.txt"), "").unwrap();
         std::os::unix::fs::symlink(r.join("b"), r.join("a/l")).unwrap();
         std::os::unix::fs::symlink(r.join("a"), r.join("b/l")).unwrap();
-        // Sorted walk: a/ first, then its link a/l (= b), so b's files appear under a/l.
-        assert_eq!(list_files(s(r)).await.unwrap(), ["a/l/y.txt", "a/x.txt"]);
+        // Real paths win over the links.
+        assert_eq!(list_files(s(r)).await.unwrap(), ["a/x.txt", "b/y.txt"]);
     }
 
     #[cfg(unix)]
@@ -363,8 +367,8 @@ mod tests {
         fs::write(r.join("real/sub/b.txt"), "").unwrap();
         std::os::unix::fs::symlink(r.join("real"), r.join("link")).unwrap();
         let first = list_files(s(r)).await.unwrap();
-        // "link" sorts before "real", so it wins.
-        assert_eq!(first, ["link/a.txt", "link/sub/b.txt"]);
+        // The real path wins even though "link" sorts first.
+        assert_eq!(first, ["real/a.txt", "real/sub/b.txt"]);
         for _ in 0..5 {
             assert_eq!(list_files(s(r)).await.unwrap(), first);
         }
