@@ -155,21 +155,7 @@ fn compile(app: &AppHandle, path: Option<String>, content: String) -> Result<Com
         .join(format!("{:x}", h.finish()));
     std::fs::create_dir_all(&build).map_err(|e| e.to_string())?;
 
-    // Root copy + overlay of the edited buffer (relative to the root's directory).
-    let root_name = root.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or("main.tex".into());
-    let root_copy = build.join(&root_name);
-    if root == src_path {
-        std::fs::write(&root_copy, &content).map_err(|e| e.to_string())?;
-    } else {
-        std::fs::copy(&root, &root_copy).map_err(|e| format!("Root-Datei {}: {e}", root.display()))?;
-        if let Ok(rel) = src_path.strip_prefix(&root_dir) {
-            let overlay = build.join(rel);
-            if let Some(p) = overlay.parent() {
-                let _ = std::fs::create_dir_all(p);
-            }
-            std::fs::write(&overlay, &content).map_err(|e| e.to_string())?;
-        }
-    }
+    let root_name = prepare_build(&build, &root, &root_dir, &src_path, &content)?;
 
     // Offline first (≈0.2 s); if a package isn't cached yet, retry online so Tectonic can fetch it.
     // The online run can take minutes the first time (format + hundreds of support files), so it
@@ -213,6 +199,41 @@ fn compile(app: &AppHandle, path: Option<String>, content: String) -> Result<Com
         sync,
         millis: started.elapsed().as_millis(),
     })
+}
+
+/// Lists the overlays written into the build dir, so the next compile can remove them.
+const OVERLAYS: &str = ".omega-overlays";
+
+/// Puts the sources into the build dir: the root copy plus an overlay of the edited buffer
+/// (relative to the root's directory). Overlays from earlier compiles are removed first: they
+/// would shadow the source file in later compiles (unsaved edits that were saved, reverted or
+/// discarded since). Returns the root's file name.
+fn prepare_build(build: &Path, root: &Path, root_dir: &Path, src_path: &Path, content: &str) -> Result<String, String> {
+    if let Ok(list) = std::fs::read_to_string(build.join(OVERLAYS)) {
+        for rel in list.lines().filter(|l| !l.is_empty()) {
+            let rel = Path::new(rel);
+            if rel.is_relative() && !rel.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+                let _ = std::fs::remove_file(build.join(rel));
+            }
+        }
+        let _ = std::fs::remove_file(build.join(OVERLAYS));
+    }
+    let root_name = root.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or("main.tex".into());
+    let root_copy = build.join(&root_name);
+    if root == src_path {
+        std::fs::write(&root_copy, content).map_err(|e| e.to_string())?;
+    } else {
+        std::fs::copy(root, &root_copy).map_err(|e| format!("Root-Datei {}: {e}", root.display()))?;
+        if let Ok(rel) = src_path.strip_prefix(root_dir) {
+            let overlay = build.join(rel);
+            if let Some(p) = overlay.parent() {
+                let _ = std::fs::create_dir_all(p);
+            }
+            std::fs::write(build.join(OVERLAYS), format!("{}\n", rel.to_string_lossy())).map_err(|e| e.to_string())?;
+            std::fs::write(&overlay, content).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(root_name)
 }
 
 /// Maps a file name as TeX reports it (relative to the build dir, or a path inside it) back to
@@ -571,6 +592,29 @@ mod tests {
         // An existing file without extension is kept; a missing one stays as reported.
         assert_eq!(map_source("data", &build, &src), norm(src.join("data")));
         assert_eq!(map_source("missing", &build, &src), norm(src.join("missing")));
+    }
+
+    #[test]
+    fn stale_overlays_are_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let (src, build) = (dir.path().join("src"), dir.path().join("build"));
+        std::fs::create_dir_all(src.join("chapters")).unwrap();
+        std::fs::create_dir_all(&build).unwrap();
+        let (main, one) = (src.join("main.tex"), src.join("chapters/one.tex"));
+        std::fs::write(&main, "\\documentclass{article}").unwrap();
+        std::fs::write(&one, "saved").unwrap();
+        // Compiling while chapters/one.tex has unsaved edits overlays them.
+        assert_eq!(prepare_build(&build, &main, &src, &one, "unsaved").unwrap(), "main.tex");
+        assert_eq!(std::fs::read_to_string(build.join("chapters/one.tex")).unwrap(), "unsaved");
+        // The edits are discarded and main.tex is compiled: the source file must win again.
+        prepare_build(&build, &main, &src, &main, "\\documentclass{article}").unwrap();
+        assert!(!build.join("chapters/one.tex").exists());
+        assert!(!build.join(OVERLAYS).exists());
+        assert!(build.join("main.tex").exists());
+        // A manifest entry can't delete anything outside the build dir.
+        std::fs::write(build.join(OVERLAYS), "../src/chapters/one.tex\n/etc/passwd\n").unwrap();
+        prepare_build(&build, &main, &src, &main, "x").unwrap();
+        assert!(one.exists());
     }
 
     #[test]
