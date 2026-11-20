@@ -254,14 +254,15 @@ describe("LspClient", () => {
     expect(srv.sent.at(-1).method).toBe("exit");
     (window as any).__TAURI_INTERNALS__.invoke = undefined; // what clearMocks() leaves behind
     const unhandled = vi.fn();
-    process.on("unhandledRejection", unhandled);
+    const proc = (globalThis as any).process; // Node, under the test runner
+    proc.on("unhandledRejection", unhandled);
     try {
       await vi.advanceTimersByTimeAsync(300);
       vi.useRealTimers();
       await new Promise((r) => setTimeout(r, 10));
       expect(unhandled).not.toHaveBeenCalled();
     } finally {
-      process.off("unhandledRejection", unhandled);
+      proc.off("unhandledRejection", unhandled);
     }
   });
 });
