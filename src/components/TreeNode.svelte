@@ -8,7 +8,8 @@
   import { fsChanges } from "../lib/fsWatch.svelte";
   import TreeNode from "./TreeNode.svelte";
   import { untrack } from "svelte";
-  import { fsApi, joinPath, dirname, basename, type Entry } from "../lib/api";
+  import { fsApi, basename, type Entry } from "../lib/api";
+  import { renameTarget } from "../lib/pathName";
   import { app, openFile, pathMoved, activeTab, inRoot, createEntry } from "../lib/state.svelte";
   import { ui } from "../lib/ui.svelte";
   import { git, kind } from "../lib/git/git.svelte";
@@ -87,7 +88,11 @@
     const dot = name.lastIndexOf(".");
     const next = await ui.prompt(t("common.rename"), name, "", dot > 0 ? dot : undefined);
     if (!next || next === name) return;
-    const to = joinPath(dirname(path), next);
+    const to = renameTarget(path, next);
+    if (!to) {
+      ui.toast(t("app.invalidRenameName", { name: next }), "error");
+      return;
+    }
     try {
       await fsApi.rename(path, to);
       pathMoved(path, to);
