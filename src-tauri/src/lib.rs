@@ -11,6 +11,8 @@ mod ide_ws;
 mod codex_ipc;
 mod env;
 mod tools;
+mod installs;
+mod power;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -18,6 +20,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(spell::SpellState::default())
         .manage(pty::PtyState::default())
         .manage(proc::ProcState::default())
@@ -42,7 +46,14 @@ pub fn run() {
             env::refresh_path,
             tools::tool_install,
             tools::tool_installable,
+            installs::installs_status,
+            installs::installs_latest,
+            installs::installs_remove,
+            installs::installs_update_rust,
+            installs::installs_system_updates,
             pty::list_shells,
+            power::power_keep_awake,
+            power::power_status,
             fs::list_dir,
             fs::watch_dir,
             fs::read_file,
@@ -59,6 +70,7 @@ pub fn run() {
             git::git,
             git::git_status,
             git::git_head_file,
+            git::git_blame,
             collab::collab_host,
             collab::collab_join,
             collab::collab_send,
@@ -103,6 +115,7 @@ pub fn run() {
             if let tauri::RunEvent::Exit = event {
                 ide_ws::cleanup(app);
                 codex_ipc::cleanup(app);
+                power::cleanup();
             }
         });
 }

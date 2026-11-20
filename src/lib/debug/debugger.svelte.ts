@@ -9,6 +9,7 @@ import * as ed from "../editor";
 import { invoke } from "@tauri-apps/api/core";
 import { runCommand, shellQuote } from "../terminal.svelte";
 import { IS_WIN } from "../platform";
+import { showView } from "../layout.svelte";
 import { normPath } from "../api";
 import { t, i18n, type Key } from "../i18n/index.svelte";
 
@@ -119,7 +120,7 @@ export async function startDebugging() {
   if (dbg.status !== "idle" && dbg.status !== "terminated") await stopDebugging();
   for (const t of app.tabs) if (t.dirty && t.path) await save(t.id);
   setMode("code");
-  dbg.panel = true;
+  showView("debug");
   dbg.console = [];
   dbg.status = "starting";
   dbg.label = t("code.dbg.preparing");

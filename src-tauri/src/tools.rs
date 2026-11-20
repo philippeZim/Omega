@@ -17,7 +17,7 @@ fn manifest_path() -> PathBuf {
     env::tools_dir().join("managed.json")
 }
 
-fn manifest() -> BTreeMap<String, String> {
+pub fn manifest() -> BTreeMap<String, String> {
     std::fs::read_to_string(manifest_path()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
 }
 
@@ -28,6 +28,15 @@ pub fn managed_bin_dirs() -> Vec<PathBuf> {
 fn record(id: &str, bin: &Path) -> Result<(), String> {
     let mut m = manifest();
     m.insert(id.into(), bin.display().to_string());
+    std::fs::write(manifest_path(), serde_json::to_string_pretty(&m).unwrap()).map_err(|e| e.to_string())?;
+    env::rebuild();
+    Ok(())
+}
+
+/// Drops a tool from the manifest (after its folder was removed).
+pub fn forget(id: &str) -> Result<(), String> {
+    let mut m = manifest();
+    m.remove(id);
     std::fs::write(manifest_path(), serde_json::to_string_pretty(&m).unwrap()).map_err(|e| e.to_string())?;
     env::rebuild();
     Ok(())
@@ -331,8 +340,10 @@ fn install_rust(app: &AppHandle) -> Result<String, String> {
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).chars().take(800).collect());
     }
-    env::rebuild();
-    Ok(env::norm(env::home().join(".cargo").join("bin")))
+    // Recorded so the Installations tab knows this toolchain is Studio's to update/remove.
+    let bin = env::home().join(".cargo").join("bin");
+    record("rust", &bin)?;
+    Ok(env::norm(bin))
 }
 
 #[cfg(test)]

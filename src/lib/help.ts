@@ -90,6 +90,20 @@ const markdown: RawSheet = {
       ],
     },
     {
+      title: ["Callouts", "Callouts", "Encadrés (callouts)"],
+      rows: [
+        [["> [!tip] Title\n> Text", "> [!tip] Titel\n> Text", "> [!tip] Titre\n> Texte"], "Callout box (title optional)", "Hinweis-Box (Titel optional)", "Encadré (titre facultatif)"],
+        [["> [!question]- Title", "> [!question]- Titel", "> [!question]- Titre"], "Foldable, starts collapsed", "Einklappbar, startet zu", "Repliable, fermé au départ"],
+        [["> [!note]+ Title", "> [!note]+ Titel", "> [!note]+ Titre"], "Foldable, starts open", "Einklappbar, startet offen", "Repliable, ouvert au départ"],
+        ["note · info · todo", "Blue", "Blau", "Bleu"],
+        ["tip · abstract", "Cyan (hint, important · summary, tldr)", "Türkis (hint, important · summary, tldr)", "Cyan (hint, important · summary, tldr)"],
+        ["success", "Green (check, done)", "Grün (check, done)", "Vert (check, done)"],
+        ["question · warning", "Orange (help, faq · caution, attention)", "Orange (help, faq · caution, attention)", "Orange (help, faq · caution, attention)"],
+        ["failure · danger · bug", "Red (fail, missing · error)", "Rot (fail, missing · error)", "Rouge (fail, missing · error)"],
+        ["example · quote", "Purple · Grey (cite)", "Lila · Grau (cite)", "Violet · Gris (cite)"],
+      ],
+    },
+    {
       title: "Code",
       rows: [
         ["```python\n…\n```", "Code block with highlighting", "Code-Block mit Highlighting", "Bloc de code avec coloration"],

@@ -4,6 +4,7 @@
  * same features work on Windows, macOS and Linux without manual setup.
  */
 import { invoke } from "@tauri-apps/api/core";
+import { pathChanged } from "./terminal.svelte";
 import { listen } from "@tauri-apps/api/event";
 import { ui } from "./ui.svelte";
 import { t } from "./i18n/index.svelte";
@@ -92,6 +93,7 @@ export async function ensureTools(ids: ToolId[], purpose: string): Promise<boole
   await invoke("refresh_path").catch(() => {});
   const still: ToolId[] = [];
   for (const id of missing) if (!(await hasTool(id))) still.push(id);
+  if (still.length < missing.length) pathChanged();
   missing = still;
   if (!missing.length) return true;
 
@@ -108,7 +110,11 @@ export async function ensureTools(ids: ToolId[], purpose: string): Promise<boole
   const names = auto.map((id) => TOOLS[id].label).join(", ");
   const ok = await ui.confirm(t("tools.installTitle"), t("tools.installMsg", { names, purpose, mb }), t("code.install"));
   if (!ok) return false;
-  for (const id of auto) if (!(await installTool(id))) return false;
+  for (const id of auto) {
+    const ok = await installTool(id);
+    if (ok) pathChanged();
+    else return false;
+  }
   ui.toast(t("tools.installed", { names }));
   return true;
 }

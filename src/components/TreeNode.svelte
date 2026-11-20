@@ -9,10 +9,11 @@
   import TreeNode from "./TreeNode.svelte";
   import { untrack } from "svelte";
   import { fsApi, joinPath, dirname, basename, type Entry } from "../lib/api";
-  import { app, openFile, pathMoved, activeTab } from "../lib/state.svelte";
+  import { app, openFile, pathMoved, activeTab, inRoot } from "../lib/state.svelte";
   import { ui } from "../lib/ui.svelte";
   import { git, kind } from "../lib/git/git.svelte";
   import { t } from "../lib/i18n/index.svelte";
+  import { fileDrag, startFileDrag } from "../lib/fileDrag.svelte";
 
   const gitKind = $derived.by(() => {
     if (!git.repo || !git.top || !path.startsWith(git.top + "/")) return null;
@@ -48,6 +49,20 @@
     untrack(() => {
       if (isDir && children !== null && fsChanges.dirs.includes(path)) load();
     });
+  });
+
+  const dropTarget = $derived(!root && isDir && fileDrag.target === path);
+  const dragging = $derived(fileDrag.from === path);
+
+  // Hovering a closed folder while dragging opens it after a moment.
+  $effect(() => {
+    if (!dropTarget || open) return;
+    const id = setTimeout(() => {
+      open = true;
+      expanded.add(path);
+      persist();
+    }, 600);
+    return () => clearTimeout(id);
   });
 
   function toggle() {
@@ -111,6 +126,9 @@
         : [{ label: t("common.open"), action: () => openFile(path) }, { separator: true, label: "" }]),
       { label: t("common.rename"), action: rename },
       { label: t("app.copyPath"), action: () => navigator.clipboard.writeText(path) },
+      ...(app.root && inRoot(path, app.root) && path !== app.root
+        ? [{ label: t("app.copyRelativePath"), action: () => navigator.clipboard.writeText(path.slice(app.root!.replace(/\/$/, "").length + 1)) }]
+        : []),
       { separator: true, label: "" },
       { label: t("common.delete"), action: remove, danger: true },
     ]);
@@ -118,7 +136,8 @@
 </script>
 
 {#if !root}
-  <button class="row" class:active style="padding-left: {8 + (depth - 1) * 14}px" onclick={toggle} oncontextmenu={menu} role="treeitem" aria-selected={active} aria-expanded={isDir ? open : undefined}>
+  <button class="row" class:active style="padding-left: {8 + (depth - 1) * 14}px" class:drop-target={dropTarget} class:dragging data-tree-path={path} data-tree-dir={isDir ? "1" : "0"}
+    onpointerdown={(e) => startFileDrag(e, path)} onclick={toggle} oncontextmenu={menu} role="treeitem" aria-selected={active} aria-expanded={isDir ? open : undefined}>
     {#if isDir}
       <svg class="chev" class:open width="10" height="10" viewBox="0 0 10 10"><path d="M3.5 2l3 3-3 3" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
     {:else}
@@ -149,6 +168,8 @@
   }
   .row:hover { background: var(--fill-hover); }
   .row.active { background: rgba(var(--fg-rgb), 0.1); box-shadow: inset 0 1px 0 rgba(var(--hl-rgb), 0.06); }
+  .row.drop-target { background: color-mix(in srgb, var(--accent) 18%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 50%, transparent); }
+  .row.dragging { opacity: 0.45; }
   .chev { flex-shrink: 0; color: var(--label-2);  }
   .chev.open { transform: rotate(90deg); }
   .dot { width: 10px; flex-shrink: 0; }

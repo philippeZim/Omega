@@ -5,16 +5,17 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { toPng } from "html-to-image";
-import { app, activeTab, openFile, save, setMode } from "../state.svelte";
+import { app, activeTab, openFile, save, setMode, setRoot } from "../state.svelte";
 import { ui } from "../ui.svelte";
 import * as ed from "../editor";
 import { fsApi } from "../api";
-import { COMMANDS, keysFor, runCommand, availableCommands, palette } from "../commands.svelte";
+import { COMMANDS, keysFor, runCommand, availableCommands, palette, isTerminalShortcut } from "../commands.svelte";
 import { formatKey } from "../keys";
 import { git } from "../git/git.svelte";
 import { dbg } from "../debug/store.svelte";
 import { collab } from "../collab/collab.svelte";
-import { terms, readTerminal, runCommand as runInTerminal } from "../terminal.svelte";
+import { terms, readTerminal, runCommand as runInTerminal, newTerminal, closeTerminal, toggleSplit } from "../terminal.svelte";
+import { layout, ZONES, VIEWS, visibleViews, activeView, zoneShown, isShown, available, showView, hideView, focusView, moveView, setOpen, resetLayout, type ViewId, type Zone } from "../layout.svelte";
 import { runner } from "../code/runner.svelte";
 import { find } from "../search/search.svelte";
 import { settings } from "../settings.svelte";
@@ -27,6 +28,10 @@ function capture(level: string, args: unknown[]) {
   const text = args.map((a) => (a instanceof Error ? `${a.message}\n${a.stack}` : typeof a === "string" ? a : safeJson(a))).join(" ");
   consoleLog.push({ level, text: text.slice(0, 4000), time: new Date().toISOString().slice(11, 19) });
   if (consoleLog.length > 300) consoleLog.shift();
+}
+/** The last `n` console errors (for bug reports). */
+export function recentErrors(n = 5) {
+  return consoleLog.filter((m) => m.level === "error").slice(-n);
 }
 const safeJson = (v: unknown) => {
   try {
@@ -169,7 +174,7 @@ const TOOLS: Tool[] = [
       projectRoot: app.root,
       tabs: app.tabs.map((t) => ({ path: t.path, name: t.name, dirty: t.dirty, active: t.id === app.activeId })),
       editor: editorInfo(),
-      sidebar: { visible: app.sidebar, view: app.sidebarView },
+      layout: Object.fromEntries(ZONES.map((z) => [z, { shown: zoneShown(z), active: activeView(z), views: layout.zones[z].views, available: visibleViews(z), size: layout.zones[z].size }])),
       overlays: {
         help: ui.help, settings: settings.open, palette: palette.open ? palette.tab : false, findInFiles: find.open, newProject: runner.newProject,
         dialog: ui.dialog ? { title: ui.dialog.title, message: ui.dialog.message, buttons: ui.dialog.options.map((o) => o.label), input: ui.dialog.input?.value } : null,
@@ -178,8 +183,8 @@ const TOOLS: Tool[] = [
       },
       project: runner.project ? { tool: runner.project.label, root: runner.project.root, run: runner.project.run?.cmd, build: runner.project.build?.cmd } : null,
       git: git.repo ? { branch: git.branch, ahead: git.ahead, behind: git.behind, remote: git.remoteUrl, changes: git.changes.map((c) => `${c.x}${c.y} ${c.path}`) } : null,
-      debugger: { status: dbg.status, label: dbg.label, stopReason: dbg.stopReason, location: dbg.exec, panel: dbg.panel },
-      terminal: { visible: terms.visible, tabs: terms.tabs.map((t) => ({ id: t.id, title: t.title, kind: t.kind, exited: t.exited, active: t.id === terms.active })) },
+      debugger: { status: dbg.status, label: dbg.label, stopReason: dbg.stopReason, location: dbg.exec, panel: isShown("debug") },
+      terminal: { visible: isShown("terminal"), split: terms.split, tabs: terms.tabs.map((t) => ({ id: t.id, title: t.title, kind: t.kind, exited: t.exited, active: t.id === terms.active })) },
       collab: collab.role ? { role: collab.role, status: collab.status, ticket: collab.ticket || undefined, participants: collab.participants.map((p) => ({ name: p.name, role: p.role, direct: p.direct, rtt: p.rtt, addr: p.addr })), pendingRequests: collab.requests.map((r) => r.name) } : collab.error ? { role: null, error: collab.error } : null,
       recentToasts: toastLog.slice(-8),
     }),
@@ -210,6 +215,16 @@ const TOOLS: Tool[] = [
     description: "Wechselt den Modus: text, markdown, latex oder code.",
     inputSchema: obj({ mode: { type: "string", enum: ["text", "markdown", "latex", "code"] } }, ["mode"]),
     run: ({ mode }) => (setMode(mode as Mode), `Modus: ${mode}`),
+  },
+  {
+    name: "open_folder",
+    description: "Öffnet einen Ordner (absoluter Pfad) als Projektordner, wie „Ordner öffnen“.",
+    inputSchema: obj({ path: str("Ordnerpfad") }, ["path"]),
+    run: async ({ path }) => {
+      await fsApi.listDir(path);
+      await setRoot(path);
+      return { projectRoot: app.root };
+    },
   },
   {
     name: "open_file",
@@ -327,6 +342,44 @@ const TOOLS: Tool[] = [
     },
   },
   {
+    name: "drag",
+    description: "Zieht ein Element (per Text/Selektor) mit der Maus (Pointer-Events) zu einem anderen Element oder zu Fensterkoordinaten und lässt es dort los – z.B. einen Ansichts-Tab in eine andere Dock-Zone. Ohne Ziel-Element zählen to_x/to_y (CSS-Pixel im Fenster).",
+    inputSchema: obj({
+      text: str("Quelle: Text/Label"), selector: str("Quelle: CSS-Selektor"), index: num("Quelle: Treffer-Index"),
+      to_text: str("Ziel: Text/Label"), to_selector: str("Ziel: CSS-Selektor"), to_x: num("Ziel-X"), to_y: num("Ziel-Y"),
+    }),
+    run: async ({ text, selector, index, to_text, to_selector, to_x, to_y }) => {
+      const src = findElements({ text, selector })[index ?? 0];
+      if (!src) throw new Error(`Quelle nicht gefunden (${text ?? selector})`);
+      let tx = to_x, ty = to_y;
+      if (to_text || to_selector) {
+        const dst = findElements({ text: to_text, selector: to_selector })[0];
+        if (!dst) throw new Error(`Ziel nicht gefunden (${to_text ?? to_selector})`);
+        const r = dst.getBoundingClientRect();
+        tx = r.left + r.width / 2;
+        ty = r.top + r.height / 2;
+      }
+      if (tx === undefined || ty === undefined) throw new Error("Ziel fehlt (to_text/to_selector oder to_x/to_y)");
+      const r = src.getBoundingClientRect();
+      const sx = r.left + r.width / 2, sy = r.top + r.height / 2;
+      const opts = (x: number, y: number, buttons: number) => ({ bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, button: 0, buttons, pointerId: 1, pointerType: "mouse", isPrimary: true });
+      src.dispatchEvent(new PointerEvent("pointerdown", opts(sx, sy, 1)));
+      src.dispatchEvent(new MouseEvent("mousedown", opts(sx, sy, 1)));
+      const steps = 12;
+      for (let i = 1; i <= steps; i++) {
+        const x = sx + ((tx - sx) * i) / steps, y = sy + ((ty - sy) * i) / steps;
+        (document.elementFromPoint(x, y) ?? document.body).dispatchEvent(new PointerEvent("pointermove", opts(x, y, 1)));
+        await sleep(16);
+      }
+      const end = document.elementFromPoint(tx, ty) ?? document.body;
+      end.dispatchEvent(new PointerEvent("pointerup", opts(tx, ty, 0)));
+      end.dispatchEvent(new MouseEvent("mouseup", opts(tx, ty, 0)));
+      end.dispatchEvent(new MouseEvent("click", opts(tx, ty, 0)));
+      await sleep(200);
+      return { from: describe(src, index ?? 0), to: { x: Math.round(tx), y: Math.round(ty) } };
+    },
+  },
+  {
     name: "type_text",
     description: "Gibt Text in das fokussierte Element ein (Eingabefeld oder Editor), optional vorher ein Element per Text/Selektor fokussieren. submit=true drückt danach Enter.",
     inputSchema: obj({ text: str("Text"), target: str("Optional: Element per Text/Placeholder fokussieren"), selector: str("Optional: CSS-Selektor"), submit: bool("Danach Enter drücken"), clear: bool("Feld vorher leeren") }, ["text"]),
@@ -373,6 +426,22 @@ const TOOLS: Tool[] = [
         await sleep(100);
       }
       throw new Error("Zeitüberschreitung beim Warten");
+    },
+  },
+  {
+    name: "select_option",
+    description: "Wählt in einem Dropdown (<select>, per Text/Selektor gefunden) eine Option per Wert oder sichtbarem Text und löst 'change' aus.",
+    inputSchema: obj({ text: str("Text/Label/Tooltip des Dropdowns"), selector: str("CSS-Selektor"), option: str("Wert oder Text der Option") }, ["option"]),
+    run: async ({ text, selector, option }) => {
+      const el = findElements({ text, selector }).find((e) => e instanceof HTMLSelectElement) as HTMLSelectElement | undefined;
+      if (!el) throw new Error(`Kein Dropdown gefunden (${text ?? selector})`);
+      const opt = [...el.options].find((o) => o.value === option) ?? [...el.options].find((o) => o.text.toLowerCase().includes(String(option).toLowerCase()));
+      if (!opt) throw new Error(`Option nicht gefunden: ${option}. Verfügbar: ${[...el.options].map((o) => o.text).join(", ")}`);
+      el.value = opt.value;
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+      await sleep(200);
+      return `ausgewählt: ${opt.text}`;
     },
   },
   {
@@ -428,6 +497,63 @@ const TOOLS: Tool[] = [
     inputSchema: obj({ id: str("Terminal-ID aus get_state (optional)"), lines: num("Standard 60") }),
     run: ({ id, lines }) => readTerminal(id ?? terms.active, lines ?? 60),
   },
+  {
+    name: "show_view",
+    description: "Zeigt, fokussiert oder versteckt eine Ansicht des Dock-Layouts (files, changes, outline, terminal, debug, console, search, pdf). Manche sind nur in bestimmten Modi verfügbar (outline/pdf: LaTeX, debug: während des Debuggens).",
+    inputSchema: obj({ view: { type: "string", enum: VIEWS }, hide: bool("Verstecken statt zeigen"), focus: bool("Danach fokussieren") }, ["view"]),
+    run: ({ view, hide, focus }) => {
+      const v = view as ViewId;
+      if (hide) hideView(v);
+      else if (focus) focusView(v);
+      else showView(v);
+      return available(v) ? `${v}: ${isShown(v) ? "sichtbar" : "versteckt"}` : `${v} ist im aktuellen Zustand nicht verfügbar (Modus/Debugger)`;
+    },
+  },
+  {
+    name: "move_view",
+    description: "Verschiebt eine Ansicht in eine Dock-Zone (left, right, bottom), optional an eine Tab-Position (0-basiert).",
+    inputSchema: obj({ view: { type: "string", enum: VIEWS }, zone: { type: "string", enum: ZONES }, index: num("Tab-Position (Standard: ans Ende)") }, ["view", "zone"]),
+    run: ({ view, zone, index }) => {
+      moveView(view as ViewId, zone as Zone, index);
+      return `${view} → ${zone} [${layout.zones[zone as Zone].views.join(", ")}]`;
+    },
+  },
+  {
+    name: "set_zone",
+    description: "Öffnet/schließt eine Dock-Zone (left, right, bottom) im aktuellen Modus, oder setzt mit reset=true das ganze Layout zurück.",
+    inputSchema: obj({ zone: { type: "string", enum: ZONES }, open: bool("true = öffnen, false = schließen"), reset: bool("Layout auf Standard zurücksetzen") }),
+    run: ({ zone, open, reset }) => {
+      if (reset) resetLayout();
+      else if (zone) setOpen(zone as Zone, open ?? true);
+      return "ok";
+    },
+  },
+  {
+    name: "terminal_split",
+    description: "Schaltet die Terminal-Ansicht zwischen Tabs (ein Terminal groß) und geteilt (alle Terminals nebeneinander).",
+    inputSchema: obj({ split: bool("true = geteilt, false = Tabs") }, ["split"]),
+    run: ({ split }) => {
+      if (!!split !== terms.split) toggleSplit();
+      return terms.split ? "geteilt" : "Tabs";
+    },
+  },
+  {
+    name: "terminal_new",
+    description: "Öffnet einen neuen Shell-Tab (frische Umgebung/PATH) und macht ihn aktiv. Gibt die Terminal-ID zurück.",
+    inputSchema: obj({ cwd: str("Arbeitsverzeichnis (Standard: Projektordner)"), title: str("Tab-Titel (optional)") }),
+    run: ({ cwd, title }) => newTerminal(cwd ?? app.root ?? null, "shell", title),
+  },
+  {
+    name: "terminal_close",
+    description: "Schließt ein Terminal und beendet seine Shell (Standard: aktives). Der nächste Run-Befehl startet bei Bedarf einen neuen Run-Terminal.",
+    inputSchema: obj({ id: str("Terminal-ID aus get_state (optional)") }),
+    run: ({ id }) => {
+      const tid = id ?? terms.active;
+      if (!tid || !terms.tabs.some((t) => t.id === tid)) throw new Error("Terminal nicht gefunden");
+      closeTerminal(tid);
+      return `geschlossen: ${tid}`;
+    },
+  },
 ];
 
 const TERM_KEYS: Record<string, string> = {
@@ -443,8 +569,12 @@ function focusedTerminal(): string | null {
 }
 
 async function pressKey({ key, ctrl, shift, alt }: Args) {
+  const code = /^[0-9]$/.test(key) ? `Digit${key}` : key.length === 1 ? `Key${key.toUpperCase()}` : key;
+  const init = { key, bubbles: true, cancelable: true, composed: true, ctrlKey: !!ctrl, shiftKey: !!shift, altKey: !!alt, code };
+  const label = [ctrl && "Strg", shift && "Umschalt", alt && "Alt", key].filter(Boolean).join("+");
   const tid = focusedTerminal();
-  if (tid) {
+  // App shortcuts that work in the terminal (move window, toggle views …) go to the app, not the shell.
+  if (tid && !isTerminalShortcut(new KeyboardEvent("keydown", init))) {
     let seq = TERM_KEYS[key] ?? key;
     if (ctrl && key.length === 1) seq = String.fromCharCode(key.toUpperCase().charCodeAt(0) & 0x1f);
     if (alt) seq = "\x1b" + seq;
@@ -453,12 +583,11 @@ async function pressKey({ key, ctrl, shift, alt }: Args) {
     return `an Terminal gesendet: ${[ctrl && "Strg", alt && "Alt", key].filter(Boolean).join("+")}`;
   }
   const target = (document.activeElement as HTMLElement | null) ?? document.body;
-  const init = { key, bubbles: true, cancelable: true, composed: true, ctrlKey: !!ctrl, shiftKey: !!shift, altKey: !!alt, code: key.length === 1 ? `Key${key.toUpperCase()}` : key };
   const down = new KeyboardEvent("keydown", init);
   target.dispatchEvent(down);
   target.dispatchEvent(new KeyboardEvent("keyup", init));
   await sleep(150);
-  return `gedrückt: ${[ctrl && "Strg", shift && "Umschalt", alt && "Alt", key].filter(Boolean).join("+")}`;
+  return `gedrückt: ${label}`;
 }
 
 // ------------------------------------------------------------------ server lifecycle

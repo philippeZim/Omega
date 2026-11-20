@@ -41,6 +41,42 @@
   background: linear-gradient(90deg, rgba(107, 155, 224, 0.06), transparent 60%);
 }
 
+/* Callouts: > [!type] Title */
+.mode-markdown .cm-line.md-callout {
+  --c: 8, 109, 221;
+  background: rgba(var(--c), 0.1);
+  border-left: 3px solid rgba(var(--c), 0.75);
+  padding-left: 16px;
+  padding-right: 16px;
+  color: var(--label);
+}
+.mode-markdown .cm-line.md-callout-first { border-top-right-radius: 10px; padding-top: 6px; }
+.mode-markdown .cm-line.md-callout-last { border-bottom-right-radius: 10px; padding-bottom: 6px; }
+.mode-markdown .cm-line.md-callout-first.md-callout-last { padding-bottom: 6px; }
+.mode-markdown .cm-line.md-callout-abstract,
+.mode-markdown .cm-line.md-callout-tip { --c: 0, 191, 188; }
+.mode-markdown .cm-line.md-callout-success { --c: 8, 185, 78; }
+.mode-markdown .cm-line.md-callout-question,
+.mode-markdown .cm-line.md-callout-warning { --c: 236, 117, 0; }
+.mode-markdown .cm-line.md-callout-failure,
+.mode-markdown .cm-line.md-callout-danger,
+.mode-markdown .cm-line.md-callout-bug { --c: 233, 49, 71; }
+.mode-markdown .cm-line.md-callout-example { --c: 120, 82, 238; }
+.mode-markdown .cm-line.md-callout-quote { --c: 158, 158, 158; }
+.mode-markdown .md-callout-head { display: inline-flex; align-items: center; gap: 6px; margin-right: 6px; vertical-align: -0.15em; }
+.mode-markdown .md-callout-icon { width: 1.05em; height: 1.05em; color: rgb(var(--c)); flex: none; }
+.mode-markdown .md-callout-title { font-weight: 600; color: rgb(var(--c)); }
+.mode-markdown .md-callout-fold {
+  display: inline-flex;
+  margin-left: 6px;
+  vertical-align: -0.15em;
+  color: rgb(var(--c));
+  cursor: pointer;
+  transition: transform 0.15s;
+}
+.mode-markdown .md-callout-fold svg { width: 1em; height: 1em; }
+.mode-markdown .md-callout-fold.collapsed { transform: rotate(-90deg); }
+
 .mode-markdown .md-bullet {
   display: inline-block;
   width: 1.1em;

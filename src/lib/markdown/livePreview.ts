@@ -7,7 +7,9 @@
  *  - headings, blockquotes and horizontal rules reveal their markers for the whole line;
  *  - bullets / checkboxes reveal when the cursor touches the marker;
  *  - fenced code hides its fences unless the selection is inside the block;
- *  - tables and $$ math are block widgets that turn into source when the selection enters them.
+ *  - tables and $$ math are block widgets that turn into source when the selection enters them;
+ *  - callouts (`> [!tip] Title`) show their `[!type]` marker when the cursor is on the title line;
+ *    `[!type]-` callouts stay collapsed until the selection enters them.
  * While the mouse button is held, the reveal state is frozen so text doesn't jump mid-drag.
  */
 import { syntaxTree } from "@codemirror/language";
@@ -15,6 +17,7 @@ import { EditorSelection, StateEffect, StateField, type EditorState, type Extens
 import { Decoration, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate } from "@codemirror/view";
 import type { SyntaxNode } from "@lezer/common";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { CalloutFoldWidget, CalloutHeadWidget, parseCalloutHead } from "./callout";
 import { TableWidget } from "./table";
 import { BulletWidget, CheckboxWidget, CodeHeaderWidget, HrWidget, ImageWidget, MathWidget, renderMath } from "./widgets";
 import "./markdown.css";
@@ -115,6 +118,15 @@ function buildBlocks(state: EditorState): DecorationSet {
         }
         return false;
       }
+      if (n.name === "Blockquote") {
+        const first = state.doc.lineAt(n.from), last = state.doc.lineAt(n.to);
+        const head = parseCalloutHead(first.text);
+        if (head?.fold === "-" && last.number > first.number && !touches(sel, n.from, n.to)) {
+          out.push(Decoration.replace({}).range(first.to, last.to));
+          return false;
+        }
+        return;
+      }
       if (n.name === "FencedCode" || n.name === "CodeBlock" || n.name === "Paragraph") return false;
     },
   });
@@ -169,6 +181,9 @@ function buildInline(view: EditorView, path: string | null): DecorationSet {
   };
   const widget = (a: number, b: number, w: any) => out.push(Decoration.replace({ widget: w }).range(a, b));
   const withSpace = (pos: number) => (slice(pos, pos + 1) === " " ? pos + 1 : pos);
+  const callouts = new Set<number>();
+  /** The `[!type]` marker of the callout being decorated; nodes inside it (e.g. a Link) are skipped. */
+  let skip: [number, number] | null = null;
 
   for (const { from, to } of view.visibleRanges) {
     syntaxTree(state).iterate({
@@ -177,6 +192,33 @@ function buildInline(view: EditorView, path: string | null): DecorationSet {
       enter(n) {
         const name = n.name;
         const node = n.node;
+        if (skip && n.from >= skip[0] && n.to <= skip[1]) return false;
+
+        if (name === "Blockquote") {
+          const first = state.doc.lineAt(n.from);
+          const head = parseCalloutHead(first.text);
+          if (!head || callouts.has(n.from)) return;
+          callouts.add(n.from);
+          const last = state.doc.lineAt(n.to);
+          const collapsed = head.fold === "-" && last.number > first.number && !touches(sel, n.from, n.to);
+          const end = collapsed ? first.number : last.number;
+          for (let l = first.number; l <= end; l++) {
+            let cls = `md-callout md-callout-${head.type}`;
+            if (l === first.number) cls += " md-callout-first";
+            if (l === end) cls += " md-callout-last";
+            line(state.doc.line(l).from, cls);
+          }
+          const mFrom = first.from + head.markerFrom, mTo = first.from + head.markerTo;
+          skip = [mFrom, mTo];
+          if (onLines(state, sel, first.from, first.from)) mark(mFrom, mTo, "md-formatting");
+          else {
+            widget(mFrom, mTo, new CalloutHeadWidget(head.type, head.raw, head.title !== ""));
+            mark(mTo, first.to, "md-callout-title");
+            if (head.fold)
+              out.push(Decoration.widget({ widget: new CalloutFoldWidget(collapsed, first.from + head.foldAt), side: 1 }).range(first.to));
+          }
+          return;
+        }
 
         const h = /^ATXHeading(\d)$/.exec(name) || /^SetextHeading(\d)$/.exec(name);
         if (h) {

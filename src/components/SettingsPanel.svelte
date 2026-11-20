@@ -1,12 +1,13 @@
 <script lang="ts">
   import Glyph from "./Glyph.svelte";
-  import { settings, applySyntaxTheme, setSize, setAppearance, setMaterial, type Appearance, type Material } from "../lib/settings.svelte";
+  import { settings, applySyntaxTheme, setSize, setAppearance, setMaterial, PROSE_WIDTH_FULL, type Appearance, type Material } from "../lib/settings.svelte";
   import { t, i18n, setLocale, LOCALES, type Key } from "../lib/i18n/index.svelte";
 
   // `label`/`sub` are i18n keys, translated at render time.
   const SIZES = [
     { key: "codeFontSize", label: "app.settings.codeFont", sub: "app.settings.codeFontSub", min: 10, max: 24, step: 1, unit: "px" },
     { key: "proseFontSize", label: "app.settings.proseFont", sub: "app.settings.proseFontSub", min: 12, max: 28, step: 1, unit: "px" },
+    { key: "proseWidth", label: "app.settings.proseWidth", sub: "app.settings.proseWidthSub", min: 600, max: PROSE_WIDTH_FULL, step: 20, unit: "px" },
     { key: "terminalFontSize", label: "app.settings.terminalFont", sub: "app.settings.terminalFontSub", min: 9, max: 22, step: 1, unit: "px" },
     { key: "uiScale", label: "app.settings.uiScale", sub: "app.settings.uiScaleSub", min: 0.75, max: 1.5, step: 0.05, unit: "%" },
   ] as const;
@@ -19,6 +20,16 @@
   import { ideLink, AGENTS, startAgent, isConnected, detectAgents, type Agent } from "../lib/ai/ide.svelte";
   import { runCommand, listShells, shellPref, setDefaultShell } from "../lib/terminal.svelte";
   import { lspSettings, setStrictPython } from "../lib/code/lsp.svelte";
+  import { power, setKeepAwake } from "../lib/power.svelte";
+  import { installs, catalog, refreshInstalls, checkUpdates, updateAvailable, wasChecked, canInstall, manualHint, install, update, remove, type Group } from "../lib/installs.svelte";
+
+  const INSTALL_GROUPS: Group[] = ["tool", "lsp", "debug"];
+  const installItems = catalog();
+  $effect(() => {
+    if (tab === "installs") refreshInstalls();
+  });
+  const updateCount = $derived(installItems.filter((i) => updateAvailable(i.id)).length);
+  import { blameSettings, setGitBlame } from "../lib/git/blame.svelte";
 
   const AGENT_INFO: Record<Agent["id"], Key> = {
     claude: "app.settings.agent.claude",
@@ -44,6 +55,7 @@
     { id: "look", label: "app.settings.tab.look" },
     { id: "theme", label: "app.settings.tab.theme" },
     { id: "code", label: "app.settings.tab.code" },
+    { id: "installs", label: "app.settings.tab.installs" },
     { id: "spell", label: "app.settings.tab.spell" },
     { id: "keys", label: "app.settings.tab.keys" },
     { id: "ai", label: "app.settings.tab.ai" },
@@ -107,7 +119,7 @@
                 <button onclick={() => setSize(sz.key, Math.max(sz.min, +(v - sz.step).toFixed(2)))} aria-label={t("app.settings.smaller")}><Glyph name="minus" size={10} /></button>
                 <input type="range" min={sz.min} max={sz.max} step={sz.step} value={v} oninput={(e) => setSize(sz.key, Number((e.currentTarget as HTMLInputElement).value))} />
                 <button onclick={() => setSize(sz.key, Math.min(sz.max, +(v + sz.step).toFixed(2)))} aria-label={t("app.settings.larger")}><Glyph name="plus" size={10} /></button>
-                <span class="val">{sz.unit === "%" ? Math.round(v * 100) + " %" : v + " px"}</span>
+                <span class="val">{sz.unit === "%" ? Math.round(v * 100) + " %" : sz.key === "proseWidth" && v >= PROSE_WIDTH_FULL ? t("app.settings.proseWidthFull") : v + " px"}</span>
               </div>
             </div>
           {/each}
@@ -122,6 +134,10 @@
             <button class="switch" class:on={lspSettings.strictPython} onclick={() => setStrictPython(!lspSettings.strictPython)} role="switch" aria-checked={lspSettings.strictPython} aria-label={t("app.settings.strictPython")}><span></span></button>
           </div>
           <div class="srow">
+            <div><b>{t("app.settings.gitBlame")}</b><span class="sub2">{t("app.settings.gitBlameSub")}</span></div>
+            <button class="switch" class:on={blameSettings.enabled} onclick={() => setGitBlame(!blameSettings.enabled)} role="switch" aria-checked={blameSettings.enabled} aria-label={t("app.settings.gitBlame")}><span></span></button>
+          </div>
+          <div class="srow">
             <div><b>{t("app.settings.defaultShell")}</b><span class="sub2">{t("app.settings.defaultShellSub")}</span></div>
             {#await listShells() then shells}
               <select class="shell-select" value={shellPref.id} onchange={(e) => setDefaultShell((e.currentTarget as HTMLSelectElement).value)}>
@@ -131,6 +147,55 @@
             {/await}
           </div>
         </div>
+      </section>
+      {:else if tab === "installs"}
+      <section>
+        <h2>{t("app.settings.tab.installs")}</h2>
+        <p class="desc">{t("installs.desc")}</p>
+        <div class="ibar">
+          <button class="btn" disabled={installs.checking || installs.loading} onclick={checkUpdates}>{installs.checking ? t("installs.checking") : t("installs.check")}</button>
+          <button class="btn ghost" disabled={installs.loading} onclick={refreshInstalls}>{t("installs.refresh")}</button>
+          {#if installs.checkedAt && !installs.checking}<span class="note inline">{updateCount ? t("installs.updatesFound", { n: updateCount }) : t("installs.noUpdates")}</span>{/if}
+        </div>
+        {#each INSTALL_GROUPS as g (g)}
+          <h3>{t(`installs.group.${g}`)}</h3>
+          <div class="box">
+            {#each installItems.filter((i) => i.group === g) as it (it.id)}
+              {@const st = installs.status[it.id]}
+              {@const busy = installs.busy[it.id]}
+              {@const upd = updateAvailable(it.id)}
+              <div class="srow">
+                <div class="grow">
+                  <b>{it.label}</b>
+                  <span class="sub2 ipath" title={st?.path ?? ""}>{#if st?.path}{st.owner ? `${st.owner.manager}: ${st.owner.package} · ` : ""}{st.path}{:else if st && !canInstall(it.id) && manualHint(it.id)}{t("installs.manual")}: {manualHint(it.id)}{:else}&nbsp;{/if}</span>
+                </div>
+                <div class="rowend">
+                  {#if st}
+                    <span class="pill" class:ok={st.source === "studio"} class:sys={st.source === "system"}>
+                      {st.source === "studio" ? t("installs.studio") : st.source === "system" ? t("installs.system") : t("installs.missing")}{#if st.source !== "missing"}{` · ${st.version ?? t("installs.unknownVersion")}`}{/if}
+                    </span>
+                  {:else}
+                    <span class="pill">…</span>
+                  {/if}
+                  {#if busy}
+                    <span class="note inline">{t(`installs.busy.${busy}`)}</span>
+                  {:else if st?.source === "studio" || st?.source === "system"}
+                    {#if it.id === "lsp:rust" && st.source === "studio"}
+                      <span class="note inline">{t("installs.withRust")}</span>
+                    {:else if upd}
+                      <button class="btn" onclick={() => update(it.id)}>{t("installs.update", { v: upd })}</button>
+                    {:else if wasChecked(it.id)}
+                      <span class="note inline">{t("installs.upToDate")}</span>
+                    {/if}
+                    {#if st.source === "studio"}<button class="btn ghost" onclick={() => remove(it.id)}>{t("installs.remove")}</button>{/if}
+                  {:else if st?.source === "missing" && canInstall(it.id)}
+                    <button class="btn" onclick={() => install(it.id)}>{t("installs.install")}</button>
+                  {/if}
+                </div>
+              </div>
+            {/each}
+          </div>
+        {/each}
       </section>
       {:else if tab === "spell"}
       <section>
@@ -170,6 +235,12 @@
           <div class="srow">
             <div><b>{t("app.settings.sendSelection")}</b><span class="sub2">{t("app.settings.sendSelectionSub")}</span></div>
             <span class="kbd">{keysFor("ai.mention").map(formatKey).join(" / ") || "—"}</span>
+          </div>
+        </div>
+        <div class="box mt-s">
+          <div class="srow">
+            <div><b>{t("app.settings.keepAwake")}</b><span class="sub2">{t("app.settings.keepAwakeSub")}{#if power.enabled && power.status.active} · {power.status.lid ? t("app.settings.keepAwakeActive", { agent: power.status.agent ?? "" }) : t("app.settings.keepAwakeIdleOnly", { agent: power.status.agent ?? "" })}{/if}{#if power.status.error}<br />{power.status.error}{/if}</span></div>
+            <button class="switch" class:on={power.enabled} onclick={() => setKeepAwake(!power.enabled)} role="switch" aria-checked={power.enabled} aria-label={t("app.settings.keepAwake")}><span></span></button>
           </div>
         </div>
         <p class="note">{ideLink.port ? t("app.settings.ideServer", { port: ideLink.port }) : t("app.settings.ideServerOff")} · {t("app.settings.codexContext", { state: ideLink.codex === "listening" ? "~/.codex/ipc/ipc.sock" : ideLink.codex === "busy" ? t("app.settings.codexBusy") : t("app.settings.codexUnavailable") })}</p>
@@ -302,6 +373,7 @@
   .seg button { height: 28px; padding: 0 14px; border-radius: 999px; font-size: 12.5px; font-weight: 500; color: var(--label-2); transition: background 0.2s, color 0.2s; }
   .seg button.on { color: var(--label); background: var(--raised-bg); box-shadow: var(--raised-shadow); }
   h2.mt { margin-top: 30px; }
+  .box.mt-s { margin-top: 12px; }
   .rowend { display: flex; align-items: center; gap: 10px; }
   .btn:disabled { opacity: 0.4; pointer-events: none; }
   .note { margin: 10px 4px 0; font-size: 11.5px; color: var(--label-3); }
@@ -309,6 +381,10 @@
   .seg.small button { height: 24px; padding: 0 11px; font-size: 12px; }
   .pill { height: 26px; padding: 0 12px; display: inline-flex; align-items: center; border-radius: 999px; font-size: 12px; color: var(--label-2); background: rgba(var(--fg-rgb), 0.06); white-space: nowrap; }
   .pill.ok { color: var(--label); background: rgba(123, 191, 142, 0.35); }
+  .pill.sys { color: var(--label); background: rgba(var(--fg-rgb), 0.1); }
+  .ibar { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+  .note.inline { margin: 0; white-space: nowrap; }
+  .ipath { font-family: var(--mono); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .btn { height: 30px; padding: 0 14px; border-radius: 999px; font-size: 12.5px; font-weight: 600; color: var(--label); background: linear-gradient(180deg, rgba(var(--fg-rgb), 0.2), rgba(var(--fg-rgb), 0.1)); box-shadow: inset 0 1px 0 rgba(var(--hl-rgb), 0.18); white-space: nowrap; transition: background 0.2s; }
   .btn:hover { background: linear-gradient(180deg, rgba(var(--fg-rgb), 0.26), rgba(var(--fg-rgb), 0.14)); }
   .btn:active { transform: scale(0.94); }

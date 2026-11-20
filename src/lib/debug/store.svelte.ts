@@ -57,7 +57,6 @@ export const dbg = $state({
   console: [] as { text: string; kind: "out" | "err" | "info" | "error" | "build" | "input" | "result" }[],
   exec: null as { path: string; line: number } | null,
   breakpoints: loadBps() as Record<string, Breakpoint[]>,
-  panel: false,
   /** Bumps whenever editor-visible debug state changes (breakpoints, execution line). */
   version: 0,
 });

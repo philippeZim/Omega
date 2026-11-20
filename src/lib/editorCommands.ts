@@ -15,7 +15,7 @@ import type { Mode } from "./modes";
 
 /** Command group ids; the shown label is `commands.group.<id>`. */
 export type CommandGroup =
-  | "general" | "search" | "files" | "git" | "collab" | "ai" | "terminal" | "run" | "latex"
+  | "general" | "window" | "search" | "files" | "git" | "collab" | "ai" | "terminal" | "run" | "latex"
   | "selection" | "lines" | "edit" | "navigation" | "code" | "debugger" | "markdown";
 
 /** The label is looked up as `commands.cmd.<id>`. */

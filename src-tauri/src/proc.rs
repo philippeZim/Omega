@@ -301,11 +301,11 @@ pub async fn install_debugger(app: AppHandle, kind: String) -> Result<String, St
         "debugpy" => {
             let target = dir.join("debugpy");
             let ok = which("uv").is_some_and(|uv| {
-                crate::env::command(uv).args(["pip", "install", "--quiet", "--target"]).arg(&target).arg("debugpy").status().is_ok_and(|s| s.success())
+                crate::env::command(uv).args(["pip", "install", "--quiet", "--upgrade", "--target"]).arg(&target).arg("debugpy").status().is_ok_and(|s| s.success())
             });
             if !ok {
                 let py = which("python3").or_else(|| which("python")).ok_or("Python nicht gefunden")?;
-                let st = crate::env::command(py).args(["-m", "pip", "install", "--quiet", "--target"]).arg(&target).arg("debugpy").status().map_err(|e| e.to_string())?;
+                let st = crate::env::command(py).args(["-m", "pip", "install", "--quiet", "--upgrade", "--target"]).arg(&target).arg("debugpy").status().map_err(|e| e.to_string())?;
                 if !st.success() {
                     return Err("debugpy konnte nicht installiert werden".into());
                 }
@@ -326,6 +326,9 @@ pub async fn install_debugger(app: AppHandle, kind: String) -> Result<String, St
             let r = crate::tools::unpack(&archive, "js-debug.tar.gz", &dir, "");
             let _ = std::fs::remove_file(&archive);
             r?;
+            if let Some(v) = crate::installs::extract_version(&url.rsplit('/').next().unwrap_or_default()) {
+                let _ = std::fs::write(dir.join("js-debug").join(".studio-version"), v);
+            }
             Ok(crate::env::norm(dir.join("js-debug").join("src").join("dapDebugServer.js")))
         }
         "javadebug" => {
@@ -338,6 +341,8 @@ pub async fn install_debugger(app: AppHandle, kind: String) -> Result<String, St
                 .ok_or("Version nicht gefunden")?
                 .to_string();
             let target = dir.join("java-debug");
+            // Old plugin jars would be loaded into jdtls next to the new one.
+            let _ = std::fs::remove_dir_all(&target);
             std::fs::create_dir_all(&target).map_err(|e| e.to_string())?;
             let jar = target.join(format!("com.microsoft.java.debug.plugin-{version}.jar"));
             crate::tools::download(&app, "javadebug", &format!("{base}/{version}/com.microsoft.java.debug.plugin-{version}.jar"), &jar)?;

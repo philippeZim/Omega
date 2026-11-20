@@ -227,6 +227,11 @@ pub fn pty_resize(app: AppHandle, id: String, cols: u16, rows: u16) -> Result<()
 
 /// Ends all terminals (frontend reload: its xterm instances are gone, so the shells – and e.g.
 /// a `claude` running in them – would otherwise keep running invisibly).
+/// Process ids of all terminal shells (for the keep-awake monitor).
+pub fn shell_pids(app: &AppHandle) -> Vec<u32> {
+    app.state::<PtyState>().sessions.lock().unwrap().values().filter_map(|s| s.child.process_id()).collect()
+}
+
 #[tauri::command]
 pub fn pty_kill_all(app: AppHandle) {
     let sessions: Vec<Session> = app.state::<PtyState>().sessions.lock().unwrap().drain().map(|(_, s)| s).collect();

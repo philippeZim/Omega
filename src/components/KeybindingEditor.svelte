@@ -1,6 +1,8 @@
 <script lang="ts">
   import Glyph from "./Glyph.svelte";
-  import { COMMANDS, keysFor, setKeys, keymapState, conflicts, resetAllKeys, recording } from "../lib/commands.svelte";
+  import Select from "./Select.svelte";
+  import { COMMANDS, keysFor, setKeys, keymapState, conflicts, resetAllKeys, recording, applyKeymap } from "../lib/commands.svelte";
+  import { KEYMAPS, type KeymapId } from "../lib/keymaps";
   import { bindingFromEvent, formatKey, normalize } from "../lib/keys";
   import { ui } from "../lib/ui.svelte";
   import { t } from "../lib/i18n/index.svelte";
@@ -59,6 +61,26 @@
     setKeys(id, keysFor(id).filter((k) => k !== key));
   }
 
+  /** "Studio" would read like Visual Studio, so the built-in keymap is shown as "Default". */
+  const keymapName = (id: KeymapId) => (id === "studio" ? t("commands.kb.presetDefault") : KEYMAPS.find((k) => k.id === id)!.name);
+
+  async function pickKeymap(id: KeymapId) {
+    const name = keymapName(id);
+    const custom = Object.keys(keymapState.overrides).length;
+    let keep = false;
+    if (custom) {
+      const r = await ui.choose(t("commands.kb.presetTitle", { name }), t("commands.kb.presetCustom", { n: custom, name }), [
+        { label: t("common.cancel"), value: "cancel" },
+        { label: t("commands.kb.presetKeep"), value: "keep" },
+        { label: t("commands.kb.presetReplace"), value: "replace", primary: true },
+      ]);
+      if (r !== "keep" && r !== "replace") return;
+      keep = r === "keep";
+    }
+    applyKeymap(id, keep);
+    ui.toast(t("commands.kb.presetApplied", { name }));
+  }
+
   async function resetAll() {
     if (await ui.confirm(t("commands.kb.resetAllConfirm"), t("commands.kb.resetAllDetail"), t("commands.kb.reset"), true)) resetAllKeys();
   }
@@ -68,6 +90,10 @@
 
 <div class="bar">
   <input placeholder={t("commands.kb.search")} bind:value={filter} spellcheck="false" />
+  <div class="preset" title={t("commands.kb.presetHint")}>
+    <span>{t("commands.kb.keymap")}</span>
+    <Select value={keymapState.preset} options={KEYMAPS.map((k) => ({ value: k.id, label: keymapName(k.id) }))} onchange={pickKeymap} />
+  </div>
   <button class="btn" onclick={resetAll}>{t("commands.kb.resetAll")}</button>
 </div>
 
@@ -98,7 +124,8 @@
 
 <style>
   .bar { display: flex; gap: 10px; margin: 6px 0 4px; }
-  .bar input { flex: 1; }
+  .bar input { flex: 1; min-width: 0; }
+  .preset { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--label-2); white-space: nowrap; }
   h3 { margin: 22px 2px 8px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--label-2); }
   .box { border-radius: 18px; background: rgba(var(--fg-rgb), 0.035); box-shadow: inset 0 1px 0 rgba(var(--hl-rgb), 0.04); padding: 4px; }
   .row { display: grid; grid-template-columns: minmax(0, 340px) 1fr; align-items: center; gap: 20px; min-height: 40px; padding: 4px 10px 4px 14px; border-radius: 12px; }

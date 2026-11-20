@@ -161,7 +161,7 @@
   .opt .tag.inst { color: var(--label-2); }
   .none { margin: 0; padding: 18px 10px; text-align: center; font-size: 12.5px; color: var(--label-3); }
   h2 { margin: 0; font-size: 15px; font-weight: 600; }
-  p { margin: 6px 0 0; font-size: 12.5px; color: var(--label-2); line-height: 1.4; }
+  p { margin: 6px 0 0; font-size: 12.5px; color: var(--label-2); line-height: 1.4; white-space: pre-line; max-height: 50vh; overflow-y: auto; }
   input { width: 100%; margin-top: 14px; }
   .buttons { display: grid; grid-template-columns: repeat(var(--n), 1fr); gap: 8px; padding: 0 14px 14px; }
   .buttons button { height: 38px; border-radius: 999px; font-size: 13.5px; font-weight: 500; background: rgba(var(--fg-rgb), 0.08); box-shadow: inset 0 1px 0 rgba(var(--hl-rgb), 0.06); }

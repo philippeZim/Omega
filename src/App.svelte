@@ -1,6 +1,5 @@
 <script lang="ts">
   import TopBar from "./components/TopBar.svelte";
-  import Sidebar from "./components/Sidebar.svelte";
   import TabBar from "./components/TabBar.svelte";
   import EditorPane from "./components/EditorPane.svelte";
   import Dialog from "./components/Dialog.svelte";
@@ -8,12 +7,15 @@
   import Toasts from "./components/Toasts.svelte";
   import ToolProgress from "./components/ToolProgress.svelte";
   import HelpPanel from "./components/HelpPanel.svelte";
+  import ReportDialog from "./components/ReportDialog.svelte";
+  import { report } from "./lib/report.svelte";
   import SettingsPanel from "./components/SettingsPanel.svelte";
   import { settings } from "./lib/settings.svelte";
-  import PdfPanel from "./components/PdfPanel.svelte";
-  import TerminalPanel from "./components/TerminalPanel.svelte";
+  import "./lib/power.svelte";
+  import DockZone from "./components/DockZone.svelte";
+  import DockOverlay from "./components/DockOverlay.svelte";
+  import { showView } from "./lib/layout.svelte";
   import NewProjectDialog from "./components/NewProjectDialog.svelte";
-  import DebugPanel from "./components/DebugPanel.svelte";
   import CommandPalette from "./components/CommandPalette.svelte";
   import FindInFiles from "./components/FindInFiles.svelte";
   import Tooltip from "./components/Tooltip.svelte";
@@ -26,8 +28,10 @@
   import { diffState, openDiff } from "./lib/git/diff.svelte";
   import { git, refresh as gitRefresh, startGitWatch } from "./lib/git/git.svelte";
   import { setGitGutterHooks, reloadGitHeads } from "./lib/git/gutter";
+  import { setBlameRoot, reloadBlame } from "./lib/git/blame.svelte";
 
   setGitGutterHooks({ root: () => git.top || app.root, menu: (e, items) => ui.openMenu(e, items), showDiff: openDiff });
+  setBlameRoot(() => git.top || app.root);
   startGitWatch();
   window.addEventListener("studio:saved", () => gitRefresh());
   $effect(() => {
@@ -37,9 +41,9 @@
   $effect(() => {
     void git.headVersion;
     reloadGitHeads();
+    reloadBlame();
   });
   import { find } from "./lib/search/search.svelte";
-  import { dbg } from "./lib/debug/store.svelte";
   import { setConditionHook } from "./lib/debug/editorExt";
   import { handleGlobalKey, palette } from "./lib/commands.svelte";
   import { app } from "./lib/state.svelte";
@@ -65,6 +69,14 @@
     }
   });
 
+
+  // Docking search results shows the search view.
+  $effect(() => {
+    if (find.showDocked) {
+      find.showDocked = false;
+      showView("search");
+    }
+  });
 </script>
 
 <!-- Capture phase: app shortcuts win over focused widgets except the editor, which handles its own first. -->
@@ -73,27 +85,18 @@
 <div class="shell">
   <TopBar />
   <div class="main">
-    {#if app.sidebar}
-      <Sidebar />
-    {/if}
+    <DockZone zone="left" />
     <div class="center">
       <section class="workspace glass">
         <TabBar />
         <EditorPane />
       </section>
-      <!-- Kept mounted in every mode so shell sessions survive mode switches. -->
-      <div class="term-slot" class:hidden={app.mode !== "code"}>
-        <TerminalPanel />
-      </div>
+      <DockZone zone="bottom" />
     </div>
-    {#if app.mode === "code" && dbg.panel}
-      <DebugPanel />
-    {/if}
-    {#if app.mode === "latex" && app.activeId}
-      <PdfPanel />
-    {/if}
+    <DockZone zone="right" />
   </div>
 </div>
+<DockOverlay />
 
 {#if ui.help}
   <HelpPanel />
@@ -111,6 +114,9 @@
   <CommandPalette />
 {/if}
 <NewProjectDialog />
+{#if report.open}
+  <ReportDialog />
+{/if}
 <Dialog />
 <ContextMenu />
 {#if collab.open}
@@ -135,13 +141,12 @@
   }
   .center {
     flex: 1;
-    min-width: 0;
+    /* Side panels (sidebar, PDF, debugger) give way before the editor column disappears. */
+    min-width: 320px;
     display: flex;
     flex-direction: column;
     gap: var(--gap);
   }
-  .term-slot { display: contents; }
-  .term-slot.hidden { display: none; }
   .workspace {
     flex: 1;
     min-height: 0;

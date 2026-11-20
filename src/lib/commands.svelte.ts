@@ -6,20 +6,25 @@
 import type { EditorView } from "@codemirror/view";
 import { candidates, normalize } from "./keys";
 import { EDITOR_COMMANDS, type CommandGroup } from "./editorCommands";
+import { KEYMAPS, type KeymapId } from "./keymaps";
 import { t, type Key } from "./i18n/index.svelte";
 import * as ed from "./editor";
 import { app, newFile, save, openFolder, closeTab, setMode, cycleTab, toggleSpell, reopenClosedTab } from "./state.svelte";
 import { ui } from "./ui.svelte";
+import { checkForUpdates } from "./updater.svelte";
+import { report } from "./report.svelte";
 import { settings, setSize } from "./settings.svelte";
 import { runner, runAction, stopRun } from "./code/runner.svelte";
 import * as debug from "./debug/debugger.svelte";
 import { dbg } from "./debug/store.svelte";
-import { terms, toggleTerminal, focusTerm, setTerminalKeyFilter } from "./terminal.svelte";
+import { setTerminalKeyFilter } from "./terminal.svelte";
+import { toggleZone, toggleFocus, showView, moveFocused, resetLayout } from "./layout.svelte";
 import { forwardSync } from "./latex/controller.svelte";
 import { openFind } from "./search/search.svelte";
 import { collab, startHosting, joinFromClipboard, approveNext, leave as leaveCollab } from "./collab/collab.svelte";
-import { push as gitPush, pull as gitPull, newBranch, cloneRepo, publishGitHub, refresh as gitRefresh, connectRemote, initRepo } from "./git/git.svelte";
+import { git, push as gitPush, pull as gitPull, newBranch, cloneRepo, publishGitHub, refresh as gitRefresh, connectRemote, initRepo } from "./git/git.svelte";
 import { activeTab } from "./state.svelte";
+import { blameSettings, setGitBlame } from "./git/blame.svelte";
 import type { Mode } from "./modes";
 
 export interface Command {
@@ -36,6 +41,11 @@ export interface Command {
   when?: () => boolean;
   /** Still active while the terminal has focus. */
   inTerminal?: boolean;
+  /**
+   * Hard-to-undo command: when triggered by a shortcut it asks first (resolves true to proceed) and it
+   * never fires from a text field. The palette and buttons run it directly.
+   */
+  confirmKey?: () => Promise<boolean>;
 }
 
 const debugging = () => dbg.status === "running" || dbg.status === "stopped" || dbg.status === "starting";
@@ -58,10 +68,12 @@ const APP_COMMANDS: CommandDef[] = [
   { id: "search.replaceInFiles", group: "search", keys: ["Mod-Shift-r"], run: () => openFind(true), inTerminal: true },
   { id: "app.help", group: "general", keys: ["F1"], run: () => (ui.help = !ui.help) },
   { id: "app.settings", group: "general", keys: ["Mod-Comma"], run: () => (settings.open = !settings.open) },
+  { id: "app.checkUpdates", group: "general", keys: [], run: () => checkForUpdates(true) },
+  { id: "app.report", group: "general", keys: [], run: () => (report.open = true), inTerminal: true },
   { id: "app.zoomIn", group: "general", keys: ["Mod-Plus", "Mod-="], run: () => setSize("uiScale", Math.min(1.5, +(settings.uiScale + 0.05).toFixed(2))), inTerminal: true },
   { id: "app.zoomOut", group: "general", keys: ["Mod-Hyphen"], run: () => setSize("uiScale", Math.max(0.75, +(settings.uiScale - 0.05).toFixed(2))), inTerminal: true },
   { id: "app.zoomReset", group: "general", keys: ["Mod-0"], run: () => setSize("uiScale", 1), inTerminal: true },
-  { id: "app.sidebar", group: "general", keys: ["Mod-b"], run: () => (app.sidebar = !app.sidebar) },
+  { id: "app.sidebar", group: "window", keys: ["Mod-b"], run: () => toggleZone("left"), inTerminal: true },
   { id: "app.spell", group: "general", keys: ["F7"], run: toggleSpell, when: () => !debugging() },
 
   { id: "file.new", group: "files", keys: ["Mod-n"], run: newFile },
@@ -75,18 +87,20 @@ const APP_COMMANDS: CommandDef[] = [
   { id: "tab.prev", group: "files", keys: ["Mod-Shift-Tab"], run: () => cycleTab(-1), inTerminal: true },
 
   { id: "git.commit", group: "git", keys: ["Mod-k"], run: () => {
-    app.sidebar = true;
-    app.sidebarView = "changes";
+    showView("changes");
     gitRefresh();
     requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>(".changes textarea")?.focus());
   } },
-  { id: "git.push", group: "git", keys: ["Mod-Shift-k"], run: () => gitPush() },
-  { id: "git.pull", group: "git", keys: ["Mod-t"], run: () => gitPull() },
+  { id: "git.push", group: "git", keys: ["Mod-Shift-k"], run: () => gitPush(), confirmKey: () =>
+    ui.confirm(t("git.confirmPushTitle", { ref: git.upstream ?? "origin/" + git.branch }), t("git.confirmPushBody"), "Push") },
+  { id: "git.pull", group: "git", keys: ["Mod-t"], run: () => gitPull(), confirmKey: () =>
+    ui.confirm(t("git.confirmPullTitle", { ref: git.upstream ?? "origin/" + git.branch }), t("git.confirmPullBody"), "Pull") },
   { id: "git.branch", group: "git", keys: [], run: () => newBranch() },
   { id: "git.clone", group: "git", keys: [], run: () => cloneRepo() },
   { id: "git.remote", group: "git", keys: [], run: () => connectRemote() },
   { id: "git.init", group: "git", keys: [], run: () => initRepo() },
   { id: "git.publish", group: "git", keys: [], run: () => publishGitHub() },
+  { id: "git.blame", group: "git", keys: [], run: () => setGitBlame(!blameSettings.enabled) },
   { id: "collab.open", group: "collab", keys: ["Mod-Shift-c"], run: () => (collab.open = !collab.open), inTerminal: false },
   { id: "collab.host", group: "collab", keys: [], run: () => { collab.open = true; startHosting(); } },
   { id: "collab.join", group: "collab", keys: [], run: () => joinFromClipboard() },
@@ -106,7 +120,17 @@ const APP_COMMANDS: CommandDef[] = [
     if (target) follow(target);
   } },
   { id: "collab.leave", group: "collab", keys: [], run: () => leaveCollab(), when: () => !!collab.role },
-  { id: "terminal.toggle", group: "terminal", keys: ["Mod-Backquote"], run: terminalToggle, inTerminal: true },
+  { id: "terminal.toggle", group: "terminal", keys: ["Mod-Backquote", "Alt-4"], run: () => toggleFocus("terminal"), inTerminal: true },
+  { id: "view.files", group: "window", keys: ["Alt-1"], run: () => toggleFocus("files"), inTerminal: true },
+  { id: "view.changes", group: "window", keys: ["Alt-2"], run: () => { toggleFocus("changes"); gitRefresh(); }, inTerminal: true },
+  { id: "view.outline", group: "window", keys: ["Alt-3"], run: () => toggleFocus("outline"), modes: ["latex"], inTerminal: true },
+  { id: "view.console", group: "window", keys: ["Alt-6"], run: () => toggleFocus("console"), inTerminal: true },
+  { id: "view.search", group: "window", keys: ["Alt-7"], run: () => toggleFocus("search"), inTerminal: true },
+  { id: "view.pdf", group: "window", keys: ["Alt-8"], run: () => toggleFocus("pdf"), modes: ["latex"], inTerminal: true },
+  { id: "layout.moveLeft", group: "window", keys: ["Mod-Alt-Shift-ArrowLeft"], run: () => moveFocused("left"), inTerminal: true },
+  { id: "layout.moveRight", group: "window", keys: ["Mod-Alt-Shift-ArrowRight"], run: () => moveFocused("right"), inTerminal: true },
+  { id: "layout.moveBottom", group: "window", keys: ["Mod-Alt-Shift-ArrowDown"], run: () => moveFocused("bottom"), inTerminal: true },
+  { id: "layout.reset", group: "window", keys: [], run: resetLayout },
 
   { id: "run.run", group: "run", keys: ["Shift-F10"], run: () => runAction(runner.project?.run), modes: ["code"] },
   { id: "run.build", group: "run", keys: ["Mod-F9"], run: () => runAction(runner.project?.build), modes: ["code"] },
@@ -117,7 +141,7 @@ const APP_COMMANDS: CommandDef[] = [
   { id: "debug.stepOver", group: "run", keys: ["F8"], run: debug.stepOver, when: debugging, inTerminal: true },
   { id: "debug.stepInto", group: "run", keys: ["F7"], run: debug.stepInto, when: debugging, inTerminal: true },
   { id: "debug.stepOut", group: "run", keys: ["Shift-F8"], run: debug.stepOut, when: debugging, inTerminal: true },
-  { id: "debug.panel", group: "run", keys: [], run: () => (dbg.panel = !dbg.panel), when: debugging },
+  { id: "debug.panel", group: "window", keys: ["Alt-5"], run: () => toggleFocus("debug"), when: () => dbg.status !== "idle", inTerminal: true },
 
   { id: "latex.sync", group: "latex", keys: ["Mod-j"], modes: ["latex"], run: () => {
     const v = ed.getView();
@@ -125,18 +149,6 @@ const APP_COMMANDS: CommandDef[] = [
   } },
 ];
 
-function terminalToggle(e?: unknown) {
-  if (app.mode !== "code") setMode("code");
-  const inTerminal = !!(document.activeElement as HTMLElement | null)?.closest?.(".xterm");
-  if (terms.visible && inTerminal) {
-    toggleTerminal();
-    ed.focus();
-  } else {
-    if (!terms.visible) toggleTerminal();
-    requestAnimationFrame(() => focusTerm());
-  }
-  void e;
-}
 
 /** Adds `label` / `group` getters so every consumer sees the current UI language. */
 function localized(c: Omit<Command, "label" | "group"> & { group: CommandGroup }): Command {
@@ -162,22 +174,74 @@ function loadOverrides(): Record<string, string[]> {
   }
 }
 
-export const keymapState = $state({ overrides: loadOverrides() });
+function loadPreset(): KeymapId {
+  const id = localStorage.getItem("keymap.preset");
+  return KEYMAPS.some((k) => k.id === id) ? (id as KeymapId) : "studio";
+}
+
+export const keymapState = $state({ overrides: loadOverrides(), preset: loadPreset() });
+
+const modesOverlap = (a: Command | undefined, b: Command) => !a?.modes || !b.modes || a.modes.some((m) => b.modes!.includes(m));
+
+const baseCache = new Map<KeymapId, Record<string, string[]>>();
+
+/** Keys of every command under a preset: its own entries, else Studio's defaults minus keys the preset gave to others. */
+function presetBase(id: KeymapId): Record<string, string[]> {
+  let base = baseCache.get(id);
+  if (base) return base;
+  const preset = KEYMAPS.find((k) => k.id === id)?.keys ?? {};
+  // Only keys a command newly gets count as claimed; clashes Studio already has (and resolves by scope) stay.
+  const claimed = COMMANDS.filter((c) => c.id in preset).map((c) => {
+    const own = c.keys.map(normalize);
+    return { c, keys: preset[c.id].map(normalize).filter((k) => !own.includes(k)) };
+  });
+  base = {};
+  for (const c of COMMANDS) {
+    if (c.id in preset) base[c.id] = preset[c.id].map(normalize);
+    else base[c.id] = c.keys.map(normalize).filter((k) => !claimed.some((p) => p.keys.includes(k) && modesOverlap(p.c, c)));
+  }
+  baseCache.set(id, base);
+  return base;
+}
+
+/** Keys of a command in the active preset, ignoring the user's own changes. */
+export function defaultKeysFor(id: string): string[] {
+  return presetBase(keymapState.preset)[id] ?? [];
+}
 
 export function keysFor(id: string): string[] {
-  const c = COMMANDS.find((x) => x.id === id);
-  return (keymapState.overrides[id] ?? c?.keys ?? []).map(normalize);
+  return (keymapState.overrides[id] ?? defaultKeysFor(id)).map(normalize);
+}
+
+function saveOverrides() {
+  if (Object.keys(keymapState.overrides).length) localStorage.setItem("keybindings", JSON.stringify(keymapState.overrides));
+  else localStorage.removeItem("keybindings");
 }
 
 export function setKeys(id: string, keys: string[] | null) {
   if (keys === null) delete keymapState.overrides[id];
   else keymapState.overrides[id] = keys.map(normalize);
-  localStorage.setItem("keybindings", JSON.stringify(keymapState.overrides));
+  saveOverrides();
 }
 
 export function resetAllKeys() {
   keymapState.overrides = {};
-  localStorage.removeItem("keybindings");
+  saveOverrides();
+}
+
+/** Switches to another IDE's keymap. `keepCustom`: the user's own bindings stay on top of it. */
+export function applyKeymap(id: KeymapId, keepCustom: boolean) {
+  keymapState.preset = id;
+  localStorage.setItem("keymap.preset", id);
+  if (!keepCustom) keymapState.overrides = {};
+  else {
+    // Overrides identical to the new preset's keys are no longer custom.
+    for (const [cid, keys] of Object.entries(keymapState.overrides)) {
+      const base = defaultKeysFor(cid);
+      if (keys.length === base.length && keys.every((k) => base.includes(k))) delete keymapState.overrides[cid];
+    }
+  }
+  saveOverrides();
 }
 
 /** Commands (other than `id`) that currently use `key` in an overlapping context. */
@@ -186,8 +250,7 @@ export function conflicts(id: string, key: string): Command[] {
   const k = normalize(key);
   return COMMANDS.filter((c) => {
     if (c.id === id || !keysFor(c.id).includes(k)) return false;
-    const modesOverlap = !self?.modes || !c.modes || self.modes.some((m) => c.modes!.includes(m));
-    return modesOverlap;
+    return modesOverlap(self, c);
   });
 }
 
@@ -195,10 +258,13 @@ function active(c: Command) {
   return (!c.modes || c.modes.includes(app.mode)) && (!c.when || c.when());
 }
 
+/** Commands with a `when` guard first, so a shared key (VS Code F5: continue while debugging, else start) picks the specific one. */
+const BY_PRIORITY = [...COMMANDS].sort((a, b) => Number(!a.when) - Number(!b.when));
+
 function find(e: KeyboardEvent, scope: Command["scope"] | null) {
   const cands = candidates(e).map(normalize);
   if (!cands.length) return null;
-  for (const c of COMMANDS) {
+  for (const c of BY_PRIORITY) {
     if (scope && c.scope !== scope) continue;
     if (!active(c)) continue;
     if (keysFor(c.id).some((k) => cands.includes(k))) return c;
@@ -232,12 +298,17 @@ export function handleGlobalKey(e: KeyboardEvent) {
   const inTerminal = !!(e.target as HTMLElement | null)?.closest?.(".xterm");
   const inInput = (e.target as HTMLElement | null)?.matches?.("input, textarea") ?? false;
   const c = find(e, "app");
-  if (!c) return;
+  if (!c) {
+    // Reload (F5 / Ctrl+R) would throw away never-saved files and running terminals.
+    if (!inTerminal && (e.key === "F5" || ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "r"))) e.preventDefault();
+    return;
+  }
   if (inTerminal && !c.inTerminal) return;
-  if (inInput && !e.ctrlKey && !e.altKey && !/^F\d+$/.test(e.key)) return;
+  if (inInput && (c.confirmKey || (!e.ctrlKey && !e.altKey && !/^F\d+$/.test(e.key)))) return;
   e.preventDefault();
   e.stopPropagation();
-  c.run();
+  if (c.confirmKey) c.confirmKey().then((ok) => ok && c.run());
+  else c.run();
 }
 
 /** Runs any command by id (palette). Editor commands target the active editor. */
@@ -266,4 +337,6 @@ function openPalette(tab: PaletteTab) {
 export const recording = $state({ active: false });
 
 ed.setKeyHandler(handleEditorKey);
-setTerminalKeyFilter((e) => !!find(e, "app")?.inTerminal);
+/** True if the key event is an app shortcut that also works while a terminal has focus. */
+export const isTerminalShortcut = (e: KeyboardEvent) => !!find(e, "app")?.inTerminal;
+setTerminalKeyFilter(isTerminalShortcut);

@@ -50,7 +50,11 @@
   function onKey(e: KeyboardEvent) {
     if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
       e.preventDefault();
-      commit(e.shiftKey || e.altKey);
+      const andPush = e.shiftKey || e.altKey;
+      if (!andPush) return commit(false);
+      // Shift/Alt held by accident must not publish the commit.
+      ui.confirm(t("git.confirmPushTitle", { ref: git.upstream ?? "origin/" + git.branch }), t("git.confirmPushBody"), "Commit & Push")
+        .then((ok) => { if (ok) commit(true); });
     }
   }
 </script>

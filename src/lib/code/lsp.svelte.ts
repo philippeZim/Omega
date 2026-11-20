@@ -404,6 +404,15 @@ export async function clientFor(
   return r;
 }
 
+/** Stops all running servers of `kind` (before it is updated or removed); they restart on demand. */
+export function stopServers(kind: ServerKind) {
+  for (const [key, c] of clients) if (c.kind === kind) {
+    c.stop();
+    clients.delete(key);
+    delete lspState.status[key];
+  }
+}
+
 export function allClients() {
   return [...clients.values()];
 }

@@ -6,6 +6,9 @@ import * as ed from "./editor";
 
 const num = (k: string, d: number) => Number(localStorage.getItem(k)) || d;
 
+/** Slider maximum of the prose width – means "no limit". */
+export const PROSE_WIDTH_FULL = 1800;
+
 export type Appearance = "dark" | "light";
 /** Panel material: the regular frosted glass, or the clearer, refractive "Liquid Glass". */
 export type Material = "solid" | "liquid";
@@ -19,6 +22,8 @@ export const settings = $state({
   syntaxTheme: "",
   codeFontSize: num("codeFontSize", 14),
   proseFontSize: num("proseFontSize", 16),
+  /** Max. column width in Text/Markdown mode; PROSE_WIDTH_FULL = whole editor width. */
+  proseWidth: num("proseWidth", 1000),
   terminalFontSize: num("terminalFontSize", 13),
   uiScale: num("uiScale", 1),
   open: false,
@@ -29,12 +34,13 @@ export function applySizes() {
   const root = document.documentElement.style;
   root.setProperty("--code-font-size", `${settings.codeFontSize}px`);
   root.setProperty("--prose-font-size", `${settings.proseFontSize}px`);
+  root.setProperty("--prose-width", settings.proseWidth >= PROSE_WIDTH_FULL ? "none" : `${settings.proseWidth}px`);
   setTerminalFontSize(settings.terminalFontSize);
   getCurrentWebview().setZoom(settings.uiScale).catch(() => {
     // Fallback if the zoom permission is unavailable.
     document.body.style.zoom = String(settings.uiScale);
   });
-  for (const k of ["codeFontSize", "proseFontSize", "terminalFontSize", "uiScale"] as const) localStorage.setItem(k, String(settings[k]));
+  for (const k of ["codeFontSize", "proseFontSize", "proseWidth", "terminalFontSize", "uiScale"] as const) localStorage.setItem(k, String(settings[k]));
   // CodeMirror caches line heights/char widths; a CSS-variable font change needs a re-measure,
   // otherwise the cursor keeps its old size until the next click or resize.
   requestAnimationFrame(() => {
@@ -46,7 +52,7 @@ export function applySizes() {
   });
 }
 
-export function setSize(key: "codeFontSize" | "proseFontSize" | "terminalFontSize" | "uiScale", value: number) {
+export function setSize(key: "codeFontSize" | "proseFontSize" | "proseWidth" | "terminalFontSize" | "uiScale", value: number) {
   settings[key] = value;
   applySizes();
 }

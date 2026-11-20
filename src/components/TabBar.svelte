@@ -1,6 +1,6 @@
 <script lang="ts">
   import Glyph from "./Glyph.svelte";
-  import { app, activate, closeTab, newFile } from "../lib/state.svelte";
+  import { app, activate, closeTab, newFile, foreignProject } from "../lib/state.svelte";
   import { ui } from "../lib/ui.svelte";
   import RunBar from "./RunBar.svelte";
   import { t } from "../lib/i18n/index.svelte";
@@ -9,6 +9,9 @@
     ui.openMenu(e, [
       { label: t("common.close"), shortcut: `${t("app.ctrl")}+W`, action: () => closeTab(id) },
       { label: t("app.closeOthers"), action: () => app.tabs.filter((x) => x.id !== id).forEach((x) => closeTab(x.id)) },
+      ...(app.tabs.some((x) => foreignProject(x))
+        ? [{ label: t("app.closeForeign"), action: () => app.tabs.filter((x) => foreignProject(x)).forEach((x) => closeTab(x.id)) }]
+        : []),
       ...(path ? [{ separator: true, label: "" }, { label: t("app.copyPath"), action: () => navigator.clipboard.writeText(path) }] : []),
     ]);
   }
@@ -17,9 +20,11 @@
 {#if app.tabs.length || app.mode === "code"}
   <div class="tabs">
     {#each app.tabs as tab (tab.id)}
+      {@const foreign = foreignProject(tab)}
       <div
         class="tab"
         class:active={tab.id === app.activeId}
+        class:foreign={!!foreign}
         role="tab"
         tabindex="0"
         aria-selected={tab.id === app.activeId}
@@ -27,8 +32,9 @@
         onkeydown={(e) => e.key === "Enter" && activate(tab.id)}
         onauxclick={(e) => e.button === 1 && closeTab(tab.id)}
         oncontextmenu={(e) => menu(e, tab.id, tab.path)}
-        title={tab.path ?? tab.name}
+        title={foreign ? `${tab.path}\n${t("app.foreignTab", { project: foreign })}` : (tab.path ?? tab.name)}
       >
+        {#if foreign}<span class="proj">{foreign}</span>{/if}
         <span class="name">{tab.name}</span>
         <button class="close" class:dirty={tab.dirty} onclick={(e) => { e.stopPropagation(); closeTab(tab.id); }} aria-label={t("common.close")}>
           <span class="x"><Glyph name="x" size={8} /></span><span class="d"></span>
@@ -66,6 +72,23 @@
   }
   .tab:hover { background: var(--fill-hover); color: var(--label); }
   .tab.active { background: rgba(var(--fg-rgb), 0.1); color: var(--label); box-shadow: inset 0 1px 0 rgba(var(--hl-rgb), 0.08); }
+  /* Tabs whose file isn't part of the open project (left over from a previous folder). */
+  .tab.foreign { padding-left: 5px; border: 1px dashed rgba(var(--fg-rgb), 0.16); }
+  .tab.foreign .name { font-style: italic; opacity: 0.7; }
+  .tab.foreign.active .name, .tab.foreign:hover .name { opacity: 0.9; }
+  .proj {
+    flex-shrink: 1;
+    min-width: 0;
+    max-width: 90px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    padding: 2px 7px;
+    border-radius: 999px;
+    font-size: 10.5px;
+    color: var(--label-2);
+    background: rgba(var(--fg-rgb), 0.08);
+  }
   .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .close {
     width: 18px;

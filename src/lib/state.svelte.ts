@@ -1,5 +1,5 @@
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
-import { basename, extname, fsApi, normPath } from "./api";
+import { basename, dirname, extname, fsApi, normPath } from "./api";
 import * as ed from "./editor";
 import { modeForExtension, type Mode } from "./modes";
 import { ui } from "./ui.svelte";
@@ -45,6 +45,8 @@ export interface Tab {
   path: string | null;
   name: string;
   dirty: boolean;
+  /** Project folder that was open when the tab was opened (for the "other project" hint). */
+  root?: string | null;
 }
 
 export const app = $state({
@@ -52,9 +54,6 @@ export const app = $state({
   root: localStorage.getItem("root") as string | null,
   tabs: [] as Tab[],
   activeId: null as string | null,
-  sidebar: true,
-  /** Sidebar tab: files / git changes / LaTeX outline */
-  sidebarView: "files" as "files" | "changes" | "outline",
   cursor: { line: 1, col: 1, selected: 0 },
   treeVersion: 0,
   spellEnabled: localStorage.getItem("spellEnabled") === "true",
@@ -99,6 +98,22 @@ export const collabHooks = {
   tabClosed: (_path: string | null) => {},
 };
 export const isRemotePath = (p: string | null | undefined) => !!p && p.startsWith("collab:");
+
+/** True if `path` lies inside the folder `root`. */
+export function inRoot(path: string, root: string | null): boolean {
+  if (!root) return false;
+  const r = root.endsWith("/") ? root : root + "/";
+  return path === root || path.startsWith(r);
+}
+
+/**
+ * For a tab whose file lies outside the open project: the name of the project (or folder) it
+ * belongs to, shown as a hint in the tab bar. Null for tabs of the current project.
+ */
+export function foreignProject(tab: Tab): string | null {
+  if (!tab.path || isRemotePath(tab.path) || !app.root || inRoot(tab.path, app.root)) return null;
+  return basename(tab.root && inRoot(tab.path, tab.root) ? tab.root : dirname(tab.path));
+}
 
 export const activeTab = () => app.tabs.find((t) => t.id === app.activeId) ?? null;
 
@@ -162,8 +177,14 @@ export async function syncFromDisk() {
 window.addEventListener("focus", () => syncFromDisk());
 document.addEventListener("visibilitychange", () => document.hidden && flushAutosave());
 getCurrentWindow()
-  .onCloseRequested(async () => {
+  .onCloseRequested(async (e) => {
     await flushAutosave();
+    // Files on disk are autosaved; only new files that never got a path would be lost.
+    const lost = app.tabs.filter((t) => t.dirty && !t.path);
+    if (!lost.length) return;
+    e.preventDefault();
+    const ok = await ui.confirm(t("app.quitUnsavedTitle", { n: lost.length }), t("app.quitUnsavedMessage"), t("app.quitAnyway"), true);
+    if (ok) await getCurrentWindow().destroy();
   })
   .catch(() => {});
 
@@ -231,7 +252,7 @@ export async function openFile(path: string) {
   }
   const id = uid();
   ed.createDoc(id, content);
-  app.tabs.push({ id, path, name: basename(path), dirty: false });
+  app.tabs.push({ id, path, name: basename(path), dirty: false, root: inRoot(path, app.root) ? app.root : null });
   const suggested = modeForExtension(extname(path));
   if (suggested && suggested !== app.mode) {
     app.mode = suggested;

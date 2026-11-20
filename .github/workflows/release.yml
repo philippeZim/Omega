@@ -57,6 +57,9 @@ jobs:
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Signs the update bundles; the app only installs updates signed with this key.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || 'v__VERSION__' }}
           releaseName: "Studio v__VERSION__"
@@ -64,7 +67,9 @@ jobs:
             Downloads below. The app is not code-signed, so the first launch shows a warning:
             - **Windows:** "More info" → "Run anyway".
             - **macOS:** right-click the app → Open, or run `xattr -cr /Applications/Studio.app`.
-            - **Linux:** `chmod +x Studio_*.AppImage` and run it, or install the .deb/.rpm.
+            - **Linux:** `chmod +x Studio_*.AppImage` and run it, or install the .deb/.rpm (only the AppImage updates itself).
+
+            Studio checks for updates on startup, so you only need to install it once.
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}

@@ -12,7 +12,6 @@
 
   pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
 
-  let width = $state(Number(localStorage.getItem("pdfWidth")) || 560);
   let zoom = $state(Number(localStorage.getItem("pdfZoom")) || 0); // 0 = fit width
   let scroller: HTMLDivElement;
   let pagesEl = $state<HTMLDivElement>()!;
@@ -166,18 +165,20 @@
     forwardSync(activeTab()?.path ?? null, line);
   }
 
-  function startResize(e: PointerEvent) {
-    const startX = e.clientX, startW = width;
-    const move = (ev: PointerEvent) => (width = Math.min(1400, Math.max(300, startW - (ev.clientX - startX))));
-    const up = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-      localStorage.setItem("pdfWidth", String(width));
-      if (zoom === 0) render();
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
-  }
+  // Fit-width zoom follows the panel width (dock zone resized or moved), debounced.
+  let rootEl = $state<HTMLDivElement>();
+  $effect(() => {
+    if (!rootEl) return;
+    let last = rootEl.clientWidth, timer = 0;
+    const ro = new ResizeObserver(() => {
+      if (!rootEl || rootEl.clientWidth === last) return;
+      last = rootEl.clientWidth;
+      clearTimeout(timer);
+      timer = window.setTimeout(() => zoom === 0 && render(), 150);
+    });
+    ro.observe(rootEl);
+    return () => { ro.disconnect(); clearTimeout(timer); };
+  });
 
   onDestroy(() => {
     renderSeq++;
@@ -186,8 +187,7 @@
 </script>
 
 
-<aside class="pdf glass" style="width: {width}px">
-  <div class="resizer" role="separator" onpointerdown={startResize}></div>
+<div class="pdf" bind:this={rootEl}>
   <div class="toolbar">
     <button class="status {latex.status}" onclick={() => (showLog = !showLog)} title={t("code.pdf.showLog")}>
       {#if latex.available === false}
@@ -280,17 +280,17 @@
       </div>
     </div>
   {/if}
-</aside>
+</div>
 
 <style>
   .pdf {
     position: relative;
-    flex-shrink: 0;
+    flex: 1;
+    min-height: 0;
     display: flex;
     flex-direction: column;
     overflow: hidden;
   }
-  .resizer { position: absolute; left: 0; top: 0; bottom: 0; width: 6px; cursor: col-resize; z-index: 5; }
   .toolbar {
     height: 50px;
     flex-shrink: 0;

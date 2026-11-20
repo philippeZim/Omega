@@ -5,12 +5,13 @@
   import { startDebugging, stopDebugging } from "../lib/debug/debugger.svelte";
   import { dbg } from "../lib/debug/store.svelte";
   import { langFor } from "../lib/code/languages";
-  import { terms, toggleTerminal, focusTerm } from "../lib/terminal.svelte";
+  import { focusTerm } from "../lib/terminal.svelte";
+  import { toggleView, isShown } from "../lib/layout.svelte";
   import { t } from "../lib/i18n/index.svelte";
 
   function terminal() {
-    toggleTerminal();
-    if (terms.visible) requestAnimationFrame(() => focusTerm());
+    toggleView("terminal");
+    if (isShown("terminal")) requestAnimationFrame(() => focusTerm());
   }
 
   const lang = $derived(langFor(activeTab()?.path ?? null));
@@ -102,11 +103,11 @@
   {/if}
 
   <div class="gcap">
-    <button class="gbtn icon" class:on={terms.visible} title={t("code.rb.toggleTerminal")} onclick={terminal} aria-label="Terminal">
+    <button class="gbtn icon" class:on={isShown("terminal")} title={t("code.rb.toggleTerminal")} onclick={terminal} aria-label="Terminal">
       <svg width="15" height="15" viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M4.5 6.2l2 1.8-2 1.8M8 10h3.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
     </button>
     {#if debugging}
-      <button class="gbtn icon appear" class:on={dbg.panel} title={t("code.rb.toggleDebugPanel")} onclick={() => (dbg.panel = !dbg.panel)} aria-label={t("code.rb.debugPanel")}>
+      <button class="gbtn icon appear" class:on={isShown("debug")} title={t("code.rb.toggleDebugPanel")} onclick={() => toggleView("debug")} aria-label={t("code.rb.debugPanel")}>
         <svg width="15" height="15" viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.3"/><line x1="10" y1="2.5" x2="10" y2="13.5" stroke="currentColor" stroke-width="1.3"/></svg>
       </button>
     {/if}

@@ -11,7 +11,6 @@
   import { openFile } from "../lib/state.svelte";
   import * as ed from "../lib/editor";
 
-  let width = $state(Number(localStorage.getItem("debugWidth")) || 380);
   let newWatch = $state("");
   let open = $state<Record<string, boolean>>(JSON.parse(localStorage.getItem("debugSections") || '{"vars":true,"watch":true,"stack":true,"bps":false}'));
 
@@ -23,18 +22,6 @@
   function toggleSection(k: string) {
     open[k] = !open[k];
     localStorage.setItem("debugSections", JSON.stringify(open));
-  }
-
-  function startResize(e: PointerEvent) {
-    const startX = e.clientX, startW = width;
-    const move = (ev: PointerEvent) => (width = Math.min(800, Math.max(280, startW - (ev.clientX - startX))));
-    const up = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-      localStorage.setItem("debugWidth", String(width));
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
   }
 
   async function gotoBp(p: string, line: number) {
@@ -52,8 +39,7 @@
 
 </script>
 
-<aside class="debug-panel glass" style="width: {width}px">
-  <div class="resizer" role="separator" onpointerdown={startResize}></div>
+<div class="debug-panel">
 
   <div class="toolbar">
     {#if !live}
@@ -93,12 +79,6 @@
         </button>
       </div>
     {/if}
-    <span class="spacer"></span>
-    <div class="gcap">
-      <button class="gbtn icon" title={t("code.dbg.closePanel")} onclick={() => (dbg.panel = false)} aria-label={t("common.close")}>
-        <svg width="10" height="10" viewBox="0 0 10 10"><path d="M1.5 1.5l7 7M8.5 1.5l-7 7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-      </button>
-    </div>
   </div>
 
   <div class="status {dbg.status}">
@@ -179,13 +159,11 @@
       </div>
     {/if}
   </div>
-</aside>
+</div>
 
 <style>
-  .debug-panel { position: relative; flex-shrink: 0; display: flex; flex-direction: column; overflow: hidden; }
-  .resizer { position: absolute; left: 0; top: 0; bottom: 0; width: 6px; cursor: col-resize; z-index: 5; }
+  .debug-panel { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
   .toolbar { height: 54px; flex-shrink: 0; display: flex; align-items: center; gap: 6px; padding: 0 10px; border-bottom: 1px solid rgba(var(--fg-rgb), 0.05); }
-  .spacer { flex: 1; }
   .status { display: flex; align-items: center; gap: 8px; padding: 10px 16px 6px; font-size: 12px; }
   .status .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--label-3); flex-shrink: 0; }
   .status.running .dot, .status.starting .dot { background: var(--green); animation: pulse 1.4s infinite; }

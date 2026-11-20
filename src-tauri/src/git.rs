@@ -115,3 +115,105 @@ pub async fn git_head_file(root: String, path: String) -> Result<Option<String>,
     .await
     .map_err(|e| e.to_string())?
 }
+
+#[derive(Serialize)]
+pub struct BlameCommit {
+    hash: String,
+    author: String,
+    mail: String,
+    /// Unix seconds (author time).
+    time: i64,
+    summary: String,
+}
+
+#[derive(Serialize)]
+pub struct Blame {
+    commits: Vec<BlameCommit>,
+    /// One entry per line: index into `commits`, or -1 for not yet committed lines.
+    lines: Vec<i32>,
+}
+
+/// `git blame` of a file. With `contents` the (unsaved) editor buffer is blamed instead of the
+/// file on disk, so line numbers always match the editor. None outside a repository / untracked.
+#[tauri::command]
+pub async fn git_blame(root: String, path: String, contents: Option<String>) -> Result<Option<Blame>, String> {
+    use std::io::Write;
+    use std::process::Stdio;
+    tauri::async_runtime::spawn_blocking(move || {
+        // Resolve the repository from the file's own folder (it may live outside the project).
+        let dir = std::path::Path::new(&path).parent().filter(|d| d.is_dir()).map(|d| d.to_string_lossy().to_string()).unwrap_or(root);
+        let top = git_cmd(&dir).args(["rev-parse", "--show-toplevel"]).output().map_err(|e| e.to_string())?;
+        if !top.status.success() {
+            return Ok(None);
+        }
+        let top = String::from_utf8_lossy(&top.stdout).trim().to_string();
+        let rel = std::path::Path::new(&path).strip_prefix(&top).map(|p| p.to_string_lossy().replace('\\', "/")).unwrap_or(path);
+        let mut cmd = git_cmd(&top);
+        cmd.args(["blame", "--porcelain"]);
+        if contents.is_some() {
+            cmd.args(["--contents", "-"]);
+        }
+        cmd.args(["--", &rel]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        let mut child = cmd.spawn().map_err(|e| format!("git: {e}"))?;
+        if let (Some(text), Some(mut stdin)) = (contents, child.stdin.take()) {
+            // Write from a thread: a large file could otherwise deadlock against a full stdout pipe.
+            std::thread::spawn(move || {
+                let _ = stdin.write_all(text.as_bytes());
+            });
+        } else {
+            drop(child.stdin.take());
+        }
+        let out = child.wait_with_output().map_err(|e| e.to_string())?;
+        if !out.status.success() {
+            return Ok(None);
+        }
+        Ok(Some(parse_blame(&String::from_utf8_lossy(&out.stdout))))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+fn parse_blame(s: &str) -> Blame {
+    let mut commits: Vec<BlameCommit> = Vec::new();
+    let mut index = std::collections::HashMap::<String, usize>::new();
+    let mut lines: Vec<(usize, i32)> = Vec::new();
+    let mut cur: Option<usize> = None;
+    let mut final_line = 0usize;
+    for l in s.lines() {
+        if l.starts_with('\t') {
+            if let Some(c) = cur {
+                let i = if commits[c].hash.bytes().all(|b| b == b'0') { -1 } else { c as i32 };
+                lines.push((final_line, i));
+            }
+            continue;
+        }
+        let mut parts = l.split(' ');
+        let first = parts.next().unwrap_or("");
+        if first.len() == 40 && first.bytes().all(|b| b.is_ascii_hexdigit()) {
+            final_line = parts.nth(1).and_then(|n| n.parse().ok()).unwrap_or(0);
+            let c = *index.entry(first.to_string()).or_insert_with(|| {
+                commits.push(BlameCommit { hash: first.to_string(), author: String::new(), mail: String::new(), time: 0, summary: String::new() });
+                commits.len() - 1
+            });
+            cur = Some(c);
+            continue;
+        }
+        let Some(c) = cur else { continue };
+        let rest = l.get(first.len() + 1..).unwrap_or("").to_string();
+        match first {
+            "author" => commits[c].author = rest,
+            "author-mail" => commits[c].mail = rest.trim_matches(|ch| ch == '<' || ch == '>').to_string(),
+            "author-time" => commits[c].time = rest.parse().unwrap_or(0),
+            "summary" => commits[c].summary = rest,
+            _ => {}
+        }
+    }
+    let n = lines.iter().map(|(l, _)| *l).max().unwrap_or(0);
+    let mut out = vec![-1; n];
+    for (l, i) in lines {
+        if l >= 1 {
+            out[l - 1] = i;
+        }
+    }
+    Blame { commits, lines: out }
+}

@@ -12,7 +12,7 @@
       { label: t("app.newBranch"), action: newBranch },
       { label: t("app.pull") + (git.behind ? t("app.behind", { n: git.behind }) : ""), shortcut: `${ctrl} T`, action: pull },
       { label: "Push" + (git.ahead ? t("app.ahead", { n: git.ahead }) : ""), shortcut: `${ctrl} ⇧ K`, action: push },
-      { label: t("app.showChanges"), shortcut: `${ctrl} K`, action: () => { app.sidebar = true; app.sidebarView = "changes"; } },
+      { label: t("app.showChanges"), shortcut: `${ctrl} K`, action: () => showView("changes") },
       { label: git.remoteUrl ? t("app.remoteChange", { url: git.remoteUrl.replace(/^https?:\/\/|^git@/, "").replace(/\.git$/, "") }) : t("app.connectRemote"), action: connectRemote },
       { separator: true, label: "" },
       ...b.local.map((n) => ({ label: (n === git.branch ? "✓  " : "     ") + n, action: () => n !== git.branch && switchBranch(n) })),
@@ -37,19 +37,27 @@
   }
   fsApi.homeDir().then((h) => localStorage.setItem("homeDir", h));
   import { ui } from "../lib/ui.svelte";
+  import { report } from "../lib/report.svelte";
   import { MODES } from "../lib/modes";
   import { basename } from "../lib/api";
   import { runner } from "../lib/code/runner.svelte";
   import { settings } from "../lib/settings.svelte";
   import { collab } from "../lib/collab/collab.svelte";
   import { share } from "../lib/collab/share.svelte";
+  import { focusTerm } from "../lib/terminal.svelte";
+  import { showView, toggleView, isShown, toggleZone, zoneShown } from "../lib/layout.svelte";
+
+  function toggleTerminalPanel() {
+    toggleView("terminal");
+    if (isShown("terminal")) requestAnimationFrame(() => focusTerm());
+  }
 
   const activeIndex = $derived(MODES.findIndex((m) => m.id === app.mode));
 </script>
 
 <header class="topbar">
   <div class="left">
-    <button class="ghost" title="{t('app.sidebar')} ({t('app.ctrl')}+B)" onclick={() => (app.sidebar = !app.sidebar)} aria-label={t("app.sidebar")}>
+    <button class="ghost" title="{t('app.sidebar')} ({t('app.ctrl')}+B)" class:on={zoneShown("left")} onclick={() => toggleZone("left")} aria-label={t("app.sidebar")}>
       <svg width="16" height="16" viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.3"/><line x1="6" y1="2.5" x2="6" y2="13.5" stroke="currentColor" stroke-width="1.3"/></svg>
     </button>
     <button class="title" onclick={projectMenu} title={app.root ?? t("app.openFolder")}>
@@ -84,6 +92,9 @@
   </div>
 
   <div class="right">
+    <button class="ghost help" class:on={isShown("terminal")} title={t("code.rb.toggleTerminal")} onclick={toggleTerminalPanel} aria-label="Terminal">
+      <svg width="16" height="16" viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M4.5 6.2l2 1.8-2 1.8M8 10h3.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
     <button class="ghost help collab" class:on={collab.open} class:live={!!collab.role} title={t("app.collab")} onclick={() => (collab.open = !collab.open)} aria-label={t("app.collab")}>
       {#if collab.role && collab.participants.length > 1}
         <span class="faces">
@@ -96,6 +107,9 @@
     </button>
     <button class="ghost help gear" class:on={settings.open} title={t("app.settings")} onclick={() => (settings.open = !settings.open)} aria-label={t("app.settings")}>
       <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+    </button>
+    <button class="ghost help" class:on={report.open} title={t("app.report.button")} onclick={() => (report.open = true)} aria-label={t("app.report.button")}>
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M12 7v4"/><path d="M12 14h.01"/></svg>
     </button>
     <button class="ghost help" class:on={ui.help} title={t("app.cheatSheet")} onclick={() => (ui.help = !ui.help)} aria-label={t("app.help")}>?</button>
   </div>

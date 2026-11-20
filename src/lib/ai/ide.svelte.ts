@@ -13,6 +13,7 @@ import { ui } from "../ui.svelte";
 import { t } from "../i18n/index.svelte";
 
 import { newTerminalWith, terms, focusTerm } from "../terminal.svelte";
+import { showView } from "../layout.svelte";
 import { basename } from "../api";
 
 
@@ -302,7 +303,7 @@ export function mentionSelection() {
     invoke("ide_notify", { method: "at_mentioned", params: { filePath: s.filePath, lineStart: s.selection.start.line, lineEnd: end } });
   } else return ui.toast(t("ai.noAgent"), "error");
   if (tid) terms.active = tid;
-  terms.visible = true;
+  showView("terminal");
   setTimeout(() => tid && focusTerm(tid), 50);
 }
 

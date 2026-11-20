@@ -16,6 +16,7 @@ import { langFor, indentFor } from "./code/languages";
 import { lspExtension } from "./code/lspExtension";
 import { debugExtension } from "./debug/editorExt";
 import { gitGutter } from "./git/gutter";
+import { gitBlame } from "./git/blame.svelte";
 import { t } from "./i18n/index.svelte";
 
 export type Mode = "text" | "markdown" | "latex" | "code";
@@ -38,9 +39,10 @@ export function modeForExtension(ext: string): Mode | null {
   return null;
 }
 
-/** Prose modes get a centered, readable column (like Obsidian's "readable line length"). */
+/** Prose modes get a centered, readable column (like Obsidian's "readable line length");
+ *  width is the "Text width" setting. */
 const proseLayout = EditorView.theme({
-  ".cm-content": { maxWidth: "760px", margin: "0 auto", padding: "48px 32px 40vh" },
+  ".cm-content": { maxWidth: "var(--prose-width, 1000px)", margin: "0 auto", padding: "48px 32px 40vh" },
 });
 
 const markdownLang = markdown({ base: markdownLanguage, codeLanguages: languages, extensions: [Highlight, InlineMath, BlockMath] });
@@ -66,6 +68,7 @@ export function modeExtensions(mode: Mode, rawPath: string | null): Extension {
     case "latex":
       return [
         EditorView.lineWrapping,
+        path ? gitBlame(path) : [],
         path ? gitGutter(path) : [],
         lineNumbers(),
         highlightActiveLineGutter(),
@@ -80,6 +83,7 @@ export function modeExtensions(mode: Mode, rawPath: string | null): Extension {
       const lang = langFor(rawPath);
       return [
         path && lang?.server ? debugExtension(path) : [],
+        path ? gitBlame(path) : [],
         path ? gitGutter(path) : [],
         lineNumbers(),
         highlightActiveLineGutter(),

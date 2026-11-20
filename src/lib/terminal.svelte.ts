@@ -8,6 +8,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import "@xterm/xterm/css/xterm.css";
 import { t } from "./i18n/index.svelte";
 import { q, cd, CLEAR_LINE, IS_MAC } from "./platform";
+import { showView, hideView, toggleView } from "./layout.svelte";
 
 /** Set by the command registry: true if the key is an app shortcut that should bypass the shell. */
 let terminalKeyFilter: (e: KeyboardEvent) => boolean = () => false;
@@ -22,12 +23,18 @@ export interface TermTab {
   exited: boolean;
 }
 
+// Where and whether the terminal view is shown is managed by layout.svelte.ts.
 export const terms = $state({
   tabs: [] as TermTab[],
   active: null as string | null,
-  height: Number(localStorage.getItem("termHeight")) || 260,
-  visible: localStorage.getItem("termVisible") !== "false",
+  /** true: all terminals side by side (sharing the space); false: one terminal at a time (tabs). */
+  split: localStorage.getItem("termSplit") === "true",
 });
+
+export function toggleSplit() {
+  terms.split = !terms.split;
+  localStorage.setItem("termSplit", String(terms.split));
+}
 
 export interface ShellInfo {
   id: string;
@@ -56,8 +63,17 @@ interface Instance {
   pending: string[];
   /** Directory the last run command cd'ed into (avoids repeating long cd prefixes). */
   runDir?: string | null;
+  /** `pathGen` when the shell was spawned – its environment (PATH) is fixed from then on. */
+  gen?: number;
 }
 const instances = new Map<string, Instance>();
+
+/** Bumped whenever the effective PATH changes (a tool was installed), see `pathChanged`. */
+let pathGen = 0;
+/** Marks running shells as stale: the Run terminal is restarted before its next command. */
+export function pathChanged() {
+  pathGen++;
+}
 let counter = 1;
 
 const decoder = new Map<string, TextDecoder>();
@@ -170,7 +186,7 @@ export function newTerminal(cwd: string | null, kind: "shell" | "run" = "shell",
   terms.tabs.push({ id, title: title ?? (kind === "run" ? t("common.run") : shell ? shell.label : `Terminal ${n}`), kind, exited: false });
   counter++;
   terms.active = id;
-  terms.visible = true;
+  showView("terminal");
   return id;
 }
 
@@ -186,6 +202,7 @@ export async function attach(id: string, container: HTMLElement, cwdFallback: st
   fitTerm(id);
   if (!inst.spawned) {
     inst.spawned = true;
+    inst.gen = pathGen;
     await leftoversKilled;
     await invoke("pty_spawn", { id, cwd: inst.cwd ?? cwdFallback, cols: inst.term.cols, rows: inst.term.rows, kind: inst.kind, shell: inst.shell });
     for (const p of inst.pending) await invoke("pty_write", { id, data: p });
@@ -208,7 +225,8 @@ export function focusTerm(id = terms.active) {
   if (id) instances.get(id)?.term.focus();
 }
 
-export function closeTerminal(id: string) {
+/** Kills a session and removes its tab; returns the tab's former index. */
+function discardTerminal(id: string): number {
   invoke("pty_kill", { id });
   instances.get(id)?.term.dispose();
   instances.get(id)?.el.remove();
@@ -216,21 +234,35 @@ export function closeTerminal(id: string) {
   decoder.delete(id);
   const i = terms.tabs.findIndex((t) => t.id === id);
   terms.tabs.splice(i, 1);
+  return i;
+}
+
+export function closeTerminal(id: string) {
+  const i = discardTerminal(id);
   if (terms.active === id) terms.active = terms.tabs[Math.max(0, i - 1)]?.id ?? null;
   // Closing the last terminal hides the panel instead of spawning a new shell.
-  if (!terms.tabs.length && terms.visible) toggleTerminal();
+  if (!terms.tabs.length) hideView("terminal");
 }
 
 /** Runs a command in the shared "Run" terminal (created on demand) so programs stay interactive. */
 export function runCommand(cmd: string, cwd: string | null, title = t("common.run"), focus = true) {
   let tab = terms.tabs.find((t) => t.kind === "run" && !t.exited);
+  // A shell spawned before a tool install doesn't see the new PATH: replace it, same tab position.
+  let at = -1;
+  const old = tab && instances.get(tab.id);
+  if (tab && old?.spawned && (old.gen ?? 0) < pathGen) {
+    at = terms.tabs.indexOf(tab);
+    discardTerminal(tab.id);
+    tab = undefined;
+  }
   if (!tab) {
     const id = newTerminal(cwd, "run", title);
     tab = terms.tabs.find((t) => t.id === id)!;
+    if (at >= 0) terms.tabs.splice(at, 0, ...terms.tabs.splice(terms.tabs.indexOf(tab), 1));
   }
   tab.title = title;
   terms.active = tab.id;
-  terms.visible = true;
+  showView("terminal");
   const inst = instances.get(tab.id)!;
   inst.runDir ??= inst.cwd;
   // Ctrl+U (Esc in cmd.exe) clears whatever is typed at the prompt; cd only when the project dir changed.
@@ -251,14 +283,8 @@ export function interruptRun() {
 /** Quotes for the Run terminal's shell (POSIX sh, or cmd.exe on Windows). */
 export const shellQuote = q;
 
-export function setHeight(h: number) {
-  terms.height = h;
-  localStorage.setItem("termHeight", String(h));
-}
-
 export function toggleTerminal() {
-  terms.visible = !terms.visible;
-  localStorage.setItem("termVisible", String(terms.visible));
+  toggleView("terminal");
 }
 
 /** Last `lines` lines of a terminal's buffer (for the control MCP). */
