@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 import { KEYMAPS } from "./keymaps";
 import { formatKey, normalize } from "./keys";
 import { dictionaries } from "./i18n/strings";
-import { COMMANDS, applyKeymap, conflicts, defaultKeysFor, handleGlobalKey, keymapState, keysFor, modeNames, resetAllKeys, setKeys, shortcutLabel, withShortcut } from "./commands.svelte";
+import { COMMANDS, applyKeymap, conflicts, defaultKeysFor, handleGlobalKey, keymapState, keysFor, modeNames, modeSwitchLabel, resetAllKeys, setKeys, shortcutLabel, withShortcut } from "./commands.svelte";
 import { toggleZone } from "./layout.svelte";
 import { settings } from "./settings.svelte";
 const { stub } = vi.hoisted(() => {
@@ -187,5 +187,20 @@ describe("shortcutLabel / withShortcut", () => {
     expect(shortcutLabel("mode.markdown")).toBe("");
     expect(withShortcut("Markdown", "mode.markdown")).toBe("Markdown");
     expect(withShortcut("Sidebar", "app.sidebar")).toBe(`Sidebar (${formatKey("Mod-b")})`);
+  });
+});
+
+describe("modeSwitchLabel (#140)", () => {
+  beforeEach(() => {
+    applyKeymap("omega", false);
+    resetAllKeys();
+  });
+
+  test("compact for the usual run, each key otherwise, empty when unbound", () => {
+    expect(modeSwitchLabel()).toBe(`${formatKey("Mod-1")} – 4`);
+    setKeys("mode.latex", ["Alt-F3"]);
+    expect(modeSwitchLabel()).toBe(["Mod-1", "Mod-2", "Alt-F3", "Mod-4"].map(formatKey).join(" / "));
+    for (const m of ["text", "markdown", "latex", "code"]) setKeys(`mode.${m}`, []);
+    expect(modeSwitchLabel()).toBe("");
   });
 });

@@ -235,6 +235,14 @@ export function shortcutLabel(id: string): string {
   return keysFor(id).map(formatKey).join(" / ");
 }
 
+/** Shortcuts of the four mode commands for hints: "Ctrl 1 – 4" for the usual run, else each first key ("" if none is bound). */
+export function modeSwitchLabel(): string {
+  const keys = MODES.map((m) => keysFor(`mode.${m.id}`)[0]);
+  const prefix = keys[0]?.replace(/1$/, "");
+  if (prefix && keys[0] !== prefix && keys.every((k, i) => k === `${prefix}${i + 1}`)) return `${formatKey(keys[0]!)} – ${keys.length}`;
+  return keys.filter((k): k is string => !!k).map(formatKey).join(" / ");
+}
+
 /** Tooltip text with the current shortcut appended, e.g. "Sidebar (Ctrl B)". */
 export function withShortcut(text: string, id: string): string {
   const s = shortcutLabel(id);

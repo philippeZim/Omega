@@ -10,6 +10,7 @@ vi.mock("../lib/state.svelte", async () => ({
   foreignProject: () => null,
 }));
 vi.mock("./RunBar.svelte", () => ({ default: () => {} }));
+vi.mock("../lib/commands.svelte", () => ({ shortcutLabel: () => "Ctrl W", withShortcut: (s: string) => s }));
 
 const { app } = await import("./TabBar.fixture.svelte");
 const { default: TabBar } = await import("./TabBar.svelte");

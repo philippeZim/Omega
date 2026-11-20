@@ -13,6 +13,7 @@
   import { selectAll } from "@codemirror/commands";
   import { runner } from "../lib/code/runner.svelte";
   import { t } from "../lib/i18n/index.svelte";
+  import { modeSwitchLabel, shortcutLabel } from "../lib/commands.svelte";
 
   let host: HTMLDivElement;
   onMount(() => ed.mount(host));
@@ -59,6 +60,13 @@
   }
 
   const modeLabel = $derived(MODES.find((m) => m.id === app.mode)?.label);
+  /** Hints follow the configured keymap; unbound commands are left out. */
+  const newKey = $derived(shortcutLabel("file.new"));
+  const openKey = $derived(shortcutLabel("file.openFolder"));
+  const hint = $derived.by(() => {
+    const modes = modeSwitchLabel(), help = shortcutLabel("app.help");
+    return [modes && t("code.ed.hintModes", { keys: modes }), help && t("code.ed.hintHelp", { key: help })].filter(Boolean).join(" · ");
+  });
 </script>
 
 <div class="pane">
@@ -68,11 +76,11 @@
       <div class="inner">
       <h1>{modeLabel}</h1>
       <div class="actions">
-        <button class="btn" onclick={newFile}>{t("code.ed.newFile")} <kbd>{IS_MAC ? "⌘" : t("code.key.ctrl")} N</kbd></button>
-        <button class="btn" onclick={openFolder}>{t("code.ed.openFolder")} <kbd>{IS_MAC ? "⌘" : t("code.key.ctrl")} O</kbd></button>
+        <button class="btn" onclick={newFile}>{t("code.ed.newFile")}{#if newKey} <kbd>{newKey}</kbd>{/if}</button>
+        <button class="btn" onclick={openFolder}>{t("code.ed.openFolder")}{#if openKey} <kbd>{openKey}</kbd>{/if}</button>
         {#if app.mode === "code"}<button class="btn primary" onclick={() => (runner.newProject = true)}>{t("code.np.newProject")}</button>{/if}
       </div>
-      <p class="hint">{t("code.ed.hint")}</p>
+      {#if hint}<p class="hint">{hint}</p>{/if}
       </div>
     </div>
   {/if}

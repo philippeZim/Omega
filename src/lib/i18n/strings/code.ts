@@ -205,7 +205,8 @@ export const en = {
   "code.ed.selectAll": "Select All",
   "code.ed.newFile": "New File",
   "code.ed.openFolder": "Open Folder",
-  "code.ed.hint": "Switch modes with Ctrl 1 – 4 · Cheat sheet with F1",
+  "code.ed.hintModes": "Switch modes with {keys}",
+  "code.ed.hintHelp": "Cheat sheet with {key}",
 
   // PDF panel
   "code.pdf.showLog": "Show log / errors",
@@ -436,7 +437,8 @@ export const de: Record<keyof typeof en, string> = {
   "code.ed.selectAll": "Alles auswählen",
   "code.ed.newFile": "Neue Datei",
   "code.ed.openFolder": "Ordner öffnen",
-  "code.ed.hint": "Modus wechseln mit Strg 1 – 4 · Cheat Sheet mit F1",
+  "code.ed.hintModes": "Modus wechseln mit {keys}",
+  "code.ed.hintHelp": "Cheat Sheet mit {key}",
 
   "code.pdf.showLog": "Log / Fehler anzeigen",
   "code.pdf.tectonicMissing": "Tectonic fehlt",
@@ -666,7 +668,8 @@ export const fr: Record<keyof typeof en, string> = {
   "code.ed.selectAll": "Tout sélectionner",
   "code.ed.newFile": "Nouveau fichier",
   "code.ed.openFolder": "Ouvrir un dossier",
-  "code.ed.hint": "Changer de mode avec Ctrl 1 – 4 · Aide-mémoire avec F1",
+  "code.ed.hintModes": "Changer de mode avec {keys}",
+  "code.ed.hintHelp": "Aide-mémoire avec {key}",
 
   "code.pdf.showLog": "Afficher le journal / les erreurs",
   "code.pdf.tectonicMissing": "Tectonic manquant",
