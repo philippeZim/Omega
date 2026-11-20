@@ -117,28 +117,7 @@ pub fn search_text(app: AppHandle, id: u64, root: String, opts: SearchOptions) -
 
     std::thread::spawn(move || {
         let cancelled = || CURRENT.load(Ordering::SeqCst) != id;
-        let root_path = std::path::PathBuf::from(&root);
-        let mut paths: Vec<std::path::PathBuf> = Vec::new();
-        if opts.files.is_empty() {
-            let walker = ignore::WalkBuilder::new(&root)
-                .hidden(true)
-                .git_ignore(true)
-                .git_global(true)
-                .parents(true)
-                .require_git(false)
-                .filter_entry(|e| !(e.file_type().is_some_and(|t| t.is_dir()) && SKIP_DIRS.contains(&e.file_name().to_string_lossy().as_ref())))
-                .build();
-            for entry in walker.flatten() {
-                if cancelled() {
-                    return;
-                }
-                if entry.file_type().is_some_and(|t| t.is_file()) {
-                    paths.push(entry.into_path());
-                }
-            }
-        } else {
-            paths = opts.files.iter().map(std::path::PathBuf::from).collect();
-        }
+        let Some(paths) = candidates(&root, &opts, &inc, &exc, &cancelled) else { return };
 
         let (mut total, mut files_with_hits, mut truncated) = (0usize, 0usize, false);
         let mut batch: Vec<Hit> = Vec::new();
@@ -147,24 +126,7 @@ pub fn search_text(app: AppHandle, id: u64, root: String, opts: SearchOptions) -
             if cancelled() {
                 return;
             }
-            // Globs use "/" (also on Windows).
-            let rel = crate::env::norm(path.strip_prefix(&root_path).unwrap_or(&path));
-            let rel = rel.as_str();
-            if let Some(i) = &inc {
-                if !i.is_match(rel) {
-                    continue;
-                }
-            }
-            if let Some(x) = &exc {
-                if x.is_match(rel) {
-                    continue;
-                }
-            }
-            let Ok(bytes) = std::fs::read(&path) else { continue };
-            if bytes.len() > 8 * 1024 * 1024 || bytes[..bytes.len().min(8000)].contains(&0) {
-                continue; // binary or huge
-            }
-            let Ok(text) = String::from_utf8(bytes) else { continue };
+            let Some(text) = read_text(&path) else { continue };
             let (hits, t) = match_text(&re, &crate::env::norm(&path), &text, &mut total, opts.max_results);
             if !hits.is_empty() {
                 files_with_hits += 1;
@@ -187,6 +149,65 @@ pub fn search_text(app: AppHandle, id: u64, root: String, opts: SearchOptions) -
     Ok(id)
 }
 
+/// The files a search looks at: every non-ignored file under `root` (or `opts.files`), filtered by
+/// the mask. `None` if the search was cancelled while walking.
+fn candidates(root: &str, opts: &SearchOptions, inc: &Option<GlobSet>, exc: &Option<GlobSet>, cancelled: &dyn Fn() -> bool) -> Option<Vec<std::path::PathBuf>> {
+    let root_path = std::path::Path::new(root);
+    let mut paths: Vec<std::path::PathBuf> = Vec::new();
+    if opts.files.is_empty() {
+        let walker = ignore::WalkBuilder::new(root)
+            .hidden(true)
+            .git_ignore(true)
+            .git_global(true)
+            .parents(true)
+            .require_git(false)
+            .filter_entry(|e| !(e.file_type().is_some_and(|t| t.is_dir()) && SKIP_DIRS.contains(&e.file_name().to_string_lossy().as_ref())))
+            .build();
+        for entry in walker.flatten() {
+            if cancelled() {
+                return None;
+            }
+            if entry.file_type().is_some_and(|t| t.is_file()) {
+                paths.push(entry.into_path());
+            }
+        }
+    } else {
+        paths = opts.files.iter().map(std::path::PathBuf::from).collect();
+    }
+    paths.retain(|path| {
+        // Globs use "/" (also on Windows).
+        let rel = crate::env::norm(path.strip_prefix(root_path).unwrap_or(path));
+        inc.as_ref().is_none_or(|i| i.is_match(rel.as_str())) && !exc.as_ref().is_some_and(|x| x.is_match(rel.as_str()))
+    });
+    Some(paths)
+}
+
+/// The file's text, or `None` for unreadable, binary, huge or non-UTF-8 files (never searched).
+fn read_text(path: &std::path::Path) -> Option<String> {
+    let bytes = std::fs::read(path).ok()?;
+    if bytes.len() > 8 * 1024 * 1024 || bytes[..bytes.len().min(8000)].contains(&0) {
+        return None;
+    }
+    String::from_utf8(bytes).ok()
+}
+
+/// Every file in the search scope with at least one match, without a result cap (Replace All
+/// when the hit list was truncated).
+fn matching_files(root: &str, opts: &SearchOptions) -> Result<Vec<String>, String> {
+    if opts.query.is_empty() {
+        return Ok(Vec::new());
+    }
+    let re = build_regex(&opts.query, opts.case_sensitive, opts.whole_word, opts.regex).map_err(|e| e.to_string())?;
+    let (inc, exc) = build_mask(&opts.mask)?;
+    let paths = candidates(root, opts, &inc, &exc, &|| false).unwrap_or_default();
+    Ok(paths.iter().filter(|p| read_text(p).is_some_and(|t| re.find_iter(&t).any(|m| m.end() > m.start()))).map(|p| crate::env::norm(p)).collect())
+}
+
+#[tauri::command]
+pub async fn search_files(root: String, opts: SearchOptions) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || matching_files(&root, &opts)).await.map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 pub fn search_cancel() {
     CURRENT.store(0, Ordering::SeqCst);
@@ -204,6 +225,20 @@ mod tests {
 
     fn ranges(hits: &[Hit]) -> Vec<(usize, Vec<(usize, usize)>)> {
         hits.iter().map(|h| (h.line, h.ranges.clone())).collect()
+    }
+
+    #[test]
+    fn matching_files_has_no_cap_and_respects_the_mask() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("big.log"), "line 1\n".repeat(10_000)).unwrap();
+        std::fs::write(dir.path().join("late.txt"), "a line\n").unwrap();
+        std::fs::write(dir.path().join("skip.md"), "line\n").unwrap();
+        std::fs::write(dir.path().join("none.txt"), "nothing\n").unwrap();
+        let opts = SearchOptions { query: "line".into(), case_sensitive: false, whole_word: false, regex: false, mask: "!*.md".into(), files: vec![], max_results: 5 };
+        let mut files = matching_files(&crate::env::norm(dir.path()), &opts).unwrap();
+        files.sort();
+        let names: Vec<&str> = files.iter().map(|f| f.rsplit('/').next().unwrap()).collect();
+        assert_eq!(names, ["big.log", "late.txt"]);
     }
 
     #[test]

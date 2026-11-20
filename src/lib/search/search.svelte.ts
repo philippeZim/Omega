@@ -82,6 +82,12 @@ function searchRoot() {
   return app.root ?? (app.tabs.find((t) => t.path)?.path ? dirname(app.tabs.find((t) => t.path)!.path!) : null);
 }
 
+/** Backend search options for the current query, scope and mask. */
+function searchOpts() {
+  const files = find.scope === "open" ? app.tabs.filter((t) => t.path).map((t) => t.path!) : [];
+  return { query: find.query, caseSensitive: find.caseSensitive, wholeWord: find.wholeWord, regex: find.regex, mask: find.mask, files, maxResults: 5000 };
+}
+
 let timer: number | undefined;
 /** Debounced like PyCharm (100 ms). */
 export function runSearch(delay = 100) {
@@ -101,17 +107,13 @@ export function runSearch(delay = 100) {
       return;
     }
     find.running = true;
-    const files = find.scope === "open" ? app.tabs.filter((t) => t.path).map((t) => t.path!) : [];
-    if (find.scope === "open" && !files.length) {
+    const opts = searchOpts();
+    if (find.scope === "open" && !opts.files.length) {
       find.running = false;
       return;
     }
     currentId = nextSearchId();
-    await invoke<number>("search_text", {
-      id: currentId,
-      root,
-      opts: { query: find.query, caseSensitive: find.caseSensitive, wholeWord: find.wholeWord, regex: find.regex, mask: find.mask, files, maxResults: 5000 },
-    });
+    await invoke<number>("search_text", { id: currentId, root, opts });
   }, delay);
 }
 
@@ -209,8 +211,18 @@ export function matchSummary(total: number, files: number, suffix = ""): string 
 const filesLabel = (n: number) => t(n === 1 ? "git.search.fileOne" : "git.search.fileMany", { n });
 
 export async function replaceAll() {
-  const files = [...new Set(find.hits.map((h) => h.file))];
+  let files = [...new Set(find.hits.map((h) => h.file))];
   if (!files.length) return;
+  // The hit list stops at the cap: ask the backend for every file with a match, so none is skipped.
+  const root = searchRoot();
+  if (find.truncated && root) {
+    try {
+      files = await invoke<string[]>("search_files", { root, opts: searchOpts() });
+    } catch (e) {
+      ui.toast(String(e), "error");
+      return;
+    }
+  }
   const ok = await ui.confirm(t("git.search.replaceAllTitle"), t("git.search.replaceAllBody", { summary: matchSummary(find.total, files.length, find.truncated ? "+" : ""), text: find.replacement }), t("git.search.replaceAll"), true);
   if (!ok) return;
   let n = 0;
