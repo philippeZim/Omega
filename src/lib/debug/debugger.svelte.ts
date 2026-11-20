@@ -1,4 +1,5 @@
 /** Debug controller: drives DAP sessions and keeps the shared store in sync. */
+import { backendErrorText } from "../backendError";
 import { DapSession } from "./dap";
 import { planFor, type Plan } from "./adapters";
 import { dbg, dbgHooks, saveWatches, type Frame, type VarNode } from "./store.svelte";
@@ -145,7 +146,7 @@ export async function startDebugging() {
       askInstall: (name) => ui.confirm(t("code.dbg.installTitle"), t("code.dbg.installMsg", { name }), t("code.install")),
     });
   } catch (e) {
-    log(String(e instanceof Error ? e.message : e), "error");
+    log(backendErrorText(e), "error");
     dbg.status = "terminated";
     dbg.label = t("code.dbg.startFailed");
     return;
@@ -169,7 +170,7 @@ export async function startDebugging() {
     dbg.status = "running";
     await launchSession(s, "launch", plan.launch);
   } catch (e) {
-    log(t("code.dbg.debugStartFailed", { err: String(e instanceof Error ? e.message : e) }), "error");
+    log(t("code.dbg.debugStartFailed", { err: backendErrorText(e) }), "error");
     await stopDebugging();
   }
 }

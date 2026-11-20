@@ -1,4 +1,5 @@
 /** Minimal LSP client: one server process per (server kind, project root), full-text document sync. */
+import { backendErrorText } from "../backendError";
 import { invoke } from "@tauri-apps/api/core";
 import { onRpc } from "../rpc";
 import { t } from "../i18n/index.svelte";
@@ -442,8 +443,8 @@ export async function clientFor(
         await withInstallProgress(serverProgressId(kind), name, () => invoke("install_server", { kind }));
       } catch (e) {
         lspState.status[key] = "error";
-        lspState.message[key] = String(e);
-        ui.toast(t("code.lsp.installFailed", { err: String(e) }), "error");
+        lspState.message[key] = backendErrorText(e);
+        ui.toast(t("code.lsp.installFailed", { err: backendErrorText(e) }), "error");
         return null;
       }
       cmd = await resolveCommand(kind, root);
@@ -459,7 +460,7 @@ export async function clientFor(
       const exited = !c.alive;
       if (c.current) {
         lspState.status[key] = "error";
-        if (!exited) lspState.message[key] = String(e);
+        if (!exited) lspState.message[key] = backendErrorText(e);
         clients.delete(key);
       }
       if (!exited) ui.toast(t("code.lsp.startFailed", { kind, err: String(e) }), "error");

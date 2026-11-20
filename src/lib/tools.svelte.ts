@@ -3,6 +3,7 @@
  * offers to install what's missing into Omega's app folder (see src-tauri/src/tools.rs), so the
  * same features work on Windows, macOS and Linux without manual setup.
  */
+import { backendErrorText } from "./backendError";
 import { invoke } from "@tauri-apps/api/core";
 import { pathChanged } from "./terminal.svelte";
 import { listen } from "@tauri-apps/api/event";
@@ -99,7 +100,7 @@ export async function installTool(id: ToolId): Promise<boolean> {
   } catch (e) {
     const err = String(e);
     if (err.includes("XCODE_CLT")) await ui.confirm(t("tools.xcodeTitle"), t("tools.xcodeMsg"), t("common.ok"));
-    else ui.toast(t("tools.failed", { name: info.label, err }), "error");
+    else ui.toast(t("tools.failed", { name: info.label, err: backendErrorText(err) }), "error");
     return false;
   } finally {
     delete toolState.installing[id];

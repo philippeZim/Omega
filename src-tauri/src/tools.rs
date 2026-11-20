@@ -70,7 +70,7 @@ fn get_json(url: &str) -> Result<Value, String> {
 
 /// Streams `url` into `out`, emitting `tool-progress`; returns the final URL (after redirects).
 pub fn download(app: &AppHandle, id: &str, url: &str, out: &Path) -> Result<String, String> {
-    let resp = agent().get(url).call().map_err(|e| format!("Download fehlgeschlagen ({url}): {e}"))?;
+    let resp = agent().get(url).call().map_err(|e| format!("tools:download_failed:{url}: {e}"))?;
     let final_url = resp.get_url().to_string();
     let total: u64 = resp.header("Content-Length").and_then(|v| v.parse().ok()).unwrap_or(0);
     let mut reader = resp.into_reader();
@@ -78,7 +78,7 @@ pub fn download(app: &AppHandle, id: &str, url: &str, out: &Path) -> Result<Stri
     let mut buf = vec![0u8; 256 * 1024];
     let (mut done, mut last) = (0u64, 0u64);
     loop {
-        let n = reader.read(&mut buf).map_err(|e| format!("Download abgebrochen: {e}"))?;
+        let n = reader.read(&mut buf).map_err(|e| format!("tools:download_aborted:{e}"))?;
         if n == 0 {
             break;
         }
@@ -102,12 +102,12 @@ pub fn unpack(archive: &Path, _name_hint: &str, dest: &Path, raw_name: &str) -> 
     let magic = &magic[..n];
     if magic.starts_with(b"PK\x03\x04") {
         let f = std::fs::File::open(archive).map_err(|e| e.to_string())?;
-        zip::ZipArchive::new(f).map_err(|e| e.to_string())?.extract(dest).map_err(|e| format!("Entpacken: {e}"))
+        zip::ZipArchive::new(f).map_err(|e| e.to_string())?.extract(dest).map_err(|e| format!("tools:unpack_failed:{e}"))
     } else if magic.starts_with(&[0x1f, 0x8b]) {
         let f = std::fs::File::open(archive).map_err(|e| e.to_string())?;
         let mut a = tar::Archive::new(flate2::read::GzDecoder::new(f));
         a.set_preserve_permissions(true);
-        a.unpack(dest).map_err(|e| format!("Entpacken: {e}"))
+        a.unpack(dest).map_err(|e| format!("tools:unpack_failed:{e}"))
     } else {
         let target = dest.join(raw_name);
         std::fs::copy(archive, &target).map_err(|e| e.to_string())?;
@@ -150,7 +150,7 @@ fn find_bin(root: &Path, name: &str) -> Option<PathBuf> {
 /// First asset of a recent (non-prerelease) GitHub release whose lowercase name matches.
 fn gh_asset(repo: &str, pred: impl Fn(&str) -> bool) -> Result<String, String> {
     let releases = get_json(&format!("https://api.github.com/repos/{repo}/releases?per_page=20"))?;
-    pick_asset(&releases, pred).ok_or_else(|| format!("Kein passender Download für {OS}/{} in {repo} gefunden", std::env::consts::ARCH))
+    pick_asset(&releases, pred).ok_or_else(|| format!("tools:no_asset:{OS}/{} ({repo})", std::env::consts::ARCH))
 }
 
 /// Download URL of the first asset in a GitHub releases list (skipping drafts and prereleases)
@@ -212,7 +212,7 @@ fn plan(id: &str) -> Result<Plan, String> {
                 .as_array()
                 .and_then(|a| a.iter().find(|r| r["lts"].is_string()))
                 .and_then(|r| r["version"].as_str())
-                .ok_or("Node.js-Version nicht gefunden")?
+                .ok_or("tools:no_version:Node.js")?
                 .to_string();
             let (plat, ext) = match OS {
                 "windows" => (format!("win-{x}"), "zip"),
@@ -257,7 +257,7 @@ fn plan(id: &str) -> Result<Plan, String> {
         }
         "gradle" => {
             let v = get_json("https://services.gradle.org/versions/current")?;
-            let url = v["downloadUrl"].as_str().ok_or("Gradle-Version nicht gefunden")?.to_string();
+            let url = v["downloadUrl"].as_str().ok_or("tools:no_version:Gradle")?.to_string();
             Plan { url, exe: "gradle" }
         }
         "git" if cfg!(windows) => {
@@ -270,7 +270,7 @@ fn plan(id: &str) -> Result<Plan, String> {
             let url = gh_asset("mstorsjo/llvm-mingw", |n| n.starts_with("llvm-mingw-") && n.ends_with(suffix))?;
             Plan { url, exe: "clang" }
         }
-        _ => return Err(format!("{id} kann auf diesem System nicht automatisch installiert werden")),
+        _ => return Err(format!("tools:unsupported:{id}")),
     })
 }
 
@@ -315,7 +315,7 @@ fn install(app: &AppHandle, id: &str) -> Result<String, String> {
     let res = unpack(&tmp, &final_url, &dest, &exe_name(p.exe));
     let _ = std::fs::remove_file(&tmp);
     res?;
-    let bin = find_bin(&dest, p.exe).ok_or_else(|| format!("{} nicht im Download gefunden", p.exe))?;
+    let bin = find_bin(&dest, p.exe).ok_or_else(|| format!("tools:bin_missing:{}", p.exe))?;
     make_executable(&bin.join(exe_name(p.exe)));
     record(id, &bin)?;
     Ok(env::norm(bin))
