@@ -5,6 +5,15 @@
   import { ui } from "../../lib/ui.svelte";
   import { t } from "../../lib/i18n/index.svelte";
 
+  let list: HTMLDivElement | undefined = $state();
+
+  // The active tab (often the newest one, at the far right) is always scrolled into view.
+  $effect(() => {
+    void terms.tabs.length;
+    const el = list?.querySelector<HTMLElement>(`[data-term="${CSS.escape(terms.active ?? "")}"]`);
+    el?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  });
+
   /** Menu of available shells (WSL distributions, Git Bash, zsh/fish …) for a new terminal. */
   async function shellMenu(e: MouseEvent) {
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
@@ -25,9 +34,9 @@
 </script>
 
 <div class="ttabs">
-  <div class="list">
+  <div class="list" bind:this={list}>
   {#each terms.tabs as tab (tab.id)}
-    <div class="tab" class:active={tab.id === terms.active} class:exited={tab.exited} role="tab" tabindex="0" aria-selected={tab.id === terms.active}
+    <div class="tab" data-term={tab.id} class:active={tab.id === terms.active} class:exited={tab.exited} role="tab" tabindex="0" aria-selected={tab.id === terms.active}
       onclick={() => { terms.active = tab.id; focusTerm(tab.id); }} onkeydown={(e) => e.key === "Enter" && (terms.active = tab.id)}>
       {#if tab.status && tab.status !== "running"}
         <span class="st {tab.status}" title={tab.status === "ok" ? t("code.term.stOk") : tab.status === "fail" ? t("code.term.stFail", { code: String(tab.code) }) : t("code.term.stStopped")}>{tab.status === "ok" ? "✓" : tab.status === "fail" ? "✗" : "■"}</span>
@@ -58,7 +67,8 @@
   /* Tabs keep a readable minimum and scroll sideways; the buttons next to them stay put. */
   .list { flex: 0 1 auto; min-width: 0; display: flex; align-items: center; gap: 4px; overflow-x: auto; }
   .list::-webkit-scrollbar { height: 0; }
-  .list > .tab { flex: 0 1 auto; min-width: 88px; max-width: 240px; }
+  /* Wide enough for "Terminal 3" or "cargo: Test", so tabs stay distinguishable. */
+  .list > .tab { flex: 0 1 auto; min-width: 132px; max-width: 240px; }
   .tab { height: 28px; display: flex; align-items: center; gap: 7px; padding: 0 5px 0 12px; border-radius: 999px; color: var(--label-2); font-size: 12px; white-space: nowrap; cursor: default; }
   .tab > :not(.label) { flex-shrink: 0; }
   .label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
