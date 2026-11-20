@@ -52,6 +52,8 @@ export class LspClient {
   diagnosticListeners = new Set<(uri: string) => void>();
   /** Called once the process exited (crash or stop), so editors can reconnect. */
   exitListeners = new Set<() => void>();
+  /** Has had a document open (a fresh client without documents is not idle yet). */
+  used = false;
   alive = true;
   stopping = false;
 
@@ -196,6 +198,7 @@ export class LspClient {
     const d = this.docs.get(uri);
     if (d) return this.change(uri, text);
     this.docs.set(uri, { version: 1, text });
+    this.used = true;
     this.notify("textDocument/didOpen", { textDocument: { uri, languageId, version: 1, text } });
   }
 
@@ -214,6 +217,7 @@ export class LspClient {
   close(uri: string) {
     if (!this.docs.delete(uri)) return;
     this.notify("textDocument/didClose", { textDocument: { uri } });
+    if (!this.docs.size) stopIdle();
   }
 
   stop() {
@@ -234,6 +238,26 @@ const clients = new Map<string, LspClient>();
 const starting = new Map<string, Promise<LspClient | null>>();
 /** Servers whose install prompt was cancelled: not asked again this session (until stopServers). */
 const declined = new Set<ServerKind>();
+
+let currentWorkspace: () => string | null = () => null;
+/** Lets the registry see the open folder (set together with the editor hooks). */
+export function setLspWorkspace(get: () => string | null) {
+  currentWorkspace = get;
+}
+
+const related = (root: string, ws: string) => root === ws || root.startsWith(ws + "/") || ws.startsWith(root + "/");
+
+/** Stops servers without open documents whose project is not the open folder (e.g. after a folder switch). */
+function stopIdle() {
+  const ws = currentWorkspace();
+  for (const [key, c] of clients)
+    if (c.used && !c.docs.size && !c.stopping && !(ws && related(c.root, ws))) {
+      c.stop();
+      clients.delete(key);
+      delete lspState.status[key];
+      delete lspState.message[key];
+    }
+}
 
 const ROOT_MARKERS: Record<ServerKind, string[]> = {
   python: ["pyproject.toml", "setup.py", "requirements.txt", ".git"],
@@ -387,6 +411,7 @@ export async function clientFor(
 ): Promise<LspClient | null> {
   const kind = lang.server;
   if (!kind) return null;
+  stopIdle();
   const root = await findRoot(file, ROOT_MARKERS[kind], workspace);
   const key = `${kind}|${root}`;
   const existing = clients.get(key);

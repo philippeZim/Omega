@@ -6,7 +6,7 @@ import { autocompletion, insertCompletionText, snippet, type Completion, type Co
 import { setDiagnostics, forEachDiagnostic, type Diagnostic, type Action } from "@codemirror/lint";
 import { ui } from "../ui.svelte";
 import { t } from "../i18n/index.svelte";
-import { clientFor, fileUri, uriPath, type LspClient, type ServerKind } from "./lsp.svelte";
+import { clientFor, fileUri, setLspWorkspace, uriPath, type LspClient, type ServerKind } from "./lsp.svelte";
 import type { LangInfo } from "./languages";
 
 // ---------------------------------------------------------- app hooks
@@ -18,6 +18,7 @@ let hooks = {
 };
 export function setLspHooks(h: typeof hooks) {
   hooks = h;
+  setLspWorkspace(h.workspace);
 }
 
 // ---------------------------------------------------------- positions
