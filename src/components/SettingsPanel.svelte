@@ -345,6 +345,9 @@
   .scroll { flex: 1; overflow: auto; padding: 8px 34px 34px; }
   /* One centred column for title, tabs and content (wide windows would otherwise spread it). */
   header, .tabs, .scroll > section { width: 100%; max-width: 900px; margin-left: auto; margin-right: auto; }
+  /* Header and tabs pad their content inside the box like .scroll does around the sections, so their
+     column is wider by that padding (34px each side) and the left edges line up at every width (#124). */
+  header, .tabs { max-width: calc(900px + 2 * 34px); }
   header { padding-left: 34px; padding-right: 26px; }
   .tabs { padding-left: 30px; }
   .tabs { display: flex; gap: 6px; padding: 6px 30px 10px; overflow-x: auto; flex-shrink: 0; }
