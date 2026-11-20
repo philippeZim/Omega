@@ -373,8 +373,47 @@ fn sys_available(o: &Owner, pacman_updates: &Option<std::collections::HashMap<St
             let line = o.lines().find(|l| l.starts_with("stable")).unwrap_or_default();
             Ok(if line.to_lowercase().contains("update available") { line.rsplit("->").next().and_then(extract_version) } else { None })
         }
-        _ => Err("unbekannter Paketmanager".into()),
+        "scoop" => {
+            let (_, o) = out(env::tool("scoop")?.arg("status")).ok_or_else(none)?;
+            parse_scoop_status(&o, p)
+        }
+        _ => Err("unknown package manager".into()),
     }
+}
+
+/// Latest version of `package` from `scoop status` output: Ok(None) = not listed as outdated.
+/// Scoop prints a PowerShell table ("Name  Installed Version  Latest Version  Missing Dependencies
+/// Info"); old versions printed "Updates are available for:" followed by "name: old -> new" lines.
+fn parse_scoop_status(text: &str, package: &str) -> Result<Option<String>, String> {
+    let lines: Vec<&str> = text.lines().collect();
+    if let Some(h) = lines.iter().position(|l| l.trim_start().starts_with("Name") && l.contains("Latest Version")) {
+        // Cells are fixed-width columns aligned with the header.
+        let col = |name: &str| lines[h].find(name).map(|b| lines[h][..b].chars().count());
+        let start = col("Latest Version").ok_or("scoop status: no Latest Version column")?;
+        let end = col("Missing Dependencies").or_else(|| col("Info")).unwrap_or(usize::MAX);
+        for row in &lines[h + 1..] {
+            if row.split_whitespace().next() != Some(package) {
+                continue;
+            }
+            let cell: String = row.chars().skip(start).take(end.saturating_sub(start)).collect();
+            return Ok(cell.split_whitespace().next().map(String::from));
+        }
+        return Ok(None);
+    }
+    for l in &lines {
+        if let Some((name, rest)) = l.trim().split_once(':') {
+            if name.trim() == package {
+                if let Some((_, new)) = rest.split_once("->") {
+                    return Ok(Some(new.trim().to_string()));
+                }
+            }
+        }
+    }
+    let low = text.to_lowercase();
+    if low.contains("everything is ok") || low.contains("updates are available") {
+        return Ok(None);
+    }
+    Err("scoop status: unexpected output".into())
 }
 
 /// Asks the package managers about updates for the given system installations.
@@ -572,6 +611,34 @@ pub async fn installs_update_rust() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scoop_status_table() {
+        let text = "Scoop is up to date.\n\nName   Installed Version Latest Version Missing Dependencies Info\n----   ----------------- -------------- -------------------- ----\nuv     0.4.0             0.5.1\nnodejs 20.0.0            22.1.0                              Held package\ngit    2.40.0                                                Manifest removed\n\n";
+        assert_eq!(parse_scoop_status(text, "uv"), Ok(Some("0.5.1".into())));
+        assert_eq!(parse_scoop_status(text, "nodejs"), Ok(Some("22.1.0".into())));
+        // Listed, but without a newer version (manifest gone): nothing to offer.
+        assert_eq!(parse_scoop_status(text, "git"), Ok(None));
+        assert_eq!(parse_scoop_status(text, "cmake"), Ok(None));
+    }
+
+    #[test]
+    fn scoop_status_other_formats() {
+        assert_eq!(parse_scoop_status("Scoop is up to date.\nEverything is ok!\n", "uv"), Ok(None));
+        let old = "Updates are available for:\n    uv: 0.4.0 -> 0.5.1\n    cmake: 3.30.0 -> 4.1.2\n";
+        assert_eq!(parse_scoop_status(old, "cmake"), Ok(Some("4.1.2".into())));
+        assert_eq!(parse_scoop_status(old, "node"), Ok(None));
+        assert!(parse_scoop_status("", "uv").is_err());
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn scoop_owner_has_an_update_check() {
+        // Before #19, sys_available had no scoop arm ("unknown package manager"), so scoop installs
+        // never got an update entry. Here (no scoop installed) it gets as far as looking for scoop.
+        let o = Owner { manager: "scoop".into(), package: "uv".into() };
+        assert_eq!(sys_available(&o, &None), Err("scoop: not found".to_string()));
+    }
 
     #[test]
     fn versions() {
