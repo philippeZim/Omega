@@ -150,6 +150,12 @@ fn find_bin(root: &Path, name: &str) -> Option<PathBuf> {
 /// First asset of a recent (non-prerelease) GitHub release whose lowercase name matches.
 fn gh_asset(repo: &str, pred: impl Fn(&str) -> bool) -> Result<String, String> {
     let releases = get_json(&format!("https://api.github.com/repos/{repo}/releases?per_page=20"))?;
+    pick_asset(&releases, pred).ok_or_else(|| format!("Kein passender Download für {OS}/{} in {repo} gefunden", std::env::consts::ARCH))
+}
+
+/// Download URL of the first asset in a GitHub releases list (skipping drafts and prereleases)
+/// whose lowercase name matches `pred`.
+fn pick_asset(releases: &Value, pred: impl Fn(&str) -> bool) -> Option<String> {
     for r in releases.as_array().into_iter().flatten() {
         if r["prerelease"].as_bool() == Some(true) || r["draft"].as_bool() == Some(true) {
             continue;
@@ -158,12 +164,12 @@ fn gh_asset(repo: &str, pred: impl Fn(&str) -> bool) -> Result<String, String> {
             let name = a["name"].as_str().unwrap_or_default().to_lowercase();
             if pred(&name) {
                 if let Some(u) = a["browser_download_url"].as_str() {
-                    return Ok(u.to_string());
+                    return Some(u.to_string());
                 }
             }
         }
     }
-    Err(format!("Kein passender Download für {OS}/{} in {repo} gefunden", std::env::consts::ARCH))
+    None
 }
 
 fn not_sig(n: &str) -> bool {
@@ -349,6 +355,169 @@ fn install_rust(app: &AppHandle) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    fn mode(p: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(p).unwrap().permissions().mode() & 0o777
+    }
+
+    #[test]
+    fn unpack_zip() {
+        let t = tempfile::tempdir().unwrap();
+        let archive = t.path().join("download");
+        {
+            let mut z = zip::ZipWriter::new(std::fs::File::create(&archive).unwrap());
+            let exe = zip::write::SimpleFileOptions::default().unix_permissions(0o755);
+            let plain = zip::write::SimpleFileOptions::default().unix_permissions(0o644);
+            z.add_directory("tool-1.0/bin/", exe).unwrap();
+            z.start_file("tool-1.0/bin/tool", exe).unwrap();
+            z.write_all(b"#!/bin/sh\necho hi\n").unwrap();
+            z.start_file("tool-1.0/README", plain).unwrap();
+            z.write_all(b"readme").unwrap();
+            z.finish().unwrap();
+        }
+        let dest = t.path().join("out");
+        unpack(&archive, "", &dest, "ignored").unwrap();
+        assert_eq!(std::fs::read(dest.join("tool-1.0/bin/tool")).unwrap(), b"#!/bin/sh\necho hi\n");
+        assert_eq!(std::fs::read_to_string(dest.join("tool-1.0/README")).unwrap(), "readme");
+        assert!(!dest.join("ignored").exists());
+        #[cfg(unix)]
+        {
+            assert_eq!(mode(&dest.join("tool-1.0/bin/tool")) & 0o111, 0o111);
+            assert_eq!(mode(&dest.join("tool-1.0/README")) & 0o111, 0);
+        }
+    }
+
+    #[test]
+    fn unpack_tar_gz() {
+        let t = tempfile::tempdir().unwrap();
+        let archive = t.path().join("download");
+        {
+            let gz = flate2::write::GzEncoder::new(std::fs::File::create(&archive).unwrap(), flate2::Compression::default());
+            let mut b = tar::Builder::new(gz);
+            let mut add = |path: &str, data: &[u8], mode: u32| {
+                let mut h = tar::Header::new_gnu();
+                h.set_size(data.len() as u64);
+                h.set_mode(mode);
+                h.set_cksum();
+                b.append_data(&mut h, path, data).unwrap();
+            };
+            add("node-v22/bin/node", b"ELF", 0o755);
+            add("node-v22/LICENSE", b"MIT", 0o644);
+            b.into_inner().unwrap().finish().unwrap();
+        }
+        let dest = t.path().join("out");
+        unpack(&archive, "node.tar.gz", &dest, "node").unwrap();
+        assert_eq!(std::fs::read(dest.join("node-v22/bin/node")).unwrap(), b"ELF");
+        assert_eq!(std::fs::read(dest.join("node-v22/LICENSE")).unwrap(), b"MIT");
+        assert!(!dest.join("node").exists());
+        #[cfg(unix)]
+        {
+            assert_eq!(mode(&dest.join("node-v22/bin/node")), 0o755);
+            assert_eq!(mode(&dest.join("node-v22/LICENSE")), 0o644);
+        }
+    }
+
+    #[test]
+    fn unpack_raw_file_becomes_executable() {
+        let t = tempfile::tempdir().unwrap();
+        let archive = t.path().join("download");
+        std::fs::write(&archive, b"\x7fELF raw binary").unwrap();
+        let dest = t.path().join("out/nested");
+        unpack(&archive, "", &dest, "pnpm").unwrap();
+        assert_eq!(std::fs::read(dest.join("pnpm")).unwrap(), b"\x7fELF raw binary");
+        #[cfg(unix)]
+        assert_eq!(mode(&dest.join("pnpm")), 0o755);
+    }
+
+    #[test]
+    fn unpack_tiny_file_is_raw() {
+        // Shorter than the 4-byte signature.
+        let t = tempfile::tempdir().unwrap();
+        let archive = t.path().join("download");
+        std::fs::write(&archive, b"PK").unwrap();
+        unpack(&archive, "", t.path(), "x").unwrap();
+        assert_eq!(std::fs::read(t.path().join("x")).unwrap(), b"PK");
+    }
+
+    #[test]
+    fn find_bin_nested_and_depth_limit() {
+        let t = tempfile::tempdir().unwrap();
+        let r = t.path();
+        let put = |dir: &str| {
+            std::fs::create_dir_all(r.join(dir)).unwrap();
+            std::fs::write(r.join(dir).join(exe_name("cmake")), "").unwrap();
+        };
+        std::fs::create_dir_all(r.join("a/b")).unwrap();
+        put("cmake-4.1/bin");
+        assert_eq!(find_bin(r, "cmake").unwrap(), r.join("cmake-4.1/bin"));
+        assert!(find_bin(r, "ninja").is_none());
+
+        // Directly in root.
+        let t2 = tempfile::tempdir().unwrap();
+        std::fs::write(t2.path().join(exe_name("uv")), "").unwrap();
+        assert_eq!(find_bin(t2.path(), "uv").unwrap(), t2.path());
+
+        // A directory named like the executable doesn't count.
+        let t3 = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(t3.path().join(exe_name("uv"))).unwrap();
+        assert!(find_bin(t3.path(), "uv").is_none());
+
+        // Depth 5 (root + 5 folders) is still searched, depth 6 isn't.
+        let t4 = tempfile::tempdir().unwrap();
+        let d5 = t4.path().join("1/2/3/4/5");
+        std::fs::create_dir_all(&d5).unwrap();
+        std::fs::write(d5.join(exe_name("deep")), "").unwrap();
+        assert_eq!(find_bin(t4.path(), "deep").unwrap(), d5);
+        let d6 = d5.join("6");
+        std::fs::create_dir_all(&d6).unwrap();
+        std::fs::write(d6.join(exe_name("deeper")), "").unwrap();
+        assert!(find_bin(t4.path(), "deeper").is_none());
+    }
+
+    #[test]
+    fn not_sig_filters_checksums_and_signatures() {
+        for n in ["pnpm-linux-x64.sha256", "x.tar.gz.asc", "x.tar.gz.sig", "release.json", "sha256sums.txt", "pnpm-sha256sum"] {
+            assert!(!not_sig(n), "{n}");
+        }
+        for n in ["pnpm-linux-x64", "pnpm-win-x64.exe", "cmake-4.1.2-linux-x86_64.tar.gz"] {
+            assert!(not_sig(n), "{n}");
+        }
+    }
+
+    #[test]
+    fn pick_asset_skips_drafts_prereleases_and_lowercases() {
+        let v = serde_json::json!([
+            { "prerelease": true, "assets": [ { "name": "tool-linux.tar.gz", "browser_download_url": "https://pre" } ] },
+            { "draft": true, "assets": [ { "name": "tool-linux.tar.gz", "browser_download_url": "https://draft" } ] },
+            { "prerelease": false, "assets": [
+                { "name": "tool-linux.tar.gz.sha256", "browser_download_url": "https://sum" },
+                { "name": "Tool-Linux.tar.gz" },
+                { "name": "TOOL-LINUX.TAR.GZ", "browser_download_url": "https://stable" }
+            ] },
+            { "assets": [ { "name": "tool-linux.tar.gz", "browser_download_url": "https://older" } ] }
+        ]);
+        let pred = |n: &str| n.starts_with("tool-linux") && n.ends_with(".tar.gz");
+        assert_eq!(pick_asset(&v, pred).as_deref(), Some("https://stable"));
+        assert_eq!(pick_asset(&v, |n| n.contains("windows")), None);
+        assert_eq!(pick_asset(&serde_json::json!({"message": "rate limited"}), pred), None);
+        assert_eq!(pick_asset(&serde_json::json!([]), pred), None);
+    }
+
+    /// Ids whose plan is built without network requests (the others query GitHub/nodejs.org/gradle.org).
+    #[test]
+    fn plan_offline_ids() {
+        for id in ["uv", "ninja", "jdk"] {
+            let p = plan(id).unwrap_or_else(|e| panic!("{id}: {e}"));
+            assert!(p.url.starts_with("https://"), "{id}: {}", p.url);
+            assert!(!p.exe.is_empty());
+        }
+        assert!(plan("nonexistent").is_err());
+        assert!(tool_installable().contains(&"rust"));
+        // rust is installed through rustup-init, not plan().
+        assert!(plan("rust").is_err());
+    }
 
     /// Network test: resolve, download, unpack and locate a few small tools (`cargo test -- --ignored`).
     #[test]

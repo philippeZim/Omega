@@ -240,4 +240,113 @@ mod tests {
         assert_eq!(fs::read_to_string(&file).unwrap(), "int main() {}");
         fs::remove_dir_all(dir).unwrap();
     }
+
+    fn s(p: &Path) -> String {
+        p.to_string_lossy().to_string()
+    }
+
+    #[test]
+    fn list_dir_dirs_first_case_insensitive_hidden_skipped() {
+        let t = tempfile::tempdir().unwrap();
+        for d in ["zeta", "Alpha", ".git", "node_modules", "target", "src"] {
+            fs::create_dir(t.path().join(d)).unwrap();
+        }
+        for f in ["b.txt", "A.txt", "c.TXT", ".env"] {
+            fs::write(t.path().join(f), "").unwrap();
+        }
+        let out = list_dir(s(t.path())).unwrap();
+        let names: Vec<(&str, bool)> = out.iter().map(|e| (e.name.as_str(), e.is_dir)).collect();
+        assert_eq!(
+            names,
+            [("Alpha", true), ("src", true), ("zeta", true), (".env", false), ("A.txt", false), ("b.txt", false), ("c.TXT", false)]
+        );
+        assert_eq!(out[0].path, crate::env::norm(t.path().join("Alpha")));
+    }
+
+    #[test]
+    fn list_dir_missing_is_err() {
+        let t = tempfile::tempdir().unwrap();
+        assert!(list_dir(s(&t.path().join("nope"))).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "bug: list_dir shows symlinks to directories as files"]
+    fn list_dir_symlinked_dir_is_dir() {
+        let t = tempfile::tempdir().unwrap();
+        fs::create_dir(t.path().join("real")).unwrap();
+        std::os::unix::fs::symlink(t.path().join("real"), t.path().join("link")).unwrap();
+        let out = list_dir(s(t.path())).unwrap();
+        let link = out.iter().find(|e| e.name == "link").unwrap();
+        assert!(link.is_dir);
+    }
+
+    #[test]
+    fn rename_path_moves_and_refuses_existing_target() {
+        let t = tempfile::tempdir().unwrap();
+        let (a, b, c) = (t.path().join("a"), t.path().join("b"), t.path().join("c"));
+        fs::write(&a, "A").unwrap();
+        fs::write(&b, "B").unwrap();
+        let e = rename_path(s(&a), s(&b)).unwrap_err();
+        assert_eq!(e, "Ziel existiert bereits");
+        assert_eq!(fs::read_to_string(&a).unwrap(), "A");
+        assert_eq!(fs::read_to_string(&b).unwrap(), "B");
+        rename_path(s(&a), s(&c)).unwrap();
+        assert!(!a.exists());
+        assert_eq!(fs::read_to_string(&c).unwrap(), "A");
+    }
+
+    #[test]
+    fn delete_path_file_and_dir_tree() {
+        let t = tempfile::tempdir().unwrap();
+        let f = t.path().join("f.txt");
+        fs::write(&f, "x").unwrap();
+        delete_path(s(&f)).unwrap();
+        assert!(!f.exists());
+        let d = t.path().join("d");
+        fs::create_dir_all(d.join("x/y")).unwrap();
+        fs::write(d.join("x/y/z.txt"), "z").unwrap();
+        fs::write(d.join("top.txt"), "t").unwrap();
+        delete_path(s(&d)).unwrap();
+        assert!(!d.exists());
+        assert!(delete_path(s(&d)).is_err());
+    }
+
+    #[test]
+    fn write_file_base64_decodes_and_rejects_bad_input() {
+        let t = tempfile::tempdir().unwrap();
+        let f = t.path().join("sub/img.bin");
+        write_file_base64(s(&f), "AAEC/w==".into()).unwrap();
+        assert_eq!(fs::read(&f).unwrap(), [0u8, 1, 2, 255]);
+        let bad = t.path().join("bad/x.bin");
+        assert!(write_file_base64(s(&bad), "not base64!!".into()).is_err());
+        assert!(!bad.exists());
+        assert!(!t.path().join("bad").exists(), "no parent dir created on decode error");
+    }
+
+    #[tokio::test]
+    async fn list_files_skips_dot_dirs_keeps_github_sorted_relative() {
+        let t = tempfile::tempdir().unwrap();
+        let r = t.path();
+        for d in ["src/nested", ".github/workflows", ".git", ".vscode", "node_modules/pkg", "target/debug", "build"] {
+            fs::create_dir_all(r.join(d)).unwrap();
+        }
+        for f in [
+            "z.txt",
+            "a.txt",
+            ".env",
+            "src/main.rs",
+            "src/nested/deep.rs",
+            ".github/workflows/ci.yml",
+            ".git/HEAD",
+            ".vscode/settings.json",
+            "node_modules/pkg/index.js",
+            "target/debug/omega",
+            "build/out.o",
+        ] {
+            fs::write(r.join(f), "").unwrap();
+        }
+        let out = list_files(s(r)).await.unwrap();
+        assert_eq!(out, [".env", ".github/workflows/ci.yml", "a.txt", "src/main.rs", "src/nested/deep.rs", "z.txt"]);
+    }
 }

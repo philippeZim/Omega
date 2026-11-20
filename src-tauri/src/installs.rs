@@ -254,20 +254,29 @@ fn segment_after(p: &str, marker: &str) -> Option<String> {
     p.split_once(marker).and_then(|(_, rest)| rest.split('/').next()).filter(|s| !s.is_empty()).map(String::from)
 }
 
+/// Package manager recognisable from the (normalised) path alone: mise, Homebrew, Scoop.
+fn owner_from_path(p: &str) -> Option<Owner> {
+    let own = |m: &str, p: String| Some(Owner { manager: m.into(), package: p });
+    if let Some(n) = segment_after(p, "/mise/installs/") {
+        return own("mise", n);
+    }
+    if let Some(n) = segment_after(p, "/Cellar/") {
+        return own("brew", n);
+    }
+    if let Some(n) = segment_after(&p.to_lowercase(), "/scoop/apps/") {
+        return own("scoop", n);
+    }
+    None
+}
+
 /// Which package manager installed `path` (and under which package name).
 fn owner(path: &Path) -> Option<Owner> {
     let own = |m: &str, p: String| Some(Owner { manager: m.into(), package: p });
     let real = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let (orig, canon) = (env::norm(path), env::norm(&real));
     for p in [&orig, &canon] {
-        if let Some(n) = segment_after(p, "/mise/installs/") {
-            return own("mise", n);
-        }
-        if let Some(n) = segment_after(p, "/Cellar/") {
-            return own("brew", n);
-        }
-        if let Some(n) = segment_after(&p.to_lowercase(), "/scoop/apps/") {
-            return own("scoop", n);
+        if let Some(o) = owner_from_path(p) {
+            return Some(o);
         }
     }
     if path.starts_with(env::home().join(".cargo").join("bin")) && env::which("rustup").is_some() {
@@ -572,6 +581,50 @@ mod tests {
         assert_eq!(extract_version("1.44.0.202501221502.jar").as_deref(), Some("1.44.0"));
         assert_eq!(extract_version("tectonic@0.15.0").as_deref(), Some("0.15.0"));
         assert_eq!(extract_version("20241030").as_deref(), Some("20241030"));
+    }
+
+    #[test]
+    fn segment_after_cases() {
+        assert_eq!(segment_after("/x/mise/installs/node/22/bin", "/mise/installs/").as_deref(), Some("node"));
+        assert_eq!(segment_after("/x/mise/installs/node", "/mise/installs/").as_deref(), Some("node"));
+        assert_eq!(segment_after("/x/mise/installs/", "/mise/installs/"), None);
+        assert_eq!(segment_after("/usr/bin/node", "/mise/installs/"), None);
+        assert_eq!(segment_after("", "/mise/installs/"), None);
+    }
+
+    fn owner_of(p: &str) -> Option<(String, String)> {
+        owner_from_path(p).map(|o| (o.manager, o.package))
+    }
+
+    fn pair(m: &str, p: &str) -> Option<(String, String)> {
+        Some((m.into(), p.into()))
+    }
+
+    #[test]
+    fn owner_from_path_cases() {
+        assert_eq!(owner_of("/home/u/.local/share/mise/installs/node/22.11.0/bin/node"), pair("mise", "node"));
+        assert_eq!(owner_of("/opt/homebrew/Cellar/cmake/4.1.2/bin/cmake"), pair("brew", "cmake"));
+        assert_eq!(owner_of("/usr/local/Cellar/node/23.1.0/bin/node"), pair("brew", "node"));
+        assert_eq!(owner_of("C:/Users/U/Scoop/Apps/nodejs/current/node.exe"), pair("scoop", "nodejs"));
+        assert_eq!(owner_of("C:/Users/U/scoop/apps/cmake/current/bin/cmake.exe"), pair("scoop", "cmake"));
+        // Markers are case-sensitive for mise/brew.
+        assert_eq!(owner_of("/opt/homebrew/cellar/cmake/4.1.2/bin/cmake"), None);
+        assert_eq!(owner_of("/usr/bin/node"), None);
+        assert_eq!(owner_of("/x/mise/installs/"), None);
+    }
+
+    #[test]
+    fn update_command_cases() {
+        let o = |m: &str| Owner { manager: m.into(), package: "nodejs".into() };
+        assert_eq!(update_command(&o("pacman")), Some(("sudo pacman -Syu --needed nodejs".to_string(), true)));
+        assert_eq!(update_command(&o("apt")), Some(("sudo apt update && sudo apt install --only-upgrade -y nodejs".to_string(), false)));
+        assert_eq!(update_command(&o("brew")), Some(("brew upgrade nodejs".to_string(), false)));
+        assert_eq!(update_command(&o("rustup")), Some(("rustup update".to_string(), false)));
+        for m in ["dnf", "mise", "scoop"] {
+            let (cmd, full) = update_command(&o(m)).unwrap();
+            assert!(cmd.ends_with(" nodejs") && !full, "{m}: {cmd}");
+        }
+        assert_eq!(update_command(&o("unknown")), None);
     }
 }
 

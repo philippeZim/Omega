@@ -267,3 +267,57 @@ pub fn pid_alive(pid: u32) -> bool {
     }
     command("kill").args(["-0", &pid.to_string()]).output().is_ok_and(|o| o.status.success())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn which_empty_is_none() {
+        assert_eq!(which(""), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn which_direct_path() {
+        assert_eq!(which("/bin/sh"), Some(PathBuf::from("/bin/sh")));
+        assert_eq!(which("/definitely/not/here/sh"), None);
+        // A directory isn't an executable.
+        assert_eq!(which("/bin"), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn which_name_on_path() {
+        assert!(which("sh").is_some_and(|p| p.is_absolute() && p.ends_with("sh")));
+        assert_eq!(which("omega-surely-not-an-executable-xyz"), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn norm_is_identity_on_unix() {
+        for s in ["/home/u/a b/c.txt", "rel/path", "with\\backslash", ""] {
+            assert_eq!(norm(s), s);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn norm_windows() {
+        assert_eq!(norm(r"\\?\C:\Users\u\x.txt"), "C:/Users/u/x.txt");
+        assert_eq!(norm(r"C:\a\b"), "C:/a/b");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn expand_vars_cases() {
+        let root = std::env::var("SystemRoot").expect("SystemRoot set on Windows");
+        assert_eq!(expand_vars(r"%SystemRoot%\System32"), format!(r"{root}\System32"));
+        assert_eq!(expand_vars("%SystemRoot%;%SystemRoot%"), format!("{root};{root}"));
+        assert_eq!(expand_vars(r"C:\plain"), r"C:\plain");
+        assert_eq!(expand_vars("%OMEGA_SURELY_UNSET_VAR%\\x"), "%OMEGA_SURELY_UNSET_VAR%\\x");
+        assert_eq!(expand_vars("100% sure"), "100% sure");
+        assert_eq!(expand_vars("a%b"), "a%b");
+        assert_eq!(expand_vars(""), "");
+    }
+}
