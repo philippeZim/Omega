@@ -681,3 +681,22 @@ describe("Markdown link to a folder (#48)", () => {
     expect(ui.toast).not.toHaveBeenCalled();
   });
 });
+
+describe("LaTeX: background tab changing on disk (#50)", () => {
+  test("is not compiled with the active tab's path", async () => {
+    await setup({ "/p/chapters/one.tex": "\\section{Chapter one}", "/p/main.tex": "\\input{chapters/one}" });
+    const one = await open("/p/chapters/one.tex");
+    const main = await open("/p/main.tex");
+    st.app.mode = "latex";
+    const latexCtl = (await import("./latex/controller.svelte")) as unknown as { schedule: ReturnType<typeof vi.fn> };
+    latexCtl.schedule.mockClear();
+    fs.files.set("/p/chapters/one.tex", "\\section{Chapter one AGAIN}");
+    await st.syncFromDisk();
+    expect(ed.getText(one.id)).toBe("\\section{Chapter one AGAIN}");
+    expect(latexCtl.schedule).not.toHaveBeenCalledWith(one.id, expect.anything());
+    expect(latexCtl.schedule).not.toHaveBeenCalledWith(one.id, expect.anything(), expect.anything());
+    // Edits in the active tab still compile it.
+    ed.type(main.id, "\\input{chapters/one}\n");
+    expect(latexCtl.schedule).toHaveBeenCalledWith(main.id, "/p/main.tex");
+  });
+});

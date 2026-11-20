@@ -330,7 +330,9 @@ ed.setCallbacks({
     app.cursor = { line, col, selected };
   },
   onChange(id) {
-    if (app.mode === "latex") latexCtl.schedule(id, activeTab()?.path ?? null);
+    // Only the active buffer: a background tab reloaded from disk must not be compiled under the
+    // active tab's path (#50). The controller recompiles on dependency changes by itself.
+    if (app.mode === "latex" && id === app.activeId) latexCtl.schedule(id, activeTab()?.path ?? null);
   },
 });
 
