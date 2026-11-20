@@ -96,7 +96,8 @@ pub fn create_dir(path: String) -> Result<(), String> {
 
 #[tauri::command]
 pub fn rename_path(from: String, to: String) -> Result<(), String> {
-    if Path::new(&to).exists() {
+    // symlink_metadata also sees a dangling link, which exists() would report as missing (#98).
+    if fs::symlink_metadata(&to).is_ok() {
         return Err("fs:exists".into());
     }
     fs::rename(&from, &to).map_err(io_err)
@@ -490,5 +491,17 @@ mod tests {
             std::os::unix::fs::symlink(t.path().join("gone"), &link).unwrap();
             assert_eq!(create_file(s(&link)).unwrap_err(), "fs:exists");
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rename_path_refuses_dangling_symlink_target() {
+        let t = tempfile::tempdir().unwrap();
+        let (a, link) = (t.path().join("a"), t.path().join("broken-link"));
+        fs::write(&a, "A").unwrap();
+        std::os::unix::fs::symlink(t.path().join("gone"), &link).unwrap();
+        assert_eq!(rename_path(s(&a), s(&link)).unwrap_err(), "fs:exists");
+        assert_eq!(fs::read_to_string(&a).unwrap(), "A");
+        assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
     }
 }
