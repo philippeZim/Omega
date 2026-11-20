@@ -125,29 +125,38 @@ pub async fn list_files(root: String) -> Result<Vec<String>, String> {
         const SKIP: &[&str] = &[".git", "node_modules", "target", "__pycache__", ".venv", "venv", ".idea", "build", "dist", ".gradle", ".mypy_cache", ".pytest_cache", ".cache"];
         let base = PathBuf::from(&root);
         let mut out = Vec::new();
-        // Symlinks are followed. Each stack entry carries the canonical paths of the directory and
-        // its ancestors, so a link back into its own chain (a loop) is not descended into again.
-        let Ok(base_canon) = base.canonicalize() else { return Ok(out) };
-        let mut stack = vec![(base.clone(), vec![base_canon])];
-        while let Some((dir, chain)) = stack.pop() {
+        // Symlinks are followed, but every real directory is visited only once (tracked by its
+        // canonical path), so loops and webs of links can't make the walk explode. Entries are
+        // walked in sorted order, so when a directory is reachable by several paths the same one
+        // wins every time. Only symlinks are canonicalized: a real directory's canonical path is
+        // its parent's plus its name. If canonicalizing fails (RAM disks, network or shared
+        // folders), the raw path stands in.
+        let base_canon = base.canonicalize().unwrap_or_else(|_| base.clone());
+        let mut visited = std::collections::HashSet::new();
+        let mut stack = vec![(base.clone(), base_canon)];
+        while let Some((dir, canon)) = stack.pop() {
+            if !visited.insert(canon.clone()) {
+                continue;
+            }
             let Ok(rd) = fs::read_dir(&dir) else { continue };
-            for e in rd.flatten() {
+            let mut entries: Vec<_> = rd.flatten().collect();
+            entries.sort_by_key(|e| e.file_name());
+            let mut subdirs = Vec::new();
+            for e in entries {
                 let name = e.file_name().to_string_lossy().to_string();
                 let Ok(mut ft) = e.file_type() else { continue };
-                if ft.is_symlink() {
+                let link = ft.is_symlink();
+                if link {
                     // Broken links are skipped.
                     let Ok(m) = fs::metadata(e.path()) else { continue };
                     ft = m.file_type();
                 }
                 if ft.is_dir() {
                     if !SKIP.contains(&name.as_str()) && !(name.starts_with('.') && name != ".github") {
-                        let Ok(canon) = e.path().canonicalize() else { continue };
-                        if chain.contains(&canon) {
-                            continue;
+                        let c = if link { e.path().canonicalize().unwrap_or_else(|_| e.path()) } else { canon.join(e.file_name()) };
+                        if !visited.contains(&c) {
+                            subdirs.push((e.path(), c));
                         }
-                        let mut chain = chain.clone();
-                        chain.push(canon);
-                        stack.push((e.path(), chain));
                     }
                 } else if ft.is_file() {
                     if let Ok(rel) = e.path().strip_prefix(&base) {
@@ -158,6 +167,7 @@ pub async fn list_files(root: String) -> Result<Vec<String>, String> {
                     }
                 }
             }
+            stack.extend(subdirs.into_iter().rev());
         }
         out.sort();
         Ok(out)
@@ -316,6 +326,48 @@ mod tests {
         std::os::unix::fs::symlink(r.join("missing"), r.join("broken")).unwrap();
         let out = list_files(s(r)).await.unwrap();
         assert_eq!(out, ["ext/o.txt", "real/sub/x.txt"]);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn list_files_includes_symlinked_files() {
+        let t = tempfile::tempdir().unwrap();
+        let r = t.path();
+        fs::write(r.join("a.txt"), "").unwrap();
+        std::os::unix::fs::symlink(r.join("a.txt"), r.join("b.txt")).unwrap();
+        assert_eq!(list_files(s(r)).await.unwrap(), ["a.txt", "b.txt"]);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn list_files_mutual_sibling_links_list_each_file_once() {
+        let t = tempfile::tempdir().unwrap();
+        let r = t.path();
+        fs::create_dir_all(r.join("a")).unwrap();
+        fs::create_dir_all(r.join("b")).unwrap();
+        fs::write(r.join("a/x.txt"), "").unwrap();
+        fs::write(r.join("b/y.txt"), "").unwrap();
+        std::os::unix::fs::symlink(r.join("b"), r.join("a/l")).unwrap();
+        std::os::unix::fs::symlink(r.join("a"), r.join("b/l")).unwrap();
+        // Sorted walk: a/ first, then its link a/l (= b), so b's files appear under a/l.
+        assert_eq!(list_files(s(r)).await.unwrap(), ["a/l/y.txt", "a/x.txt"]);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn list_files_link_and_target_give_each_file_once_deterministically() {
+        let t = tempfile::tempdir().unwrap();
+        let r = t.path();
+        fs::create_dir_all(r.join("real/sub")).unwrap();
+        fs::write(r.join("real/a.txt"), "").unwrap();
+        fs::write(r.join("real/sub/b.txt"), "").unwrap();
+        std::os::unix::fs::symlink(r.join("real"), r.join("link")).unwrap();
+        let first = list_files(s(r)).await.unwrap();
+        // "link" sorts before "real", so it wins.
+        assert_eq!(first, ["link/a.txt", "link/sub/b.txt"]);
+        for _ in 0..5 {
+            assert_eq!(list_files(s(r)).await.unwrap(), first);
+        }
     }
 
     #[test]
