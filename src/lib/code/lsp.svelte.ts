@@ -495,6 +495,37 @@ export function stopServers(kind: ServerKind) {
   }
 }
 
+/** Called after restartServer, so editors without a client (failed or missing server) connect again. */
+export const restartListeners = new Set<() => void>();
+
+/**
+ * Restarts the server for this file (the status indicator's action). A missing server is
+ * offered for installation again, even after the prompt was cancelled.
+ */
+export async function restartServer(
+  lang: LangInfo,
+  file: string,
+  workspace: string | null,
+  askInstall: (kind: ServerKind, name: string) => Promise<boolean>,
+): Promise<LspClient | null> {
+  const kind = lang.server;
+  if (!kind) return null;
+  const key = `${kind}|${await findRoot(file, ROOT_MARKERS[kind], workspace)}`;
+  if (starting.has(key)) return starting.get(key)!;
+  declined.delete(kind);
+  failed.delete(key);
+  const old = clients.get(key);
+  if (old) {
+    old.stop(); // its exit makes the editors reconnect to the new client
+    clients.delete(key);
+  }
+  delete lspState.status[key];
+  delete lspState.message[key];
+  const c = await clientFor(lang, file, workspace, askInstall);
+  for (const l of restartListeners) l();
+  return c;
+}
+
 export function allClients() {
   return [...clients.values()];
 }

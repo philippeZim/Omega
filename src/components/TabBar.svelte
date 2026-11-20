@@ -3,6 +3,7 @@
   import { app, activate, closeTab, newFile, foreignProject } from "../lib/state.svelte";
   import { ui } from "../lib/ui.svelte";
   import RunBar from "./RunBar.svelte";
+  import LspStatus from "./LspStatus.svelte";
   import { t } from "../lib/i18n/index.svelte";
   import { shortcutLabel, withShortcut } from "../lib/commands.svelte";
   import { tabHints } from "../lib/tabHints";
@@ -60,7 +61,7 @@
     {/each}
     <button class="add" onclick={newFile} title={withShortcut(t("app.newFile"), "file.new")} aria-label={t("app.newFile")}><Glyph name="plus" size={11} /></button>
   </div>
-  {#if app.mode === "code"}<RunBar {width} />{/if}
+  {#if app.mode === "code"}<LspStatus compact={width < 640} /><RunBar {width} />{/if}
   </div>
 {/if}
 
