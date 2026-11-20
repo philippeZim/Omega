@@ -394,6 +394,38 @@ describe("client registry", () => {
     expect(spawned.length).toBe(2);
   });
 
+  // #96: a crash during initialize used to replace the stderr reason with a generic message
+  // and a second "failed to start" toast.
+  test("a crash during initialize keeps the stderr reason and shows one toast", async () => {
+    const { ui } = await import("../ui.svelte");
+    const toast = vi.mocked(ui.toast);
+    toast.mockClear();
+    const spawned: string[] = [];
+    mockIPC(
+      (cmd, args: any) => {
+        if (cmd === "tools_dir") return "/tools";
+        if (cmd === "which_cmd") return args.cmd === "basedpyright-langserver" ? "/usr/bin/basedpyright-langserver" : null;
+        if (cmd === "path_exists") return false;
+        if (cmd === "proc_spawn") spawned.push(args.id);
+        if (cmd === "proc_send" && JSON.parse(args.msg).method === "initialize")
+          setTimeout(async () => {
+            await emit("proc-stderr", { id: args.id, msg: "error: bad config" });
+            await emit("proc-exit", args.id);
+          }, 0);
+        return null;
+      },
+      { shouldMockEvents: true },
+    );
+    vi.resetModules();
+    L = await import("./lsp.svelte");
+    await settle();
+    expect(await L.clientFor(PY, "/w/a.py", "/w", no)).toBeNull();
+    expect(L.lspState.status["python|/w"]).toBe("error");
+    expect(L.lspState.message["python|/w"]).toBe("error: bad config");
+    expect(toast).toHaveBeenCalledTimes(1);
+    expect(String(toast.mock.calls[0][0])).toContain("error: bad config");
+  });
+
   test("missing server: status missing, askInstall declined → null", async () => {
     mockIPC((cmd) => (cmd === "tools_dir" ? "/tools" : cmd === "path_exists" ? false : null), { shouldMockEvents: true });
     const ask = vi.fn(async () => false);
