@@ -122,6 +122,8 @@ function links(doc: string): [string, string | undefined][] {
     }),
     parent: document.body,
   });
+  // The initial parse has a time budget; under load it may stop before the reference definitions.
+  forceParsing(view, text.length, 5000);
   const out = [...view.dom.querySelectorAll<HTMLElement>(".md-link")].map((e): [string, string | undefined] => [e.textContent!, e.dataset.href]);
   view.destroy();
   return out;
