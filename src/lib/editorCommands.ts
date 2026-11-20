@@ -62,16 +62,28 @@ const duplicate: Command = (view) => {
   return true;
 };
 
-/** Joins the next line onto the current one. */
+/** Joins the next line onto the current one; a selection over several lines joins all of them. */
 const joinLines: Command = (view) => {
   const { state } = view;
   view.dispatch(
     state.changeByRange((r) => {
-      const line = state.doc.lineAt(r.head);
-      if (line.number >= state.doc.lines) return { range: r };
-      const next = state.doc.line(line.number + 1);
-      const lead = /^\s*/.exec(next.text)![0].length;
-      return { changes: { from: line.to, to: next.from + lead, insert: " " }, range: EditorSelection.cursor(line.to) };
+      const first = state.doc.lineAt(r.from);
+      let last = state.doc.lineAt(r.to);
+      // A selection ending at the start of a line (Shift+Down) doesn't include that line.
+      if (last.number > first.number && r.to === last.from) last = state.doc.line(last.number - 1);
+      if (last.number === first.number) {
+        if (first.number >= state.doc.lines) return { range: r };
+        last = state.doc.line(first.number + 1);
+      }
+      const changes = [];
+      for (let n = first.number; n < last.number; n++) {
+        const line = state.doc.line(n), next = state.doc.line(n + 1);
+        const lead = /^\s*/.exec(next.text)![0].length;
+        changes.push({ from: line.to, to: next.from + lead, insert: " " });
+      }
+      const set = state.changes(changes);
+      const range = r.empty ? EditorSelection.cursor(first.to) : EditorSelection.range(set.mapPos(r.anchor, r.anchor > r.head ? 1 : -1), set.mapPos(r.head, r.head > r.anchor ? 1 : -1));
+      return { changes: set, range };
     }),
   );
   return true;
