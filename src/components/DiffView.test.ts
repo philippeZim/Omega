@@ -2,6 +2,8 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { mount, unmount, flushSync } from "svelte";
 import { mockIPC } from "@tauri-apps/api/mocks";
+import { EditorView } from "@codemirror/view";
+import { getChunks } from "@codemirror/merge";
 
 const git = vi.hoisted(() => ({ top: "/r", changes: [] as { path: string; x: string; y: string; orig: string | null }[] }));
 vi.mock("../lib/git/git.svelte", () => ({ git, refresh: vi.fn() }));
@@ -60,5 +62,16 @@ describe("renamed file (#70)", () => {
     git.changes = [{ path: "n.txt", x: "?", y: "?", orig: null }];
     await open("/r/n.txt", {}, { "/r/n.txt": "x\n" });
     expect(info()).toBe("git.diff.newFile");
+  });
+});
+
+describe("large diff (#74)", () => {
+  test("scattered changes in a 5000-line file become many small chunks, not one block", async () => {
+    const lines = Array.from({ length: 5000 }, (_, i) => `line ${i + 1}`);
+    const head = lines.join("\n") + "\n";
+    const cur = lines.map((l, i) => ((i + 1) % 7 === 0 ? l + " CHANGED" : l)).join("\n") + "\n";
+    await open("/r/big.txt", { "/r/big.txt": head }, { "/r/big.txt": cur });
+    const b = EditorView.findFromDOM(document.querySelector(".cm-merge-b") as HTMLElement)!;
+    expect(getChunks(b.state)!.chunks.length).toBe(714);
   });
 });

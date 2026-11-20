@@ -7,7 +7,7 @@
   import { syntaxHighlighting } from "@codemirror/language";
   import { history, historyKeymap, defaultKeymap } from "@codemirror/commands";
   import { keymap } from "@codemirror/view";
-  import { diffState } from "../lib/git/diff.svelte";
+  import { diffState, DIFF_CONFIG } from "../lib/git/diff.svelte";
   import { git, refresh } from "../lib/git/git.svelte";
   import { app } from "../lib/state.svelte";
   import { fsApi, basename } from "../lib/api";
@@ -74,6 +74,8 @@
       highlightChanges: true,
       gutter: true,
       collapseUnchanged: { margin: 3, minSize: 6 },
+      // The default character diff gives up on files with many scattered changes (#74).
+      diffConfig: DIFF_CONFIG,
     });
   });
 
