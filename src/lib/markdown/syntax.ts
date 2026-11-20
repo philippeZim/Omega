@@ -10,7 +10,8 @@ export const Highlight: MarkdownConfig = {
     {
       name: "Highlight",
       parse(cx, next, pos) {
-        if (next != 61 /* = */ || cx.char(pos + 1) != 61 || cx.char(pos + 2) == 61) return -1;
+        // Only exactly "==": the parser retries every position, so also reject the middle of a longer "=" run.
+        if (next != 61 /* = */ || cx.char(pos + 1) != 61 || cx.char(pos + 2) == 61 || cx.char(pos - 1) == 61) return -1;
         const before = cx.slice(pos - 1, pos), after = cx.slice(pos + 2, pos + 3);
         const sBefore = /\s|^$/.test(before), sAfter = /\s|^$/.test(after);
         return cx.addDelimiter(HighlightDelim, pos, pos + 2, !sAfter, !sBefore);
@@ -26,7 +27,8 @@ export const InlineMath: MarkdownConfig = {
     {
       name: "InlineMath",
       parse(cx, next, pos) {
-        if (next != 36 /* $ */ || cx.char(pos + 1) == 36) return -1;
+        // "$$" is block math only; reject it from both of its dollars, since the parser retries at the second one.
+        if (next != 36 /* $ */ || cx.char(pos + 1) == 36 || cx.char(pos - 1) == 36) return -1;
         // Like Obsidian: no whitespace right inside the dollars ("costs $5 and $6" is not math).
         if (/\s/.test(String.fromCharCode(cx.char(pos + 1)))) return -1;
         for (let i = pos + 1; i < cx.end; i++) {
