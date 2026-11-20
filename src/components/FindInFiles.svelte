@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy, tick } from "svelte";
-  import { open as openDialog } from "@tauri-apps/plugin-dialog";
+  import { openDialog } from "../lib/native";
   import { EditorState, RangeSetBuilder } from "@codemirror/state";
   import { EditorView, Decoration, lineNumbers, highlightActiveLine, keymap, drawSelection, ViewPlugin, type DecorationSet } from "@codemirror/view";
   import { history, historyKeymap, defaultKeymap } from "@codemirror/commands";

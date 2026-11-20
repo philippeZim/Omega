@@ -21,6 +21,7 @@ import { find } from "../search/search.svelte";
 import { settings } from "../settings.svelte";
 import type { Mode } from "../modes";
 import { audit, CHECKS, type Check } from "./uiAudit";
+import { sandboxNative } from "../native";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 
 // ------------------------------------------------------------------ console capture
@@ -82,7 +83,7 @@ function labelOf(el: Element): string {
     h.innerText ||
     h.textContent ||
     ""
-  ).replace(/\s+/g, " ").trim().slice(0, 120);
+  ).replace(/\s+/g, " ").trim();
 }
 
 /** Finds elements by visible text / aria-label / tooltip (case-insensitive) or CSS selector. */
@@ -112,14 +113,14 @@ function describe(el: HTMLElement, i: number) {
     index: i,
     tag: el.tagName.toLowerCase(),
     role: el.getAttribute("role") ?? undefined,
-    label: labelOf(el),
+    label: labelOf(el).slice(0, 160),
     disabled: (el as HTMLButtonElement).disabled || undefined,
     checked: el.getAttribute("aria-checked") ?? el.getAttribute("aria-selected") ?? undefined,
     rect: { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) },
   };
 }
 
-function clickElement(el: HTMLElement, double = false) {
+function clickElement(el: HTMLElement, double = false, right = false) {
   el.scrollIntoView({ block: "nearest" });
   const r = el.getBoundingClientRect();
   const opts = { bubbles: true, cancelable: true, composed: true, clientX: r.x + r.width / 2, clientY: r.y + r.height / 2, button: 0 };
@@ -128,6 +129,13 @@ function clickElement(el: HTMLElement, double = false) {
   el.dispatchEvent(new PointerEvent("pointerdown", opts));
   el.dispatchEvent(new MouseEvent("mousedown", opts));
   if (el.matches("input, textarea, [contenteditable=true]")) el.focus();
+  if (right) {
+    const r2 = { ...opts, button: 2, buttons: 2 };
+    el.dispatchEvent(new PointerEvent("pointerup", r2));
+    el.dispatchEvent(new MouseEvent("mouseup", r2));
+    el.dispatchEvent(new MouseEvent("contextmenu", r2));
+    return;
+  }
   el.dispatchEvent(new PointerEvent("pointerup", opts));
   el.dispatchEvent(new MouseEvent("mouseup", opts));
   el.dispatchEvent(new MouseEvent("click", opts));
@@ -339,13 +347,13 @@ export const TOOLS: Tool[] = [
   {
     name: "click",
     description: "Klickt ein Element an, gefunden über sichtbaren Text, aria-label, Tooltip oder CSS-Selektor. Bei mehreren Treffern 'index' angeben.",
-    inputSchema: obj({ text: str("Text/Label/Tooltip"), selector: str("CSS-Selektor"), index: num("Treffer-Index (Standard 0)"), double: bool("Doppelklick"), exact: bool("Text muss exakt passen") }),
-    run: async ({ text, selector, index, double, exact }) => {
+    inputSchema: obj({ text: str("Text/Label/Tooltip"), selector: str("CSS-Selektor"), index: num("Treffer-Index (Standard 0)"), double: bool("Doppelklick"), right: bool("Rechtsklick (öffnet Kontextmenüs)"), exact: bool("Text muss exakt passen") }),
+    run: async ({ text, selector, index, double, right, exact }) => {
       const els = findElements({ text, selector, exact });
       const el = els[index ?? 0];
       if (!el) throw new Error(`Kein Element gefunden (${text ?? selector}). Treffer: ${els.length}`);
       const info = describe(el, index ?? 0);
-      clickElement(el, double);
+      clickElement(el, double, right);
       await sleep(200);
       return { clicked: info, alternatives: els.length - 1 };
     },
@@ -456,11 +464,11 @@ export const TOOLS: Tool[] = [
   {
     name: "screenshot",
     description: "Screenshot des App-Inhalts (PNG) – ganzes Fenster oder ein Element per Selektor/Text.",
-    inputSchema: obj({ selector: str("CSS-Selektor (optional)"), text: str("Element per Text (optional)"), scale: num("Skalierung, Standard 0.75") }),
+    inputSchema: obj({ selector: str("CSS-Selektor (optional)"), text: str("Element per Text (optional)"), scale: num("Skalierung, Standard 1 (kleinere Werte können Artefakte zeigen)") }),
     run: async ({ selector, text, scale }) => {
       const el = selector || text ? findElements({ selector, text })[0] : document.body;
       if (!el) throw new Error("Element nicht gefunden");
-      const base = { pixelRatio: scale ?? 0.75, backgroundColor: "#030304", filter: (n: Node) => !(n instanceof HTMLElement && (n.classList.contains("tip") || n.classList.contains("cm-widgetBuffer"))) };
+      const base = { pixelRatio: scale ?? 1, backgroundColor: "#030304", filter: (n: Node) => !(n instanceof HTMLElement && (n.classList.contains("tip") || n.classList.contains("cm-widgetBuffer"))) };
       // A resource that fails to load (font/image) rejects with a bare Event → retry without them.
       const PIXEL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
       let url: string;
@@ -719,6 +727,27 @@ listen<{ call: number; name: string; args: Args }>("mcp-call", async (e) => {
   invoke("mcp_reply", { call, result });
 });
 
+/**
+ * Test instances run on an invisible desktop, but native windows (GTK file dialogs, the browser,
+ * the file manager) would open on the user's desktop. In instances, file dialogs therefore
+ * become an in-app prompt for the path (fillable via type_text/press_key Enter), and opening
+ * URLs or paths is only logged (get_console) and toasted.
+ */
+function sandboxNativeWindows() {
+  sandboxNative({
+    async dialog(kind, o: any) {
+      console.info(`[instance] native dialog (${kind}) shown as in-app prompt`);
+      const v = await ui.prompt(`Native dialog (${kind})${o.title ? `: ${o.title}` : ""}`, o.defaultPath ?? "", o.multiple ? "absolute paths, one per line" : "absolute path", undefined, undefined, !!o.multiple);
+      if (!v) return null;
+      return o.multiple ? v.split("\n").map((x) => x.trim()).filter(Boolean) : v.trim();
+    },
+    open(what) {
+      console.info(`[instance] would open: ${what}`);
+      ui.toast(`[instance] would open: ${what}`);
+    },
+  });
+}
+
 // An instance (OMEGA_INSTANCE) exists to be driven by an agent: control MCP always on.
 let instancePort: number | null = null;
 invoke<{ name: string | null; mcpPort: number | null }>("instance_info")
@@ -726,7 +755,10 @@ invoke<{ name: string | null; mcpPort: number | null }>("instance_info")
   .then((info) => {
     control.instance = info?.name ?? "";
     instancePort = info?.mcpPort ?? null;
-    if (control.instance) control.enabled = true;
+    if (control.instance) {
+      control.enabled = true;
+      sandboxNativeWindows();
+    }
     if (control.enabled) startControl();
   });
 

@@ -1,7 +1,7 @@
 /** Git integration (PyCharm-like, simple): status, commit (+push), pull, branches, rollback. */
 import { ensureTools } from "../tools.svelte";
 import { invoke } from "@tauri-apps/api/core";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { openDialog } from "../native";
 import { app, setRoot, openFile, save, syncFromDisk } from "../state.svelte";
 import { ui } from "../ui.svelte";
 import { joinPath, fsApi } from "../api";

@@ -1,11 +1,10 @@
-import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
+import { openDialog, saveDialog, openUrl } from "./native";
 import { basename, dirname, extname, fsApi, joinPath, normPath } from "./api";
 import * as ed from "./editor";
 import { modeForExtension, type Mode } from "./modes";
 import { ui } from "./ui.svelte";
 import type { SpellLang } from "./spell";
 import { setLinkHandler, resolvePath } from "./markdown/livePreview";
-import { openUrl } from "@tauri-apps/plugin-opener";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import * as latexCtl from "./latex/controller.svelte";
 import { setLspHooks } from "./code/lspExtension";

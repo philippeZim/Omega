@@ -4,7 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { openUrl } from "./native";
 import "@xterm/xterm/css/xterm.css";
 import { t, i18n } from "./i18n/index.svelte";
 import { q, IS_MAC } from "./platform";

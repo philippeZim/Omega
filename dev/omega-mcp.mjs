@@ -515,8 +515,12 @@ try {
   else if (cmd === "launch") console.log(JSON.stringify(await launch(rest[0] || "agent", rest.slice(1), (m) => console.error(m)), null, 2));
   else if (cmd === "stop") console.log(`Beendet: ${(await stop(rest[0] || "all")).join(", ")}`);
   else if (cmd === "call") await cliCall(rest);
+  else if (cmd === "tools") {
+    const { tools } = await forward(target(rest[0]), "tools/list", {});
+    for (const t of tools) console.log(`${t.name} ${JSON.stringify(Object.keys(t.inputSchema?.properties ?? {}))}\n    ${t.description}`);
+  }
   else {
-    console.error("Benutzung: omega-mcp.mjs [serve | list | launch [name] [pfade…] | stop <name|all> | call [-i instanz] [-o bild.png] <tool> [json-args]]");
+    console.error("Benutzung: omega-mcp.mjs [serve | list | launch [name] [pfade…] | stop <name|all> | call [-i instanz] [-o bild.png] <tool> [json-args] | tools [instanz]]");
     process.exit(2);
   }
 } catch (e) {

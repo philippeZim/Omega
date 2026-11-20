@@ -2,7 +2,7 @@
   import Glyph from "./Glyph.svelte";
   import { onDestroy } from "svelte";
   import { convertFileSrc } from "@tauri-apps/api/core";
-  import { openUrl } from "@tauri-apps/plugin-opener";
+  import { openUrl } from "../lib/native";
   import * as pdfjs from "pdfjs-dist";
   import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
   import { latex, setDark, reverseSync, forwardSync, installLatex } from "../lib/latex/controller.svelte";
