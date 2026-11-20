@@ -7,6 +7,7 @@
   import { syntaxHighlighting } from "@codemirror/language";
   import { find, runSearch, gotoHit, dockResults, replaceInFile, replaceAll, buildRegex, persistOptions, matchSummary, type Hit } from "../lib/search/search.svelte";
   import { matchHighlighter, refreshMatches } from "../lib/search/previewMatches";
+  import { previewWriter } from "../lib/search/previewWriter";
   import { app } from "../lib/state.svelte";
   import { fsApi, basename, normPath } from "../lib/api";
   import * as ed from "../lib/editor";
@@ -22,7 +23,7 @@
   let preview: EditorView | null = null;
   let previewFile: string | null = null;
   let previewEol: Eol = "\n";
-  let writeTimer: number | undefined;
+  const writer = previewWriter((f, text) => fsApi.writeFile(f, text).catch(() => {}));
 
   const hit = $derived(find.hits[find.selected] as Hit | undefined);
   const rel = (f: string) => (app.root && f.startsWith(app.root + "/") ? f.slice(app.root.length + 1) : f);
@@ -60,9 +61,8 @@
           const tab = app.tabs.find((t) => t.path === previewFile);
           for (const tr of u.transactions) if (tab && tr.docChanged) ed.applyChanges(tab.id, { changes: tr.changes });
           if (!tab) {
-            const f = previewFile, doc = u.state.doc, eol = previewEol;
-            clearTimeout(writeTimer);
-            writeTimer = window.setTimeout(() => fsApi.writeFile(f, toDisk(doc.toString(), eol)), 600);
+            const doc = u.state.doc, eol = previewEol;
+            writer.schedule(previewFile, () => toDisk(doc.toString(), eol));
           }
         }),
       ],
@@ -72,7 +72,7 @@
   async function showPreview(h: Hit | undefined) {
     if (!preview || !h) return;
     if (previewFile !== h.file) {
-      clearTimeout(writeTimer);
+      writer.flush(); // an edit in the previous file still goes to disk
       const tab = app.tabs.find((t) => t.path === h.file);
       let text: string;
       try {
@@ -111,11 +111,8 @@
     preview.contentDOM.addEventListener("blur", () => runSearch(50));
   });
   onDestroy(() => {
-    clearTimeout(writeTimer);
-    if (previewFile && !app.tabs.some((t) => t.path === previewFile) && preview) {
-      // Flush a pending preview write.
-      fsApi.writeFile(previewFile, toDisk(preview.state.doc.toString(), previewEol)).catch(() => {});
-    }
+    // Only a pending edit is written: an untouched preview must not overwrite a file changed on disk.
+    writer.flush();
     preview?.destroy();
   });
 
@@ -153,6 +150,7 @@
 
   async function replaceCurrent() {
     if (!hit) return;
+    await writer.flush(); // the replacement reads the file: a pending preview edit lands first
     await replaceInFile(hit.file, hit.line);
     previewFile = null;
     runSearch(0);
