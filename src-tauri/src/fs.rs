@@ -13,12 +13,28 @@ fn err<E: std::fmt::Display>(e: E) -> String {
     e.to_string()
 }
 
+/// File errors the frontend shows translated (`src/lib/fsError.ts`) are sent as a stable code
+/// `fs:<code>`; any other error stays the OS message.
+fn io_err(e: std::io::Error) -> String {
+    use std::io::ErrorKind::*;
+    let code = match e.kind() {
+        NotFound => "not_found",
+        PermissionDenied => "permission_denied",
+        AlreadyExists => "exists",
+        IsADirectory => "is_dir",
+        NotADirectory => "not_dir",
+        DirectoryNotEmpty => "not_empty",
+        _ => return e.to_string(),
+    };
+    format!("fs:{code}")
+}
+
 const HIDDEN: &[&str] = &[".git", "node_modules", "target", "__pycache__", ".venv", ".idea"];
 
 #[tauri::command]
 pub fn list_dir(path: String) -> Result<Vec<Entry>, String> {
     let mut out: Vec<Entry> = fs::read_dir(&path)
-        .map_err(err)?
+        .map_err(io_err)?
         .filter_map(|e| e.ok())
         .filter_map(|e| {
             let name = e.file_name().to_string_lossy().to_string();
@@ -38,28 +54,27 @@ pub fn list_dir(path: String) -> Result<Vec<Entry>, String> {
 
 #[tauri::command]
 pub fn read_file(path: String) -> Result<String, String> {
-    let bytes = fs::read(&path).map_err(err)?;
-    String::from_utf8(bytes).map_err(|_| "Datei ist keine UTF-8-Textdatei".into())
+    let bytes = fs::read(&path).map_err(io_err)?;
+    String::from_utf8(bytes).map_err(|_| "fs:not_utf8".into())
 }
 
 #[tauri::command]
 pub fn write_file(path: String, content: String) -> Result<(), String> {
     if let Some(parent) = Path::new(&path).parent() {
-        fs::create_dir_all(parent).map_err(err)?;
+        fs::create_dir_all(parent).map_err(io_err)?;
     }
-    fs::write(&path, content).map_err(err)
+    fs::write(&path, content).map_err(io_err)
 }
 
 /// Creates a new empty file. Fails instead of truncating if the file already exists.
 #[tauri::command]
 pub fn create_file(path: String) -> Result<(), String> {
     if let Some(parent) = Path::new(&path).parent() {
-        fs::create_dir_all(parent).map_err(err)?;
+        fs::create_dir_all(parent).map_err(io_err)?;
     }
     match fs::OpenOptions::new().write(true).create_new(true).open(&path) {
         Ok(_) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err("Ziel existiert bereits".into()),
-        Err(e) => Err(err(e)),
+        Err(e) => Err(io_err(e)),
     }
 }
 
@@ -69,28 +84,28 @@ pub fn write_file_base64(path: String, data: String) -> Result<(), String> {
     use base64::Engine;
     let bytes = base64::engine::general_purpose::STANDARD.decode(data).map_err(err)?;
     if let Some(parent) = Path::new(&path).parent() {
-        fs::create_dir_all(parent).map_err(err)?;
+        fs::create_dir_all(parent).map_err(io_err)?;
     }
-    fs::write(&path, bytes).map_err(err)
+    fs::write(&path, bytes).map_err(io_err)
 }
 
 #[tauri::command]
 pub fn create_dir(path: String) -> Result<(), String> {
-    fs::create_dir_all(&path).map_err(err)
+    fs::create_dir_all(&path).map_err(io_err)
 }
 
 #[tauri::command]
 pub fn rename_path(from: String, to: String) -> Result<(), String> {
     if Path::new(&to).exists() {
-        return Err("Ziel existiert bereits".into());
+        return Err("fs:exists".into());
     }
-    fs::rename(&from, &to).map_err(err)
+    fs::rename(&from, &to).map_err(io_err)
 }
 
 #[tauri::command]
 pub fn delete_path(path: String) -> Result<(), String> {
     let p = PathBuf::from(&path);
-    if p.is_dir() { fs::remove_dir_all(p) } else { fs::remove_file(p) }.map_err(err)
+    if p.is_dir() { fs::remove_dir_all(p) } else { fs::remove_file(p) }.map_err(io_err)
 }
 
 #[tauri::command]
@@ -385,7 +400,7 @@ mod tests {
         fs::write(&a, "A").unwrap();
         fs::write(&b, "B").unwrap();
         let e = rename_path(s(&a), s(&b)).unwrap_err();
-        assert_eq!(e, "Ziel existiert bereits");
+        assert_eq!(e, "fs:exists");
         assert_eq!(fs::read_to_string(&a).unwrap(), "A");
         assert_eq!(fs::read_to_string(&b).unwrap(), "B");
         rename_path(s(&a), s(&c)).unwrap();
@@ -458,5 +473,22 @@ mod tests {
             fs::write(r.join(f), "").unwrap();
         }
         assert_eq!(collect_files(&s(r), 2), ["a/z.txt", "b.txt"]);
+    }
+
+    #[test]
+    fn file_errors_are_codes() {
+        let t = tempfile::tempdir().unwrap();
+        let bin = t.path().join("data.bin");
+        fs::write(&bin, [0xff, 0xfe, 0x00]).unwrap();
+        assert_eq!(read_file(s(&bin)).unwrap_err(), "fs:not_utf8");
+        assert_eq!(read_file(s(&t.path().join("nope"))).unwrap_err(), "fs:not_found");
+        assert_eq!(read_file(s(t.path())).unwrap_err(), "fs:is_dir");
+        assert_eq!(create_file(s(&bin)).unwrap_err(), "fs:exists");
+        #[cfg(unix)]
+        {
+            let link = t.path().join("broken-link");
+            std::os::unix::fs::symlink(t.path().join("gone"), &link).unwrap();
+            assert_eq!(create_file(s(&link)).unwrap_err(), "fs:exists");
+        }
     }
 }

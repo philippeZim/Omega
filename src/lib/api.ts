@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { fsErrorText } from "./fsError";
 
 export interface Entry {
   name: string;
@@ -10,16 +11,26 @@ export interface Entry {
  *  it every save) would fail. Same as String.prototype.toWellFormed(), which ES2022 / older WebKit lack. */
 export const wellFormed = (s: string) => s.replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]|[\uD800-\uDFFF]/g, (m) => (m.length === 2 ? m : "�"));
 
+/** Runs a file command; its error codes become translated messages naming `path` (#33). */
+const fsCall = <T>(cmd: string, args: Record<string, unknown>, path: string) =>
+  invoke<T>(cmd, args).catch((e) => {
+    throw fsErrorText(e, path);
+  });
+
 export const fsApi = {
-  listDir: (path: string) => invoke<Entry[]>("list_dir", { path }),
-  readFile: (path: string) => invoke<string>("read_file", { path }),
-  writeFile: (path: string, content: string) => invoke<void>("write_file", { path, content: wellFormed(content) }),
+  listDir: (path: string) => fsCall<Entry[]>("list_dir", { path }, path),
+  readFile: (path: string) => fsCall<string>("read_file", { path }, path),
+  writeFile: (path: string, content: string) => fsCall<void>("write_file", { path, content: wellFormed(content) }, path),
   /** Creates an empty file; rejects if it already exists (never truncates). */
-  createFile: (path: string) => invoke<void>("create_file", { path }),
-  writeFileBase64: (path: string, data: string) => invoke<void>("write_file_base64", { path, data }),
-  createDir: (path: string) => invoke<void>("create_dir", { path }),
-  rename: (from: string, to: string) => invoke<void>("rename_path", { from, to }),
-  remove: (path: string) => invoke<void>("delete_path", { path }),
+  createFile: (path: string) => fsCall<void>("create_file", { path }, path),
+  writeFileBase64: (path: string, data: string) => fsCall<void>("write_file_base64", { path, data }, path),
+  createDir: (path: string) => fsCall<void>("create_dir", { path }, path),
+  // "exists" is about the target, every other error about the source.
+  rename: (from: string, to: string) =>
+    invoke<void>("rename_path", { from, to }).catch((e) => {
+      throw fsErrorText(e, String(e) === "fs:exists" ? to : from);
+    }),
+  remove: (path: string) => fsCall<void>("delete_path", { path }, path),
   exists: (path: string) => invoke<boolean>("path_exists", { path }),
   homeDir: () => invoke<string>("home_dir"),
 };
