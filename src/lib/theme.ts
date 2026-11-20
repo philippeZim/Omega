@@ -28,11 +28,28 @@ export const baseTheme = EditorView.theme(
     ".cm-foldGutter .cm-gutterElement": { color: "var(--label-3)", cursor: "default" },
     ".cm-panels": { backgroundColor: "rgba(0,0,0,0.25)", color: "var(--label)", border: "none" },
     ".cm-panels.cm-panels-top": { borderBottom: "1px solid rgba(var(--fg-rgb), 0.05)" },
-    ".cm-search": { fontFamily: "var(--font)", fontSize: "13px", padding: "8px 12px" },
-    ".cm-search input, .cm-search button, .cm-search label": { fontFamily: "var(--font)", fontSize: "12px" },
-    ".cm-textfield": { background: "var(--recess)", boxShadow: "var(--recess-shadow)", border: "none", borderRadius: "999px", padding: "5px 12px", color: "var(--label)" },
-    ".cm-button": { backgroundImage: "none", background: "rgba(var(--fg-rgb), 0.08)", border: "none", borderRadius: "999px", color: "var(--label)", padding: "4px 12px" },
-    ".cm-panel button[name=close]": { color: "var(--label-2)", fontSize: "18px" },
+    ".cm-panels.cm-panels-bottom": { borderTop: "1px solid rgba(var(--fg-rgb), 0.05)" },
+    // Find/Replace and Go to Line: app font, one size for labels, inputs and buttons (CodeMirror's
+    // defaults shrink fields and buttons to 70 %), labels kept on one line.
+    ".cm-panel.cm-search, .cm-dialog": { fontFamily: "var(--font)", fontSize: "13px", padding: "8px 40px 8px 12px", position: "relative" },
+    ".cm-panel.cm-search input, .cm-panel.cm-search button, .cm-panel.cm-search label, .cm-dialog input, .cm-dialog button, .cm-dialog label": { fontFamily: "var(--font)", fontSize: "12px" },
+    ".cm-panel.cm-search label, .cm-dialog label": { whiteSpace: "nowrap", color: "var(--label-2)" },
+    ".cm-dialog label": { fontSize: "13px" },
+    ".cm-panel.cm-search input[type=checkbox]": { accentColor: "var(--accent)", verticalAlign: "middle" },
+    ".cm-textfield": { background: "var(--recess)", boxShadow: "var(--recess-shadow)", border: "none", borderRadius: "999px", padding: "5px 12px", color: "var(--label)", fontSize: "12px", outline: "none" },
+    ".cm-textfield::placeholder": { color: "var(--label-3)" },
+    ".cm-dialog .cm-textfield": { width: "8em", margin: "0 8px 0 4px" },
+    ".cm-button": { backgroundImage: "none", background: "rgba(var(--fg-rgb), 0.08)", border: "none", borderRadius: "999px", color: "var(--label)", padding: "4px 12px", fontSize: "12px", cursor: "pointer" },
+    ".cm-button:hover": { background: "rgba(var(--fg-rgb), 0.14)" },
+    // CodeMirror's "&dark .cm-button" gradient and border outrank a plain ".cm-button".
+    "&.cm-editor .cm-panels .cm-button, &.cm-editor .cm-panels .cm-textfield": { backgroundImage: "none", border: "none" },
+    // Close ×: a round 24px target instead of a bare 9×16 px glyph.
+    ".cm-panel.cm-search button[name=close], .cm-dialog button.cm-dialog-close": {
+      position: "absolute", top: "50%", right: "8px", transform: "translateY(-50%)", width: "24px", height: "24px", padding: "0", margin: "0",
+      display: "grid", placeItems: "center", border: "none", borderRadius: "50%", background: "transparent", color: "var(--label-2)", fontSize: "18px", lineHeight: "1", cursor: "pointer",
+    },
+    ".cm-panel.cm-search button[name=close]": { top: "8px", transform: "none" },
+    ".cm-panel.cm-search button[name=close]:hover, .cm-dialog button.cm-dialog-close:hover": { background: "var(--fill-hover)", color: "var(--label)" },
     ".cm-searchMatch": { backgroundColor: "rgba(214, 163, 95,0.28)", borderRadius: "2px" },
     ".cm-searchMatch-selected": { backgroundColor: "rgba(214, 163, 95,0.55)" },
     ".cm-tooltip": { backgroundColor: "var(--glass-strong)", backdropFilter: "var(--blur)", border: "none", borderRadius: "14px", boxShadow: "var(--glass-highlight), 0 14px 40px rgba(0,0,0,0.6)", overflow: "hidden", padding: "4px" },
