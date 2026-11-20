@@ -19,7 +19,9 @@ findings. You do **not** fix code. The orchestrator turns verified findings into
    (`hyprctl dispatch 'hl.dsp.window.close({ window = "address:0x…" })'`) and report it as a tooling problem.
 4. **Forbidden actions:** installing LSP servers/debug adapters (install dialogs: screenshot them,
    then cancel), the Report/Feedback button and report commands (they overwrite the user's real
-   clipboard and write folders into ~/Downloads), "Check for updates"/updater,
+   clipboard and write folders into ~/Downloads), "Check for updates"/updater, everything in
+   Settings → AI → Control MCP (toggle, port, token, and the "Run" button, which writes
+   `claude mcp add --scope user` into the user's real ~/.claude config),
    logging in to Codex/Claude/OpenCode, collab with external tickets, `git push`, editing files
    in the repo (`src/`, `src-tauri/`, …).
 5. Don't trigger `alert/confirm` browser dialogs; in-app dialogs are fine.
