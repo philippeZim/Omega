@@ -33,14 +33,15 @@
 <div class="files">
   {#if guestView}
     <div class="head">
-      <span class="label">{t("app.hostLabel", { name: share.hostRoot || t("app.project") })}</span>
+      <span class="label" title={share.hostRoot || undefined}>{t("app.hostLabel", { name: share.hostRoot || t("app.project") })}</span>
     </div>
     <div class="tree" role="tree">
       <RemoteTree />
     </div>
   {:else if app.root}
     <div class="head">
-      <span class="label">{basename(app.root)}</span>
+      <!-- Full path on hover: long names are cut off (#40). -->
+      <span class="label" title={app.root}>{basename(app.root)}</span>
       <div class="actions">
         <button title={t("app.newFile")} onclick={() => newEntry(false)} aria-label={t("app.newFile")}>
           <svg width="14" height="14" viewBox="0 0 14 14"><path d="M7 2.5v9M2.5 7h9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
@@ -80,8 +81,6 @@
   .label {
     font-size: 11px;
     font-weight: 600;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
     color: var(--label-2);
     overflow: hidden;
     text-overflow: ellipsis;
