@@ -117,7 +117,7 @@
               <div><b>{t(sz.label)}</b><span class="sub2">{t(sz.sub)}</span></div>
               <div class="stepper">
                 <button onclick={() => setSize(sz.key, Math.max(sz.min, +(v - sz.step).toFixed(2)))} aria-label={t("app.settings.smaller")}><Glyph name="minus" size={10} /></button>
-                <input type="range" min={sz.min} max={sz.max} step={sz.step} value={v} oninput={(e) => setSize(sz.key, Number((e.currentTarget as HTMLInputElement).value))} />
+                <input type="range" aria-label={t(sz.label)} min={sz.min} max={sz.max} step={sz.step} value={v} oninput={(e) => setSize(sz.key, Number((e.currentTarget as HTMLInputElement).value))} />
                 <button onclick={() => setSize(sz.key, Math.min(sz.max, +(v + sz.step).toFixed(2)))} aria-label={t("app.settings.larger")}><Glyph name="plus" size={10} /></button>
                 <span class="val">{sz.unit === "%" ? Math.round(v * 100) + " %" : sz.key === "proseWidth" && v >= PROSE_WIDTH_FULL ? t("app.settings.proseWidthFull") : v + " px"}</span>
               </div>
@@ -268,7 +268,7 @@
             </div>
             <div class="srow">
               <div><b>Port</b><span class="sub2">{t("app.settings.portSub")}</span></div>
-              <input class="port" type="number" min="1024" max="65535" value={control.port} onchange={(e) => setControlPort(Number((e.currentTarget as HTMLInputElement).value))} />
+              <input class="port" type="number" aria-label="Port" min="1024" max="65535" value={control.port} onchange={(e) => setControlPort(Number((e.currentTarget as HTMLInputElement).value))} />
             </div>
             <div class="srow">
               <div><b>{t("app.settings.renewToken")}</b><span class="sub2">{t("app.settings.renewTokenSub")}</span></div>
