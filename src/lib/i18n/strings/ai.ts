@@ -58,6 +58,11 @@ export const en = {
   "ai.collab.end": "End session",
   "ai.collab.leave": "Leave session",
   "ai.collab.fileDeleted": "{name} was deleted by the host – your text stays here as an unsaved tab",
+  // Errors from collab.rs (codes "collab:<code>", see src/lib/collab/collabError.ts)
+  "ai.collab.err.invalid_ticket": "Invalid invite code",
+  "ai.collab.err.timeout": "Timed out – the host can't be reached",
+  "ai.collab.err.connect_failed": "Connection failed: {detail}",
+  "ai.collab.err.not_connected": "Participant not connected",
 };
 export const de: Record<keyof typeof en, string> = {
   "ai.noActiveFile": "Keine Datei aktiv",
@@ -118,6 +123,10 @@ export const de: Record<keyof typeof en, string> = {
   "ai.collab.end": "Session beenden",
   "ai.collab.leave": "Session verlassen",
   "ai.collab.fileDeleted": "{name} wurde vom Host gelöscht – dein Text bleibt hier als ungespeicherter Tab",
+  "ai.collab.err.invalid_ticket": "Ungültiger Einladungscode",
+  "ai.collab.err.timeout": "Zeitüberschreitung – der Host ist nicht erreichbar",
+  "ai.collab.err.connect_failed": "Verbindung fehlgeschlagen: {detail}",
+  "ai.collab.err.not_connected": "Teilnehmer nicht verbunden",
 };
 export const fr: Record<keyof typeof en, string> = {
   "ai.noActiveFile": "Aucun fichier actif",
@@ -178,4 +187,8 @@ export const fr: Record<keyof typeof en, string> = {
   "ai.collab.end": "Terminer la session",
   "ai.collab.leave": "Quitter la session",
   "ai.collab.fileDeleted": "{name} a été supprimé par l’hôte – votre texte reste ici dans un onglet non enregistré",
+  "ai.collab.err.invalid_ticket": "Code d’invitation invalide",
+  "ai.collab.err.timeout": "Délai dépassé – l’hôte est injoignable",
+  "ai.collab.err.connect_failed": "Échec de la connexion : {detail}",
+  "ai.collab.err.not_connected": "Participant non connecté",
 };
