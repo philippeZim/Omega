@@ -217,10 +217,18 @@ fn compile(app: &AppHandle, path: Option<String>, content: String) -> Result<Com
 
 /// Maps a file name as TeX reports it (relative to the build dir, or a path inside it) back to
 /// the source dir. `\input{chapters/one}` is reported without `.tex`, so that is added when only
-/// the `.tex` file exists.
+/// the `.tex` file exists. TeX reports absolute paths with symlinks resolved (e.g. a cache dir
+/// that is a symlink from an old app id), so the canonical build and root dirs are matched too.
 fn map_source(f: &str, build: &Path, root_dir: &Path) -> String {
     let p = Path::new(f);
-    let rel = p.strip_prefix(build).unwrap_or(p);
+    let build_real = canonical(build);
+    let root_real = canonical(root_dir);
+    let rel = p
+        .strip_prefix(build)
+        .ok()
+        .or_else(|| build_real.as_deref().and_then(|b| p.strip_prefix(b).ok()))
+        .or_else(|| root_real.as_deref().filter(|r| *r != root_dir).and_then(|r| p.strip_prefix(r).ok()))
+        .unwrap_or(p);
     let rel = rel.strip_prefix("./").unwrap_or(rel);
     let mut path = if rel.is_absolute() { rel.to_path_buf() } else { root_dir.join(rel) };
     if !path.exists() {
@@ -231,6 +239,14 @@ fn map_source(f: &str, build: &Path, root_dir: &Path) -> String {
         }
     }
     crate::env::norm(path)
+}
+
+/// `canonicalize` without the verbatim prefix Windows adds (`\\?\C:\…`), which would never
+/// match the plain `C:\…` paths TeX reports. UNC paths (`\\?\UNC\…`) are kept as they are.
+fn canonical(p: &Path) -> Option<PathBuf> {
+    let c = p.canonicalize().ok()?;
+    let plain = c.to_str().and_then(|s| s.strip_prefix(r"\\?\")).filter(|r| !r.starts_with("UNC\\")).map(PathBuf::from);
+    Some(plain.unwrap_or(c))
 }
 
 #[derive(Serialize, Clone)]
@@ -514,6 +530,30 @@ mod tests {
         let d = parse_tex_log(log, &id);
         assert_eq!((d[0].line, d[0].message.as_str()), (5, "Reference `a' on page 1 undefined"));
         assert!(parse_tex_log("no warnings here", &id).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn source_through_symlinked_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        let link = dir.path().join("link");
+        std::fs::create_dir_all(real.join("cache/abc")).unwrap();
+        std::fs::create_dir_all(real.join("proj")).unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let (build, src) = (link.join("cache/abc"), link.join("proj"));
+        let norm = |p: PathBuf| crate::env::norm(p);
+        let real = real.canonicalize().unwrap();
+        // SyncTeX names the build copy by its resolved path.
+        let f = real.join("cache/abc/./main.tex");
+        assert_eq!(map_source(&f.to_string_lossy(), &build, &src), norm(src.join("main.tex")));
+        // Files found through the search path, resolved as well.
+        let f = real.join("proj/chapters/one.tex");
+        assert_eq!(map_source(&f.to_string_lossy(), &build, &src), norm(src.join("chapters/one.tex")));
+        // Unresolved and relative names keep working.
+        assert_eq!(map_source(&build.join("main.tex").to_string_lossy(), &build, &src), norm(src.join("main.tex")));
+        assert_eq!(map_source("./chapters/one.tex", &build, &src), norm(src.join("chapters/one.tex")));
+        assert_eq!(map_source("/usr/share/x.sty", &build, &src), "/usr/share/x.sty");
     }
 
     #[test]
