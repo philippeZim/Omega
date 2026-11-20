@@ -87,6 +87,9 @@ export async function refresh() {
   } finally {
     refreshing = false;
   }
+  // Refresh runs on open, focus and every few seconds while focused: the natural place to fetch
+  // when the last fetch of this repo is older than FETCH_INTERVAL.
+  void autoFetch();
 }
 
 /** Display status of a change: new / modified / deleted / renamed / conflict. */
@@ -133,6 +136,7 @@ export async function push() {
   if (!git.repo) return;
   git.busy = t("git.busy.push");
   try {
+    await fetchSettled();
     const args = git.upstream ? ["push"] : ["push", "-u", "origin", git.branch];
     const r = await runOk(args, "git.op.push");
     if (r) ui.toast(t("git.pushedTo", { ref: git.upstream ?? "origin/" + git.branch }));
@@ -147,6 +151,7 @@ export async function pull() {
   await saveAll();
   git.busy = t("git.busy.pull");
   try {
+    await fetchSettled();
     const r = await runOk(["pull", "--autostash", "--no-edit"], "git.op.pull");
     if (r) {
       const msg = /Already up to date/.test(r.stdout) ? t("git.upToDate") : t("git.updated");
@@ -158,6 +163,70 @@ export async function pull() {
     git.busy = "";
     await refresh();
   }
+}
+
+// ------------------------------------------------------------------ fetch
+
+/** Automatic fetches run at most this often (and only while the window has focus). */
+export const FETCH_INTERVAL = 5 * 60_000;
+/** A fetch that has not finished by then counts as failed (frees pull/push and the busy state). */
+export const FETCH_TIMEOUT = 60_000;
+let lastFetch = { top: "", at: 0 };
+/** The running fetch (background or manual): pull/push wait for it instead of racing it. */
+let inflight: Promise<Out | null> | null = null;
+
+/** Runs `git <args>`, null on error or after FETCH_TIMEOUT; tracked in `inflight`. */
+function startFetch(args: () => Promise<string[]>): Promise<Out | null> {
+  lastFetch = { top: git.top, at: Date.now() };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<null>((res) => (timer = setTimeout(() => res(null), FETCH_TIMEOUT)));
+  const p: Promise<Out | null> = Promise.race([args().then((a) => run(a)).catch(() => null), timeout]).finally(() => {
+    clearTimeout(timer);
+    if (inflight === p) inflight = null;
+  });
+  inflight = p;
+  return p;
+}
+
+/**
+ * Background fetch must never wait for input: SSH in batch mode with a connect timeout (unless the
+ * user set their own core.sshCommand; GIT_SSH_COMMAND wins over both anyway) and no interactive
+ * credential helpers. Plain `fetch` = the current branch's upstream remote.
+ */
+async function backgroundFetchArgs(): Promise<string[]> {
+  const own = await run(["config", "--get", "core.sshCommand"]);
+  const ssh = own.code === 0 ? [] : ["-c", "core.sshCommand=ssh -o BatchMode=yes -o ConnectTimeout=15"];
+  return [...ssh, "-c", "credential.interactive=never", "fetch", "--quiet"];
+}
+
+/** Background fetch so the behind count (↓) sees new remote commits. Silent: no toast on failure. */
+export async function autoFetch() {
+  if (!git.repo || !git.upstream || git.busy || inflight || !document.hasFocus()) return;
+  if (lastFetch.top === git.top && Date.now() - lastFetch.at < FETCH_INTERVAL) return;
+  const r = await startFetch(backgroundFetchArgs);
+  if (r?.code === 0) await refresh();
+}
+
+/** Waits for a running fetch (before pull/push touch the same refs). */
+const fetchSettled = async () => {
+  if (inflight) await inflight;
+};
+
+/** Branch menu "Fetch": reports the result; joins a background fetch that is already running. */
+export async function fetchNow() {
+  if (!git.repo || git.busy) return;
+  git.busy = t("git.busy.fetch");
+  let r: Out | null;
+  try {
+    r = await (inflight ?? startFetch(async () => ["fetch", "--quiet"]));
+  } finally {
+    git.busy = "";
+    await refresh();
+  }
+  if (!r) return ui.toast(t("git.failed", { what: t("git.op.fetch"), msg: t("git.fetchTimedOut") }), "error");
+  if (r.code !== 0) return ui.toast(t("git.failed", { what: t("git.op.fetch"), msg: gitErrorMessage(r) }), "error");
+  const ref = git.upstream ?? "origin";
+  ui.toast(git.behind === 0 ? t("git.fetchedNothing") : t(git.behind === 1 ? "git.fetchedOne" : "git.fetchedMany", { n: git.behind, ref }));
 }
 
 /** After pull/checkout files on disk changed: reload unmodified open tabs. */
