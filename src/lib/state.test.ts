@@ -564,3 +564,49 @@ describe("Markdown heading anchor links (#42)", () => {
     expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ selection: { anchor: 7 } }));
   });
 });
+
+describe("file deleted outside Omega (#32)", () => {
+  test("clean tab: marked deleted and dirty, closing asks first", async () => {
+    await setup({ "/p/a.txt": "keep me" });
+    const tab = await open("/p/a.txt");
+    fs.files.delete("/p/a.txt");
+    await st.syncFromDisk();
+    expect(tab.deleted).toBe(true);
+    expect(tab.dirty).toBe(true);
+    expect(ui.toast).toHaveBeenCalledWith(expect.stringContaining("app.deletedOnDisk"));
+    ui.choose.mockResolvedValueOnce("cancel");
+    await st.closeTab(tab.id);
+    expect(ui.choose).toHaveBeenCalledTimes(1);
+    expect(st.app.tabs).toHaveLength(1);
+    expect(writes()).toEqual([]);
+    expect(fs.files.has("/p/a.txt")).toBe(false);
+  });
+
+  test("dirty tab: autosave does not recreate the file, Ctrl+S does", async () => {
+    await setup({ "/p/a.txt": "hello" });
+    const tab = await open("/p/a.txt");
+    ed.type(tab.id, "hello!");
+    fs.files.delete("/p/a.txt"); // before the watcher noticed
+    await vi.advanceTimersByTimeAsync(1000);
+    await flush();
+    expect(fs.files.has("/p/a.txt")).toBe(false);
+    expect(tab.deleted).toBe(true);
+    await st.flushAutosave();
+    expect(fs.files.has("/p/a.txt")).toBe(false);
+    expect(await st.save(tab.id)).toBe(true);
+    expect(fs.files.get("/p/a.txt")).toBe("hello!");
+    expect(tab.deleted).toBe(false);
+    expect(tab.dirty).toBe(false);
+  });
+
+  test("file comes back unchanged: the mark is cleared", async () => {
+    await setup({ "/p/a.txt": "same" });
+    const tab = await open("/p/a.txt");
+    fs.files.delete("/p/a.txt");
+    await st.syncFromDisk();
+    fs.files.set("/p/a.txt", "same");
+    await st.syncFromDisk();
+    expect(tab.deleted).toBe(false);
+    expect(tab.dirty).toBe(false);
+  });
+});

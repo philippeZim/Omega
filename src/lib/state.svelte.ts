@@ -64,6 +64,8 @@ export interface Tab {
   root?: string | null;
   /** Line ending of the file on disk (the editor always uses "\n"); undefined = "\n". */
   eol?: Eol;
+  /** The file was deleted outside Omega: the tab stays dirty, autosave skips it (#32). */
+  deleted?: boolean;
 }
 
 export const app = $state({
@@ -169,7 +171,18 @@ async function autosave(id: string | null) {
   clearTimeout(autosaveTimers.get(id));
   autosaveTimers.delete(id);
   const t = app.tabs.find((t) => t.id === id);
-  if (t?.path && t.dirty) await save(id);
+  if (!t?.path || !t.dirty || t.deleted || isRemotePath(t.path)) return;
+  // Deleted outside Omega before the watcher noticed: don't bring the file back (#32).
+  if (!(await fsApi.exists(t.path))) return markDeleted(t);
+  await save(id);
+}
+
+/** The tab's file is gone from disk: keep the buffer, but as unsaved, so closing it asks (#32). */
+function markDeleted(tab: Tab) {
+  if (tab.deleted) return;
+  tab.deleted = true;
+  tab.dirty = true;
+  ui.toast(t("app.deletedOnDisk", { name: tab.name }));
 }
 
 /** Writes every modified file that has a path. */
@@ -248,7 +261,14 @@ export async function syncFromDisk(paths?: string[]) {
         try {
           raw = await fsApi.readFile(t.path);
         } catch {
-          continue; // deleted or unreadable: keep the buffer
+          // Deleted: keep the buffer, but mark the tab. Unreadable: just keep the buffer.
+          if (!t.deleted && !(await fsApi.exists(t.path).catch(() => true))) markDeleted(t);
+          continue;
+        }
+        if (t.deleted) {
+          // The file is back (git checkout, undo in another program).
+          t.deleted = false;
+          t.dirty = ed.isDirty(t.id);
         }
         // Skip if Omega saved the tab while we were reading.
         if (saved === null || writing.has(t.id) || ed.savedText(t.id) !== saved) continue;
@@ -291,6 +311,7 @@ ed.setCallbacks({
   onDirty(id, dirty) {
     const t = app.tabs.find((t) => t.id === id);
     if (t && isRemotePath(t.path)) dirty = false; // the host saves shared files
+    if (t?.deleted) dirty = true; // only an explicit save brings the file back
     if (t && t.dirty !== dirty) t.dirty = dirty;
     if (dirty) scheduleAutosave(id);
   },
@@ -493,6 +514,7 @@ export async function save(id = app.activeId, forceDialog = false, overwrite = f
     writing.delete(tab.id);
   }
   ed.markSaved(tab.id, snapshot);
+  tab.deleted = false;
   window.dispatchEvent(new CustomEvent("omega:saved", { detail: path }));
   for (const c of allClients()) c.save(fileUri(path), ed.getText(tab.id));
   if (tab.path !== path) {
