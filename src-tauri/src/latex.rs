@@ -238,17 +238,29 @@ fn parse_tectonic(out: &str, map_file: &dyn Fn(&str) -> String) -> Vec<Diagnosti
         if rest.starts_with("errors were issued by the TeX engine") {
             continue;
         }
-        let mut parts = rest.splitn(3, ':');
-        let (f, l, msg) = (parts.next(), parts.next(), parts.next());
-        match (f, l.and_then(|l| l.trim().parse::<u32>().ok()), msg) {
-            (Some(f), Some(l), Some(m)) => v.push(Diagnostic { file: map_file(f.trim()), line: l, message: m.trim().into(), severity: sev.into() }),
-            _ => v.push(Diagnostic { file: String::new(), line: 0, message: rest.trim().into(), severity: sev.into() }),
+        match split_location(rest) {
+            Some((f, l, m)) => v.push(Diagnostic { file: map_file(f), line: l, message: m.into(), severity: sev.into() }),
+            None => v.push(Diagnostic { file: String::new(), line: 0, message: rest.trim().into(), severity: sev.into() }),
         }
     }
     // Tectonic repeats messages on every TeX pass (not necessarily adjacent): keep the first of each.
     let mut seen = std::collections::HashSet::new();
     v.retain(|d| seen.insert((d.file.clone(), d.line, d.message.clone())));
     v
+}
+
+/// Splits `file:line: message` at the first `:<digits>:` segment, so colons inside the
+/// file name (Windows drive letters like `C:\x\a.tex`) or the message don't break it.
+fn split_location(rest: &str) -> Option<(&str, u32, &str)> {
+    for (i, _) in rest.match_indices(':') {
+        let after = &rest[i + 1..];
+        let Some(j) = after.find(':') else { break };
+        let file = rest[..i].trim();
+        if let (false, Ok(line)) = (file.is_empty(), after[..j].trim().parse::<u32>()) {
+            return Some((file, line, after[j + 1..].trim()));
+        }
+    }
+    None
 }
 
 /// Picks up `LaTeX Warning: … on input line 42.` style warnings from the .log.
@@ -380,10 +392,30 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "bug: Windows drive colon splits the path"]
     fn tectonic_windows_path() {
         let d = parse_tectonic("error: C:\\x\\a.tex:3: msg", &id);
         assert_eq!((d[0].file.as_str(), d[0].line, d[0].message.as_str()), ("C:\\x\\a.tex", 3, "msg"));
+    }
+
+    #[test]
+    fn tectonic_message_with_colons() {
+        let out = "error: a.tex:5: Missing $ inserted: see b.tex:12: here\nwarning: C:\\x\\a.tex:7: Overfull \\hbox: 3pt too wide";
+        let d = parse_tectonic(out, &id);
+        let got: Vec<_> = d.iter().map(|d| (d.file.as_str(), d.line, d.message.as_str(), d.severity.as_str())).collect();
+        assert_eq!(
+            got,
+            vec![
+                ("a.tex", 5, "Missing $ inserted: see b.tex:12: here", "error"),
+                ("C:\\x\\a.tex", 7, "Overfull \\hbox: 3pt too wide", "warning"),
+            ]
+        );
+    }
+
+    #[test]
+    fn tectonic_unix_path_and_no_line() {
+        let d = parse_tectonic("error: /home/u/a.tex:3: msg\nerror: C:\\x\\a.tex: no line", &id);
+        assert_eq!((d[0].file.as_str(), d[0].line, d[0].message.as_str()), ("/home/u/a.tex", 3, "msg"));
+        assert_eq!((d[1].file.as_str(), d[1].line, d[1].message.as_str()), ("", 0, "C:\\x\\a.tex: no line"));
     }
 
     #[test]
