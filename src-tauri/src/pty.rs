@@ -243,7 +243,7 @@ pub fn pty_spawn(app: AppHandle, id: String, cwd: Option<String>, cols: u16, row
 pub fn pty_write(app: AppHandle, id: String, data: String) -> Result<(), String> {
     let state = app.state::<PtyState>();
     let mut sessions = state.sessions.lock().unwrap();
-    let s = sessions.get_mut(&id).ok_or("Terminal existiert nicht")?;
+    let s = sessions.get_mut(&id).ok_or("terminal does not exist")?;
     s.writer.write_all(data.as_bytes()).map_err(|e| e.to_string())?;
     s.writer.flush().map_err(|e| e.to_string())
 }
