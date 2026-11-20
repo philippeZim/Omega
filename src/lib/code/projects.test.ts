@@ -115,9 +115,22 @@ describe("detectProject", () => {
   test("pnpm: a TS file runs with tsx, no build script → typecheck", async () => {
     files["/w/package.json"] = "{}";
     const p = (await detectProject("/w/src/index.ts", "/w"))!;
-    expect(p.run?.cmd).toBe("pnpm dlx tsx /w/src/index.ts");
+    // Without a local tsx: dlx, with esbuild's build allowed so pnpm doesn't ask interactively (#81).
+    expect(p.run?.cmd).toBe("pnpm dlx --allow-build=esbuild tsx /w/src/index.ts");
     expect(p.build?.cmd).toBe("pnpm exec tsc --noEmit");
     expect(p.test).toBeNull();
+  });
+
+  test("pnpm: a TS file runs with the project's own tsx when installed (#81)", async () => {
+    files["/w/package.json"] = JSON.stringify({ devDependencies: { tsx: "^4" } });
+    files["/w/node_modules/.bin/tsx"] = "";
+    const p = (await detectProject("/w/src/index.ts", "/w"))!;
+    expect(p.run?.cmd).toBe("pnpm exec tsx /w/src/index.ts");
+  });
+
+  test("lone TS file runs tsx through dlx without the build prompt (#81)", async () => {
+    const p = (await detectProject("/x/a.ts", null))!;
+    expect(p.run?.cmd).toBe("pnpm dlx --allow-build=esbuild tsx /x/a.ts");
   });
 
   test("Cargo workspace: the outermost Cargo.toml wins", async () => {

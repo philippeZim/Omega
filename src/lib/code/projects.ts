@@ -187,6 +187,10 @@ async function packageScripts(root: string): Promise<string[]> {
 
 const RUN = "Shift+F10", BUILD = "Ctrl+F9";
 
+/** tsx without a local install. pnpm 10+ blocks esbuild's build script and asks interactively
+ *  which builds to allow, which hangs the Run tab; `--allow-build` answers that up front. */
+const TSX_DLX = "pnpm dlx --allow-build=esbuild tsx";
+
 /** Action whose label and argument prompt follow the UI language (getters re-read the locale). */
 function act(id: string, label: Key, cmd: string, opts: { shortcut?: string; ask?: () => string; suggest?: Suggest; arg?: Action["arg"]; pre?: string; setup?: Action["setup"] } = {}): Action {
   return { id, cmd, pre: opts.pre, setup: opts.setup, shortcut: opts.shortcut, suggest: opts.suggest, arg: opts.arg, get label() { return t(label); }, get ask() { return opts.ask?.(); } };
@@ -242,7 +246,8 @@ export async function detectProject(file: string | null, workspace: string | nul
   if (p?.kind === "pnpm") {
     const scripts = await packageScripts(p.root);
     const lang = file ? langFor(file)?.id : null;
-    const fileRun = file && (lang === "typescript" ? `pnpm dlx tsx ${q(file)}` : lang === "javascript" ? `pnpm exec node ${q(file)}` : null); // pnpm exec honours devEngines.runtime (chosen Node version)
+    const tsx = (await fsApi.exists(joinPath(p.root, "node_modules/.bin/tsx"))) ? "pnpm exec tsx" : TSX_DLX;
+    const fileRun = file && (lang === "typescript" ? `${tsx} ${q(file)}` : lang === "javascript" ? `pnpm exec node ${q(file)}` : null); // pnpm exec honours devEngines.runtime (chosen Node version)
     const runScript = ["dev", "start"].find((s) => scripts.includes(s));
     return {
       ...p,
@@ -337,7 +342,7 @@ async function singleFileRun(lang: LangId | undefined, file: string): Promise<[s
     case "cpp": return [out, ["cc"], `${CXX_COMPILER} -g -Wall -std=c++20 ${f} -o ${out}`];
     case "java": return [`java ${f}`, ["jdk"]];
     case "javascript": return [`node ${f}`, ["node"]];
-    case "typescript": return [`pnpm dlx tsx ${f}`, ["node", "pnpm"]];
+    case "typescript": return [`${TSX_DLX} ${f}`, ["node", "pnpm"]];
     case "rust": return [out, ["rust"], `rustc -g ${f} -o ${out}`];
     default: return null;
   }
