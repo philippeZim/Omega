@@ -1,5 +1,12 @@
 import { EditorView } from "@codemirror/view";
 
+/** Prose modes get a centered, readable column (like Obsidian's "readable line length");
+ *  width is the "Text width" setting. "&.cm-editor" outranks the generic ".cm-content" padding of
+ *  baseTheme, which comes first in the editor's extensions. */
+export const proseLayout = EditorView.theme({
+  "&.cm-editor .cm-content": { maxWidth: "var(--prose-width, 1000px)", margin: "0 auto", padding: "48px 32px 40vh" },
+});
+
 export const baseTheme = EditorView.theme(
   {
     "&": { height: "100%", backgroundColor: "transparent", color: "var(--label)", fontSize: "var(--code-font-size, 14px)" },

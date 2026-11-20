@@ -10,7 +10,7 @@ import { Prec } from "@codemirror/state";
 import { lintGutter } from "@codemirror/lint";
 import { Highlight, InlineMath, BlockMath } from "./markdown/syntax";
 import { livePreview } from "./markdown/livePreview";
-import { codeHighlight } from "./theme";
+import { codeHighlight, proseLayout } from "./theme";
 import { latexExtensions } from "./latex/language";
 import { langFor, indentFor } from "./code/languages";
 import { lspExtension } from "./code/lspExtension";
@@ -31,12 +31,6 @@ export function modeForExtension(ext: string): Mode | null {
   if (ext === "txt") return "text";
   return null;
 }
-
-/** Prose modes get a centered, readable column (like Obsidian's "readable line length");
- *  width is the "Text width" setting. */
-const proseLayout = EditorView.theme({
-  ".cm-content": { maxWidth: "var(--prose-width, 1000px)", margin: "0 auto", padding: "48px 32px 40vh" },
-});
 
 const markdownLang = markdown({ base: markdownLanguage, codeLanguages: languages, extensions: [Highlight, InlineMath, BlockMath] });
 
