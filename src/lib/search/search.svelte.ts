@@ -211,7 +211,7 @@ const filesLabel = (n: number) => t(n === 1 ? "git.search.fileOne" : "git.search
 export async function replaceAll() {
   const files = [...new Set(find.hits.map((h) => h.file))];
   if (!files.length) return;
-  const ok = await ui.confirm(t("git.search.replaceAllTitle"), t("git.search.replaceAllBody", { summary: matchSummary(find.total, files.length), text: find.replacement }), t("git.search.replaceAll"), true);
+  const ok = await ui.confirm(t("git.search.replaceAllTitle"), t("git.search.replaceAllBody", { summary: matchSummary(find.total, files.length, find.truncated ? "+" : ""), text: find.replacement }), t("git.search.replaceAll"), true);
   if (!ok) return;
   let n = 0;
   for (const f of files) n += await replaceInFile(f);
