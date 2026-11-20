@@ -1,0 +1,382 @@
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { mockIPC } from "@tauri-apps/api/mocks";
+import { emit } from "@tauri-apps/api/event";
+
+vi.mock("../ui.svelte", () => ({ ui: { toast: vi.fn() } }));
+vi.mock("../tools.svelte", () => ({ ensureTools: async () => true, withInstallProgress: async (_i: string, _n: string, f: () => any) => f(), serverProgressId: (k: string) => k }));
+
+// ---------------------------------------------------------------- URIs (pure)
+
+describe("fileUri / uriPath", () => {
+  test.each([
+    ["/home/me/proj/main.py", "file:///home/me/proj/main.py"],
+    ["/home/me/my project/a b.py", "file:///home/me/my%20project/a%20b.py"],
+    ["/tmp/#hash/100%/q?.c", "file:///tmp/%23hash/100%25/q%3F.c"],
+    ["/home/ü/Ärger €.ts", "file:///home/%C3%BC/%C3%84rger%20%E2%82%AC.ts"],
+    ["C:/Users/me/proj/main.c", "file:///c%3A/Users/me/proj/main.c"],
+    ["D:/My Files/x+y&z.rs", "file:///d%3A/My%20Files/x%2By%26z.rs"],
+  ])("%s ⇄ %s", (path, uri) => {
+    expect(L.fileUri(path)).toBe(uri);
+    expect(L.uriPath(uri)).toBe(path);
+    expect(L.uriPath(L.fileUri(path))).toBe(path);
+  });
+
+  test("uriPath accepts other spellings of Windows URIs", () => {
+    expect(L.uriPath("file:///C:/Users/me/a.c")).toBe("C:/Users/me/a.c");
+    expect(L.uriPath("file:///c:/Users/me/a.c")).toBe("C:/Users/me/a.c");
+    expect(L.uriPath("file:///C%3A/Users/me/a%20b.c")).toBe("C:/Users/me/a b.c");
+    // Normalised back to our own spelling.
+    expect(L.fileUri(L.uriPath("file:///C:/x/a.c"))).toBe("file:///c%3A/x/a.c");
+  });
+});
+
+// ---------------------------------------------------------------- LspClient with a fake server
+
+class FakeServer {
+  id: string | null = null;
+  sent: any[] = [];
+  /** method → result (function), or "none" to never answer. */
+  results: Record<string, ((params: any) => any) | "none"> = {
+    initialize: () => ({ capabilities: { hoverProvider: true } }),
+  };
+  onSend(raw: string) {
+    const m = JSON.parse(raw);
+    this.sent.push(m);
+    if (m.id === undefined || !m.method) return; // notifications and our responses
+    const r = this.results[m.method];
+    if (r === "none") return;
+    setTimeout(() => this.send({ jsonrpc: "2.0", id: m.id, result: r ? r(m.params) : null }), 0);
+  }
+  send(m: any) {
+    return emit("proc-msg", { id: this.id, msg: JSON.stringify(m) });
+  }
+  notifications() {
+    return this.sent.filter((m) => m.id === undefined).map((m) => m.method);
+  }
+}
+
+let srv: FakeServer;
+let calls: [string, any][];
+let L: typeof import("./lsp.svelte");
+const settle = () => new Promise((r) => setTimeout(r, 0));
+
+beforeEach(async () => {
+  srv = new FakeServer();
+  calls = [];
+  mockIPC(
+    (cmd, args: any) => {
+      calls.push([cmd, args]);
+      if (cmd === "proc_spawn") srv.id = args.id;
+      if (cmd === "proc_send" && args.id === srv.id) srv.onSend(args.msg);
+      if (cmd === "path_exists") return false;
+      return null;
+    },
+    { shouldMockEvents: true },
+  );
+  vi.resetModules();
+  L = await import("./lsp.svelte");
+  await settle();
+});
+
+afterEach(() => vi.useRealTimers());
+
+async function readyClient(kind: "python" | "rust" = "python", root = "/w/proj") {
+  const c = new L.LspClient(kind, root, "pyright-langserver", ["--stdio"]);
+  await c.ready;
+  return c;
+}
+
+describe("LspClient", () => {
+  test("start: spawns, initializes, sends initialized and becomes ready", async () => {
+    const c = await readyClient();
+    expect(calls.find(([cmd]) => cmd === "proc_spawn")![1]).toEqual({ id: c.id, cmd: "pyright-langserver", args: ["--stdio"], cwd: "/w/proj" });
+    const init = srv.sent[0];
+    expect(init).toMatchObject({ jsonrpc: "2.0", id: 1, method: "initialize" });
+    expect(init.params).toMatchObject({ rootUri: "file:///w/proj", rootPath: "/w/proj", workspaceFolders: [{ uri: "file:///w/proj", name: "proj" }] });
+    expect(srv.sent[1]).toEqual({ jsonrpc: "2.0", method: "initialized", params: {} });
+    expect(c.capabilities).toEqual({ hoverProvider: true });
+    expect(L.lspState.status[c.key]).toBe("ready");
+  });
+
+  test("rust gets checkOnSave as default initializationOptions", async () => {
+    await readyClient("rust", "/w/crate");
+    expect(srv.sent[0].params.initializationOptions).toEqual({ checkOnSave: true });
+  });
+
+  test("responses are matched by id, also out of order", async () => {
+    const c = await readyClient();
+    srv.results.slow = "none";
+    srv.results.fast = (p) => ({ echo: p });
+    const slow = c.request("slow", { a: 1 });
+    const fast = c.request("fast", { b: 2 });
+    await expect(fast).resolves.toEqual({ echo: { b: 2 } });
+    const slowId = srv.sent.find((m) => m.method === "slow").id;
+    await srv.send({ jsonrpc: "2.0", id: 9999, result: "stray" });
+    await srv.send({ jsonrpc: "2.0", id: slowId, result: "late" });
+    await expect(slow).resolves.toBe("late");
+  });
+
+  test("error responses reject with the server's message", async () => {
+    const c = await readyClient();
+    srv.results.bad = "none";
+    const p = c.request("bad", null);
+    await settle();
+    await srv.send({ jsonrpc: "2.0", id: srv.sent.at(-1).id, error: { code: -32601, message: "Unhandled method bad" } });
+    await expect(p).rejects.toThrow("Unhandled method bad");
+  });
+
+  test("a request without response times out", async () => {
+    const c = await readyClient();
+    srv.results["textDocument/hover"] = "none";
+    vi.useFakeTimers();
+    const p = c.request("textDocument/hover", {}, 500);
+    const done = expect(p).rejects.toThrow("textDocument/hover: Timeout");
+    await vi.advanceTimersByTimeAsync(499);
+    expect((c as any).pending.size).toBe(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await done;
+    expect((c as any).pending.size).toBe(0);
+  });
+
+  test("a failed proc_send rejects and clears the pending entry", async () => {
+    const c = await readyClient();
+    mockIPC((cmd) => { if (cmd === "proc_send") throw new Error("pipe closed"); return null; }, { shouldMockEvents: true });
+    await expect(c.request("x", null)).rejects.toThrow("pipe closed");
+    expect((c as any).pending.size).toBe(0);
+  });
+
+  test("didOpen / didChange / didSave / didClose sequence with versions", async () => {
+    const c = await readyClient();
+    const uri = L.fileUri("/w/proj/a b.py");
+    srv.sent = [];
+    c.open(uri, "python", "x = 1");
+    c.open(uri, "python", "x = 1"); // already open, same text: nothing
+    c.change(uri, "x = 1"); // unchanged: nothing
+    c.change(uri, "x = 2");
+    c.open(uri, "python", "x = 3"); // already open: becomes a change
+    c.save(uri, "x = 3");
+    c.close(uri);
+    c.close(uri); // not open: nothing
+    c.save(uri, "x = 3"); // not open: nothing
+    c.change(uri, "x = 4"); // not open: nothing
+    await settle();
+    expect(srv.sent).toEqual([
+      { jsonrpc: "2.0", method: "textDocument/didOpen", params: { textDocument: { uri, languageId: "python", version: 1, text: "x = 1" } } },
+      { jsonrpc: "2.0", method: "textDocument/didChange", params: { textDocument: { uri, version: 2 }, contentChanges: [{ text: "x = 2" }] } },
+      { jsonrpc: "2.0", method: "textDocument/didChange", params: { textDocument: { uri, version: 3 }, contentChanges: [{ text: "x = 3" }] } },
+      { jsonrpc: "2.0", method: "textDocument/didSave", params: { textDocument: { uri }, text: "x = 3" } },
+      { jsonrpc: "2.0", method: "textDocument/didClose", params: { textDocument: { uri } } },
+    ]);
+    expect(c.docs.has(uri)).toBe(false);
+  });
+
+  test("publishDiagnostics are stored under our URI spelling and reach listeners", async () => {
+    const c = await readyClient();
+    const seen: string[] = [];
+    c.diagnosticListeners.add((u) => seen.push(u));
+    const diags = [{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } }, message: "boom", severity: 1 }];
+    await srv.send({ jsonrpc: "2.0", method: "textDocument/publishDiagnostics", params: { uri: "file:///C:/w/a%20b.c", diagnostics: diags } });
+    await srv.send({ jsonrpc: "2.0", method: "textDocument/publishDiagnostics", params: { uri: "file:///w/proj/m.py", diagnostics: [] } });
+    expect(seen).toEqual(["file:///c%3A/w/a%20b.c", "file:///w/proj/m.py"]);
+    expect(c.diagnostics.get(L.fileUri("C:/w/a b.c"))).toEqual(diags);
+    expect(c.diagnostics.get(L.fileUri("/w/proj/m.py"))).toEqual([]);
+  });
+
+  test("server requests are answered (configuration, workspaceFolders, unknown → null)", async () => {
+    const c = await readyClient();
+    srv.sent = [];
+    await srv.send({ jsonrpc: "2.0", id: 5, method: "workspace/configuration", params: { items: [{ section: "basedpyright" }, { section: "other" }] } });
+    await srv.send({ jsonrpc: "2.0", id: 6, method: "workspace/workspaceFolders" });
+    await srv.send({ jsonrpc: "2.0", id: 7, method: "client/registerCapability", params: {} });
+    await srv.send({ jsonrpc: "2.0", id: 8, method: "workspace/applyEdit", params: {} });
+    await settle();
+    expect(srv.sent).toEqual([
+      { jsonrpc: "2.0", id: 5, result: [{ analysis: { typeCheckingMode: "standard" } }, null] },
+      { jsonrpc: "2.0", id: 6, result: [{ uri: "file:///w/proj", name: "/w/proj" }] },
+      { jsonrpc: "2.0", id: 7, result: null },
+      { jsonrpc: "2.0", id: 8, result: { applied: false } },
+    ]);
+    expect(c.alive).toBe(true);
+  });
+
+  test("showMessage errors/warnings are kept as status message", async () => {
+    const c = await readyClient();
+    await srv.send({ jsonrpc: "2.0", method: "window/showMessage", params: { type: 3, message: "info only" } });
+    expect(L.lspState.message[c.key]).toBeUndefined();
+    await srv.send({ jsonrpc: "2.0", method: "window/showMessage", params: { type: 1, message: "Failed to load project" } });
+    expect(L.lspState.message[c.key]).toBe("Failed to load project");
+  });
+
+  test("proc-exit marks the client stopped and keeps the stderr tail", async () => {
+    const c = await readyClient();
+    await emit("proc-stderr", { id: c.id, msg: "panic: something" });
+    await emit("proc-exit", c.id);
+    expect(c.alive).toBe(false);
+    expect(L.lspState.status[c.key]).toBe("stopped");
+    expect(L.lspState.message[c.key]).toBe("panic: something");
+    srv.sent = [];
+    c.notify("x", {}); // dead: notifications are dropped
+    await settle();
+    expect(srv.sent).toEqual([]);
+  });
+
+  // bug: LspClient's exit handler never rejects `pending` (DapSession does), so every in-flight
+  // request (hover, completion, …) hangs until its 15 s timeout after the server crashed.
+  test.fails("proc-exit rejects in-flight requests right away", async () => {
+    const c = await readyClient();
+    srv.results.slow = "none";
+    vi.useFakeTimers();
+    const p = c.request("slow", null);
+    const settled = vi.fn();
+    p.then(settled, settled);
+    await emit("proc-exit", c.id);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(settled).toHaveBeenCalled();
+  });
+
+  test("stop: shutdown request, exit notification, then kill", async () => {
+    const c = await readyClient();
+    srv.sent = [];
+    c.stop();
+    await vi.waitFor(() => expect(calls.some(([cmd, a]) => cmd === "proc_kill" && a.id === c.id)).toBe(true));
+    expect(srv.sent.map((m) => m.method)).toEqual(["shutdown", "exit"]);
+    expect(c.stopping).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------- findRoot
+
+describe("findRoot", () => {
+  function withFiles(files: string[]) {
+    const set = new Set(files);
+    const asked: string[] = [];
+    mockIPC((cmd, args: any) => {
+      if (cmd === "path_exists") {
+        asked.push(args.path);
+        return set.has(args.path);
+      }
+      return null;
+    });
+    return asked;
+  }
+  const PY = ["pyproject.toml", "setup.py", "requirements.txt", ".git"];
+
+  test("nearest directory with a marker", async () => {
+    withFiles(["/w/proj/pyproject.toml", "/w/.git"]);
+    expect(await L.findRoot("/w/proj/src/pkg/a.py", PY, "/w")).toBe("/w/proj");
+  });
+
+  test("falls back to the workspace, or the file's folder without one", async () => {
+    withFiles([]);
+    expect(await L.findRoot("/w/proj/src/a.py", PY, "/w")).toBe("/w");
+    expect(await L.findRoot("/w/proj/src/a.py", PY, null)).toBe("/w/proj/src");
+  });
+
+  test("does not look above the workspace root", async () => {
+    const asked = withFiles(["/.git", "/home/.git"]);
+    expect(await L.findRoot("/home/me/w/src/a.py", PY, "/home/me/w")).toBe("/home/me/w");
+    expect(asked.some((p) => p.startsWith("/home/me/.git") || p === "/home/.git" || p === "/.git")).toBe(false);
+    expect(asked).toContain("/home/me/w/.git");
+  });
+
+  test("without a workspace walks up to (not including) the filesystem root", async () => {
+    const asked = withFiles(["/home/me/.git"]);
+    expect(await L.findRoot("/home/me/x/y/a.py", PY, null)).toBe("/home/me");
+    const asked2 = withFiles([]);
+    await L.findRoot("/a/b.py", PY, null);
+    expect(asked2.every((p) => !p.startsWith("//") && p !== "/.git")).toBe(true);
+    expect(asked.length).toBeGreaterThan(0);
+  });
+
+  test("Cargo: the outermost Cargo.toml wins (workspace)", async () => {
+    withFiles(["/w/ws/Cargo.toml", "/w/ws/crates/a/Cargo.toml"]);
+    expect(await L.findRoot("/w/ws/crates/a/src/main.rs", ["Cargo.toml"], "/w")).toBe("/w/ws");
+  });
+
+  test("Windows paths", async () => {
+    withFiles(["C:/Users/me/proj/CMakeLists.txt"]);
+    expect(await L.findRoot("C:/Users/me/proj/src/main.c", ["compile_commands.json", "CMakeLists.txt"], null)).toBe("C:/Users/me/proj");
+    withFiles([]);
+    expect(await L.findRoot("C:/a/b/main.c", ["CMakeLists.txt"], null)).toBe("C:/a/b");
+    expect(await L.findRoot("C:/a/b/main.c", ["CMakeLists.txt"], "C:/a")).toBe("C:/a");
+  });
+});
+
+describe("statusFor", () => {
+  test("picks the most specific root containing the file", () => {
+    L.lspState.status["python|/w"] = "ready";
+    L.lspState.status["python|/w/sub"] = "starting";
+    L.lspState.status["clangd|/w/sub/deeper"] = "error";
+    const lang = { server: "python" } as any;
+    expect(L.statusFor(lang, "/w/sub/a.py").status).toBe("starting");
+    expect(L.statusFor(lang, "/w/a.py").status).toBe("ready");
+    expect(L.statusFor(lang, "/w2/a.py").status).toBeNull();
+    expect(L.statusFor(lang, "/w/subway/a.py").status).toBe("ready");
+    expect(L.statusFor(null, "/w/a.py").status).toBeNull();
+  });
+});
+
+describe("client registry", () => {
+  /** Fake servers for every spawned id: answer initialize/shutdown right away. */
+  async function multiServer() {
+    const spawned: string[] = [];
+    mockIPC(
+      (cmd, args: any) => {
+        if (cmd === "tools_dir") return "/tools";
+        if (cmd === "which_cmd") return args.cmd === "basedpyright-langserver" ? "/usr/bin/basedpyright-langserver" : null;
+        if (cmd === "path_exists") return false;
+        if (cmd === "proc_spawn") spawned.push(args.id);
+        if (cmd === "proc_send") {
+          const msg = JSON.parse(args.msg);
+          if (msg.id !== undefined && msg.method)
+            setTimeout(() => emit("proc-msg", { id: args.id, msg: JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: msg.method === "initialize" ? { capabilities: {} } : null }) }), 0);
+        }
+        return null;
+      },
+      { shouldMockEvents: true },
+    );
+    // A new IPC mock drops the event listeners: re-import so rpc.ts listens again.
+    vi.resetModules();
+    L = await import("./lsp.svelte");
+    await settle();
+    return spawned;
+  }
+  const PY = { server: "python", lspId: "python" } as any;
+  const no = async () => false;
+
+  test("clientFor reuses the running client for the same root and dedupes concurrent starts", async () => {
+    const spawned = await multiServer();
+    const [a, b] = await Promise.all([L.clientFor(PY, "/w/a.py", "/w", no), L.clientFor(PY, "/w/b.py", "/w", no)]);
+    expect(a).toBe(b);
+    expect(await L.clientFor(PY, "/w/sub/c.py", "/w", no)).toBe(a);
+    expect(spawned.length).toBe(1);
+    expect(a!.root).toBe("/w");
+    expect(L.lspState.status["python|/w"]).toBe("ready");
+  });
+
+  // bug: the exit handler of a stopped client does `clients.delete(this.key)` and sets
+  // status "stopped" for its key, even when a new client for the same key has started in the
+  // meantime (stopServers + restart on demand, or clientFor(..., needDebug) for Java, which stops
+  // jdtls and immediately starts a new one). The new, running server is dropped from the registry
+  // (the next clientFor spawns a duplicate) and the status bar shows "stopped".
+  test.fails("a late exit of a stopped client does not clobber its replacement", async () => {
+    const spawned = await multiServer();
+    const old = await L.clientFor(PY, "/w/a.py", "/w", no);
+    L.stopServers("python");
+    const fresh = await L.clientFor(PY, "/w/a.py", "/w", no);
+    expect(fresh).not.toBe(old);
+    await emit("proc-exit", old!.id); // old process finally exits
+    expect(L.lspState.status["python|/w"]).toBe("ready");
+    expect(L.allClients()).toContain(fresh);
+    expect(await L.clientFor(PY, "/w/a.py", "/w", no)).toBe(fresh);
+    expect(spawned.length).toBe(2);
+  });
+
+  test("missing server: status missing, askInstall declined → null", async () => {
+    mockIPC((cmd) => (cmd === "tools_dir" ? "/tools" : cmd === "path_exists" ? false : null), { shouldMockEvents: true });
+    const ask = vi.fn(async () => false);
+    expect(await L.clientFor(PY, "/w/a.py", "/w", ask)).toBeNull();
+    expect(ask).toHaveBeenCalledWith("python", "basedpyright (Python)");
+    expect(L.lspState.status["python|/w"]).toBe("missing");
+  });
+});

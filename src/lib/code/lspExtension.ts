@@ -22,11 +22,11 @@ export function setLspHooks(h: typeof hooks) {
 
 // ---------------------------------------------------------- positions
 
-const toPos = (doc: Text, offset: number) => {
+export const toPos = (doc: Text, offset: number) => {
   const line = doc.lineAt(offset);
   return { line: line.number - 1, character: offset - line.from };
 };
-const toOffset = (doc: Text, p: { line: number; character: number }) => {
+export const toOffset = (doc: Text, p: { line: number; character: number }) => {
   if (p.line >= doc.lines) return doc.length;
   const line = doc.line(p.line + 1);
   return Math.min(line.to, line.from + p.character);
@@ -73,7 +73,7 @@ const KIND: Record<number, string> = {
 /** LSP snippet syntax ($1, ${1:x}) → CodeMirror snippet syntax (${1}, ${1:x}). */
 const toCmSnippet = (s: string) => s.replace(/\$(\d+)/g, "${$1}").replace(/\$\{0\}/g, "${}");
 
-function applyItem(view: EditorView, item: any, from: number, to: number) {
+export function applyItem(view: EditorView, item: any, from: number, to: number) {
   const doc = view.state.doc;
   let start = from;
   const edit = item.textEdit;
