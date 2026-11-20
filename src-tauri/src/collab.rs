@@ -11,6 +11,7 @@ use iroh::endpoint::{presets, Connection, SendStream};
 use iroh::{Endpoint, EndpointAddr};
 use serde::Serialize;
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::Mutex;
@@ -188,6 +189,30 @@ pub async fn collab_stop(app: AppHandle) {
     }
 }
 
+/// Whether `path` stays inside `root` once symlinks are resolved (#138: a guest's request for
+/// "ext/etc/passwd" with `ext -> /` in the shared folder). A path that doesn't exist yet is judged
+/// by its nearest existing folder; a dangling symlink is refused (writing would follow it).
+fn path_inside(root: &Path, path: &Path) -> bool {
+    let Ok(root) = root.canonicalize() else { return false };
+    if path.symlink_metadata().is_ok_and(|m| m.file_type().is_symlink()) && path.canonicalize().is_err() {
+        return false;
+    }
+    let mut p = Some(path);
+    while let Some(c) = p {
+        if let Ok(real) = c.canonicalize() {
+            return real.starts_with(&root);
+        }
+        p = c.parent();
+    }
+    false
+}
+
+/// Host: checks a path a guest asked for against the shared folder (see `path_inside`).
+#[tauri::command]
+pub fn collab_path_inside(root: String, path: String) -> bool {
+    path_inside(Path::new(&root), Path::new(&path))
+}
+
 #[derive(Serialize)]
 pub struct ConnInfo {
     /// Address of the selected path ("192.168.1.5:1234" or the relay URL), for diagnostics.
@@ -213,6 +238,32 @@ pub async fn collab_conn_info(app: AppHandle, peer: String) -> Option<ConnInfo> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn guest_paths_through_symlinks_stay_inside_the_shared_folder() {
+        let tmp = std::env::temp_dir().join(format!("omega-collab-inside-{}", std::process::id()));
+        let root = tmp.join("proj");
+        let outside = tmp.join("secret");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(root.join("src/a.rs"), "a").unwrap();
+        std::fs::write(outside.join("key"), "k").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("ext")).unwrap();
+        std::os::unix::fs::symlink(root.join("src"), root.join("inner")).unwrap();
+        std::os::unix::fs::symlink(outside.join("missing"), root.join("dangling")).unwrap();
+
+        assert!(path_inside(&root, &root));
+        assert!(path_inside(&root, &root.join("src/a.rs")));
+        assert!(path_inside(&root, &root.join("src/new.rs")));
+        assert!(path_inside(&root, &root.join("inner/a.rs")));
+        assert!(!path_inside(&root, &root.join("ext")));
+        assert!(!path_inside(&root, &root.join("ext/key")));
+        assert!(!path_inside(&root, &root.join("ext/new.txt")));
+        assert!(!path_inside(&root, &root.join("dangling")));
+        assert!(!path_inside(&root, &root.join("../secret/key")));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 
     #[test]
     fn bad_invite_codes_give_a_code_not_german_text() {

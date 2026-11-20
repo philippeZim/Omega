@@ -8,6 +8,7 @@
 import * as Y from "yjs";
 import { Awareness, encodeAwarenessUpdate, applyAwarenessUpdate, removeAwarenessStates } from "y-protocols/awareness";
 import { yCollab } from "y-codemirror.next";
+import { invoke } from "@tauri-apps/api/core";
 import { ChangeSet, type ChangeSpec } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { collab, send, broadcast, onCollabMessage } from "./collab.svelte";
@@ -159,6 +160,15 @@ export const hostKey = (tab: Tab) => (tab.path && relOf(tab.path)) || `tab:${tab
 
 // ------------------------------------------------------------------ host
 
+/**
+ * Host: whether a relative path a guest asked for stays inside the shared folder, also after
+ * resolving symlinks (#138: `ext -> /` in the project must not open the whole disk).
+ */
+async function guestPathOk(rel: string): Promise<boolean> {
+  if (!app.root || rel.startsWith("/") || rel.split(/[\\/]/).includes("..")) return false;
+  return invoke<boolean>("collab_path_inside", { root: app.root, path: rel ? joinPath(app.root, rel) : app.root }).catch(() => false);
+}
+
 function scheduleHostWrite(d: SharedDoc) {
   // Open tabs are saved by the host's autosave; background docs are written here.
   if (d.tabId || !app.root) return;
@@ -171,6 +181,7 @@ async function hostWrite(d: SharedDoc) {
   const abs = joinPath(app.root, d.rel);
   const text = d.ytext.toString();
   if (text === d.disk) return;
+  if (!(await guestPathOk(d.rel))) return; // e.g. a folder was swapped for a symlink meanwhile
   // The file changed outside Omega and the watcher hasn't told us yet: take that change instead of
   // overwriting it (#128).
   const now = await fsApi.readFile(abs).catch(() => undefined);
@@ -220,7 +231,7 @@ async function hostDoc(rel: string): Promise<SharedDoc | null> {
     bindHostTab(d, tab.id);
     return d;
   }
-  if (!app.root || rel.includes("..")) return null;
+  if (!app.root || !(await guestPathOk(rel))) return null;
   const abs = joinPath(app.root, rel);
   const tab = app.tabs.find((t) => t.path === abs);
   let text: string;
@@ -434,7 +445,7 @@ onCollabMessage(async (peer, msg) => {
     } else if (msg.t === "fs.list") {
       const rel = String(msg.path || "");
       let entries: { name: string; rel: string; is_dir: boolean }[] = [];
-      if (app.root && !rel.includes("..")) {
+      if (app.root && (await guestPathOk(rel))) {
         try {
           entries = (await fsApi.listDir(rel ? joinPath(app.root, rel) : app.root)).map((e) => ({ name: e.name, rel: rel ? `${rel}/${e.name}` : e.name, is_dir: e.is_dir }));
         } catch {

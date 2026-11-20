@@ -58,6 +58,17 @@ vi.mock("../ui.svelte", () => ({ ui }));
 const share = await import("./share.svelte");
 const { viewActions } = await import("../editorActions");
 
+/**
+ * The fake file system plus the backend's symlink check: in these tests "/p/ext" is a symlink to a
+ * folder outside the project.
+ */
+function hostFs(initial: Record<string, string> = {}) {
+  const fs = fakeFs(initial);
+  const other = fs.other;
+  fs.other = (cmd, args) => (cmd === "collab_path_inside" ? !`${args.path}/`.startsWith("/p/ext/") : other(cmd, args));
+  return fs;
+}
+
 /** Delivers a message as if it came from `peer`. */
 async function receive(peer: string, msg: Msg) {
   for (const h of handlers) await h(peer, msg);
@@ -89,7 +100,7 @@ beforeEach(async () => {
 });
 
 test("host's first undo after sharing an open tab doesn't wipe the file (#126)", async () => {
-  fakeFs({ "/p/main.rs": "fn main() {}\n" });
+  hostFs({ "/p/main.rs": "fn main() {}\n" });
   app.tabs.push({ id: "t1", path: "/p/main.rs", name: "main.rs" });
   texts.set("t1", "fn main() {}\n");
   await receive("g1", { t: "doc.open", path: "main.rs" });
@@ -100,7 +111,7 @@ test("host's first undo after sharing an open tab doesn't wipe the file (#126)",
 });
 
 test("undo after a remote edit leaves the loaded text alone (#126)", async () => {
-  fakeFs({ "/p/a.txt": "original\n" });
+  hostFs({ "/p/a.txt": "original\n" });
   app.tabs.push({ id: "t1", path: "/p/a.txt", name: "a.txt" });
   texts.set("t1", "original\n");
   await receive("g1", { t: "doc.open", path: "a.txt" });
@@ -117,7 +128,7 @@ test("undo after a remote edit leaves the loaded text alone (#126)", async () =>
 
 test("the host's own edits in the editor stay undoable (#126)", async () => {
   const { EditorView } = await import("@codemirror/view");
-  fakeFs({ "/p/a.txt": "one\n" });
+  hostFs({ "/p/a.txt": "one\n" });
   app.tabs.push({ id: "t1", path: "/p/a.txt", name: "a.txt" });
   texts.set("t1", "one\n");
   await receive("g1", { t: "doc.open", path: "a.txt" });
@@ -141,7 +152,7 @@ async function guestInsert(path: string, at: number, text: string, g = new Y.Doc
 test("a background doc follows an outside change of its file, the guest's next edit keeps it (#128)", async () => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   try {
-    const fs = fakeFs({ "/p/a.txt": "original a\n" });
+    const fs = hostFs({ "/p/a.txt": "original a\n" });
     await receive("g1", { t: "doc.open", path: "a.txt" });
     fs.files.set("/p/a.txt", "EXTERNAL v2\n");
     for (const f of fileListeners) f(["/p/a.txt"]);
@@ -160,7 +171,7 @@ test("a background doc follows an outside change of its file, the guest's next e
 test("an outside change the watcher hasn't reported yet isn't overwritten by a guest edit (#128)", async () => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   try {
-    const fs = fakeFs({ "/p/a.txt": "original a\n" });
+    const fs = hostFs({ "/p/a.txt": "original a\n" });
     await receive("g1", { t: "doc.open", path: "a.txt" });
     fs.files.set("/p/a.txt", "EXTERNAL v2\n");
     const g = await guestInsert("a.txt", 0, "Y");
@@ -173,7 +184,7 @@ test("an outside change the watcher hasn't reported yet isn't overwritten by a g
 });
 
 test("host deletes a shared file it has open: guests are told, the host tab is unshared (#134)", async () => {
-  fakeFs({ "/p/src/x.rs": "fn x() {}\n" });
+  hostFs({ "/p/src/x.rs": "fn x() {}\n" });
   app.tabs.push({ id: "t1", path: "/p/src/x.rs", name: "x.rs" });
   texts.set("t1", "fn x() {}\n");
   await receive("g1", { t: "doc.open", path: "src/x.rs" });
@@ -187,7 +198,7 @@ test("host deletes a shared file it has open: guests are told, the host tab is u
 test("a background doc whose file is deleted outside Omega isn't recreated by guest edits (#134)", async () => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   try {
-    const fs = fakeFs({ "/p/a.txt": "a\n" });
+    const fs = hostFs({ "/p/a.txt": "a\n" });
     await receive("g1", { t: "doc.open", path: "a.txt" });
     fs.files.delete("/p/a.txt");
     for (const f of fileListeners) f(["/p/a.txt"]);
@@ -224,7 +235,7 @@ test("guest: a file the host deleted stays open as an unsaved tab with its text 
 test("host renames a shared file: the doc follows, guest edits go to the new name (#127)", async () => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   try {
-    const fs = fakeFs({ "/p/a.txt": "original a\n" });
+    const fs = hostFs({ "/p/a.txt": "original a\n" });
     await receive("g1", { t: "doc.open", path: "a.txt" });
     fs.files.set("/p/b.txt", fs.files.get("/p/a.txt")!);
     fs.files.delete("/p/a.txt");
@@ -244,7 +255,7 @@ test("host renames a shared file: the doc follows, guest edits go to the new nam
 });
 
 test("renaming a folder moves the shared docs inside it, moving a file out of the project unshares it (#127)", async () => {
-  fakeFs({ "/p/src/a.rs": "a\n", "/p/src/b.rs": "b\n" });
+  hostFs({ "/p/src/a.rs": "a\n", "/p/src/b.rs": "b\n" });
   await receive("g1", { t: "doc.open", path: "src/a.rs" });
   await receive("g1", { t: "doc.open", path: "src/b.rs" });
   collabHooks.pathMoved("/p/src", "/p/lib");
@@ -293,4 +304,21 @@ test("leaving a session with an open shared tab logs no yjs errors (#135)", asyn
   await share.teardownShare();
   expect(errors).not.toHaveBeenCalled();
   expect(app.tabs).toEqual([]);
+});
+
+test("host refuses guest requests that leave the shared folder through a symlink (#138)", async () => {
+  const fs = hostFs({ "/p/ext/passwd": "root:x:0:0" , "/p/a.txt": "a\n" });
+  await receive("g1", { t: "doc.open", path: "ext/passwd" });
+  expect(sent.at(-1)!.msg).toEqual({ t: "doc.error", path: "ext/passwd", error: "unavailable" });
+  await receive("g1", { t: "fs.list", path: "ext", req: 3 });
+  expect(sent.at(-1)!.msg).toEqual({ t: "fs.list.res", req: 3, entries: [] });
+  for (const path of ["../etc/passwd", "/etc/passwd", "src/../../x"]) {
+    await receive("g1", { t: "doc.open", path });
+    expect(sent.at(-1)!.msg.t).toBe("doc.error");
+  }
+  expect(fs.calls.filter((c) => c.cmd === "read_file" || c.cmd === "list_dir")).toEqual([]);
+
+  // Inside the folder everything still works.
+  await receive("g1", { t: "doc.open", path: "a.txt" });
+  expect(guestCopy("a.txt")).toBe("a\n");
 });
