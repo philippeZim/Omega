@@ -189,6 +189,14 @@ export const en = {
   "app.settings.group.retro": "Warm & Retro",
   "app.settings.sampleComment": "Fibonacci sequence",
   "app.invalidEntryName": "Invalid name \"{name}\": no empty parts, \".\" or \"..\" and no leading or trailing \"/\"",
+  // File errors from the backend (codes "fs:<code>", see src/lib/fsError.ts)
+  "app.fsErr.not_utf8": "\"{name}\" is not a UTF-8 text file",
+  "app.fsErr.not_found": "\"{name}\" doesn't exist",
+  "app.fsErr.permission_denied": "No permission for \"{name}\"",
+  "app.fsErr.exists": "\"{name}\" already exists",
+  "app.fsErr.is_dir": "\"{name}\" is a folder",
+  "app.fsErr.not_dir": "The path to \"{name}\" contains a file where a folder is expected",
+  "app.fsErr.not_empty": "Folder \"{name}\" is not empty",
 };
 export const de: Record<keyof typeof en, string> = {
   "app.report.button": "Problem oder Idee melden",
@@ -376,6 +384,13 @@ export const de: Record<keyof typeof en, string> = {
   "app.settings.group.retro": "Warm & Retro",
   "app.settings.sampleComment": "Fibonacci-Folge",
   "app.invalidEntryName": "Ungültiger Name „{name}“: keine leeren Teile, „.“ oder „..“ und kein „/“ am Anfang oder Ende",
+  "app.fsErr.not_utf8": "„{name}“ ist keine UTF-8-Textdatei",
+  "app.fsErr.not_found": "„{name}“ existiert nicht",
+  "app.fsErr.permission_denied": "Keine Berechtigung für „{name}“",
+  "app.fsErr.exists": "„{name}“ existiert bereits",
+  "app.fsErr.is_dir": "„{name}“ ist ein Ordner",
+  "app.fsErr.not_dir": "Im Pfad zu „{name}“ steht eine Datei, wo ein Ordner erwartet wird",
+  "app.fsErr.not_empty": "Ordner „{name}“ ist nicht leer",
 };
 export const fr: Record<keyof typeof en, string> = {
   "app.report.button": "Signaler un problème ou une idée",
@@ -563,4 +578,11 @@ export const fr: Record<keyof typeof en, string> = {
   "app.settings.group.retro": "Chaleureux & rétro",
   "app.settings.sampleComment": "Suite de Fibonacci",
   "app.invalidEntryName": "Nom invalide « {name} » : pas de parties vides, « . » ou « .. », ni de « / » au début ou à la fin",
+  "app.fsErr.not_utf8": "« {name} » n’est pas un fichier texte UTF-8",
+  "app.fsErr.not_found": "« {name} » n’existe pas",
+  "app.fsErr.permission_denied": "Pas d’autorisation pour « {name} »",
+  "app.fsErr.exists": "« {name} » existe déjà",
+  "app.fsErr.is_dir": "« {name} » est un dossier",
+  "app.fsErr.not_dir": "Le chemin vers « {name} » contient un fichier à la place d’un dossier",
+  "app.fsErr.not_empty": "Le dossier « {name} » n’est pas vide",
 };
