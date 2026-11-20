@@ -4,7 +4,7 @@
  */
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { toPng } from "html-to-image";
+import { snapshotPng } from "./snapshot";
 import { app, activeTab, openFile, save, setMode, setRoot } from "../state.svelte";
 import { ui } from "../ui.svelte";
 import * as ed from "../editor";
@@ -438,10 +438,10 @@ export const TOOLS: Tool[] = [
       const PIXEL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
       let url: string;
       try {
-        url = await toPng(el, { ...base, cacheBust: true });
+        url = await snapshotPng(el, { ...base, cacheBust: true });
       } catch (e) {
         try {
-          url = await toPng(el, { ...base, skipFonts: true, imagePlaceholder: PIXEL });
+          url = await snapshotPng(el, { ...base, skipFonts: true, imagePlaceholder: PIXEL });
         } catch (e2) {
           const what = (x: unknown) => (x instanceof Event ? `${x.type} bei ${(x.target as HTMLElement | null)?.outerHTML?.slice(0, 120) ?? "?"}` : String(x));
           throw new Error(`Screenshot fehlgeschlagen: ${what(e)} / ${what(e2)}`);
