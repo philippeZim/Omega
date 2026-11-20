@@ -8,6 +8,7 @@ vi.mock("../TreeNode.svelte", () => ({ default: () => {} }));
 vi.mock("../RemoteTree.svelte", () => ({ default: () => {} }));
 vi.mock("../../lib/collab/collab.svelte", () => ({ collab: { role: null, status: "idle" } }));
 vi.mock("../../lib/collab/share.svelte", () => ({ share: { hostRoot: "" } }));
+vi.mock("../../lib/commands.svelte", () => ({ shortcutLabel: () => "Ctrl O" }));
 
 const { default: FilesView } = await import("./FilesView.svelte");
 
