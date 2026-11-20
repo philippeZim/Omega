@@ -457,6 +457,39 @@ describe("client registry", () => {
     expect(String(toast.mock.calls[0][0])).toContain("error: bad config");
   });
 
+  // #115: servers of a previously opened folder kept running for the whole session.
+  test("servers without documents outside the open folder are stopped", async () => {
+    const spawned = await multiServer();
+    let ws = "/a";
+    L.setLspWorkspace(() => ws);
+    const a = (await L.clientFor(PY, "/a/x.py", "/a", no))!;
+    a.open(L.fileUri("/a/x.py"), "python", "");
+    a.close(L.fileUri("/a/x.py"));
+    expect(L.allClients()).toContain(a); // still the open folder: kept
+    a.open(L.fileUri("/a/x.py"), "python", "");
+    ws = "/b";
+    const b = (await L.clientFor(PY, "/b/y.py", "/b", no))!;
+    expect(L.allClients()).toContain(a); // still has an open document
+    b.open(L.fileUri("/b/y.py"), "python", "");
+    a.close(L.fileUri("/a/x.py")); // last tab of the old folder closed
+    expect(L.allClients()).toEqual([b]);
+    expect(a.stopping).toBe(true);
+    expect(L.lspState.status["python|/a"]).toBeUndefined();
+    expect(spawned.length).toBe(2);
+  });
+
+  test("an idle server of the old folder is stopped when the next server is requested", async () => {
+    await multiServer();
+    let ws = "/a";
+    L.setLspWorkspace(() => ws);
+    const a = (await L.clientFor(PY, "/a/x.py", "/a", no))!;
+    a.open(L.fileUri("/a/x.py"), "python", "");
+    a.close(L.fileUri("/a/x.py"));
+    ws = "/b";
+    const b = await L.clientFor(PY, "/b/y.py", "/b", no);
+    expect(L.allClients()).toEqual([b]);
+  });
+
   test("missing server: status missing, askInstall declined → null", async () => {
     mockIPC((cmd) => (cmd === "tools_dir" ? "/tools" : cmd === "path_exists" ? false : null), { shouldMockEvents: true });
     const ask = vi.fn(async () => false);
