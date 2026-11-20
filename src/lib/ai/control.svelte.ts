@@ -14,7 +14,7 @@ import { formatKey } from "../keys";
 import { git } from "../git/git.svelte";
 import { dbg } from "../debug/store.svelte";
 import { collab } from "../collab/collab.svelte";
-import { terms, readTerminal, runCommand as runInTerminal, newTerminal, closeTerminal, toggleSplit } from "../terminal.svelte";
+import { terms, readTerminal, runCommand as runInTerminal, newTerminal, closeTerminal, toggleSplit, sendInput } from "../terminal.svelte";
 import { layout, ZONES, VIEWS, visibleViews, activeView, zoneShown, isShown, available, showView, hideView, focusView, moveView, setOpen, resetLayout, type ViewId, type Zone } from "../layout.svelte";
 import { runner } from "../code/runner.svelte";
 import { find } from "../search/search.svelte";
@@ -374,7 +374,7 @@ export const TOOLS: Tool[] = [
       const el = document.activeElement as HTMLElement | null;
       const v = ed.getView();
       const tid = focusedTerminal();
-      if (tid) await invoke("pty_write", { id: tid, data: text });
+      if (tid) await sendInput(tid, text);
       else if (v && typesIntoEditor(el, v.dom)) {
         const at = v.state.selection.main;
         v.dispatch({ changes: { from: at.from, to: at.to, insert: text }, selection: { anchor: at.from + text.length }, userEvent: "input.type" });
@@ -495,7 +495,7 @@ export const TOOLS: Tool[] = [
     run: async ({ text, id, enter }) => {
       const tid = id ?? terms.active;
       if (!tid) throw new Error("Kein Terminal offen");
-      await invoke("pty_write", { id: tid, data: text + (enter ? "\r" : "") });
+      await sendInput(tid, text + (enter ? "\r" : ""));
       return `geschrieben an ${tid}`;
     },
   },
@@ -586,7 +586,7 @@ async function pressKey({ key, ctrl, shift, alt }: Args) {
     let seq = TERM_KEYS[key] ?? key;
     if (ctrl && key.length === 1) seq = String.fromCharCode(key.toUpperCase().charCodeAt(0) & 0x1f);
     if (alt) seq = "\x1b" + seq;
-    await invoke("pty_write", { id: tid, data: seq });
+    await sendInput(tid, seq);
     await sleep(150);
     return `an Terminal gesendet: ${[ctrl && "Strg", alt && "Alt", key].filter(Boolean).join("+")}`;
   }

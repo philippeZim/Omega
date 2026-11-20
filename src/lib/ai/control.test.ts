@@ -9,6 +9,7 @@ type FakeTab = { id: string; path: string | null; name: string; dirty: boolean }
 const h = vi.hoisted(() => ({
   app: { tabs: [] as FakeTab[], activeId: null as string | null, root: null as string | null, mode: "text" },
   save: (_id?: string | null): Promise<boolean> => Promise.resolve(true),
+  sendInput: vi.fn(async (_id: string, _data: string) => {}),
 }));
 
 vi.mock("../state.svelte", () => ({
@@ -41,6 +42,7 @@ vi.mock("../terminal.svelte", () => ({
   newTerminal: vi.fn(),
   closeTerminal: vi.fn(),
   toggleSplit: vi.fn(),
+  sendInput: h.sendInput,
 }));
 vi.mock("../layout.svelte", () => ({
   layout: { zones: {} },
@@ -162,5 +164,15 @@ describe("control MCP save tool (#5)", () => {
     await emit("mcp-call", { call: 9, name: "nope", args: {} });
     await vi.waitFor(() => expect(replies).toHaveLength(1));
     expect(replies[0].result.isError).toBe(true);
+  });
+});
+
+describe("control MCP terminal_write (#88)", () => {
+  test("writes through the terminal module, which maps Build/Run tabs to their PTY", async () => {
+    h.sendInput.mockClear();
+    const mod = await import("./control.svelte");
+    const tool = mod.TOOLS.find((t) => t.name === "terminal_write")!;
+    await tool.run({ text: "Jürgen", id: "run-tab", enter: true });
+    expect(h.sendInput).toHaveBeenCalledWith("run-tab", "Jürgen\r");
   });
 });

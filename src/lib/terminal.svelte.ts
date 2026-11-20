@@ -400,6 +400,11 @@ export const isTaskPty = (pty: string) => {
   return tab?.kind === "build" || tab?.kind === "run";
 };
 
+/** Sends input to a terminal tab: its shell, or the program running in a Build/Run tab (own PTY per run). */
+export function sendInput(id: string, data: string): Promise<void> {
+  return invoke("pty_write", { id: ptyOf(id), data });
+}
+
 /** Sends input to the program in the Run tab (collab guests type here). */
 export function writeRun(data: string) {
   const id = runTerminalId();

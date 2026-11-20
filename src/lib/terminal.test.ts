@@ -127,6 +127,15 @@ describe("Build/Run tasks", () => {
     expect(T.terms.tabs[0].status).toBe("stopped");
   });
 
+  test("sendInput reaches the program in the Run tab, which has its own PTY id (#88)", async () => {
+    T.runTask("run", "./prog", null, "Run", { focus: false });
+    await settle();
+    const tab = T.terms.tabs.find((t) => t.kind === "run")!;
+    await T.sendInput(tab.id, "Jürgen\r");
+    expect(calls.at(-1)).toEqual(["pty_write", { id: spawns()[0].id, data: "Jürgen\r" }]);
+    expect(spawns()[0].id).not.toBe(tab.id);
+  });
+
   test("a killed process (code null) counts as stopped", async () => {
     T.runTask("run", "x", null, "Run", { focus: false });
     await settle();
