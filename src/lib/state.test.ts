@@ -506,3 +506,61 @@ describe("createEntry: names that leave the folder (#35)", () => {
     expect(st.app.tabs.map((t) => t.path)).toEqual(["/x.txt"]);
   });
 });
+
+describe("Markdown heading anchor links (#42)", () => {
+  async function linkHandler() {
+    const lp = (await import("./markdown/livePreview")) as unknown as {
+      setLinkHandler: { mock: { calls: [(href: string, from: string | null) => Promise<void>][] } };
+      resolvePath: { mockImplementation(fn: (href: string) => string): void };
+    };
+    lp.resolvePath.mockImplementation((href) => "/p/" + href.split("#")[0]);
+    return lp.setLinkHandler.mock.calls.at(-1)![0];
+  }
+  /** Minimal CodeMirror view over the fake editor's text of the active tab. */
+  function fakeView() {
+    const dispatch = vi.fn();
+    const view = {
+      state: {
+        doc: {
+          line: (n: number) => {
+            const lines = ed.getText(st.app.activeId!).split("\n");
+            return { from: lines.slice(0, n - 1).reduce((a, l) => a + l.length + 1, 0) };
+          },
+        },
+      },
+      dispatch,
+      focus: vi.fn(),
+    };
+    (ed as unknown as { getView: () => unknown }).getView = () => view;
+    return dispatch;
+  }
+  afterEach(() => {
+    (ed as unknown as { getView: () => unknown }).getView = () => null;
+  });
+
+  test("[x](#sec-two) moves the cursor to the heading", async () => {
+    await setup({ "/p/a.md": "# T\n\n## Sec two\n\n[jump](#sec-two)" });
+    await open("/p/a.md");
+    const dispatch = fakeView();
+    await (await linkHandler())("#sec-two", "/p/a.md");
+    expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ selection: { anchor: 5 } }));
+  });
+
+  test("unknown anchor: toast instead of silence", async () => {
+    await setup({ "/p/a.md": "# T" });
+    await open("/p/a.md");
+    const dispatch = fakeView();
+    await (await linkHandler())("#nope", "/p/a.md");
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(ui.toast).toHaveBeenCalledWith(expect.stringContaining("app.headingNotFound"), "error");
+  });
+
+  test("other.md#second opens the file and jumps to the heading", async () => {
+    await setup({ "/p/a.md": "[x](second.md#second)", "/p/second.md": "intro\n\n# Second" });
+    await open("/p/a.md");
+    const dispatch = fakeView();
+    await (await linkHandler())("second.md#second", "/p/a.md");
+    expect(st.activeTab()?.path).toBe("/p/second.md");
+    expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ selection: { anchor: 7 } }));
+  });
+});

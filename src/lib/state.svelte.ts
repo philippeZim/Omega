@@ -12,6 +12,7 @@ import { allClients, fileUri } from "./code/lsp.svelte";
 import { t } from "./i18n/index.svelte";
 import { onFilesChanged, watchRoot } from "./fsWatch.svelte";
 import { detectEol, fromDisk, toDisk, type Eol } from "./eol";
+import { findHeadingLine } from "./headingAnchor";
 
 setLspHooks({
   workspace: () => app.root,
@@ -30,13 +31,27 @@ setLspHooks({
 
 setLinkHandler(async (href, fromPath) => {
   if (/^[a-z][a-z0-9+.-]*:/i.test(href)) return openUrl(href).catch((e) => ui.toast(String(e), "error"));
-  if (href.startsWith("#")) return;
+  if (href.startsWith("#")) return jumpToHeading(href.slice(1));
   let p = resolvePath(href, fromPath);
   if (!p) return ui.toast(t("app.relativeLinkUnsaved"), "error");
   if (!(await fsApi.exists(p)) && (await fsApi.exists(p + ".md"))) p += ".md";
   if (!(await fsApi.exists(p))) return ui.toast(t("app.fileNotFound", { path: p }), "error");
-  openFile(p);
+  await openFile(p);
+  const hash = href.indexOf("#");
+  if (hash >= 0 && href.length > hash + 1 && activeTab()?.path === p) jumpToHeading(href.slice(hash + 1));
 });
+
+/** "[x](#sec-two)": moves the cursor in the active tab to that heading (#42). */
+function jumpToHeading(fragment: string) {
+  const id = app.activeId;
+  const view = ed.getView();
+  if (!id || !view) return;
+  const line = findHeadingLine(ed.getText(id), fragment);
+  if (line < 0) return ui.toast(t("app.headingNotFound", { name: fragment }), "error");
+  const pos = view.state.doc.line(line + 1).from;
+  view.dispatch({ selection: { anchor: pos }, scrollIntoView: true });
+  view.focus();
+}
 
 const spellLangs: Record<string, SpellLang> = JSON.parse(localStorage.getItem("spellLangs") || "{}");
 
