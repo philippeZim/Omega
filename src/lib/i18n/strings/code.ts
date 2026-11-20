@@ -33,6 +33,7 @@ export const en = {
   "code.project.file": "File",
   "code.tpl.empty": "Empty",
   "code.tpl.folderOnly": "folder only",
+  "code.tpl.hello": "Hello, world!",
 
   // New project / runner
   "code.existsAlready": "\"{name}\" already exists there",
@@ -271,6 +272,7 @@ export const de: Record<keyof typeof en, string> = {
   "code.project.file": "Datei",
   "code.tpl.empty": "Leer",
   "code.tpl.folderOnly": "nur Ordner",
+  "code.tpl.hello": "Hallo, Welt!",
 
   "code.existsAlready": "„{name}“ existiert dort bereits",
   "code.newProjectTitle": "Neues Projekt: {name}",
@@ -500,6 +502,7 @@ export const fr: Record<keyof typeof en, string> = {
   "code.project.file": "Fichier",
   "code.tpl.empty": "Vide",
   "code.tpl.folderOnly": "dossier seul",
+  "code.tpl.hello": "Bonjour, le monde !",
 
   "code.existsAlready": "« {name} » existe déjà à cet emplacement",
   "code.newProjectTitle": "Nouveau projet : {name}",
