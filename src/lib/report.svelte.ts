@@ -1,16 +1,18 @@
 /**
- * "Report a problem": the user writes a short description (plus an optional image); we open GitHub's
- * "new issue" form pre-filled with it and the app version / OS / recent errors. GitHub's URL can't
- * carry images, so the image goes to the clipboard and the user pastes it into the form (Ctrl+V
- * uploads it there).
+ * "Report a problem": the user writes a short description (plus optional screenshots); we open
+ * GitHub's "new issue" form pre-filled with it and the app version / OS / recent errors. GitHub's
+ * URL can't carry images: a single screenshot goes to the clipboard (Ctrl+V in the form uploads it),
+ * several are saved to a folder that we open, so they can be dragged into the form together.
  */
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
+import { downloadDir } from "@tauri-apps/api/path";
 import { writeImage } from "@tauri-apps/plugin-clipboard-manager";
 import { getVersion } from "@tauri-apps/api/app";
 import { platform } from "./platform";
 import { recentErrors } from "./ai/control.svelte";
 import { app } from "./state.svelte";
 import { t } from "./i18n/index.svelte";
+import { fsApi, joinPath } from "./api";
 
 export const REPO = "philippeZim/Omega";
 
@@ -46,17 +48,33 @@ async function environment(withErrors: boolean) {
   return { lines, errors };
 }
 
-export async function submitReport(kind: ReportKind, text: string, image: Uint8Array | null, withErrors: boolean) {
+const b64 = (u: Uint8Array) => {
+  let s = "";
+  for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode(...u.subarray(i, i + 0x8000));
+  return btoa(s);
+};
+
+/** Saves the screenshots into Downloads/omega-report-<time>/ and returns that folder. */
+async function saveImages(images: Uint8Array[]): Promise<string> {
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+  const dir = joinPath((await downloadDir()).replace(/\\/g, "/").replace(/\/+$/, ""), `omega-report-${stamp}`);
+  for (const [i, png] of images.entries()) await fsApi.writeFileBase64(joinPath(dir, `screenshot-${i + 1}.png`), b64(png));
+  return dir;
+}
+
+/** Opens the pre-filled issue. Returns the folder the screenshots were saved to (several images) or null. */
+export async function submitReport(kind: ReportKind, text: string, images: Uint8Array[], withErrors: boolean): Promise<string | null> {
   const desc = text.trim();
   const first = desc.split("\n")[0].trim();
-  const title = `${kind === "bug" ? "[Bug]" : "[Idee]"} ${first.length > 80 ? first.slice(0, 77) + "…" : first}`;
+  const title = `${kind === "bug" ? "[Bug]" : "[Idea]"} ${first.length > 80 ? first.slice(0, 77) + "…" : first}`;
   const env = await environment(withErrors);
+  const hint = images.length === 1 ? t("app.report.pasteHere") : images.length > 1 ? t("app.report.dropHere", { n: images.length }) : "";
   const build = (errors: string) =>
     [
       desc,
-      image ? `<!-- ${t("app.report.pasteHere")} -->` : "",
+      hint ? `<!-- ${hint} -->` : "",
       withErrors ? ["---", ...env.lines].join("\n") : "",
-      errors ? `<details><summary>Letzte Fehler</summary>\n\n\`\`\`\n${errors}\n\`\`\`\n</details>` : "",
+      errors ? `<details><summary>Recent errors</summary>\n\n\`\`\`\n${errors}\n\`\`\`\n</details>` : "",
     ]
       .filter(Boolean)
       .join("\n\n");
@@ -71,6 +89,11 @@ export async function submitReport(kind: ReportKind, text: string, image: Uint8A
     u = url(build(errors));
   }
   if (u.length > MAX_URL) u = url(build("").slice(0, 3000) + "\n…");
-  if (image) await writeImage(image);
+  let folder: string | null = null;
+  if (images.length === 1) await writeImage(images[0]);
+  else if (images.length > 1) folder = await saveImages(images);
   await openUrl(u);
+  // Open the folder after the browser so it ends up on top, ready to drag from.
+  if (folder) await revealItemInDir(joinPath(folder, "screenshot-1.png")).catch(() => {});
+  return folder;
 }

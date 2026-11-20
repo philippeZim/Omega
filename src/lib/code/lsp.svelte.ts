@@ -5,7 +5,7 @@ import { t } from "../i18n/index.svelte";
 import { ui } from "../ui.svelte";
 import { fsApi, dirname, joinPath, isRoot } from "../api";
 import { OS, platform } from "../platform";
-import { ensureTools, type ToolId } from "../tools.svelte";
+import { ensureTools, withInstallProgress, serverProgressId, type ToolId } from "../tools.svelte";
 import type { LangInfo } from "./languages";
 
 type Json = any;
@@ -375,7 +375,7 @@ export async function clientFor(
       }
       lspState.status[key] = "installing";
       try {
-        await invoke("install_server", { kind });
+        await withInstallProgress(serverProgressId(kind), name, () => invoke("install_server", { kind }));
       } catch (e) {
         lspState.status[key] = "error";
         lspState.message[key] = String(e);

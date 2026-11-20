@@ -10,8 +10,9 @@
   let kind = $state<ReportKind>("bug");
   let text = $state("");
   let withErrors = $state(true);
-  let image = $state<Uint8Array | null>(null);
-  let preview = $state<string | null>(null);
+  /** Screenshots as PNG bytes plus an object URL for the thumbnail. */
+  let images = $state<{ png: Uint8Array; url: string }[]>([]);
+  const MAX_IMAGES = 10;
   let sending = $state(false);
   let dragging = $state(false);
   let area: HTMLTextAreaElement;
@@ -31,35 +32,32 @@
         else if (payload.type === "leave") dragging = false;
         else if (payload.type === "drop") {
           dragging = false;
-          const path = payload.paths.find((p) => IMAGE_FILE.test(p));
-          if (path) setImage(await (await fetch(convertFileSrc(path))).blob());
+          for (const path of payload.paths.filter((p) => IMAGE_FILE.test(p))) addImage(await (await fetch(convertFileSrc(path))).blob());
         }
       })
       .then((fn) => (alive ? (unlisten = fn) : fn()));
     return () => {
       alive = false;
       unlisten?.();
-      // Free the preview only when the dialog closes (an $effect reading `preview` would re-run on
-      // every new image and revoke the URL it just created).
-      if (preview) URL.revokeObjectURL(preview);
+      // Free the thumbnails only when the dialog closes (an $effect reading `images` would re-run
+      // on every new image and revoke URLs that are still shown).
+      for (const i of images) URL.revokeObjectURL(i.url);
     };
   });
 
-  async function setImage(blob: Blob) {
+  async function addImage(blob: Blob) {
+    if (images.length >= MAX_IMAGES) return ui.toast(t("app.report.tooMany", { n: MAX_IMAGES }), "error");
     try {
       const png = await toPngBytes(blob);
-      if (preview) URL.revokeObjectURL(preview);
-      image = png;
-      preview = URL.createObjectURL(new Blob([png as BlobPart], { type: "image/png" }));
+      images.push({ png, url: URL.createObjectURL(new Blob([png as BlobPart], { type: "image/png" })) });
     } catch {
       ui.toast(t("app.report.badImage"), "error");
     }
   }
 
-  function clearImage() {
-    if (preview) URL.revokeObjectURL(preview);
-    image = null;
-    preview = null;
+  function removeImage(i: number) {
+    URL.revokeObjectURL(images[i].url);
+    images.splice(i, 1);
   }
 
   // Ctrl+V: macOS and Windows put a pasted screenshot into the paste event, but WebKitGTK (Linux)
@@ -73,7 +71,7 @@
     if (file) {
       pastedImage = true;
       e.preventDefault();
-      setImage(file);
+      addImage(file);
     }
   }
 
@@ -91,7 +89,7 @@
       canvas.height = height;
       canvas.getContext("2d")!.putImageData(new ImageData(new Uint8ClampedArray(rgba), width, height), 0, 0);
       const blob = await new Promise<Blob | null>((res) => canvas.toBlob(res, "image/png"));
-      if (blob && !pastedImage) setImage(blob);
+      if (blob && !pastedImage) addImage(blob);
     } catch {
       ui.toast(t("app.report.badImage"), "error");
     } finally {
@@ -101,16 +99,15 @@
 
   function onDrop(e: DragEvent) {
     dragging = false;
-    const file = [...(e.dataTransfer?.files ?? [])].find((f) => f.type.startsWith("image/"));
-    if (file) {
+    const files = [...(e.dataTransfer?.files ?? [])].filter((f) => f.type.startsWith("image/"));
+    if (files.length) {
       e.preventDefault();
-      setImage(file);
+      for (const f of files) addImage(f);
     }
   }
 
   function onPick() {
-    const f = fileInput.files?.[0];
-    if (f) setImage(f);
+    for (const f of fileInput.files ?? []) addImage(f);
     fileInput.value = "";
   }
 
@@ -118,9 +115,9 @@
     if (!text.trim() || sending) return;
     sending = true;
     try {
-      await submitReport(kind, text, image, withErrors);
+      const folder = await submitReport(kind, text, images.map((i) => i.png), withErrors);
       report.open = false;
-      ui.toast(image ? t("app.report.sentImage") : t("app.report.sent"));
+      ui.toast(folder ? t("app.report.sentImages", { n: images.length }) : images.length ? t("app.report.sentImage") : t("app.report.sent"));
     } catch (e) {
       ui.toast(t("app.report.failed", { error: String(e) }), "error");
     } finally {
@@ -154,10 +151,17 @@
     </div>
     <textarea bind:this={area} bind:value={text} rows="5" placeholder={kind === "bug" ? t("app.report.bugPlaceholder") : t("app.report.ideaPlaceholder")}></textarea>
 
-    {#if preview}
-      <div class="shot">
-        <img src={preview} alt={t("app.report.image")} />
-        <button class="remove" onclick={clearImage} aria-label={t("app.report.removeImage")} title={t("app.report.removeImage")}>×</button>
+    {#if images.length}
+      <div class="shots">
+        {#each images as img, i (img.url)}
+          <div class="shot">
+            <img src={img.url} alt={t("app.report.image")} />
+            <button class="remove" onclick={() => removeImage(i)} aria-label={t("app.report.removeImage")} title={t("app.report.removeImage")}>×</button>
+          </div>
+        {/each}
+        {#if images.length < MAX_IMAGES}
+          <button class="shot add" class:dragging onclick={() => fileInput.click()} title={t("app.report.addMore")} aria-label={t("app.report.addMore")}>+</button>
+        {/if}
       </div>
     {:else}
       <button
@@ -169,7 +173,7 @@
         ondrop={onDrop}
       >{t("app.report.addImage")}</button>
     {/if}
-    <input bind:this={fileInput} type="file" accept="image/*" hidden onchange={onPick} />
+    <input bind:this={fileInput} type="file" accept="image/*" multiple hidden onchange={onPick} />
 
     <label class="check"><input type="checkbox" bind:checked={withErrors} /> {t("app.report.withErrors")}</label>
     <p class="hint">{t("app.report.hint")}</p>
@@ -202,9 +206,12 @@
   textarea:focus { box-shadow: var(--recess-shadow), 0 0 0 1px rgba(var(--fg-rgb), 0.14); }
   .drop { display: block; width: 100%; margin-top: 10px; padding: 14px; border-radius: 16px; border: 1px dashed rgba(var(--fg-rgb), 0.18); font-size: 12.5px; color: var(--label-2); transition: background 0.15s; }
   .drop:hover, .drop.dragging { background: rgba(var(--fg-rgb), 0.06); color: var(--label); }
-  .shot { position: relative; margin-top: 10px; border-radius: 16px; overflow: hidden; background: var(--recess); }
-  .shot img { display: block; width: 100%; max-height: 220px; object-fit: contain; }
-  .remove { position: absolute; top: 6px; right: 6px; width: 26px; height: 26px; border-radius: 999px; font-size: 16px; line-height: 1; color: white; background: rgba(0, 0, 0, 0.55); }
+  .shots { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; margin-top: 10px; }
+  .shot { position: relative; aspect-ratio: 4 / 3; border-radius: 12px; overflow: hidden; background: var(--recess); }
+  .shot img { display: block; width: 100%; height: 100%; object-fit: cover; }
+  .shot.add { border: 1px dashed rgba(var(--fg-rgb), 0.18); background: none; font-size: 22px; color: var(--label-2); }
+  .shot.add:hover, .shot.add.dragging { background: rgba(var(--fg-rgb), 0.06); color: var(--label); }
+  .remove { position: absolute; top: 4px; right: 4px; width: 22px; height: 22px; border-radius: 999px; font-size: 16px; line-height: 1; color: white; background: rgba(0, 0, 0, 0.55); }
   .remove:hover { background: rgba(0, 0, 0, 0.75); }
   .check { display: flex; align-items: center; gap: 8px; margin-top: 12px; font-size: 12.5px; color: var(--label-2); cursor: pointer; }
   .hint { margin: 8px 0 14px; font-size: 11.5px; line-height: 1.45; color: var(--label-3); }

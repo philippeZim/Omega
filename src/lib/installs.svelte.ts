@@ -7,7 +7,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { t } from "./i18n/index.svelte";
 import { ui } from "./ui.svelte";
 import { OS } from "./platform";
-import { TOOLS, installTool, ensureTools, hasTool, type ToolId } from "./tools.svelte";
+import { TOOLS, installTool, ensureTools, hasTool, withInstallProgress, serverProgressId, type ToolId } from "./tools.svelte";
 import { pathChanged, runCommand } from "./terminal.svelte";
 import { settings } from "./settings.svelte";
 import { stopServers, type ServerKind } from "./code/lsp.svelte";
@@ -134,14 +134,16 @@ async function doInstall(id: string) {
     const pre = LSP_PREREQ[name];
     if (pre && !(await ensureTools(pre, t("tools.purpose.lsp")))) return false;
     stopServers(name as ServerKind);
-    await invoke("install_server", { kind: name });
+    await withInstallProgress(serverProgressId(name), labelOf(id), () => invoke("install_server", { kind: name }));
     return true;
   }
   if (name === "debugpy" && !(await hasTool("uv")) && !(await invoke<string | null>("which_cmd", { cmd: "python3" })) && !(await invoke<string | null>("which_cmd", { cmd: "python" })))
     if (!(await ensureTools(["uv"], t("tools.purpose.debug")))) return false;
-  await invoke("install_debugger", { kind: name });
+  await withInstallProgress(name, labelOf(id), () => invoke("install_debugger", { kind: name }));
   return true;
 }
+
+const labelOf = (id: string) => catalog().find((i) => i.id === id)?.label ?? id;
 
 async function run(id: string, action: "install" | "update" | "remove", fn: () => Promise<boolean>) {
   if (installs.busy[id]) return;
@@ -177,7 +179,7 @@ export const update = (id: string) =>
   installs.status[id]?.source === "system" ? updateSystem(id) :
   run(id, "update", async () => {
     if (id === "tool:rust") {
-      await invoke("installs_update_rust");
+      await withInstallProgress("rust", labelOf(id), () => invoke("installs_update_rust"));
       return true;
     }
     return doInstall(id);

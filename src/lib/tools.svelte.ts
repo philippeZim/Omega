@@ -64,6 +64,24 @@ function manualHint(id: ToolId): string {
   return "";
 }
 
+/**
+ * Shows the progress card while `run` installs something (language server, debugger, update …).
+ * `id` is the id the backend uses for its `tool-progress` events, so downloads show real progress;
+ * installs without events (npm, uv, rustup) show the animated bar.
+ */
+export async function withInstallProgress<T>(id: string, label: string, run: () => Promise<T>): Promise<T> {
+  if (toolState.installing[id]) return run();
+  toolState.installing[id] = { label, done: 0, total: 0, stage: "install" };
+  try {
+    return await run();
+  } finally {
+    delete toolState.installing[id];
+  }
+}
+
+/** Backend progress id of a language-server install (see install_server in proc.rs). */
+export const serverProgressId = (kind: string) => (kind === "java" ? "jdtls" : kind === "clangd" ? "clangd" : `lsp-${kind}`);
+
 /** Runs a single install with progress UI. Returns true on success. */
 export async function installTool(id: ToolId): Promise<boolean> {
   const info = TOOLS[id];

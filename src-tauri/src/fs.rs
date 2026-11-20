@@ -47,6 +47,17 @@ pub fn write_file(path: String, content: String) -> Result<(), String> {
     fs::write(&path, content).map_err(err)
 }
 
+/// Writes binary data sent as base64 (e.g. screenshots from the report dialog).
+#[tauri::command]
+pub fn write_file_base64(path: String, data: String) -> Result<(), String> {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD.decode(data).map_err(err)?;
+    if let Some(parent) = Path::new(&path).parent() {
+        fs::create_dir_all(parent).map_err(err)?;
+    }
+    fs::write(&path, bytes).map_err(err)
+}
+
 #[tauri::command]
 pub fn create_dir(path: String) -> Result<(), String> {
     fs::create_dir_all(&path).map_err(err)

@@ -58,6 +58,7 @@ pub fn run() {
             fs::watch_dir,
             fs::read_file,
             fs::write_file,
+            fs::write_file_base64,
             fs::create_dir,
             fs::rename_path,
             fs::delete_path,

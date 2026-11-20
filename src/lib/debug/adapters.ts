@@ -6,7 +6,7 @@ import { detectProject, pythonEntry, cmakeConfigure } from "../code/projects";
 import { toolsDir, clientFor, javaDebugBundles } from "../code/lsp.svelte";
 import { t } from "../i18n/index.svelte";
 import { exe, tmpPath, venvPython, IS_WIN, OS } from "../platform";
-import { ensureTools, type ToolId } from "../tools.svelte";
+import { ensureTools, withInstallProgress, type ToolId } from "../tools.svelte";
 
 type Json = any;
 
@@ -44,7 +44,7 @@ async function ensure(kind: "codelldb" | "debugpy" | "jsdebug" | "javadebug", pa
   if (await exists(path)) return;
   if (!(await ctx.askInstall(name))) throw new Error(t("code.ad.required", { name }));
   ctx.log(t("code.ad.installing", { name }));
-  await invoke("install_debugger", { kind });
+  await withInstallProgress(kind, name, () => invoke("install_debugger", { kind }));
   ctx.log(t("code.ad.installed", { name }));
 }
 
