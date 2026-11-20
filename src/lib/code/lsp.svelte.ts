@@ -55,7 +55,7 @@ export class LspClient {
       exit: () => {
         this.alive = false;
         // Fail in-flight requests now instead of letting them hang until their timeout.
-        const err = new Error(t("code.lsp.exited", { kind: this.kind, tail: "" }));
+        const err = new Error(t("code.lsp.exited", { kind: this.kind, tail: tail.length ? ": " + tail[tail.length - 1] : "" }));
         for (const p of this.pending.values()) {
           clearTimeout(p.timer);
           p.reject(err);
@@ -410,12 +410,14 @@ export async function clientFor(
       await c.ready;
       return c;
     } catch (e) {
+      // Died during initialize: the exit handler already kept the stderr tail as message and showed a toast.
+      const exited = !c.alive;
       if (c.current) {
         lspState.status[key] = "error";
-        lspState.message[key] = String(e);
+        if (!exited) lspState.message[key] = String(e);
         clients.delete(key);
       }
-      ui.toast(t("code.lsp.startFailed", { kind, err: String(e) }), "error");
+      if (!exited) ui.toast(t("code.lsp.startFailed", { kind, err: String(e) }), "error");
       return null;
     }
   })();
