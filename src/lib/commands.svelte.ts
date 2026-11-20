@@ -204,12 +204,12 @@ function presetBase(id: KeymapId): Record<string, string[]> {
   return base;
 }
 
-/** Keys of a command in the active preset, ignoring the user's own changes. */
 /** Display names of the modes a command is limited to ("LaTeX", not the raw id "latex"). */
 export function modeNames(modes: Mode[] | undefined): string {
   return (modes ?? []).map((m) => MODES.find((x) => x.id === m)?.label ?? m).join(", ");
 }
 
+/** Keys of a command in the active preset, ignoring the user's own changes. */
 export function defaultKeysFor(id: string): string[] {
   return presetBase(keymapState.preset)[id] ?? [];
 }
