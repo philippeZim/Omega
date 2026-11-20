@@ -61,16 +61,24 @@ describe("pythonDeps", () => {
     expect(await pythonDeps("/nope")).toEqual([]);
   });
 
-  // bug: names() scans the whole array text including comments, so an apostrophe in a comment ("don't") yields a bogus dep "t".
-  test.fails("quotes inside comments are ignored", async () => {
+  test("quotes inside comments are ignored", async () => {
     files["/p/pyproject.toml"] = `[project]\ndependencies = [\n  "a", # don't 'pin' this\n]\n`;
     expect((await pythonDeps("/p")).map((d) => d.name)).toEqual(["a"]);
   });
 
-  // bug: an `{ include-group = "test" }` table in [dependency-groups] is reported as a package named "test".
-  test.fails("include-group entries are not packages", async () => {
+  test("include-group entries are not packages", async () => {
     files["/p/pyproject.toml"] = `[dependency-groups]\ndev = [{ include-group = "test" }, "ruff"]\n`;
     expect((await pythonDeps("/p")).map((d) => d.name)).toEqual(["ruff"]);
+  });
+
+  test("a # inside a string is not a comment", async () => {
+    files["/p/pyproject.toml"] = `[project]\ndependencies = [\n  "pkg @ https://x/#egg=pkg", "b", # 'c'\n  "d",\n]\n`;
+    expect((await pythonDeps("/p")).map((d) => d.name)).toEqual(["pkg", "b", "d"]);
+  });
+
+  test("single-quoted strings are read", async () => {
+    files["/p/pyproject.toml"] = `[project]\ndependencies = ['requests>=2', 'my-lib @ file:///x#frag', "httpx"]\n`;
+    expect((await pythonDeps("/p")).map((d) => d.name)).toEqual(["requests", "my-lib", "httpx"]);
   });
 });
 
