@@ -11,7 +11,9 @@ import { yCollab } from "y-codemirror.next";
 import { ChangeSet, type ChangeSpec } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { collab, send, broadcast, onCollabMessage } from "./collab.svelte";
-import { app, openFile, activeTab, collabHooks } from "../state.svelte";
+import { app, openFile, activeTab, activate, collabHooks, setMode, type Tab } from "../state.svelte";
+import type { Mode } from "../modes";
+import { onFilesChanged } from "../fsWatch.svelte";
 import * as ed from "../editor";
 import { fsApi, joinPath, basename } from "../api";
 import { viewActions } from "../editorActions";
@@ -46,8 +48,14 @@ const docs = new Map<string, SharedDoc>();
 export const share = $state({
   /** Host project name (guest side). */
   hostRoot: "",
+  /** Guest: whether the host has a folder open (otherwise only its open tabs are shared). */
+  hostHasRoot: true,
+  /** Guest: the host's open tabs (doc key + name), see session.svelte.ts. */
+  hostTabs: [] as { key: string; name: string }[],
+  /** Guest: bumped when the host's files changed, so the remote tree reloads. */
+  treeGen: 0,
   /** peer -> {file, line} presence of everyone (incl. "host"). */
-  presence: {} as Record<string, { file: string | null; line: number; name: string; color: string }>,
+  presence: {} as Record<string, { file: string | null; line: number; name: string; color: string; mode?: Mode }>,
   following: null as string | null,
 });
 
@@ -127,6 +135,13 @@ function binding(d: SharedDoc) {
 
 const relOf = (abs: string) => (app.root && abs.startsWith(app.root + "/") ? abs.slice(app.root.length + 1) : null);
 
+/**
+ * Host: the key a tab is shared under. Files in the project folder use their relative path (so the
+ * guest's file tree finds them); everything else – unsaved "Untitled" tabs, files outside the
+ * folder, or no folder open at all – is shared by tab id ("tab:<id>").
+ */
+export const hostKey = (tab: Tab) => (tab.path && relOf(tab.path)) || `tab:${tab.id}`;
+
 // ------------------------------------------------------------------ host
 
 function scheduleHostWrite(d: SharedDoc) {
@@ -139,6 +154,14 @@ function scheduleHostWrite(d: SharedDoc) {
 async function hostDoc(rel: string): Promise<SharedDoc | null> {
   const existing = docs.get(rel);
   if (existing) return existing;
+  if (rel.startsWith("tab:")) {
+    const tab = app.tabs.find((t) => t.id === rel.slice(4));
+    if (!tab || isRemote(tab.path)) return null;
+    const d = makeDoc(rel, true);
+    d.ytext.insert(0, ed.getText(tab.id));
+    bindHostTab(d, tab.id);
+    return d;
+  }
   if (!app.root || rel.includes("..")) return null;
   const abs = joinPath(app.root, rel);
   const tab = app.tabs.find((t) => t.path === abs);
@@ -159,6 +182,22 @@ function bindHostTab(d: SharedDoc, tabId: string) {
   if (ed.getText(tabId) !== d.ytext.toString()) ed.replaceDocText(tabId, d.ytext.toString());
   d.tabId = tabId;
   ed.setCollab(tabId, binding(d));
+}
+
+/**
+ * Host closed a tab: docs shared by tab id disappear for the guests too; project files keep being
+ * shared from disk (and written back in the background again).
+ */
+function onHostTabClosed(tabId: string) {
+  for (const d of docs.values()) {
+    if (d.tabId !== tabId) continue;
+    d.tabId = null;
+    if (d.rel.startsWith("tab:")) {
+      for (const p of d.subscribers) send(p, { t: "doc.gone", path: d.rel });
+      d.cleanup.forEach((f) => f());
+      docs.delete(d.rel);
+    }
+  }
 }
 
 /** Host opened a file that is already shared → bind it. */
@@ -193,12 +232,12 @@ function scrollToLine(line: number) {
   v.dispatch({ effects: EditorView.scrollIntoView(l.from, { y: "center" }) });
 }
 
-async function guestReceiveState(rel: string, update: Uint8Array) {
+async function guestReceiveState(rel: string, update: Uint8Array, name?: string) {
   docs.get(rel)?.cleanup.forEach((f) => f());
   const d = makeDoc(rel, false);
   Y.applyUpdate(d.ydoc, update, "remote");
   const { openVirtual } = await import("../state.svelte");
-  const tabId = openVirtual(REMOTE + rel, basename(rel), d.ytext.toString());
+  const tabId = openVirtual(REMOTE + rel, name || basename(rel), d.ytext.toString());
   d.tabId = tabId;
   ed.setCollab(tabId, binding(d));
   const p = pendingOpens.get(rel);
@@ -238,12 +277,12 @@ export function publishPresence() {
   if (!collab.role || (collab.role === "guest" && collab.status !== "connected")) return;
   const tab = activeTab();
   const v = ed.getView();
-  const file = tab?.path ? (isRemote(tab.path) ? tab.path.slice(REMOTE.length) : relOf(tab.path)) : null;
+  const file = tab ? (isRemote(tab.path) ? tab.path!.slice(REMOTE.length) : collab.role === "host" ? hostKey(tab) : null) : null;
   const line = v && tab ? v.state.doc.lineAt(v.state.selection.main.head).number : 1;
-  const key = `${file}:${line}`;
+  const key = `${file}:${line}:${app.mode}`;
   if (key === lastPresence) return;
   lastPresence = key;
-  const msg = { t: "presence", peer: collab.role === "host" ? "host" : null, file, line, name: collab.me.name, color: collab.me.color };
+  const msg = { t: "presence", peer: collab.role === "host" ? "host" : null, file, line, name: collab.me.name, color: collab.me.color, mode: app.mode };
   if (collab.role === "host") broadcast(msg);
   else send(collab.hostPeer!, msg);
 }
@@ -255,9 +294,16 @@ export function follow(peer: string | null) {
 
 async function applyFollow() {
   const p = share.following ? share.presence[share.following] : null;
-  if (!p?.file) return;
+  if (!p) return;
+  // Following someone also follows their mode (Text/Markdown/LaTeX/Code).
+  if (p.mode && p.mode !== app.mode) setMode(p.mode);
+  if (!p.file) return;
   if (collab.role === "guest") await openRemote(p.file, p.line);
-  else if (app.root) {
+  else if (p.file.startsWith("tab:")) {
+    const id = p.file.slice(4);
+    if (app.tabs.some((t) => t.id === id)) activate(id);
+    scrollToLine(p.line);
+  } else if (app.root) {
     await openFile(joinPath(app.root, p.file));
     scrollToLine(p.line);
   }
@@ -272,7 +318,8 @@ onCollabMessage(async (peer, msg) => {
       const d = await hostDoc(String(msg.path));
       if (!d) return send(peer, { t: "doc.error", path: msg.path, error: "unavailable" });
       d.subscribers.add(peer);
-      send(peer, { t: "doc.state", path: d.rel, update: b64(Y.encodeStateAsUpdate(d.ydoc)) });
+      const tab = d.tabId ? app.tabs.find((t) => t.id === d.tabId) : null;
+      send(peer, { t: "doc.state", path: d.rel, name: tab?.name ?? basename(d.rel), update: b64(Y.encodeStateAsUpdate(d.ydoc)) });
       const states = [...d.awareness.getStates().keys()];
       if (states.length) send(peer, { t: "aw", path: d.rel, update: b64(encodeAwarenessUpdate(d.awareness, states)) });
     } else if (msg.t === "doc.update") {
@@ -295,12 +342,11 @@ onCollabMessage(async (peer, msg) => {
       }
       send(peer, { t: "fs.list.res", req: msg.req, entries });
     } else if (msg.t === "presence") {
-      const info = { file: msg.file, line: msg.line, name: msg.name, color: msg.color };
+      const info = { file: msg.file, line: msg.line, name: msg.name, color: msg.color, mode: msg.mode };
       share.presence[peer] = info;
       broadcast({ ...msg, peer }, peer);
       if (share.following === peer) applyFollow();
     } else if (msg.t === "hello-ready") {
-      send(peer, { t: "root", name: app.root ? basename(app.root) : t("ai.collab.project") });
       lastPresence = "";
       publishPresence();
     }
@@ -313,7 +359,16 @@ onCollabMessage(async (peer, msg) => {
   } else if (msg.t === "root") {
     share.hostRoot = msg.name;
   } else if (msg.t === "doc.state") {
-    guestReceiveState(msg.path, unb64(msg.update));
+    guestReceiveState(msg.path, unb64(msg.update), msg.name);
+  } else if (msg.t === "doc.gone") {
+    const d = docs.get(msg.path);
+    if (d?.tabId) {
+      const { closeTab } = await import("../state.svelte");
+      ed.setCollab(d.tabId, null);
+      await closeTab(d.tabId, true);
+    }
+  } else if (msg.t === "fs.changed") {
+    share.treeGen++;
   } else if (msg.t === "doc.update") {
     const d = docs.get(msg.path);
     if (d) Y.applyUpdate(d.ydoc, unb64(msg.update), "remote");
@@ -327,7 +382,7 @@ onCollabMessage(async (peer, msg) => {
     listWaiters.delete(msg.req);
   } else if (msg.t === "presence") {
     const id = msg.peer ?? peer;
-    share.presence[id] = { file: msg.file, line: msg.line, name: msg.name, color: msg.color };
+    share.presence[id] = { file: msg.file, line: msg.line, name: msg.name, color: msg.color, mode: msg.mode };
     if (share.following === id) applyFollow();
   }
 });
@@ -347,6 +402,8 @@ export async function teardownShare() {
   share.presence = {};
   share.following = null;
   share.hostRoot = "";
+  share.hostHasRoot = true;
+  share.hostTabs = [];
   lastPresence = "";
 }
 
@@ -355,7 +412,15 @@ setInterval(publishPresence, 600);
 
 collabHooks.openRemote = (path) => openRemote(path.slice(REMOTE.length));
 collabHooks.tabOpened = (id, path) => onHostTabOpened(id, path);
-collabHooks.tabClosed = (path) => onTabClosed(path);
+collabHooks.tabClosed = (path, id) => (collab.role === "host" ? onHostTabClosed(id) : onTabClosed(path));
+
+// Host: files changed on disk (new/deleted/renamed, git checkout …) → guests reload their tree.
+let fsTimer = 0;
+onFilesChanged(() => {
+  if (collab.role !== "host" || collab.participants.length < 2) return;
+  clearTimeout(fsTimer);
+  fsTimer = window.setTimeout(() => broadcast({ t: "fs.changed" }), 300);
+});
 
 // Event listeners/intervals live at module level → full reload instead of duplicate HMR instances.
 if (import.meta.hot) import.meta.hot.accept(() => location.reload());

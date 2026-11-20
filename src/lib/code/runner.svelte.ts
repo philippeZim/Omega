@@ -16,9 +16,23 @@ export const runner = $state({
   newProject: false,
 });
 
+/**
+ * Collab guest: the project shown is the host's (`project`), and actions run on the host's machine
+ * (`run`). Set by collab/session.svelte.ts while connected as a guest.
+ */
+export const runnerRemote = {
+  project: null as (() => Project | null) | null,
+  run: null as ((a: Action) => void) | null,
+};
+
 let seq = 0;
 export async function refreshProject() {
   const s = ++seq;
+  if (runnerRemote.project) {
+    runner.project = runnerRemote.project();
+    runner.versions = [];
+    return;
+  }
   const p = await detectProject(activeTab()?.path ?? null, app.root);
   if (s !== seq) return;
   runner.project = p && withCustomRun(p);
@@ -99,6 +113,7 @@ async function saveAll() {
 export async function runAction(a: Action | null | undefined) {
   const p = runner.project;
   if (!a?.cmd || !p) return;
+  if (runnerRemote.run) return runnerRemote.run(a);
   let cmd = a.cmd;
   if (a.ask) {
     const v = await ui.prompt(a.label.replace("…", ""), "", a.ask, undefined, a.suggest);

@@ -19,7 +19,8 @@ export function setTerminalKeyFilter(fn: typeof terminalKeyFilter) {
 export interface TermTab {
   id: string;
   title: string;
-  kind: "shell" | "run";
+  /** "remote": mirror of the collab host's Run terminal (no local shell). */
+  kind: "shell" | "run" | "remote";
   exited: boolean;
 }
 
@@ -53,7 +54,9 @@ export function setDefaultShell(id: string) {
 }
 
 interface Instance {
-  kind: "shell" | "run";
+  kind: "shell" | "run" | "remote";
+  /** remote: where typed input goes (the host's Run terminal). */
+  onInput?: (data: string) => void;
   shell: string | null;
   term: Terminal;
   fit: FitAddon;
@@ -133,7 +136,7 @@ export function setTerminalFontSize(px: number) {
 /** Shells left over from a previous page load are ended before the first new one starts. */
 const leftoversKilled = invoke("pty_kill_all").catch(() => {});
 
-export function newTerminal(cwd: string | null, kind: "shell" | "run" = "shell", title?: string, shell?: ShellInfo): string {
+export function newTerminal(cwd: string | null, kind: "shell" | "run" | "remote" = "shell", title?: string, shell?: ShellInfo): string {
   const id = `t${Date.now().toString(36)}${counter}`;
   const term = new Terminal({
     fontFamily: '"JetBrains Mono Variable", "JetBrainsMono Nerd Font", monospace',
@@ -173,8 +176,12 @@ export function newTerminal(cwd: string | null, kind: "shell" | "run" = "shell",
     if (terminalKeyFilter(e)) return false;
     return true;
   });
-  term.onData((data) => invoke("pty_write", { id, data }).catch(() => {}));
-  term.onResize(({ cols, rows }) => invoke("pty_resize", { id, cols, rows }).catch(() => {}));
+  term.onData((data) => {
+    const inst = instances.get(id);
+    if (inst?.kind === "remote") inst.onInput?.(data);
+    else invoke("pty_write", { id, data }).catch(() => {});
+  });
+  term.onResize(({ cols, rows }) => instances.get(id)?.kind !== "remote" && invoke("pty_resize", { id, cols, rows }).catch(() => {}));
 
   const el = document.createElement("div");
   el.className = "term-host";
@@ -200,6 +207,7 @@ export async function attach(id: string, container: HTMLElement, cwdFallback: st
     inst.term.open(inst.el);
   }
   fitTerm(id);
+  if (inst.kind === "remote") inst.spawned = true;
   if (!inst.spawned) {
     inst.spawned = true;
     inst.gen = pathGen;
@@ -273,6 +281,21 @@ export function runCommand(cmd: string, cwd: string | null, title = t("common.ru
   else inst.pending.push(line);
   if (focus) setTimeout(() => focusTerm(tab!.id), 50);
 }
+
+/** Collab guest: a terminal tab that shows the host's Run output; typing goes to `onInput`. */
+export function remoteTerminal(title: string, onInput: (data: string) => void): string {
+  const id = newTerminal(null, "remote", title);
+  instances.get(id)!.onInput = onInput;
+  return id;
+}
+
+/** Writes output into a terminal (remote mirrors). */
+export function writeTerminal(id: string, data: string) {
+  instances.get(id)?.term.write(data);
+}
+
+/** Id of the current Run terminal, if any. */
+export const runTerminalId = () => terms.tabs.find((t) => t.kind === "run" && !t.exited)?.id ?? null;
 
 /** Sends raw input (e.g. Ctrl+C) to the run terminal. */
 export function interruptRun() {

@@ -22,6 +22,7 @@
   import CollabPanel from "./components/CollabPanel.svelte";
   import { collab } from "./lib/collab/collab.svelte";
   import "./lib/collab/share.svelte";
+  import "./lib/collab/session.svelte";
   import "./lib/ai/control.svelte";
   import "./lib/ai/ide.svelte";
   import DiffView from "./components/DiffView.svelte";
