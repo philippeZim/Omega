@@ -4,12 +4,13 @@
   import { ui } from "../lib/ui.svelte";
   import RunBar from "./RunBar.svelte";
   import { t } from "../lib/i18n/index.svelte";
+  import { shortcutLabel, withShortcut } from "../lib/commands.svelte";
   import { tabHints } from "../lib/tabHints";
   import { tick } from "svelte";
 
   function menu(e: MouseEvent, id: string, path: string | null) {
     ui.openMenu(e, [
-      { label: t("common.close"), shortcut: `${t("app.ctrl")}+W`, action: () => closeTab(id) },
+      { label: t("common.close"), shortcut: shortcutLabel("tab.close"), action: () => closeTab(id) },
       { label: t("app.closeOthers"), action: () => app.tabs.filter((x) => x.id !== id).forEach((x) => closeTab(x.id)) },
       ...(app.tabs.some((x) => foreignProject(x))
         ? [{ label: t("app.closeForeign"), action: () => app.tabs.filter((x) => foreignProject(x)).forEach((x) => closeTab(x.id)) }]
@@ -57,7 +58,7 @@
         </button>
       </div>
     {/each}
-    <button class="add" onclick={newFile} title="{t('app.newFile')} ({t('app.ctrl')}+N)" aria-label={t("app.newFile")}><Glyph name="plus" size={11} /></button>
+    <button class="add" onclick={newFile} title={withShortcut(t("app.newFile"), "file.new")} aria-label={t("app.newFile")}><Glyph name="plus" size={11} /></button>
   </div>
   {#if app.mode === "code"}<RunBar {width} />{/if}
   </div>

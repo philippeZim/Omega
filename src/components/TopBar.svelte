@@ -17,7 +17,7 @@
       { label: t("app.newBranch"), action: newBranch },
       { label: t("app.pull") + (git.behind ? t("app.behind", { n: git.behind }) : ""), shortcut: shortcutLabel("git.pull"), action: pull },
       { label: t("app.fetch"), action: fetchNow },
-      { label: "Push" + (git.ahead ? aheadLabel(git.ahead) : ""), shortcut: shortcutLabel("git.push"), action: push },
+      { label: t("app.push") + (git.ahead ? aheadLabel(git.ahead) : ""), shortcut: shortcutLabel("git.push"), action: push },
       { label: t("app.showChanges"), shortcut: shortcutLabel("git.commit"), action: () => showView("changes") },
       { label: git.remoteUrl ? t("app.remoteChange", { url: git.remoteUrl.replace(/^https?:\/\/|^git@/, "").replace(/\.git$/, "") }) : t("app.connectRemote"), action: connectRemote },
       { separator: true, label: "" },
@@ -147,7 +147,7 @@
     <button class="ghost help wide" class:on={report.open} title={t("app.report.button")} onclick={() => (report.open = true)} aria-label={t("app.report.button")}>
       <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M12 7v4"/><path d="M12 14h.01"/></svg>
     </button>
-    <button class="ghost help wide" class:on={ui.help} title={t("app.cheatSheet")} onclick={() => (ui.help = !ui.help)} aria-label={t("app.help")}>?</button>
+    <button class="ghost help wide" class:on={ui.help} title={withShortcut(t("help.cheatSheet"), "app.help")} onclick={() => (ui.help = !ui.help)} aria-label={t("app.help")}>?</button>
     <button class="ghost help more" title={t("code.rb.more")} onclick={moreMenu} aria-label={t("code.rb.more")}>
       <svg width="16" height="4" viewBox="0 0 16 4"><circle cx="2" cy="2" r="1.6" fill="currentColor"/><circle cx="8" cy="2" r="1.6" fill="currentColor"/><circle cx="14" cy="2" r="1.6" fill="currentColor"/></svg>
     </button>
