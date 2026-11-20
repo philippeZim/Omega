@@ -28,8 +28,12 @@ describe("latex outline", () => {
   });
 
   test("multiple headings on one line", () => {
-    // Only the first per line: the regex is anchored to the line start.
-    expect(outline("\\section{A} \\section{B}").map((i) => i.title)).toEqual(["A"]);
+    expect(outline("\\section{A} \\section{B}").map((i) => i.title)).toEqual(["A", "B"]);
+    const text = "\\section{Page two}\\newpage Two \\newpage\\section{Page three} Three \\newpage\\section{Page four} Four";
+    const o = outline(text);
+    expect(o.map((i) => i.title)).toEqual(["Page two", "Page three", "Page four"]);
+    for (const i of o) expect(text.startsWith("\\section", i.pos)).toBe(true);
+    expect(outline("\\section{A} % \\section{B}\n50\\% \\section{C}").map((i) => i.title)).toEqual(["A", "C"]);
   });
 
   test("no headings → []", () => {
