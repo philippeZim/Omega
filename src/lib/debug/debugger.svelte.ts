@@ -200,12 +200,10 @@ function cleanup() {
   refreshEditor();
 }
 
+/** Always a full stop + start, even when the adapter supports the DAP `restart` request:
+ *  CodeLLDB ends the session on `restart` without the launch config, and only a fresh start
+ *  runs the build step (cargo/cmake) again so the restarted program has the latest changes. */
 export async function restartDebugging() {
-  if (root?.capabilities.supportsRestartRequest && active === root) {
-    runGen++;
-    await root.request("restart", {}).catch(() => {});
-    return;
-  }
   const file = lastPlan?.file;
   await stopDebugging();
   if (file && activeTab()?.path !== file) await openFile(file);
