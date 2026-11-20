@@ -27,17 +27,26 @@ export interface JoinRequest {
   name: string;
 }
 
+/** Longest name the host accepts (it cuts longer ones). */
+export const MAX_NAME = 40;
+
 export const collab = $state({
   role: null as null | "host" | "guest",
   status: "idle" as "idle" | "starting" | "hosting" | "joining" | "waiting" | "connected" | "error",
   ticket: "",
   error: "",
-  me: { name: localStorage.getItem("collab.name") || "", color: localStorage.getItem("collab.color") || PEER_COLORS[0] },
+  me: { name: (localStorage.getItem("collab.name") || "").slice(0, MAX_NAME), color: localStorage.getItem("collab.color") || PEER_COLORS[0] },
   participants: [] as Participant[],
   requests: [] as JoinRequest[],
   hostPeer: null as string | null,
+  /** Guest: my peer id as the host knows it (from "welcome"), to find myself in the list. */
+  myPeer: null as string | null,
   open: false,
 });
+
+/** Whether a participant row is me (host: "self"; guest: the id the host gave me). */
+export const isMe = (p: { peer: string; name: string; color: string }) =>
+  collab.role === "host" ? p.peer === "self" : collab.myPeer ? p.peer === collab.myPeer : p.name === collab.me.name && p.color === collab.me.color;
 
 type Msg = { t: string; [k: string]: any };
 const handlers = new Set<(peer: string, msg: Msg) => void>();
@@ -59,7 +68,7 @@ async function defaultName() {
   if (collab.me.name) return;
   try {
     const r = await invoke<{ code: number; stdout: string }>("git", { root: "/", args: ["config", "--global", "user.name"] });
-    collab.me.name = r.stdout.trim() || t("ai.collab.me");
+    collab.me.name = r.stdout.trim().slice(0, MAX_NAME) || t("ai.collab.me");
   } catch {
     collab.me.name = t("ai.collab.me");
   }
@@ -69,7 +78,7 @@ async function defaultName() {
 defaultName();
 
 export function setMyName(name: string) {
-  collab.me.name = name.trim() || collab.me.name;
+  collab.me.name = name.trim().slice(0, MAX_NAME).trim() || collab.me.name;
   localStorage.setItem("collab.name", collab.me.name);
 }
 
@@ -101,7 +110,7 @@ export function approve(req: JoinRequest) {
   collab.requests = collab.requests.filter((r) => r.peer !== req.peer);
   const p: Participant = { peer: req.peer, name: req.name, color: nextColor(), role: "guest" };
   collab.participants.push(p);
-  send(req.peer, { t: "welcome", you: { name: p.name, color: p.color }, participants: collab.participants.map(publicInfo) });
+  send(req.peer, { t: "welcome", you: { peer: p.peer, name: p.name, color: p.color }, participants: collab.participants.map(publicInfo) });
   broadcast({ t: "participants", participants: collab.participants.map(publicInfo) });
   ui.toast(t("ai.collab.joined", { name: req.name }));
 }
@@ -176,7 +185,7 @@ export async function leave() {
   await invoke("collab_stop");
   const { teardownShare } = await import("./share.svelte");
   await teardownShare();
-  Object.assign(collab, { role: null, status: "idle", ticket: "", participants: [], requests: [], hostPeer: null, error: "" });
+  Object.assign(collab, { role: null, status: "idle", ticket: "", participants: [], requests: [], hostPeer: null, myPeer: null, error: "" });
   for (const h of sessionEndHooks) {
     try {
       await h(wasGuest);
@@ -202,7 +211,7 @@ listen<{ peer: string; msg: string }>("collab-msg", (e) => {
     if (msg.t === "hello") {
       // Unknown peers must be approved first (the code alone is not enough).
       if (!collab.requests.some((r) => r.peer === peer) && !collab.participants.some((p) => p.peer === peer))
-        collab.requests.push({ peer, name: String(msg.name || t("ai.collab.guest")).slice(0, 40) });
+        collab.requests.push({ peer, name: String(msg.name || t("ai.collab.guest")).slice(0, MAX_NAME) });
       collab.open = true;
       return;
     }
@@ -212,6 +221,7 @@ listen<{ peer: string; msg: string }>("collab-msg", (e) => {
     if (msg.t === "welcome") {
       collab.status = "connected";
       collab.me.color = msg.you.color;
+      collab.myPeer = msg.you.peer ?? null;
       collab.participants = msg.participants;
       ui.toast(t("ai.collab.connected"));
     } else if (msg.t === "participants") collab.participants = msg.participants;

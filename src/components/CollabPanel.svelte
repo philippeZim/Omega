@@ -1,6 +1,6 @@
 <script lang="ts">
   import Glyph from "./Glyph.svelte";
-  import { collab, startHosting, join, leave, approve, deny, kick, setMyName, clipboardTicket } from "../lib/collab/collab.svelte";
+  import { collab, startHosting, join, leave, approve, deny, kick, setMyName, clipboardTicket, isMe as isMeOf } from "../lib/collab/collab.svelte";
   import { onMount, tick } from "svelte";
 
   let codeInput: HTMLInputElement | undefined = $state();
@@ -86,7 +86,7 @@
     <label class="lbl" for="plist">{t("ai.collab.participants")}</label>
     <div class="people" id="plist">
       {#each collab.participants as p (p.peer)}
-        {@const isMe = collab.role === "host" ? p.peer === "self" : p.name === collab.me.name && p.color === collab.me.color}
+        {@const isMe = isMeOf(p)}
         {@const where = share.presence[presenceKey(p)]}
         {@const following = share.following === presenceKey(p)}
         <div class="person" class:following>
