@@ -89,6 +89,9 @@ export class HrWidget extends WidgetType {
   }
 }
 
+/** URLs made by convertFileSrc: asset://localhost/… (Linux, macOS) or http(s)://asset.localhost/… (Windows). */
+export const isAssetUrl = (src: string) => /^(asset:|https?:\/\/asset\.localhost\/)/i.test(src);
+
 export class ImageWidget extends WidgetType {
   constructor(readonly src: string, readonly alt: string) {
     super();
@@ -99,6 +102,9 @@ export class ImageWidget extends WidgetType {
   toDOM() {
     const img = document.createElement("img");
     img.className = "md-image";
+    // Local files come through Tauri's asset protocol. WebKitGTK drops a plain (no-cors) <img> request
+    // for it before Tauri sees it; a CORS request is answered (#89).
+    if (isAssetUrl(this.src)) img.crossOrigin = "anonymous";
     img.src = this.src;
     img.alt = this.alt;
     img.title = this.alt;
