@@ -230,7 +230,7 @@ export async function cloneInto(url: string, dest: string): Promise<string | nul
   if (!(await ensureTools(["git"], t("tools.purpose.git")))) return t("git.cloneFailed");
   const parent = dest.replace(/\/[^/]+$/, "") || "/";
   const r = await invoke<Out>("git", { root: parent, args: ["clone", url, dest] });
-  if (r.code !== 0) return (r.stderr || r.stdout).trim().split("\n").filter((l) => !l.startsWith("Cloning")).pop() ?? t("git.cloneFailed");
+  if (r.code !== 0) return gitErrorMessage(r) || t("git.cloneFailed");
   setRoot(dest);
   for (const f of ["README.md", "readme.md", "main.py", "src/main.rs", "src/main.py", "index.js"]) {
     if (await fsApi.exists(joinPath(dest, f))) {
@@ -288,7 +288,7 @@ export async function publishGitHub() {
   git.busy = t("git.busy.publish");
   try {
     const r = await invoke<Out>("run_capture", { cmd: "gh", args: ["repo", "create", name, `--${vis}`, "--source", ".", "--remote", "origin", "--push"], cwd: git.top || app.root });
-    if (r.code !== 0) ui.toast(t("git.publishFailed", { msg: (r.stderr || r.stdout).trim().split("\n").pop() ?? "" }), "error");
+    if (r.code !== 0) ui.toast(t("git.publishFailed", { msg: gitErrorMessage(r) }), "error");
     else ui.toast(t("git.published", { url: r.stdout.trim().split("\n").pop() ?? "" }));
   } finally {
     git.busy = "";

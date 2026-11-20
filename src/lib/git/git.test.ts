@@ -20,13 +20,14 @@ vi.mock("../ui.svelte", () => ({
     toast: (text: string, kind?: string) => m.toast.push([text, kind]),
     prompt: async () => m.prompt,
     confirm: async () => true,
+    choose: async () => "private",
   },
 }));
 vi.mock("../tools.svelte", () => ({ ensureTools: async () => true }));
 vi.mock("../native", () => ({ openDialog: async () => null }));
 vi.mock("../i18n/index.svelte", () => ({ t: (k: string, p?: Record<string, unknown>) => (p ? `${k} ${JSON.stringify(p)}` : k) }));
 
-import { git, newBranch } from "./git.svelte";
+import { cloneInto, git, newBranch, publishGitHub } from "./git.svelte";
 
 /** Fake git: `handler` gets the git argv and returns {code, stdout, stderr} (default: success). */
 function fakeGit(handler: (args: string[]) => Partial<{ code: number; stdout: string; stderr: string }> | undefined) {
@@ -55,6 +56,38 @@ describe("git error toasts (#71)", () => {
     await newBranch();
     const err = m.toast.find(([, kind]) => kind === "error")?.[0];
     expect(err).toContain("'feature/bad-name..x' is not a valid branch name");
+    expect(err).not.toContain("hint");
+  });
+
+  test("clone failure returns the fatal line, not the trailing advice (#93)", async () => {
+    const stderr = [
+      "Cloning into '/home/me/repo'...",
+      "fatal: repository 'https://example.com/nope.git/' not found",
+    ].join("\n");
+    fakeGit((a) => (a[0] === "clone" ? { code: 128, stderr } : undefined));
+    expect(await cloneInto("https://example.com/nope.git", "/home/me/repo")).toBe("repository 'https://example.com/nope.git/' not found");
+    const ssh = "Cloning into 'repo'...\ngit@github.com: Permission denied (publickey).\nfatal: Could not read from remote repository.\n\nPlease make sure you have the correct access rights\nand the repository exists.";
+    fakeGit((a) => (a[0] === "clone" ? { code: 128, stderr: ssh } : undefined));
+    expect(await cloneInto("git@github.com:me/repo.git", "/home/me/repo")).toBe("Could not read from remote repository.");
+  });
+
+  test("publish failure toasts gh's error, not its last hint line (#93)", async () => {
+    m.prompt = "repo";
+    mockIPC((cmd) => {
+      if (cmd === "git") return { code: 0, stdout: "", stderr: "" };
+      if (cmd === "git_status") return { repo: true, top: "/repo", branch: "main", upstream: null, ahead: 0, behind: 0, changes: [] };
+      if (cmd === "run_capture")
+        return {
+          code: 1,
+          stdout: "",
+          stderr: "remote: error: GH013: Repository rule violations found for refs/heads/main.\nerror: failed to push some refs to 'github.com:me/repo.git'\nhint: see the docs",
+        };
+      return null;
+    });
+    git.repo = true;
+    await publishGitHub();
+    const err = m.toast.find(([, kind]) => kind === "error")?.[0];
+    expect(err).toContain("GH013: Repository rule violations found");
     expect(err).not.toContain("hint");
   });
 });
