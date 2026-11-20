@@ -54,6 +54,17 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      # The updater compares versions, so a tag that doesn't match the app version would break it.
+      - name: Check that the tag matches the app version
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: |
+          v=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          if [ "v$v" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match version $v in tauri.conf.json"
+            exit 1
+          fi
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
