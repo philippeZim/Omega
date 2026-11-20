@@ -82,17 +82,19 @@ fn respond(req: tiny_http::Request, status: u16, body: Option<Value>, extra: &[(
     let _ = req.respond(resp);
 }
 
-/// Starts the server on 127.0.0.1:`port`. `tools` = MCP tool definitions (from the frontend).
+/// Starts the server on 127.0.0.1:`port` (0 = any free port) and returns the port it listens on.
+/// `tools` = MCP tool definitions (from the frontend).
 #[tauri::command]
-pub async fn mcp_control_start(app: AppHandle, port: u16, token: String, tools: Value) -> Result<(), String> {
+pub async fn mcp_control_start(app: AppHandle, port: u16, token: String, tools: Value) -> Result<u16, String> {
     let state = app.state::<McpControlState>();
     *state.tools.lock().unwrap() = tools;
     *state.token.lock().unwrap() = token.clone();
     *TOKEN.lock().unwrap() = Some(token.clone());
     let running_port = state.server.lock().unwrap().as_ref().map(|(p, _)| *p);
-    if running_port == Some(port) {
+    if let Some(running) = running_port.filter(|&p| p == port || port == 0) {
         state.enabled.store(true, Ordering::SeqCst);
-        return Ok(());
+        crate::instance::announce(running, &token);
+        return Ok(running);
     }
     if let Some((_, old)) = state.server.lock().unwrap().take() {
         old.unblock();
@@ -113,8 +115,10 @@ pub async fn mcp_control_start(app: AppHandle, port: u16, token: String, tools: 
         }
     }
     let server = server.ok_or_else(|| format!("Port {port}: {last_err}"))?;
+    let port = server.server_addr().to_ip().map(|a| a.port()).unwrap_or(port);
     *state.server.lock().unwrap() = Some((port, server.clone()));
     state.enabled.store(true, Ordering::SeqCst);
+    crate::instance::announce(port, &token);
 
     std::thread::spawn(move || {
         for mut req in server.incoming_requests() {
@@ -164,11 +168,12 @@ pub async fn mcp_control_start(app: AppHandle, port: u16, token: String, tools: 
             });
         }
     });
-    Ok(())
+    Ok(port)
 }
 
 #[tauri::command]
 pub fn mcp_control_stop(app: AppHandle) {
+    crate::instance::withdraw();
     *TOKEN.lock().unwrap() = None;
     app.state::<McpControlState>().enabled.store(false, Ordering::SeqCst);
 }

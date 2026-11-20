@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "omega-dev": {
+      "command": "node",
+      "args": ["dev/omega-mcp.mjs"]
+    }
+  }
+}
