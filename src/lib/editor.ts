@@ -129,7 +129,18 @@ export function createDoc(id: string, content: string) {
   docs.set(id, { state, saved: state.doc, cfg: null, collab: null });
 }
 
+/** Cursor of recently closed files (by path), restored when the file is opened again in this session. */
+const closedPos = new Map<string, { anchor: number; head: number }>();
+
 export function disposeDoc(id: string) {
+  const d = docs.get(id);
+  const path = d?.cfg?.path;
+  if (d && path) {
+    const { anchor, head } = (id === activeId && view ? view.state : d.state).selection.main;
+    closedPos.delete(path);
+    closedPos.set(path, { anchor, head });
+    if (closedPos.size > 100) closedPos.delete(closedPos.keys().next().value!);
+  }
   docs.delete(id);
 }
 
@@ -143,12 +154,18 @@ export function activate(id: string | null, cfg: EditorConfig) {
     return;
   }
   const d = docs.get(id)!;
+  let restored: number | null = null;
   if (d.cfg === null) {
-    d.state = EditorState.create({ doc: d.state.doc, extensions: baseExtensions(cfg, d.collab) });
+    const pos = cfg.path ? closedPos.get(cfg.path) : undefined;
+    const len = d.state.doc.length;
+    const selection = pos && { anchor: Math.min(pos.anchor, len), head: Math.min(pos.head, len) };
+    d.state = EditorState.create({ doc: d.state.doc, selection, extensions: baseExtensions(cfg, d.collab) });
     d.cfg = cfg;
+    if (selection) restored = selection.head;
   }
   view.dom.style.display = "";
   view.setState(d.state);
+  if (restored !== null) view.dispatch({ effects: EditorView.scrollIntoView(restored, { y: "center" }) });
   if (!sameCfg(d.cfg, cfg)) configure(cfg);
   reportCursor(view.state);
   view.focus();
