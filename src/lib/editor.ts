@@ -262,6 +262,11 @@ export function setCollab(id: string, ext: import("@codemirror/state").Extension
   else d.state = d.state.update({ effects }).state;
 }
 
+/** Mode the active document is configured for (null without an active document). */
+export function activeMode(): Mode | null {
+  return (activeId && docs.get(activeId)?.cfg?.mode) || null;
+}
+
 export function isActive(id: string) {
   return id === activeId;
 }
