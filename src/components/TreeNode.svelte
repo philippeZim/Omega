@@ -15,6 +15,7 @@
   import { git, kind } from "../lib/git/git.svelte";
   import { t } from "../lib/i18n/index.svelte";
   import { fileDrag, startFileDrag } from "../lib/fileDrag.svelte";
+  import { treeKeyAction, focusTreeRow } from "../lib/treeNav";
 
   const gitKind = $derived.by(() => {
     if (!git.repo || !git.top || !path.startsWith(git.top + "/")) return null;
@@ -112,6 +113,17 @@
     }
   }
 
+  // Arrows move the focus and open/close folders, F2 renames, Delete deletes (#39).
+  function onKey(e: KeyboardEvent) {
+    const a = treeKeyAction(e, { isDir: !!isDir, open });
+    if (!a) return;
+    e.preventDefault();
+    if (a === "expand" || a === "collapse") toggle();
+    else if (a === "rename") rename();
+    else if (a === "delete") remove();
+    else focusTreeRow(e.currentTarget as HTMLElement, a);
+  }
+
   function menu(e: MouseEvent) {
     if (root) return;
     ui.openMenu(e, [
@@ -135,7 +147,7 @@
 
 {#if !root}
   <button class="row" class:active style="padding-left: {8 + (depth - 1) * 14}px" class:drop-target={dropTarget} class:dragging data-tree-path={path} data-tree-dir={isDir ? "1" : "0"}
-    onpointerdown={(e) => startFileDrag(e, path)} onclick={toggle} oncontextmenu={menu} role="treeitem" aria-selected={active} aria-expanded={isDir ? open : undefined}>
+    onpointerdown={(e) => startFileDrag(e, path)} onclick={toggle} onkeydown={onKey} oncontextmenu={menu} role="treeitem" aria-level={depth} aria-selected={active} aria-expanded={isDir ? open : undefined}>
     {#if isDir}
       <svg class="chev" class:open width="10" height="10" viewBox="0 0 10 10"><path d="M3.5 2l3 3-3 3" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
     {:else}
