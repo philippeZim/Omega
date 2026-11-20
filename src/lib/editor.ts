@@ -23,6 +23,7 @@ import { baseTheme } from "./theme";
 import { REGISTERED_RUNS } from "./editorCommands";
 import { Prec } from "@codemirror/state";
 import { i18n, onLocaleChange, t, type Key } from "./i18n/index.svelte";
+import { stripBom } from "./eol";
 
 /** CodeMirror's built-in UI phrases (search panel, go to line, folding, lint) → our dictionary keys. */
 const CM_PHRASES: [string, Key][] = [
@@ -142,7 +143,8 @@ export function mount(parent: HTMLElement) {
 
 export function createDoc(id: string, content: string) {
   // The state is created lazily with the right extensions on first activation.
-  const state = EditorState.create({ doc: content });
+  // The BOM is not part of the text (it would show as a special character); save writes it back (eol.ts).
+  const state = EditorState.create({ doc: stripBom(content) });
   docs.set(id, { state, saved: state.doc, cfg: null, collab: null });
 }
 
