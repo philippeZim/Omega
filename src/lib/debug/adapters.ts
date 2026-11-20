@@ -2,7 +2,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { fsApi, basename, dirname, joinPath } from "../api";
 import { langFor } from "../code/languages";
-import { detectProject, pythonEntry, cmakeConfigure } from "../code/projects";
+import { detectProject, pythonEntry, cmakeConfigure, cmakeExecutable } from "../code/projects";
 import { toolsDir, clientFor, javaDebugBundles } from "../code/lsp.svelte";
 import { t } from "../i18n/index.svelte";
 import { exe, tmpPath, venvPython, IS_WIN, OS } from "../platform";
@@ -74,6 +74,11 @@ async function findPython(root: string, ctx: Ctx): Promise<string> {
     r = await invoke<{ code: number; stdout: string }>("run_capture", { cmd: "uv", args: ["python", "find"], cwd: root });
   }
   return r.stdout.trim().replace(/\\/g, "/");
+}
+
+/** Path of the CMake build output, resolved the same way as Run (variables, comments). */
+export function cmakeProgram(root: string, lists: string): string {
+  return joinPath(root, `build/${exe(cmakeExecutable(lists) ?? basename(root))}`);
 }
 
 export async function planFor(ctx: Ctx): Promise<Plan> {
@@ -148,7 +153,7 @@ export async function planFor(ctx: Ctx): Promise<Plan> {
         }
         await capture("cmake", ["--build", "build"], root, ctx);
         const lists = await fsApi.readFile(joinPath(root, "CMakeLists.txt")).catch(() => "");
-        program = joinPath(root, `build/${exe(/add_executable\s*\(\s*([\w.-]+)/.exec(lists)?.[1] ?? basename(root))}`);
+        program = cmakeProgram(root, lists);
       } else {
         await need(["cc"]);
         program = await tmpPath(exe(`omega-dbg-${basename(ctx.file).replace(/\.\w+$/, "")}`));
