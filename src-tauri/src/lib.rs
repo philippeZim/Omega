@@ -83,6 +83,7 @@ pub fn run() {
             collab::collab_kick,
             collab::collab_stop,
             collab::collab_conn_info,
+            collab::collab_path_inside,
             instance::instance_info,
             mcp_control::mcp_control_start,
             mcp_control::mcp_control_stop,
