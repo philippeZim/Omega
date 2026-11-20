@@ -33,14 +33,27 @@
     const seq = ++renderSeq;
     const url = convertFileSrc(path) + "?v=" + latex.pdfVersion;
     const next = await pdfjs.getDocument({ url, isEvalSupported: false }).promise.catch(() => null);
-    if (!next || seq !== renderSeq) return;
+    if (!next) return;
+    if (seq !== renderSeq) return void next.destroy();
     const old = doc;
     doc = next;
-    await render(seq);
-    old?.destroy();
+    try {
+      await render(seq);
+    } finally {
+      old?.destroy();
+    }
   }
 
   async function render(seq = ++renderSeq) {
+    try {
+      await renderPages(seq);
+    } catch (e) {
+      // clear() or a newer load destroyed the doc mid-render ("Worker was destroyed").
+      if (seq === renderSeq) throw e;
+    }
+  }
+
+  async function renderPages(seq: number) {
     if (!doc) return;
     const ratio = scroller.scrollTop / Math.max(1, scroller.scrollHeight);
     const dpr = window.devicePixelRatio || 1;
@@ -116,8 +129,18 @@
     scroller.scrollTo({ top: pageEl.offsetTop + top - 12, behavior: "smooth" });
   }
 
+  /** Drops the rendered pages (e.g. after switching to a .tex tab without a PDF). */
+  function clear() {
+    renderSeq++;
+    doc?.destroy();
+    doc = null;
+    pageSizes = [];
+    pagesEl.replaceChildren();
+  }
+
   $effect(() => {
-    if (latex.pdf && latex.pdfVersion) load(latex.pdf);
+    if (!latex.pdf) clear();
+    else if (latex.pdfVersion) load(latex.pdf);
   });
 
   $effect(() => {
