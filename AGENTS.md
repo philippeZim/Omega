@@ -7,6 +7,7 @@ Omega is a Tauri 2 editor (Svelte 5 + TypeScript frontend in `src/`, Rust backen
 - `main`: released code only. Every merge is tagged (`v0.x.y`), and the tag builds the release. **Never commit or push to `main`.**
 - `dev`: the integration branch. Issue branches are merged here, by the orchestrator only.
 - Issue branches: `fix/<nr>-<slug>` or `feat/<nr>-<slug>`, always branched from `dev`, each in its own worktree (`dev/agent.sh new <nr>`).
+- Never use `git stash`: the stash is shared by all worktrees, so parallel agents swap each other's changes. To check a test without your fix, use `git diff > /tmp/<nr>.patch`, `git checkout -- <file>`, run the test, then `git apply /tmp/<nr>.patch`.
 - Work only on your own branch, in your own worktree. Rebase on `dev` when the orchestrator says `dev` moved: `git rebase dev`.
 
 ## Before you report "done"
