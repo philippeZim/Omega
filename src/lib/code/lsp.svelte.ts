@@ -57,6 +57,8 @@ export class LspClient {
   used = false;
   alive = true;
   stopping = false;
+  /** Start failed: the process was killed and its late exit must not touch the status. */
+  failed = false;
 
   constructor(readonly kind: ServerKind, readonly root: string, cmd: string, args: string[], readonly initOptions?: Json) {
     this.id = `lsp-${kind}-${Math.random().toString(36).slice(2, 8)}`;
@@ -77,7 +79,7 @@ export class LspClient {
         }
         this.pending.clear();
         // A stopped client can exit after its replacement started: leave the replacement's state alone.
-        if (this.current) {
+        if (this.current && !this.failed) {
           lspState.status[this.key] = "stopped";
           lspState.message[this.key] = tail.join("\n");
           clients.delete(this.key);
@@ -239,6 +241,8 @@ const clients = new Map<string, LspClient>();
 const starting = new Map<string, Promise<LspClient | null>>();
 /** Servers whose install prompt was cancelled: not asked again this session (until stopServers). */
 const declined = new Set<ServerKind>();
+/** Keys whose server failed to start: not retried for every new tab (only after stopServers). */
+const failed = new Set<string>();
 
 let currentWorkspace: () => string | null = () => null;
 /** Lets the registry see the open folder (set together with the editor hooks). */
@@ -421,6 +425,7 @@ export async function clientFor(
     clients.delete(key);
   } else if (existing) return existing.ready.then(() => existing);
   if (starting.has(key)) return starting.get(key)!;
+  if (failed.has(key)) return null;
 
   const p = (async () => {
     let cmd = await resolveCommand(kind, root);
@@ -458,6 +463,12 @@ export async function clientFor(
     } catch (e) {
       // Died during initialize: the exit handler already kept the stderr tail as message and showed a toast.
       const exited = !c.alive;
+      failed.add(key);
+      if (!exited) {
+        // The process may still run (e.g. it answered initialize with an error): kill it.
+        c.failed = c.stopping = true;
+        invoke("proc_kill", { id: c.id }).catch(() => {});
+      }
       if (c.current) {
         lspState.status[key] = "error";
         if (!exited) lspState.message[key] = backendErrorText(e);
@@ -476,6 +487,7 @@ export async function clientFor(
 /** Stops all running servers of `kind` (before it is updated or removed); they restart on demand. */
 export function stopServers(kind: ServerKind) {
   declined.delete(kind);
+  for (const key of failed) if (key.startsWith(kind + "|")) failed.delete(key);
   for (const [key, c] of clients) if (c.kind === kind) {
     c.stop();
     clients.delete(key);
