@@ -72,6 +72,7 @@ pub fn run() {
             fs::list_files,
             search::search_text,
             search::search_cancel,
+            search::search_files,
             git::git,
             git::git_status,
             git::git_head_file,
