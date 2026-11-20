@@ -464,4 +464,19 @@ describe("client registry", () => {
     expect(ask).toHaveBeenCalledWith("python", "basedpyright (Python)");
     expect(L.lspState.status["python|/w"]).toBe("missing");
   });
+
+  // #112: the prompt came back on every activation of a tab after Cancel.
+  test("a declined install is not asked again, except for debugging or after stopServers", async () => {
+    mockIPC((cmd) => (cmd === "tools_dir" ? "/tools" : cmd === "path_exists" ? false : null), { shouldMockEvents: true });
+    const ask = vi.fn(async () => false);
+    expect(await L.clientFor(PY, "/w/a.py", "/w", ask)).toBeNull();
+    expect(await L.clientFor(PY, "/w/b.py", "/w", ask)).toBeNull();
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(L.lspState.status["python|/w"]).toBe("missing");
+    await L.clientFor(PY, "/w/a.py", "/w", ask, true);
+    expect(ask).toHaveBeenCalledTimes(2);
+    L.stopServers("python"); // installed/updated from the settings
+    await L.clientFor(PY, "/w/a.py", "/w", ask);
+    expect(ask).toHaveBeenCalledTimes(3);
+  });
 });
