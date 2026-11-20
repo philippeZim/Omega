@@ -198,6 +198,11 @@ function toTestWorkspace(pid, prevAddr) {
   return true;
 }
 
+/** App tool call through the proxy (MCP and CLI). */
+async function appCall(inst, name, args) {
+  return forward(inst, "tools/call", { name, arguments: args });
+}
+
 /** Builds (cargo) and starts an instance of `root`; resolves when its control MCP is up. */
 async function launch(name = "agent", paths = [], log = () => {}) {
   if (!validName(name)) throw new Error(`Ungültiger Name "${name}" (erlaubt: A-Z a-z 0-9 _ -)`);
@@ -413,7 +418,7 @@ async function callTool(name, args = {}) {
       return text(`Beendet: ${(await stop(args.name)).join(", ")}`);
     default: {
       const { instance, ...rest } = args;
-      return forward(target(instance), "tools/call", { name, arguments: rest });
+      return appCall(target(instance), name, rest);
     }
   }
 }
@@ -475,14 +480,43 @@ function serve() {
 
 // ------------------------------------------------------------------ CLI
 
+/** `call [-i instance] [-o out.png] <tool> [json]`: one app tool from a shell (for subagents
+ *  without MCP access). Text goes to stdout; images are written to -o (default: a temp file)
+ *  and their path is printed. Exit code 1 if the tool reports an error. */
+async function cliCall(argv) {
+  let instance;
+  let outFile;
+  const pos = [];
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === "-i") instance = argv[++i];
+    else if (argv[i] === "-o") outFile = argv[++i];
+    else pos.push(argv[i]);
+  }
+  const [name, json] = pos;
+  if (!name) throw new Error("call: Tool-Name fehlt");
+  const args = json ? JSON.parse(json) : {};
+  const res = await appCall(target(instance), name, args);
+  let n = 0;
+  for (const c of res.content ?? []) {
+    if (c.type === "image") {
+      const file = outFile && n === 0 ? outFile : `${os.tmpdir()}/omega-shot-${Date.now()}-${n}.png`;
+      fs.writeFileSync(file, Buffer.from(c.data, "base64"));
+      console.log(`[Bild] ${file}`);
+      n++;
+    } else console.log(c.text ?? JSON.stringify(c));
+  }
+  if (res.isError) process.exitCode = 1;
+}
+
 const [cmd, ...rest] = process.argv.slice(2);
 try {
   if (!cmd || cmd === "serve") serve();
   else if (cmd === "list") console.log(JSON.stringify(instances().map(publicInfo), null, 2));
   else if (cmd === "launch") console.log(JSON.stringify(await launch(rest[0] || "agent", rest.slice(1), (m) => console.error(m)), null, 2));
   else if (cmd === "stop") console.log(`Beendet: ${(await stop(rest[0] || "all")).join(", ")}`);
+  else if (cmd === "call") await cliCall(rest);
   else {
-    console.error("Benutzung: omega-mcp.mjs [serve | list | launch [name] [pfade…] | stop <name|all>]");
+    console.error("Benutzung: omega-mcp.mjs [serve | list | launch [name] [pfade…] | stop <name|all> | call [-i instanz] [-o bild.png] <tool> [json-args]]");
     process.exit(2);
   }
 } catch (e) {

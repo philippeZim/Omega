@@ -20,6 +20,8 @@ import { runner } from "../code/runner.svelte";
 import { find } from "../search/search.svelte";
 import { settings } from "../settings.svelte";
 import type { Mode } from "../modes";
+import { audit, CHECKS, type Check } from "./uiAudit";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 
 // ------------------------------------------------------------------ console capture
 
@@ -131,6 +133,9 @@ function clickElement(el: HTMLElement, double = false) {
   el.dispatchEvent(new MouseEvent("click", opts));
   if (double) el.dispatchEvent(new MouseEvent("dblclick", opts));
 }
+
+/** Zoom set by `set_viewport` (null = the user's uiScale). */
+let viewportZoom: number | null = null;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -470,6 +475,32 @@ export const TOOLS: Tool[] = [
         }
       }
       return { __image: url.split(",")[1] };
+    },
+  },
+  {
+    name: "ui_audit",
+    description: "Misst grafische Fehler im aktuellen Fenster: abgeschnittener/überlaufender Text (overflow), Bedienelemente außerhalb des Fensters (offscreen) oder verdeckt (covered), zu wenig Textkontrast (contrast), Buttons ohne Beschriftung (unlabeled), unübersetzte Texte/rohe Schlüssel (i18n). Editor-, Terminal- und PDF-Inhalt werden übersprungen.",
+    inputSchema: obj({
+      checks: { type: "array", items: { type: "string", enum: CHECKS }, description: "Nur diese Prüfungen (Standard: alle)" },
+      selector: str("Nur innerhalb dieses Elements (CSS-Selektor)"),
+      min_contrast: num("Mindestkontrast (Standard 4.5)"),
+      limit: num("max. Funde (Standard 80)"),
+    }),
+    run: ({ checks, selector, min_contrast, limit }) => audit({ checks: checks as Check[], selector, minContrast: min_contrast, limit }),
+  },
+  {
+    name: "set_viewport",
+    description: "Emuliert ein kleineres/größeres Fenster über den Webview-Zoom (Test-Fenster liegen auf einem unsichtbaren Desktop und können nicht echt verkleinert werden). Mit 'width' und/oder 'height' wird der Zoom so gewählt, dass die engere Dimension genau passt; die andere folgt dem Seitenverhältnis des echten Fensters. Ohne Argumente: zurück zur normalen UI-Skalierung.",
+    inputSchema: obj({ width: num("Breite in CSS-Pixeln, z. B. 800"), height: num("Höhe in CSS-Pixeln, z. B. 600") }),
+    run: async ({ width, height }) => {
+      const base = settings.uiScale || 1;
+      const z0 = viewportZoom ?? base; // window size at zoom 1 = CSS size × current zoom
+      const fits = [width && (window.innerWidth * z0) / width, height && (window.innerHeight * z0) / height].filter(Boolean) as number[];
+      const zoom = fits.length ? Math.max(0.25, Math.min(5, ...fits)) : base;
+      await getCurrentWebview().setZoom(zoom);
+      viewportZoom = fits.length ? zoom : null;
+      await sleep(400);
+      return { viewport: { w: window.innerWidth, h: window.innerHeight }, zoom: +zoom.toFixed(3) };
     },
   },
   {
