@@ -3,12 +3,17 @@
   import { fsApi } from "../lib/api";
   import { t } from "../lib/i18n/index.svelte";
   import { aheadLabel } from "../lib/git/labels";
-  import { git, branches, switchBranch, newBranch, pull, push, fetchNow, cloneRepo, publishGitHub, initRepo, connectRemote } from "../lib/git/git.svelte";
+  import { git, branches, switchBranch, newBranch, pull, push, fetchNow, continueOperation, abortOperation, cloneRepo, publishGitHub, initRepo, connectRemote } from "../lib/git/git.svelte";
 
   async function branchMenu(e: MouseEvent) {
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
     const b = await branches();
     ui.openMenu(new MouseEvent("contextmenu", { clientX: r.left, clientY: r.bottom + 8 }), [
+      ...(git.operation === "rebase"
+        ? [{ label: t("git.continueRebase"), action: () => continueOperation() }, { label: t("git.abortRebase"), action: abortOperation }, { separator: true, label: "" }]
+        : git.operation === "merge"
+          ? [{ label: t("git.continueMerge"), action: () => continueOperation() }, { label: t("git.abortMerge"), action: abortOperation }, { separator: true, label: "" }]
+          : []),
       { label: t("app.newBranch"), action: newBranch },
       { label: t("app.pull") + (git.behind ? t("app.behind", { n: git.behind }) : ""), shortcut: shortcutLabel("git.pull"), action: pull },
       { label: t("app.fetch"), action: fetchNow },
@@ -94,7 +99,7 @@
     {#if git.repo && git.branch}
       <button class="branch" onclick={branchMenu} title={t("app.branchTitle")}>
         <svg width="12" height="12" viewBox="0 0 16 16"><circle cx="4" cy="3.5" r="1.8" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="4" cy="12.5" r="1.8" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="12" cy="5" r="1.8" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M4 5.3v5.4M12 6.8c0 3-4 2.5-7.2 4.4" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>
-        <span>{git.branch}</span>
+        <span>{git.branch}{git.operation === "rebase" ? t("git.rebasing") : git.operation === "merge" ? t("git.merging") : ""}</span>
         {#if git.ahead}<span class="ab">↑{git.ahead}</span>{/if}
         {#if git.behind}<span class="ab">↓{git.behind}</span>{/if}
         {#if git.changes.length}<span class="dirty"></span>{/if}
