@@ -9,6 +9,7 @@
   import { app } from "../lib/state.svelte";
   import { fsApi, basename, normPath } from "../lib/api";
   import * as ed from "../lib/editor";
+  import { detectEol, toDisk, type Eol } from "../lib/eol";
   import { langFor, indentFor } from "../lib/code/languages";
   import { baseTheme, codeHighlight } from "../lib/theme";
   import { formatKey } from "../lib/keys";
@@ -19,6 +20,7 @@
   let previewHost: HTMLDivElement | undefined = $state();
   let preview: EditorView | null = null;
   let previewFile: string | null = null;
+  let previewEol: Eol = "\n";
   let writeTimer: number | undefined;
 
   const hit = $derived(find.hits[find.selected] as Hit | undefined);
@@ -82,9 +84,9 @@
           const tab = app.tabs.find((t) => t.path === previewFile);
           for (const tr of u.transactions) if (tab && tr.docChanged) ed.applyChanges(tab.id, { changes: tr.changes });
           if (!tab) {
-            const f = previewFile, doc = u.state.doc;
+            const f = previewFile, doc = u.state.doc, eol = previewEol;
             clearTimeout(writeTimer);
-            writeTimer = window.setTimeout(() => fsApi.writeFile(f, doc.toString()), 600);
+            writeTimer = window.setTimeout(() => fsApi.writeFile(f, toDisk(doc.toString(), eol)), 600);
           }
         }),
       ],
@@ -104,6 +106,7 @@
       }
       if (hit !== h) return;
       previewFile = h.file;
+      previewEol = detectEol(text);
       preview.setState(previewState(text, h.file));
     }
     const doc = preview.state.doc;
@@ -129,7 +132,7 @@
     clearTimeout(writeTimer);
     if (previewFile && !app.tabs.some((t) => t.path === previewFile) && preview) {
       // Flush a pending preview write.
-      fsApi.writeFile(previewFile, preview.state.doc.toString()).catch(() => {});
+      fsApi.writeFile(previewFile, toDisk(preview.state.doc.toString(), previewEol)).catch(() => {});
     }
     preview?.destroy();
   });

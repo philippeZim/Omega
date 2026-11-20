@@ -12,6 +12,7 @@
   import { app } from "../lib/state.svelte";
   import { fsApi, basename } from "../lib/api";
   import * as ed from "../lib/editor";
+  import { detectEol, toDisk, type Eol } from "../lib/eol";
   import { langFor } from "../lib/code/languages";
   import { baseTheme, codeHighlight } from "../lib/theme";
   import { t } from "../lib/i18n/index.svelte";
@@ -19,6 +20,7 @@
   let host: HTMLDivElement | undefined = $state();
   let view: MergeView | null = null;
   let writeTimer: number | undefined;
+  let eol: Eol = "\n";
   let info = $state<"git.diff.deleted" | "git.diff.newFile" | null>(null);
   const file = diffState.file!;
   const rel = git.top && file.startsWith(git.top + "/") ? file.slice(git.top.length + 1) : file;
@@ -35,6 +37,7 @@
     let current = "";
     try {
       current = tab ? ed.getText(tab.id) : await fsApi.readFile(file);
+      eol = detectEol(current);
     } catch {
       info = "git.diff.deleted";
     }
@@ -58,7 +61,7 @@
             if (!t) {
               clearTimeout(writeTimer);
               const doc = u.state.doc;
-              writeTimer = window.setTimeout(() => fsApi.writeFile(file, doc.toString()), 500);
+              writeTimer = window.setTimeout(() => fsApi.writeFile(file, toDisk(doc.toString(), eol)), 500);
             }
           }),
         ],
@@ -73,7 +76,7 @@
   onDestroy(() => {
     if (writeTimer && view && !app.tabs.some((t) => t.path === file)) {
       clearTimeout(writeTimer);
-      fsApi.writeFile(file, view.b.state.doc.toString()).catch(() => {});
+      fsApi.writeFile(file, toDisk(view.b.state.doc.toString(), eol)).catch(() => {});
     }
     view?.destroy();
   });
