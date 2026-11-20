@@ -29,6 +29,36 @@ fn io_err(e: std::io::Error) -> String {
     format!("fs:{code}")
 }
 
+/// The open project folder (set by `watch_dir`), for the symlink check of new entries (#91).
+static ROOT: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+
+/// Refuses to create `target` when its path lies inside the open project but its folder resolves
+/// (through a symlinked folder) to somewhere outside it. Paths outside the project (Save As
+/// elsewhere) and saving existing files stay allowed.
+fn check_new_entry(target: &Path) -> Result<(), String> {
+    let root = ROOT.lock().ok().and_then(|r| r.clone());
+    match root {
+        Some(root) => check_new_entry_in(&root, target),
+        None => Ok(()),
+    }
+}
+
+fn check_new_entry_in(root: &Path, target: &Path) -> Result<(), String> {
+    if !target.starts_with(root) {
+        return Ok(());
+    }
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    // Missing folders in between get created, so the nearest existing one decides.
+    let mut dir = target.parent();
+    while let Some(d) = dir {
+        if let Ok(c) = d.canonicalize() {
+            return if c.starts_with(&root) { Ok(()) } else { Err("fs:outside_project".into()) };
+        }
+        dir = d.parent();
+    }
+    Ok(())
+}
+
 const HIDDEN: &[&str] = &[".git", "node_modules", "target", "__pycache__", ".venv", ".idea"];
 
 #[tauri::command]
@@ -69,6 +99,7 @@ pub fn write_file(path: String, content: String) -> Result<(), String> {
 /// Creates a new empty file. Fails instead of truncating if the file already exists.
 #[tauri::command]
 pub fn create_file(path: String) -> Result<(), String> {
+    check_new_entry(Path::new(&path))?;
     if let Some(parent) = Path::new(&path).parent() {
         fs::create_dir_all(parent).map_err(io_err)?;
     }
@@ -91,6 +122,7 @@ pub fn write_file_base64(path: String, data: String) -> Result<(), String> {
 
 #[tauri::command]
 pub fn create_dir(path: String) -> Result<(), String> {
+    check_new_entry(Path::new(&path))?;
     fs::create_dir_all(&path).map_err(io_err)
 }
 
@@ -100,6 +132,7 @@ pub fn rename_path(from: String, to: String) -> Result<(), String> {
     if fs::symlink_metadata(&to).is_ok() {
         return Err("fs:exists".into());
     }
+    check_new_entry(Path::new(&to))?;
     fs::rename(&from, &to).map_err(io_err)
 }
 
@@ -227,6 +260,9 @@ pub fn watch_dir(app: tauri::AppHandle, path: Option<String>) -> Result<(), Stri
 
     let mut slot = WATCHER.lock().map_err(err)?;
     *slot = None; // drops (stops) the old watcher, which also ends its debounce thread
+    if let Ok(mut root) = ROOT.lock() {
+        *root = path.as_ref().map(PathBuf::from);
+    }
     let Some(path) = path else { return Ok(()) };
 
     // (path, structural): structural = created/removed/renamed, i.e. the parent listing changed.
@@ -503,5 +539,37 @@ mod tests {
         assert_eq!(rename_path(s(&a), s(&link)).unwrap_err(), "fs:exists");
         assert_eq!(fs::read_to_string(&a).unwrap(), "A");
         assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn new_entries_through_a_link_out_of_the_project_are_refused() {
+        let t = tempfile::tempdir().unwrap();
+        let (root, outside) = (t.path().join("proj"), t.path().join("outside"));
+        fs::create_dir_all(root.join("sub")).unwrap();
+        fs::create_dir(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("ext")).unwrap();
+        let err = Err("fs:outside_project".to_string());
+        assert_eq!(check_new_entry_in(&root, &root.join("ext/x")), err);
+        assert_eq!(check_new_entry_in(&root, &root.join("ext/new/deeper/x")), err);
+        assert_eq!(check_new_entry_in(&root, &root.join("sub/../../outside/x")), err);
+        assert_eq!(check_new_entry_in(&root, &root.join("sub/x")), Ok(()));
+        assert_eq!(check_new_entry_in(&root, &root.join("new/deeper/x")), Ok(()));
+        // Explicit paths outside the project (Save As elsewhere) stay allowed.
+        assert_eq!(check_new_entry_in(&root, &outside.join("x")), Ok(()));
+
+        // Through the commands, with the project root set like watch_dir does.
+        *ROOT.lock().unwrap() = Some(root.clone());
+        assert_eq!(create_file(s(&root.join("ext/x"))), err);
+        assert_eq!(create_dir(s(&root.join("ext/d"))), err);
+        fs::write(root.join("a.txt"), "A").unwrap();
+        assert_eq!(rename_path(s(&root.join("a.txt")), s(&root.join("ext/a.txt"))), err);
+        assert!(!outside.join("x").exists() && !outside.join("d").exists() && !outside.join("a.txt").exists());
+        create_file(s(&root.join("sub/ok.txt"))).unwrap();
+        // Saving an existing file through the link stays allowed.
+        fs::write(outside.join("linked.txt"), "old").unwrap();
+        write_file(s(&root.join("ext/linked.txt")), "new".into()).unwrap();
+        assert_eq!(fs::read_to_string(outside.join("linked.txt")).unwrap(), "new");
+        *ROOT.lock().unwrap() = None;
     }
 }

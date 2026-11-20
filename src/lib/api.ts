@@ -25,10 +25,10 @@ export const fsApi = {
   createFile: (path: string) => fsCall<void>("create_file", { path }, path),
   writeFileBase64: (path: string, data: string) => fsCall<void>("write_file_base64", { path, data }, path),
   createDir: (path: string) => fsCall<void>("create_dir", { path }, path),
-  // "exists" is about the target, every other error about the source.
+  // "exists" and "outside_project" are about the target, every other error about the source.
   rename: (from: string, to: string) =>
     invoke<void>("rename_path", { from, to }).catch((e) => {
-      throw fsErrorText(e, String(e) === "fs:exists" ? to : from);
+      throw fsErrorText(e, ["fs:exists", "fs:outside_project"].includes(String(e)) ? to : from);
     }),
   remove: (path: string) => fsCall<void>("delete_path", { path }, path),
   exists: (path: string) => invoke<boolean>("path_exists", { path }),

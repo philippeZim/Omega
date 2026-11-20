@@ -33,6 +33,8 @@ describe("fsApi translates backend codes (#33)", () => {
     setLocale("en");
     mockIPC(() => Promise.reject("fs:exists"));
     await expect(fsApi.rename("/p/a.txt", "/p/sub/b.txt")).rejects.toBe('"b.txt" already exists');
+    mockIPC(() => Promise.reject("fs:outside_project"));
+    await expect(fsApi.rename("/p/a.txt", "/p/ext/b.txt")).rejects.toBe('"b.txt" would be created outside the project through a linked folder');
     mockIPC(() => Promise.reject("fs:not_found"));
     await expect(fsApi.rename("/p/a.txt", "/p/sub/b.txt")).rejects.toBe("\"a.txt\" doesn't exist");
   });

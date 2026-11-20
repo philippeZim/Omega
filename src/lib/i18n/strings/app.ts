@@ -199,6 +199,7 @@ export const en = {
   "app.fsErr.not_dir": "The path to \"{name}\" contains a file where a folder is expected",
   "app.fsErr.not_empty": "Folder \"{name}\" is not empty",
   "app.headingNotFound": "No heading \"#{name}\" in this file",
+  "app.fsErr.outside_project": "\"{name}\" would be created outside the project through a linked folder",
 };
 export const de: Record<keyof typeof en, string> = {
   "app.report.button": "Problem oder Idee melden",
@@ -395,6 +396,7 @@ export const de: Record<keyof typeof en, string> = {
   "app.fsErr.not_dir": "Im Pfad zu „{name}“ steht eine Datei, wo ein Ordner erwartet wird",
   "app.fsErr.not_empty": "Ordner „{name}“ ist nicht leer",
   "app.headingNotFound": "Keine Überschrift „#{name}“ in dieser Datei",
+  "app.fsErr.outside_project": "„{name}“ würde über einen verlinkten Ordner außerhalb des Projekts angelegt",
 };
 export const fr: Record<keyof typeof en, string> = {
   "app.report.button": "Signaler un problème ou une idée",
@@ -591,4 +593,5 @@ export const fr: Record<keyof typeof en, string> = {
   "app.fsErr.not_dir": "Le chemin vers « {name} » contient un fichier à la place d’un dossier",
   "app.fsErr.not_empty": "Le dossier « {name} » n’est pas vide",
   "app.headingNotFound": "Aucun titre « #{name} » dans ce fichier",
+  "app.fsErr.outside_project": "« {name} » serait créé hors du projet via un dossier lié",
 };
