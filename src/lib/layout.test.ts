@@ -45,9 +45,8 @@ describe("layout load()", () => {
     expect(allViews(zones).sort()).toEqual([...VIEWS].sort());
   });
 
-  // bug: a zone absent from the saved data keeps its default views but they are not marked as seen,
-  // so the "views added in a later version" loop appends them a second time (duplicate tabs).
-  test.fails("a missing zone keeps its defaults without duplicates", () => {
+  // #30: a zone absent from the saved data keeps its defaults; they must not be appended a second time.
+  test("a missing zone keeps its defaults without duplicates", () => {
     save({ zones: { left: { views: ["files"] } } });
     const { zones } = load();
     expect(zones.left.views).toEqual(["files", "changes", "outline"]);
@@ -55,15 +54,24 @@ describe("layout load()", () => {
     expect(new Set(allViews(zones)).size).toBe(VIEWS.length);
   });
 
-  // bug: `active` is copied unchecked, so a stale/unknown id survives load() (activeView() masks it at runtime).
-  test.fails("active must be one of the zone's views", () => {
+  // #30: a stale/unknown active id is dropped.
+  test("active must be one of the zone's views", () => {
     save({ zones: { left: { views: ["files"], active: "bogus" } } });
     expect(load().zones.left.active).not.toBe("bogus");
   });
 
-  // bug: a non-array `views` (e.g. a number from a corrupted file) makes load() throw at startup.
-  test.fails("corrupted views value does not throw", () => {
+  // #30: a non-array `views` (corrupted data) must not make load() throw at startup.
+  test("corrupted views value does not throw", () => {
     save({ zones: { left: { views: 5 } } });
     expect(() => load()).not.toThrow();
+  });
+
+  test("a view moved out of a missing zone is not duplicated there", () => {
+    save({ zones: { left: { views: ["files", "terminal"], active: "terminal" } } });
+    const { zones } = load();
+    expect(zones.left.views).toEqual(["files", "terminal", "changes", "outline"]);
+    expect(zones.bottom.views).toEqual(["console", "search"]);
+    expect(zones.bottom.active).toBeNull();
+    expect(new Set(allViews(zones)).size).toBe(VIEWS.length);
   });
 });

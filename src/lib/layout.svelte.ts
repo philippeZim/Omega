@@ -47,18 +47,28 @@ export function load(): { zones: Record<Zone, ZoneState>; open: OpenState } {
   const zones = structuredClone(DEFAULT_ZONES);
   if (saved?.zones) {
     const seen = new Set<ViewId>();
+    const missing: Zone[] = [];
     for (const z of ZONES) {
       const s = saved.zones[z];
-      if (!s) continue;
+      if (!s || typeof s !== "object") {
+        missing.push(z);
+        continue;
+      }
       zones[z].views = [];
-      for (const v of s.views ?? []) {
+      for (const v of Array.isArray(s.views) ? s.views : []) {
         if (VIEWS.includes(v) && !seen.has(v)) {
           seen.add(v);
           zones[z].views.push(v);
         }
       }
-      zones[z].active = s.active ?? null;
+      zones[z].active = s.active && zones[z].views.includes(s.active) ? s.active : null;
       if (typeof s.size === "number" && s.size > 0) zones[z].size = s.size;
+    }
+    // A zone missing from the saved data keeps its defaults, minus views placed elsewhere.
+    for (const z of missing) {
+      zones[z].views = zones[z].views.filter((v) => !seen.has(v));
+      if (zones[z].active && !zones[z].views.includes(zones[z].active)) zones[z].active = null;
+      for (const v of zones[z].views) seen.add(v);
     }
     // Views added in a later version go to their default zone.
     for (const v of VIEWS) if (!seen.has(v)) zones[defaultZone(v)].views.push(v);
