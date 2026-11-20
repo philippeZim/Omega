@@ -1,5 +1,7 @@
 import { describe, expect, test } from "vitest";
-import { resolvePath } from "./livePreview";
+import { EditorState } from "@codemirror/state";
+import { EditorView } from "@codemirror/view";
+import { resolvePath, toggleWrap } from "./livePreview";
 
 describe("resolvePath", () => {
   const from = "/home/me/notes/index.md";
@@ -49,5 +51,41 @@ describe("resolvePath", () => {
     expect(resolvePath("100%.md", from)).toBe("/home/me/notes/100%.md");
     expect(resolvePath("img/50% off.png", from)).toBe("/home/me/notes/img/50% off.png");
     expect(resolvePath("100%.md#Top", from)).toBe("/home/me/notes/100%.md");
+  });
+});
+
+// ------------------------------------------------------------ formatting commands
+
+/** Applies toggleWrap(marker) to `doc`, where the selection is written as [ … ]. */
+function wrap(doc: string, marker: string): string {
+  const from = doc.indexOf("["), to = doc.indexOf("]") - 1;
+  const view = new EditorView({
+    state: EditorState.create({ doc: doc.replace("[", "").replace("]", ""), selection: { anchor: from, head: to } }),
+  });
+  toggleWrap(marker)(view);
+  const { state } = view;
+  const r = state.selection.main;
+  const out = state.doc.toString();
+  view.destroy();
+  return out.slice(0, r.from) + "[" + out.slice(r.from, r.to) + "]" + out.slice(r.to);
+}
+
+describe("toggleWrap", () => {
+  test("wraps and unwraps", () => {
+    expect(wrap("a [b] c", "*")).toBe("a *[b]* c");
+    expect(wrap("a *[b]* c", "*")).toBe("a [b] c");
+    expect(wrap("a **[b]** c", "**")).toBe("a [b] c");
+    expect(wrap("a ~~[b]~~ c", "~~")).toBe("a [b] c");
+  });
+
+  // #41: italic on a bold word removed one "*" on each side, so bold turned into italic.
+  test("italic on bold gives bold-italic and back", () => {
+    expect(wrap("word **[bold]** x", "*")).toBe("word ***[bold]*** x");
+    expect(wrap("word ***[bold]*** x", "*")).toBe("word **[bold]** x");
+  });
+
+  test("bold on italic / bold-italic", () => {
+    expect(wrap("a *[b]* c", "**")).toBe("a ***[b]*** c");
+    expect(wrap("a ***[b]*** c", "**")).toBe("a *[b]* c");
   });
 });
