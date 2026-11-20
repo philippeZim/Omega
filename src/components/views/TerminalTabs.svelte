@@ -29,7 +29,11 @@
   {#each terms.tabs as tab (tab.id)}
     <div class="tab" class:active={tab.id === terms.active} class:exited={tab.exited} role="tab" tabindex="0" aria-selected={tab.id === terms.active}
       onclick={() => { terms.active = tab.id; focusTerm(tab.id); }} onkeydown={(e) => e.key === "Enter" && (terms.active = tab.id)}>
-      <span class="dot" class:run={tab.kind === "run"}></span>
+      {#if tab.status && tab.status !== "running"}
+        <span class="st {tab.status}" title={tab.status === "ok" ? t("code.term.stOk") : tab.status === "fail" ? t("code.term.stFail", { code: String(tab.code) }) : t("code.term.stStopped")}>{tab.status === "ok" ? "✓" : tab.status === "fail" ? "✗" : "■"}</span>
+      {:else}
+        <span class="dot" class:run={tab.kind === "run" || tab.kind === "build"} class:busy={tab.status === "running"} title={tab.status === "running" ? t("code.term.stRunning") : undefined}></span>
+      {/if}
       <span class="label" title={tab.title}>{tab.title}</span>
       <button class="x" onclick={(e) => { e.stopPropagation(); closeTerminal(tab.id); }} aria-label={t("common.close")}><Glyph name="x" size={8} /></button>
     </div>
@@ -61,6 +65,12 @@
   .tab:hover { background: var(--fill-hover); color: var(--label); }
   .tab.active { background: rgba(var(--fg-rgb), 0.1); color: var(--label); box-shadow: inset 0 1px 0 rgba(var(--hl-rgb), 0.08); }
   .tab.exited { opacity: 0.55; }
+  .st { width: 9px; display: grid; place-items: center; font-size: 11px; font-weight: 700; line-height: 1; }
+  .st.ok { color: var(--green); }
+  .st.fail { color: var(--red); }
+  .st.stopped { color: var(--label-3); font-size: 8px; }
+  .dot.busy { animation: busy 1.1s ease-in-out infinite; }
+  @keyframes busy { 50% { opacity: 0.3; transform: scale(0.75); } }
   .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--label-3); }
   .dot.run { background: var(--green); }
   .x { width: 18px; height: 18px; display: grid; place-items: center; border-radius: 50%; color: var(--label-2); }

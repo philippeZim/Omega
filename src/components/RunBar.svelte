@@ -66,7 +66,7 @@
   {#if p}
     <div class="gcap">
       {#if p.run}
-        <button class="gbtn icon run" title="{p.run.cmd} (⇧F10) · {t('code.rb.runRightClick')}" onclick={() => runAction(p.run)} oncontextmenu={(e) => ui.openMenu(e, runItems())} aria-label={p.run.label}>
+        <button class="gbtn icon run" title="{p.run.pre ? `${p.run.pre} → ` : ""}{p.run.cmd} (⇧F10) · {t('code.rb.runRightClick')}" onclick={() => runAction(p.run)} oncontextmenu={(e) => ui.openMenu(e, runItems())} aria-label={p.run.label}>
           <svg class="ico" width="11" height="12" viewBox="0 0 11 12"><path d="M1.5 1.2v9.6a.6.6 0 0 0 .9.5l7.8-4.8a.6.6 0 0 0 0-1L2.4.7a.6.6 0 0 0-.9.5z" fill="currentColor"/></svg>
         </button>
       {/if}

@@ -6,8 +6,8 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import "@xterm/xterm/css/xterm.css";
-import { t } from "./i18n/index.svelte";
-import { q, cd, CLEAR_LINE, IS_MAC } from "./platform";
+import { t, i18n } from "./i18n/index.svelte";
+import { q, IS_MAC } from "./platform";
 import { showView, hideView, toggleView } from "./layout.svelte";
 
 /** Set by the command registry: true if the key is an app shortcut that should bypass the shell. */
@@ -16,12 +16,19 @@ export function setTerminalKeyFilter(fn: typeof terminalKeyFilter) {
   terminalKeyFilter = fn;
 }
 
+/** "build"/"run": one command per start (see `runTask`); "remote": mirror of the collab host's Run terminal (no local shell). */
+export type TermKind = "shell" | "build" | "run" | "remote";
+/** State of a Build/Run tab's last command. */
+export type TaskStatus = "running" | "ok" | "fail" | "stopped";
+
 export interface TermTab {
   id: string;
   title: string;
-  /** "remote": mirror of the collab host's Run terminal (no local shell). */
-  kind: "shell" | "run" | "remote";
+  kind: TermKind;
   exited: boolean;
+  /** build/run: state and exit code of the last command. */
+  status?: TaskStatus;
+  code?: number | null;
 }
 
 // Where and whether the terminal view is shown is managed by layout.svelte.ts.
@@ -54,7 +61,11 @@ export function setDefaultShell(id: string) {
 }
 
 interface Instance {
-  kind: "shell" | "run" | "remote";
+  kind: TermKind;
+  /** Id of the PTY currently behind this tab (a Build/Run tab gets a new one per command). */
+  pty: string;
+  /** build/run: command of the current start, when it started, and what happens when it ends. */
+  task?: { cmd: string; started: number; stopRequested: boolean; onExit?: (code: number | null) => void };
   /** remote: where typed input goes (the host's Run terminal). */
   onInput?: (data: string) => void;
   shell: string | null;
@@ -64,34 +75,39 @@ interface Instance {
   spawned: boolean;
   cwd: string | null;
   pending: string[];
-  /** Directory the last run command cd'ed into (avoids repeating long cd prefixes). */
-  runDir?: string | null;
-  /** `pathGen` when the shell was spawned – its environment (PATH) is fixed from then on. */
-  gen?: number;
 }
 const instances = new Map<string, Instance>();
+/** PTY id → tab id. */
+const ptyTab = new Map<string, string>();
+const ptyOf = (id: string) => instances.get(id)?.pty ?? id;
 
-/** Bumped whenever the effective PATH changes (a tool was installed), see `pathChanged`. */
-let pathGen = 0;
-/** Marks running shells as stale: the Run terminal is restarted before its next command. */
-export function pathChanged() {
-  pathGen++;
-}
+/**
+ * Called after a tool install changed the effective PATH. Build/Run commands get a fresh process
+ * (and so the new PATH) every time; open shells keep theirs, like in any terminal.
+ */
+export function pathChanged() {}
 let counter = 1;
 
 const decoder = new Map<string, TextDecoder>();
 listen<{ id: string; data: string }>("pty-data", (e) => {
-  const inst = instances.get(e.payload.id);
+  const tid = ptyTab.get(e.payload.id);
+  const inst = tid ? instances.get(tid) : undefined;
   if (!inst) return;
   const bin = Uint8Array.from(atob(e.payload.data), (c) => c.charCodeAt(0));
   let d = decoder.get(e.payload.id);
   if (!d) decoder.set(e.payload.id, (d = new TextDecoder()));
   inst.term.write(d.decode(bin, { stream: true }));
 });
-listen<string>("pty-exit", (e) => {
-  const tab = terms.tabs.find((t) => t.id === e.payload);
-  if (tab) tab.exited = true;
-  instances.get(e.payload)?.term.write(`\r\n\x1b[90m${t("code.term.exited")}\x1b[0m\r\n`);
+listen<{ id: string; code: number | null }>("pty-exit", (e) => {
+  const tid = ptyTab.get(e.payload.id);
+  ptyTab.delete(e.payload.id);
+  decoder.delete(e.payload.id);
+  const inst = tid ? instances.get(tid) : undefined;
+  const tab = terms.tabs.find((t) => t.id === tid);
+  if (!inst || !tab || inst.pty !== e.payload.id) return;
+  if (inst.task) return finishTask(tab, inst, e.payload.code);
+  tab.exited = true;
+  inst.term.write(`\r\n\x1b[90m${t("code.term.exited")}\x1b[0m\r\n`);
 });
 
 const theme = {
@@ -136,7 +152,7 @@ export function setTerminalFontSize(px: number) {
 /** Shells left over from a previous page load are ended before the first new one starts. */
 const leftoversKilled = invoke("pty_kill_all").catch(() => {});
 
-export function newTerminal(cwd: string | null, kind: "shell" | "run" | "remote" = "shell", title?: string, shell?: ShellInfo): string {
+export function newTerminal(cwd: string | null, kind: TermKind = "shell", title?: string, shell?: ShellInfo): string {
   const id = `t${Date.now().toString(36)}${counter}`;
   const term = new Terminal({
     fontFamily: '"JetBrains Mono Variable", "JetBrainsMono Nerd Font", monospace',
@@ -161,7 +177,7 @@ export function newTerminal(cwd: string | null, kind: "shell" | "run" | "remote"
       return false;
     }
     if (IS_MAC && e.metaKey && !e.ctrlKey && !e.altKey && e.key.toLowerCase() === "v") {
-      navigator.clipboard.readText().then((t) => invoke("pty_write", { id, data: t }));
+      navigator.clipboard.readText().then((t) => invoke("pty_write", { id: ptyOf(id), data: t }));
       return false;
     }
     if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "c") {
@@ -169,7 +185,7 @@ export function newTerminal(cwd: string | null, kind: "shell" | "run" | "remote"
       return false;
     }
     if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "v") {
-      navigator.clipboard.readText().then((t) => invoke("pty_write", { id, data: t }));
+      navigator.clipboard.readText().then((t) => invoke("pty_write", { id: ptyOf(id), data: t }));
       return false;
     }
     // App shortcuts that are allowed in the terminal (mode switch, terminal toggle, debugger keys …).
@@ -179,18 +195,19 @@ export function newTerminal(cwd: string | null, kind: "shell" | "run" | "remote"
   term.onData((data) => {
     const inst = instances.get(id);
     if (inst?.kind === "remote") inst.onInput?.(data);
-    else invoke("pty_write", { id, data }).catch(() => {});
+    else invoke("pty_write", { id: ptyOf(id), data }).catch(() => {});
   });
-  term.onResize(({ cols, rows }) => instances.get(id)?.kind !== "remote" && invoke("pty_resize", { id, cols, rows }).catch(() => {}));
+  term.onResize(({ cols, rows }) => instances.get(id)?.kind !== "remote" && invoke("pty_resize", { id: ptyOf(id), cols, rows }).catch(() => {}));
 
   const el = document.createElement("div");
   el.className = "term-host";
   el.dataset.tid = id;
-  instances.set(id, { kind, shell: shell?.id ?? (shellPref.id || null), term, fit, el, spawned: false, cwd, pending: [] });
+  instances.set(id, { kind, pty: id, shell: shell?.id ?? (shellPref.id || null), term, fit, el, spawned: false, cwd, pending: [] });
+  ptyTab.set(id, id);
   // Lowest free number, so a fresh panel starts again at "Terminal 1".
   let n = 1;
   while (terms.tabs.some((t) => t.title === `Terminal ${n}`)) n++;
-  terms.tabs.push({ id, title: title ?? (kind === "run" ? t("common.run") : shell ? shell.label : `Terminal ${n}`), kind, exited: false });
+  terms.tabs.push({ id, title: title ?? (kind === "run" ? t("common.run") : kind === "build" ? t("code.act.build") : shell ? shell.label : `Terminal ${n}`), kind, exited: false });
   counter++;
   terms.active = id;
   showView("terminal");
@@ -210,7 +227,6 @@ export async function attach(id: string, container: HTMLElement, cwdFallback: st
   if (inst.kind === "remote") inst.spawned = true;
   if (!inst.spawned) {
     inst.spawned = true;
-    inst.gen = pathGen;
     await leftoversKilled;
     await invoke("pty_spawn", { id, cwd: inst.cwd ?? cwdFallback, cols: inst.term.cols, rows: inst.term.rows, kind: inst.kind, shell: inst.shell });
     for (const p of inst.pending) await invoke("pty_write", { id, data: p });
@@ -235,11 +251,13 @@ export function focusTerm(id = terms.active) {
 
 /** Kills a session and removes its tab; returns the tab's former index. */
 function discardTerminal(id: string): number {
-  invoke("pty_kill", { id });
+  const pty = ptyOf(id);
+  invoke("pty_kill", { id: pty });
+  ptyTab.delete(pty);
   instances.get(id)?.term.dispose();
   instances.get(id)?.el.remove();
   instances.delete(id);
-  decoder.delete(id);
+  decoder.delete(pty);
   const i = terms.tabs.findIndex((t) => t.id === id);
   terms.tabs.splice(i, 1);
   return i;
@@ -252,34 +270,113 @@ export function closeTerminal(id: string) {
   if (!terms.tabs.length) hideView("terminal");
 }
 
-/** Runs a command in the shared "Run" terminal (created on demand) so programs stay interactive. */
-export function runCommand(cmd: string, cwd: string | null, title = t("common.run"), focus = true) {
-  let tab = terms.tabs.find((t) => t.kind === "run" && !t.exited);
-  // A shell spawned before a tool install doesn't see the new PATH: replace it, same tab position.
-  let at = -1;
-  const old = tab && instances.get(tab.id);
-  if (tab && old?.spawned && (old.gen ?? 0) < pathGen) {
-    at = terms.tabs.indexOf(tab);
-    discardTerminal(tab.id);
-    tab = undefined;
-  }
+// ------------------------------------------------------------------ Build / Run tabs
+
+/** Collab host: also gets the lines Omega writes itself (command header, result line). */
+let runEcho: ((text: string) => void) | null = null;
+export function setRunEcho(fn: typeof runEcho) {
+  runEcho = fn;
+}
+function echo(inst: Instance, text: string) {
+  inst.term.write(text);
+  runEcho?.(text);
+}
+
+const DIM = "\x1b[2m", RESET = "\x1b[0m";
+
+function duration(ms: number): string {
+  const nf = (n: number, digits = 0) => new Intl.NumberFormat(i18n.locale, { maximumFractionDigits: digits }).format(n);
+  if (ms < 1000) return `${ms} ms`;
+  if (ms < 60_000) return `${nf(ms / 1000, ms < 10_000 ? 1 : 0)} s`;
+  return `${nf(Math.floor(ms / 60_000))} min ${nf(Math.round((ms % 60_000) / 1000))} s`;
+}
+
+function finishTask(tab: TermTab, inst: Instance, code: number | null) {
+  const task = inst.task!;
+  const time = duration(Date.now() - task.started);
+  const status: TaskStatus = task.stopRequested || code === null ? "stopped" : code === 0 ? "ok" : "fail";
+  tab.status = status;
+  tab.code = code;
+  const line =
+    status === "ok" ? `\x1b[32m✓${RESET}${DIM} ${t("code.term.ok", { time })}` :
+    status === "fail" ? `\x1b[31m✗ ${t("code.term.failed", { code: String(code), time })}` :
+    `${DIM}■ ${t("code.term.stopped", { time })}`;
+  // Nothing to type into any more: hide the cursor (term.reset() on the next start brings it back).
+  echo(inst, `\r\n${line}${RESET}\r\n\x1b[?25l`);
+  const next = task.onExit;
+  task.onExit = undefined;
+  next?.(status === "stopped" ? null : code);
+}
+
+/** Ends the current command of a Build/Run tab without a result line (it's being replaced). */
+function dropTask(inst: Instance) {
+  if (!inst.task) return;
+  inst.task.onExit = undefined;
+  const tab = terms.tabs.find((x) => instances.get(x.id) === inst);
+  if (tab?.status !== "running") return;
+  invoke("pty_kill", { id: inst.pty }).catch(() => {});
+  ptyTab.delete(inst.pty);
+}
+
+/**
+ * Runs one command in the "build" or "run" tab (created on demand, reused and cleared on every
+ * start). The tab shows the command as a dim first line, then its output, then the exit code and
+ * duration; its status (running / ✓ / ✗ / stopped) is shown in the tab bar. `onExit` gets the exit
+ * code (null = stopped). Programs stay interactive: it's a real PTY.
+ */
+export function runTask(kind: "build" | "run", cmd: string, cwd: string | null, title: string, opts: { focus?: boolean; onExit?: (code: number | null) => void } = {}) {
+  let tab = terms.tabs.find((x) => x.kind === kind);
   if (!tab) {
-    const id = newTerminal(cwd, "run", title);
-    tab = terms.tabs.find((t) => t.id === id)!;
-    if (at >= 0) terms.tabs.splice(at, 0, ...terms.tabs.splice(terms.tabs.indexOf(tab), 1));
+    const id = newTerminal(cwd, kind, title);
+    tab = terms.tabs.find((x) => x.id === id)!;
+    // Build stays left of Run.
+    const run = terms.tabs.findIndex((x) => x.kind === "run");
+    if (kind === "build" && run >= 0 && run < terms.tabs.indexOf(tab)) terms.tabs.splice(run, 0, ...terms.tabs.splice(terms.tabs.indexOf(tab), 1));
   }
+  const inst = instances.get(tab.id)!;
+  dropTask(inst);
   tab.title = title;
+  tab.status = "running";
+  tab.code = undefined;
+  tab.exited = false;
+  inst.cwd = cwd;
+  inst.task = { cmd, started: Date.now(), stopRequested: false, onExit: opts.onExit };
+  inst.term.reset();
+  echo(inst, `${DIM}$ ${cmd.replace(/\r?\n/g, " ")}${RESET}\r\n`);
   terms.active = tab.id;
   showView("terminal");
-  const inst = instances.get(tab.id)!;
-  inst.runDir ??= inst.cwd;
-  // Ctrl+U (Esc in cmd.exe) clears whatever is typed at the prompt; cd only when the project dir changed.
-  const needCd = cwd && cwd !== inst.runDir;
-  if (cwd) inst.runDir = cwd;
-  const line = `${CLEAR_LINE}${needCd ? `${cd(cwd!)} && ` : ""}${cmd}\r`;
-  if (inst.spawned) invoke("pty_write", { id: tab.id, data: line });
-  else inst.pending.push(line);
-  if (focus) setTimeout(() => focusTerm(tab!.id), 50);
+  inst.spawned = true;
+  const pty = `${tab.id}.${counter++}`;
+  inst.pty = pty;
+  ptyTab.set(pty, tab.id);
+  const id = tab.id;
+  leftoversKilled
+    .then(() => invoke("pty_spawn", { id: pty, cwd, cols: inst.term.cols, rows: inst.term.rows, kind, shell: null, command: cmd }))
+    .catch((e) => {
+      if (inst.pty !== pty) return;
+      ptyTab.delete(pty);
+      echo(inst, `\x1b[31m${String(e)}${RESET}\r\n`);
+      const tb = terms.tabs.find((x) => x.id === id);
+      if (tb) finishTask(tb, inst, 127);
+    });
+  if (opts.focus ?? true) setTimeout(() => focusTerm(id), 50);
+}
+
+/** Runs a single command in the Run tab (installs, debuggee, new projects, AI …). */
+export function runCommand(cmd: string, cwd: string | null, title = t("common.run"), focus = true) {
+  runTask("run", cmd, cwd, title, { focus });
+}
+
+/** True while the Build or Run tab is busy. */
+export const taskRunning = (kind?: "build" | "run") => terms.tabs.some((x) => (kind ? x.kind === kind : x.kind === "build" || x.kind === "run") && x.status === "running");
+
+/** Stops a still running command of a Build/Run tab silently (a new start replaces it). */
+export function cancelTask(kind: "build" | "run") {
+  const tab = terms.tabs.find((x) => x.kind === kind);
+  const inst = tab && instances.get(tab.id);
+  if (!tab || !inst || tab.status !== "running") return;
+  inst.task!.stopRequested = true;
+  invoke("pty_kill", { id: inst.pty }).catch(() => {});
 }
 
 /** Collab guest: a terminal tab that shows the host's Run output; typing goes to `onInput`. */
@@ -294,13 +391,28 @@ export function writeTerminal(id: string, data: string) {
   instances.get(id)?.term.write(data);
 }
 
-/** Id of the current Run terminal, if any. */
-export const runTerminalId = () => terms.tabs.find((t) => t.kind === "run" && !t.exited)?.id ?? null;
+/** Id of the Run terminal tab, if any. */
+export const runTerminalId = () => terms.tabs.find((t) => t.kind === "run")?.id ?? null;
 
-/** Sends raw input (e.g. Ctrl+C) to the run terminal. */
+/** Collab host: whether PTY output belongs to the Build or Run tab (mirrored to guests). */
+export const isTaskPty = (pty: string) => {
+  const tab = terms.tabs.find((x) => x.id === ptyTab.get(pty));
+  return tab?.kind === "build" || tab?.kind === "run";
+};
+
+/** Sends input to the program in the Run tab (collab guests type here). */
+export function writeRun(data: string) {
+  const id = runTerminalId();
+  if (id) invoke("pty_write", { id: ptyOf(id), data }).catch(() => {});
+}
+
+/** Stop: Ctrl+C to the running Build or Run command (the result line then says "stopped"). */
 export function interruptRun() {
-  const tab = terms.tabs.find((t) => t.kind === "run" && !t.exited);
-  if (tab) invoke("pty_write", { id: tab.id, data: "\x03" });
+  const tab = terms.tabs.find((x) => x.kind === "build" && x.status === "running") ?? terms.tabs.find((x) => x.kind === "run" && x.status === "running");
+  const inst = tab && instances.get(tab.id);
+  if (!inst?.task) return;
+  inst.task.stopRequested = true;
+  invoke("pty_write", { id: inst.pty, data: "\x03" }).catch(() => {});
 }
 
 /** Quotes for the Run terminal's shell (POSIX sh, or cmd.exe on Windows). */
