@@ -55,12 +55,13 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       # The updater compares versions, so a tag that doesn't match the app version would break it.
-      - name: Check that the tag matches the app version
-        if: github.ref_type == 'tag'
+      - name: Read the app version (and check it matches the tag)
+        id: version
         shell: bash
         run: |
           v=$(node -p "require('./src-tauri/tauri.conf.json').version")
-          if [ "v$v" != "$GITHUB_REF_NAME" ]; then
+          echo "v=$v" >> "$GITHUB_OUTPUT"
+          if [ "$GITHUB_REF_TYPE" = "tag" ] && [ "v$v" != "$GITHUB_REF_NAME" ]; then
             echo "::error::Tag $GITHUB_REF_NAME does not match version $v in tauri.conf.json"
             exit 1
           fi
@@ -75,12 +76,33 @@ jobs:
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || 'v__VERSION__' }}
           releaseName: "Omega v__VERSION__"
           releaseBody: |
-            Downloads below. The app is not code-signed, so the first launch shows a warning:
-            - **Windows:** "More info" → "Run anyway".
-            - **macOS:** right-click the app → Open, or run `xattr -cr /Applications/Omega.app`.
-            - **Linux:** `chmod +x Omega_*.AppImage` and run it, or install the .deb/.rpm (only the AppImage updates itself).
+            ## Which file do I need?
 
-            Omega checks for updates on startup, so you only need to install it once.
+            | Your computer | Download |
+            | --- | --- |
+            | **Windows** | [Omega_${{ steps.version.outputs.v }}_x64-setup.exe](https://github.com/${{ github.repository }}/releases/download/v${{ steps.version.outputs.v }}/Omega_${{ steps.version.outputs.v }}_x64-setup.exe) |
+            | **Mac with Apple chip** (M1, M2, M3 …) | [Omega_${{ steps.version.outputs.v }}_aarch64.dmg](https://github.com/${{ github.repository }}/releases/download/v${{ steps.version.outputs.v }}/Omega_${{ steps.version.outputs.v }}_aarch64.dmg) |
+            | **Mac with Intel chip** | [Omega_${{ steps.version.outputs.v }}_x64.dmg](https://github.com/${{ github.repository }}/releases/download/v${{ steps.version.outputs.v }}/Omega_${{ steps.version.outputs.v }}_x64.dmg) |
+            | **Linux** (any distribution) | the command below, or [the AppImage](https://github.com/${{ github.repository }}/releases/download/v${{ steps.version.outputs.v }}/Omega_${{ steps.version.outputs.v }}_amd64.AppImage) |
+
+            **Linux and macOS** in one step (installs, adds Omega to your app menu):
+            ```sh
+            curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/install.sh | sh
+            ```
+
+            Not sure which Mac you have? Apple menu → *About This Mac*: "Chip: Apple M…" means Apple chip.
+
+            ### First start
+            The app isn't code-signed yet, so the first launch shows a warning:
+            - **Windows:** "More info" → "Run anyway".
+            - **macOS:** right-click Omega in Applications → *Open* (the install command above does this for you).
+
+            After that, Omega updates itself.
+
+            <details><summary>Other files</summary>
+
+            `.msi` is an alternative Windows installer; `.AppImage`, `.deb` and `.rpm` are for Linux (only the AppImage updates itself); `.tar.gz`, `.sig` and `latest.json` are used by the updater.
+            </details>
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}

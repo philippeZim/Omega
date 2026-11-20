@@ -37,9 +37,15 @@ And a few things you'll be glad about later: live collaboration with a classmate
 
 ## Install
 
-Download Omega for your system from the [latest release](https://github.com/philippeZim/Omega/releases/latest): `.exe` for Windows, `.dmg` for macOS, `.AppImage` for Linux.
+**Linux and macOS:** paste this into a terminal. It picks the right version for your machine and adds Omega to your app menu.
 
-The app isn't signed yet, so the first start needs one extra click: *More info → Run anyway* on Windows, *right-click → Open* on macOS. After that Omega keeps itself up to date.
+```sh
+curl -fsSL https://raw.githubusercontent.com/philippeZim/Omega/main/install.sh | sh
+```
+
+**Windows:** download the `…_x64-setup.exe` from the [latest release](https://github.com/philippeZim/Omega/releases/latest) and run it. Windows warns the first time because the app isn't signed yet: *More info → Run anyway*.
+
+That's the only time you install it. Omega updates itself from then on.
 
 ## Feedback
 
