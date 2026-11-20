@@ -13,7 +13,7 @@
 
   <div class="outline">
     {#each latex.outline as item, i (i)}
-      <button class="oitem" style="padding-left: {12 + Math.max(0, item.level - 1) * 14}px" class:top={item.level <= 2} onclick={() => gotoPos(item.pos)}>
+      <button class="oitem" style="padding-left: {12 + Math.max(0, item.level - 1) * 14}px" class:top={item.level <= 2} title={item.title} onclick={() => gotoPos(item.pos)}>
         <span class="otitle">{item.title}</span>
         <span class="oline">{item.line}</span>
       </button>
