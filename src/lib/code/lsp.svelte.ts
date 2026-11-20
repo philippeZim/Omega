@@ -232,6 +232,8 @@ export class LspClient {
 
 const clients = new Map<string, LspClient>();
 const starting = new Map<string, Promise<LspClient | null>>();
+/** Servers whose install prompt was cancelled: not asked again this session (until stopServers). */
+const declined = new Set<ServerKind>();
 
 const ROOT_MARKERS: Record<ServerKind, string[]> = {
   python: ["pyproject.toml", "setup.py", "requirements.txt", ".git"],
@@ -399,9 +401,14 @@ export async function clientFor(
     if (!cmd) {
       lspState.status[key] = "missing";
       const name = INSTALLABLE[kind];
-      if (!name || !(await askInstall(kind, name))) return null;
+      if (!name || (declined.has(kind) && !needDebug)) return null;
+      if (!(await askInstall(kind, name))) {
+        declined.add(kind);
+        return null;
+      }
       const prereq = PREREQ[kind];
       if (prereq && !(await ensureTools(prereq, t("tools.purpose.lsp")))) {
+        declined.add(kind);
         lspState.status[key] = "missing";
         return null;
       }
@@ -442,6 +449,7 @@ export async function clientFor(
 
 /** Stops all running servers of `kind` (before it is updated or removed); they restart on demand. */
 export function stopServers(kind: ServerKind) {
+  declined.delete(kind);
   for (const [key, c] of clients) if (c.kind === kind) {
     c.stop();
     clients.delete(key);
