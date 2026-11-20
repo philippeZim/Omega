@@ -83,3 +83,28 @@ export const BlockMath: MarkdownConfig = {
     },
   ],
 };
+
+/** Obsidian `[[target]]`, `[[target#heading]]` and `[[target|shown text]]` on one line. */
+export const WikiLink: MarkdownConfig = {
+  defineNodes: [{ name: "WikiLink", style: t.link }, { name: "WikiLinkMark", style: t.processingInstruction }],
+  parseInline: [
+    {
+      name: "WikiLink",
+      parse(cx, next, pos) {
+        if (next != 91 /* [ */ || cx.char(pos + 1) != 91) return -1;
+        for (let i = pos + 2; i < cx.end; i++) {
+          const c = cx.char(i);
+          if (c == 10 /* \n */ || c == 91) return -1;
+          if (c == 93 /* ] */) {
+            if (cx.char(i + 1) != 93 || i == pos + 2) return -1;
+            return cx.addElement(
+              cx.elt("WikiLink", pos, i + 2, [cx.elt("WikiLinkMark", pos, pos + 2), cx.elt("WikiLinkMark", i, i + 2)]),
+            );
+          }
+        }
+        return -1;
+      },
+      before: "Link",
+    },
+  ],
+};

@@ -2,9 +2,9 @@ import { describe, expect, test } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { ensureSyntaxTree } from "@codemirror/language";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
-import { BlockMath, Highlight, InlineMath } from "./syntax";
+import { BlockMath, Highlight, InlineMath, WikiLink } from "./syntax";
 
-const lang = markdown({ base: markdownLanguage, extensions: [Highlight, InlineMath, BlockMath] });
+const lang = markdown({ base: markdownLanguage, extensions: [Highlight, InlineMath, BlockMath, WikiLink] });
 
 /** [node name, text] for every node of the given names. */
 function nodes(doc: string, ...names: string[]): [string, string][] {
@@ -86,5 +86,18 @@ describe("$$block math$$", () => {
   test("text after the block is a paragraph again", () => {
     const n = nodes("$$\na\n$$\nafter", "BlockMath", "Paragraph");
     expect(n).toEqual([["BlockMath", "$$\na\n$$"], ["Paragraph", "after"]]);
+  });
+});
+
+describe("[[wiki links]]", () => {
+  test("node with marks", () => {
+    expect(nodes("see [[a b|c]] x", "WikiLink", "WikiLinkMark", "Link")).toEqual([
+      ["WikiLink", "[[a b|c]]"],
+      ["WikiLinkMark", "[["],
+      ["WikiLinkMark", "]]"],
+    ]);
+  });
+  test("empty, unclosed or multi-line is not a wiki link", () => {
+    expect(nodes("[[]] [[a\nb]] [[c", "WikiLink")).toEqual([]);
   });
 });
