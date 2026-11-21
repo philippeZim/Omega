@@ -68,6 +68,7 @@
     <p class="desc"><span class="spin"></span> {collab.status === "joining" ? t("ai.collab.connecting") : t("ai.collab.waiting")}</p>
     <button class="btn wide" onclick={leave}>{t("common.cancel")}</button>
   {:else}
+    <div class="scroll">
     {#if collab.role === "host"}
       <label class="lbl" for="ticket">{t("ai.collab.ticket")}</label>
       <div class="ticket">
@@ -136,8 +137,9 @@
       </div>
       <p class="hint starthint">{t("ai.collab.startRightsHint")}</p>
     {/if}
+    </div>
 
-    <button class="btn wide danger" onclick={leave}>{collab.role === "host" ? t("ai.collab.end") : t("ai.collab.leave")}</button>
+    <button class="btn wide danger end" onclick={leave}>{collab.role === "host" ? t("ai.collab.end") : t("ai.collab.leave")}</button>
   {/if}
 </div>
 
@@ -149,6 +151,12 @@
     right: 14px;
     z-index: 90;
     width: 380px;
+    /* Never larger than the window: the middle scrolls, the header and End/Leave stay. */
+    max-width: calc(100vw - 28px);
+    max-height: calc(100vh - 72px);
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
     padding: 18px;
     border-radius: 24px;
     background: var(--glass-strong);
@@ -157,7 +165,9 @@
     /* No open animation: animating opacity/transform over backdrop-filter makes WebKitGTK render a
        frame without the panel (it blinks), same as the help panel. */
   }
-  header { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+  header { flex-shrink: 0; display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+  .scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; margin-bottom: 10px; }
+  .end { flex-shrink: 0; }
   h2 { margin: 0; font-size: 17px; font-weight: 700; white-space: nowrap; flex-shrink: 0; }
   /* Long names are cut with an ellipsis instead of wrapping the header (#131). */
   .me { display: flex; align-items: center; gap: 6px; min-width: 0; height: 26px; padding: 0 10px; border-radius: 999px; font-size: 12px; color: var(--label-2); background: rgba(var(--fg-rgb), 0.06); }
