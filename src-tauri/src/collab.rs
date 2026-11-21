@@ -672,6 +672,60 @@ pub fn collab_path_inside(root: String, path: String) -> bool {
     guest_path_ok(Path::new(&root), Path::new(&path))
 }
 
+/// The most `collab_read_bounded` reads, whatever the caller asks for.
+const MAX_BOUNDED_READ: u64 = 8 * 1024 * 1024;
+
+#[derive(Serialize, Debug, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum BoundedRead {
+    Text { text: String },
+    TooLarge,
+    Binary,
+    Missing,
+}
+
+/// Reads a regular file of at most `max` bytes. The size is checked first and the read is bounded
+/// too, because the file can grow in between.
+fn read_bounded(path: &Path, max: u64) -> BoundedRead {
+    use std::io::Read;
+    let max = max.min(MAX_BOUNDED_READ);
+    let Ok(meta) = std::fs::metadata(path) else { return BoundedRead::Missing };
+    if !meta.is_file() {
+        return BoundedRead::Binary;
+    }
+    if meta.len() > max {
+        return BoundedRead::TooLarge;
+    }
+    let Ok(file) = std::fs::File::open(path) else { return BoundedRead::Missing };
+    if !file.metadata().is_ok_and(|m| m.is_file()) {
+        return BoundedRead::Binary;
+    }
+    let mut bytes = Vec::new();
+    if file.take(max + 1).read_to_end(&mut bytes).is_err() {
+        return BoundedRead::Binary;
+    }
+    if bytes.len() as u64 > max {
+        return BoundedRead::TooLarge;
+    }
+    match String::from_utf8(bytes) {
+        Ok(text) if !text.contains('\0') => BoundedRead::Text { text },
+        _ => BoundedRead::Binary,
+    }
+}
+
+/// Host: a project file for a guest, with the same path check as every guest path.
+#[tauri::command]
+pub async fn collab_read_bounded(root: String, path: String, max: u64) -> Result<BoundedRead, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if !guest_path_ok(Path::new(&root), Path::new(&path)) {
+            return BoundedRead::Missing;
+        }
+        read_bounded(Path::new(&path), max)
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
 /// Entries `tree_has_git` looks at before it gives up and answers "yes".
 const GIT_SCAN_LIMIT: usize = 200_000;
 
@@ -731,6 +785,24 @@ pub async fn collab_conn_info(app: AppHandle, peer: String) -> Option<ConnInfo> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bounded_read_stops_at_the_limit() {
+        let dir = std::env::temp_dir().join(format!("omega-bounded-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("f");
+        std::fs::write(&file, "12345").unwrap();
+        assert_eq!(read_bounded(&file, 5), BoundedRead::Text { text: "12345".into() });
+        assert_eq!(read_bounded(&file, 4), BoundedRead::TooLarge);
+        std::fs::write(&file, b"a\0b").unwrap();
+        assert_eq!(read_bounded(&file, 10), BoundedRead::Binary);
+        std::fs::write(&file, [0xff, 0xfe]).unwrap();
+        assert_eq!(read_bounded(&file, 10), BoundedRead::Binary);
+        assert_eq!(read_bounded(&dir, 10), BoundedRead::Binary);
+        assert_eq!(read_bounded(&dir.join("gone"), 10), BoundedRead::Missing);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[cfg(unix)]
     #[test]
