@@ -658,6 +658,16 @@ mod tests {
     }
 
     #[test]
+    fn sbt_is_found_and_asked_without_booting_it() {
+        assert_eq!(tool_cmds("sbt"), if cfg!(windows) { &["sbt.bat"] } else { &["sbt"] });
+        assert_eq!(tool_cmds("scala"), &["scala-cli"]);
+        // `--version` would start sbt and create project/ and target/ in the current folder.
+        assert_eq!(version_arg("sbt"), &["--script-version"]);
+        assert_eq!(version_arg("sbt.bat"), &["--script-version"]);
+        assert_eq!(version_arg("scala-cli"), &["--version"]);
+    }
+
+    #[test]
     fn versions() {
         assert_eq!(extract_version("cmake version 4.1.2\n").as_deref(), Some("4.1.2"));
         assert_eq!(extract_version("v22.11.0").as_deref(), Some("22.11.0"));

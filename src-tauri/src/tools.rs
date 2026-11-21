@@ -126,8 +126,12 @@ fn make_executable(_p: &Path) {
 }
 
 fn exe_name(name: &str) -> String {
-    // A name with an extension is complete already (sbt.bat).
-    if cfg!(windows) && !name.contains('.') { format!("{name}.exe") } else { name.to_string() }
+    exe_name_on(cfg!(windows), name)
+}
+
+/// A name with an extension is complete already (sbt.bat).
+fn exe_name_on(windows: bool, name: &str) -> String {
+    if windows && !name.contains('.') { format!("{name}.exe") } else { name.to_string() }
 }
 
 /// Folder below `root` that contains executable `name` (breadth-first, a few levels deep).
@@ -417,6 +421,40 @@ fn install_scala(app: &AppHandle) -> Result<String, String> {
     Ok(env::norm(dest))
 }
 
+/// Whether the output of `cs --help` is Coursier's.
+fn is_coursier_help(text: &str) -> bool {
+    text.contains("Coursier is the Scala application")
+}
+
+/// Asks a `cs` found on the PATH what it is (at most 10 s).
+fn is_coursier(exe: &Path) -> bool {
+    use std::process::Stdio;
+    let Ok(mut child) = env::command(exe).arg("--help").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn() else { return false };
+    let Some(mut pipe) = child.stdout.take() else { return false };
+    let reader = std::thread::spawn(move || {
+        let mut text = Vec::new();
+        let _ = pipe.read_to_end(&mut text);
+        String::from_utf8_lossy(&text).to_string()
+    });
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while matches!(child.try_wait(), Ok(None)) {
+        if std::time::Instant::now() > until {
+            let _ = child.kill();
+            let _ = child.wait();
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    reader.join().is_ok_and(|t| is_coursier_help(&t))
+}
+
+/// The last `max` characters: a failed tool says what went wrong at the end of its output.
+fn tail_chars(text: &str, max: usize) -> String {
+    let text = text.trim_end();
+    let skip = text.chars().count().saturating_sub(max);
+    text.chars().skip(skip).collect()
+}
+
 /// Latest Metals release. Maven's "latest" can be a release candidate; this list is Metals' own.
 pub fn metals_latest() -> Result<String, String> {
     get_json("https://scalameta.org/metals/latests.json")?["release"].as_str().map(String::from).ok_or_else(|| "tools:no_version:Metals".to_string())
@@ -431,13 +469,16 @@ pub fn install_metals(app: &AppHandle) -> Result<String, String> {
     let _ = std::fs::remove_dir_all(&staging);
     std::fs::create_dir_all(&staging).map_err(|e| e.to_string())?;
     let file = if cfg!(windows) { "metals.bat" } else { "metals" };
-    let cs = match env::which("cs") {
-        Some(p) => p,
-        None => {
-            let [_, (name, url)] = scala_urls(OS, ARM);
-            fetch_launcher(app, "lsp-scala", name, &url, &staging)?;
-            staging.join(exe_name(name))
-        }
+    let managed = env::tools_dir().join("scala").join(exe_name("cs"));
+    // Another program can be called `cs` too: one from the PATH has to prove it is Coursier.
+    let cs = if managed.is_file() {
+        managed
+    } else if let Some(p) = env::which("cs").filter(|p| is_coursier(p)) {
+        p
+    } else {
+        let [_, (name, url)] = scala_urls(OS, ARM);
+        fetch_launcher(app, "lsp-scala", name, &url, &staging)?;
+        staging.join(exe_name(name))
     };
     let mut c = env::command(&cs);
     c.args(["bootstrap", "--java-opt", "-Xss4m", "--java-opt", "-XX:+UseStringDeduplication"]);
@@ -447,7 +488,8 @@ pub fn install_metals(app: &AppHandle) -> Result<String, String> {
     let out = c.arg(format!("org.scalameta:metals_2.13:{version}")).arg("-o").arg(staging.join("metals")).arg("-f").output().map_err(|e| e.to_string())?;
     if !out.status.success() || !staging.join(file).is_file() {
         let _ = std::fs::remove_dir_all(&staging);
-        return Err(String::from_utf8_lossy(&out.stderr).chars().take(800).collect());
+        let err = String::from_utf8_lossy(if out.stderr.is_empty() { &out.stdout } else { &out.stderr }).to_string();
+        return Err(tail_chars(&err, 800));
     }
     if cs.starts_with(&staging) {
         let _ = std::fs::remove_file(&cs);
@@ -461,6 +503,41 @@ pub fn install_metals(app: &AppHandle) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exe_name_keeps_a_given_extension() {
+        assert_eq!(exe_name_on(true, "cs"), "cs.exe");
+        assert_eq!(exe_name_on(true, "sbt.bat"), "sbt.bat");
+        assert_eq!(exe_name_on(false, "cs"), "cs");
+        assert_eq!(exe_name_on(false, "sbt.bat"), "sbt.bat");
+    }
+
+    #[test]
+    fn only_coursier_counts_as_cs() {
+        assert!(is_coursier_help("Usage: cs <COMMAND>\nCoursier is the Scala application and artifact manager.\n"));
+        assert!(!is_coursier_help("cs: a different tool\n"));
+        assert!(!is_coursier_help(""));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_cs_that_is_something_else_is_refused() {
+        let t = tempfile::tempdir().unwrap();
+        let (real, other) = (t.path().join("real"), t.path().join("other"));
+        std::fs::write(&real, "#!/bin/sh\necho 'Coursier is the Scala application and artifact manager.'\n").unwrap();
+        std::fs::write(&other, "#!/bin/sh\necho 'not it'\n").unwrap();
+        make_executable(&real);
+        make_executable(&other);
+        assert!(is_coursier(&real));
+        assert!(!is_coursier(&other));
+    }
+
+    #[test]
+    fn tail_chars_keeps_the_end() {
+        assert_eq!(tail_chars("abcdef\n", 3), "def");
+        assert_eq!(tail_chars("äöü€", 2), "ü€");
+        assert_eq!(tail_chars("ab", 800), "ab");
+    }
 
     #[test]
     fn scala_urls_per_platform() {
