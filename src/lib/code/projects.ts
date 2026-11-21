@@ -68,6 +68,8 @@ const MARKERS: [string, ProjectKind][] = [
   ["project.scala", "scala-cli"],
 ];
 
+const mojoInstallable = async () => (await invoke<string[]>("tool_installable").catch((): string[] => [])).includes("mojo");
+
 /** A Mojo project: `mojoproject.toml`, or a pixi manifest that depends on Mojo. */
 async function isMojoProject(dir: string, mojoFile: boolean): Promise<boolean> {
   if (await fsApi.exists(joinPath(dir, "mojoproject.toml"))) return true;
@@ -414,7 +416,8 @@ export async function detectProject(file: string | null, workspace: string | nul
   if (p?.kind === "mojo") {
     // A project with a pixi manifest pins its own Mojo; without pixi, Omega's or the system's runs it.
     const manifest = (await fsApi.exists(joinPath(p.root, "pixi.toml"))) || (await fsApi.exists(joinPath(p.root, "mojoproject.toml")));
-    const pixi = manifest && !!(await which("pixi"));
+    // Where Mojo can't run, pixi can't fetch it either: `needs` then leads to the hint instead.
+    const pixi = manifest && (await mojoInstallable()) && !!(await which("pixi"));
     const mojo = pixi ? "pixi run mojo" : "mojo";
     const entry = await mojoEntry(file, p.root);
     const relEntry = entry && rel(entry, p.root);
@@ -659,7 +662,7 @@ export const TEMPLATES: Template[] = [
     label: "Mojo",
     tool: "mojo",
     // Where Mojo can't run, the project is still created: it opens with highlighting and the hint.
-    needs: async () => ((await invoke<string[]>("tool_installable").catch((): string[] => [])).includes("mojo") ? ["mojo", "cc"] : []),
+    needs: async () => ((await mojoInstallable()) ? ["mojo", "cc"] : []),
     marker: "pixi.toml",
     open: ["main.mojo"],
     create: async (n) => ({
