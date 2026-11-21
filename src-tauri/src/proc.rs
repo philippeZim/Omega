@@ -255,6 +255,7 @@ pub async fn install_server(app: AppHandle, kind: String) -> Result<String, Stri
             }
             "clangd" => crate::tools::tool_install_blocking(&app, "clangd"),
             "scala" => crate::tools::install_metals(&app),
+            "ocaml" => crate::tools::install_ocaml_package(&app, "lsp-ocaml", "ocaml-lsp-server", "ocamllsp"),
             _ => Err(format!("proc:no_auto_install:{kind}")),
         }
     })
@@ -361,6 +362,7 @@ pub async fn install_debugger(app: AppHandle, kind: String) -> Result<String, St
             crate::tools::download(&app, "javadebug", &format!("{base}/{version}/com.microsoft.java.debug.plugin-{version}.jar"), &jar)?;
             Ok(crate::env::norm(jar))
         }
+        "earlybird" => crate::tools::install_ocaml_package(&app, "earlybird", "earlybird", "ocamlearlybird"),
         _ => Err(format!("proc:unknown_debugger:{kind}")),
     })
     .await

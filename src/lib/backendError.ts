@@ -3,7 +3,7 @@ import { t, type Key } from "./i18n/index.svelte";
 /** Known codes per backend area (installs.rs, tools.rs, proc.rs); keys "tools.err.<area>.<code>". */
 const CODES: Record<string, readonly string[]> = {
   installs: ["not_in_repos", "unknown_manager", "no_version", "not_ours", "system_rust_analyzer", "unknown"],
-  tools: ["download_failed", "download_aborted", "unpack_failed", "no_asset", "no_version", "unsupported", "bin_missing"],
+  tools: ["download_failed", "download_aborted", "unpack_failed", "no_asset", "no_version", "unsupported", "bin_missing", "ocaml_missing", "ocaml_not_managed", "ocaml_failed"],
   proc: ["not_found", "connect_failed", "not_connected", "no_auto_install", "debugpy_failed", "no_version", "unknown_debugger"],
 };
 

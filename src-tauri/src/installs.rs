@@ -26,9 +26,9 @@ pub struct Owner {
     package: String,
 }
 
-const TOOLS: &[&str] = &["uv", "tectonic", "node", "pnpm", "cmake", "ninja", "jdk", "gradle", "rust", "git", "cc", "scala", "sbt"];
-const LSPS: &[&str] = &["python", "typescript", "java", "rust", "clangd", "scala"];
-const DEBUGGERS: &[&str] = &["codelldb", "debugpy", "jsdebug", "javadebug"];
+const TOOLS: &[&str] = &["uv", "tectonic", "node", "pnpm", "cmake", "ninja", "jdk", "gradle", "rust", "git", "cc", "scala", "sbt", "ocaml"];
+const LSPS: &[&str] = &["python", "typescript", "java", "rust", "clangd", "scala", "ocaml"];
+const DEBUGGERS: &[&str] = &["codelldb", "debugpy", "jsdebug", "javadebug", "earlybird"];
 
 fn all_ids() -> Vec<String> {
     let mut v: Vec<String> = TOOLS.iter().map(|t| format!("tool:{t}")).collect();
@@ -57,6 +57,7 @@ fn tool_cmds(id: &str) -> &'static [&'static str] {
         "scala" => &["scala-cli"],
         "sbt" if cfg!(windows) => &["sbt.bat"],
         "sbt" => &["sbt"],
+        "ocaml" => &["dune"],
         _ => &[],
     }
 }
@@ -208,6 +209,8 @@ fn locate(id: &str) -> (&'static str, Option<PathBuf>, Option<String>) {
                 None => system_tool(&["metals"], false),
             }
         }
+        ("lsp", "ocaml") => ocaml_package("ocamllsp"),
+        ("debug", "earlybird") => ocaml_package("ocamlearlybird"),
         ("debug", "codelldb") => {
             let d = t.join("codelldb").join("extension");
             if d.is_dir() { omega(t.join("codelldb"), json_version(&d.join("package.json"))) } else { ("missing", None, None) }
@@ -233,6 +236,17 @@ fn locate(id: &str) -> (&'static str, Option<PathBuf>, Option<String>) {
             }
         }
         _ => ("missing", None, None),
+    }
+}
+
+/// A program of the OCaml toolchain: from Omega's switch, else from the system.
+fn ocaml_package(cmd: &str) -> (&'static str, Option<PathBuf>, Option<String>) {
+    match env::which(&env::norm(crate::tools::ocaml_bin().join(cmd))) {
+        Some(p) => {
+            let v = exe_version(&p, &["--version"]);
+            omega(p, v)
+        }
+        None => system_tool(&[cmd], true),
     }
 }
 
@@ -505,6 +519,9 @@ fn latest(id: &str) -> Result<Option<String>, String> {
         "tool:scala" => gh_latest("VirtusLab/scala-cli")?,
         "tool:sbt" => gh_latest("sbt/sbt")?,
         "lsp:scala" => crate::tools::metals_latest()?,
+        "tool:ocaml" => crate::tools::ocaml_latest("dune")?,
+        "lsp:ocaml" => crate::tools::ocaml_latest("ocaml-lsp-server")?,
+        "debug:earlybird" => crate::tools::ocaml_latest("earlybird")?,
         "tool:gradle" => json("https://services.gradle.org/versions/current")?["version"].as_str().map(String::from).ok_or("installs:no_version:Gradle")?,
         "tool:git" if cfg!(windows) => gh_latest("git-for-windows/git")?,
         "tool:cc" if cfg!(windows) => gh_latest("mstorsjo/llvm-mingw")?,
@@ -594,6 +611,8 @@ fn uninstall(id: &str) -> Result<(), String> {
         ("lsp", "python") => remove_dir(&t.join("python")),
         ("lsp", "typescript") => remove_dir(&t.join("typescript")),
         ("lsp", "scala") => remove_dir(&t.join("metals")),
+        ("lsp", "ocaml") => crate::tools::remove_ocaml_package("ocaml-lsp-server"),
+        ("debug", "earlybird") => crate::tools::remove_ocaml_package("earlybird"),
         ("lsp", "java") => {
             remove_dir(&t.join("jdtls"))?;
             remove_dir(&t.join("jdtls-config"))

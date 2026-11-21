@@ -1,14 +1,15 @@
 //! Tools Omega can install by itself into its app-data folder (`tools/`), per OS and CPU:
 //! uv (Python), tectonic (LaTeX), Node.js, pnpm, CMake, Ninja, clangd, a JDK, Gradle, Rust (rustup),
-//! Scala CLI with Coursier, sbt, a C/C++ compiler (llvm-mingw on Windows, Xcode Command Line Tools
+//! Scala CLI with Coursier, sbt, OCaml through its own opam root, a C/C++ compiler (llvm-mingw on Windows, Xcode Command Line Tools
 //! on macOS) and Git on Windows.
 //! Installed tools are recorded in `tools/managed.json` (tool id → folder with its executables);
 //! those folders are appended to the PATH of everything Omega starts (see `env.rs`).
 use crate::env;
 use serde_json::Value;
 use std::collections::BTreeMap;
-use std::io::{Read, Write};
+use std::io::{BufRead, Read, Write};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use tauri::{AppHandle, Emitter};
 
 const OS: &str = if cfg!(windows) { "windows" } else if cfg!(target_os = "macos") { "macos" } else { "linux" };
@@ -291,6 +292,8 @@ pub fn tool_installable() -> Vec<&'static str> {
     let mut v = vec!["uv", "tectonic", "node", "pnpm", "cmake", "ninja", "clangd", "jdk", "gradle", "rust", "scala", "sbt"];
     if cfg!(windows) {
         v.extend(["git", "cc"]);
+    } else {
+        v.push("ocaml"); // opam on Windows needs a Cygwin setup of its own
     }
     if cfg!(target_os = "macos") {
         v.extend(["git", "cc"]); // Xcode Command Line Tools
@@ -314,6 +317,9 @@ fn install(app: &AppHandle, id: &str) -> Result<String, String> {
     }
     if id == "scala" {
         return install_scala(app);
+    }
+    if id == "ocaml" {
+        return install_ocaml(app);
     }
     if cfg!(target_os = "macos") && (id == "cc" || id == "git") {
         // Apple's installer dialog; the tools appear in /usr/bin once the user finished it.
@@ -428,7 +434,6 @@ fn is_coursier_help(text: &str) -> bool {
 
 /// Asks a `cs` found on the PATH what it is (at most 10 s).
 fn is_coursier(exe: &Path) -> bool {
-    use std::process::Stdio;
     let Ok(mut child) = env::command(exe).arg("--help").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn() else { return false };
     let Some(mut pipe) = child.stdout.take() else { return false };
     let reader = std::thread::spawn(move || {
@@ -500,9 +505,263 @@ pub fn install_metals(app: &AppHandle) -> Result<String, String> {
     Ok(env::norm(dir.join(file)))
 }
 
+// ------------------------------------------------------------------ OCaml
+
+/// Compiler of Omega's switch: dune, ocaml-lsp-server and Earlybird are all built with it, and
+/// Earlybird can only read bytecode from the compiler it was built with.
+const OCAML_COMPILER: &str = "ocaml-base-compiler.5.5.2";
+const OCAML_SWITCH: &str = "omega";
+
+fn ocaml_dir() -> PathBuf {
+    env::tools_dir().join("ocaml")
+}
+
+fn opam_exe() -> PathBuf {
+    ocaml_dir().join("opam")
+}
+
+fn opam_root() -> PathBuf {
+    ocaml_dir().join("root")
+}
+
+/// The switch's programs. This is what the manifest puts on the PATH; `opam` itself stays off it.
+pub fn ocaml_bin() -> PathBuf {
+    opam_root().join(OCAML_SWITCH).join("bin")
+}
+
+/// Which of the programs opam needs to build a compiler are missing.
+fn ocaml_missing(has: impl Fn(&str) -> bool) -> Vec<&'static str> {
+    let mut v = Vec::new();
+    if !["cc", "gcc", "clang"].iter().any(|c| has(c)) {
+        v.push("C compiler (gcc)");
+    }
+    for c in ["make", "patch", "tar", "unzip"] {
+        if !has(c) {
+            v.push(c);
+        }
+    }
+    if !["curl", "wget"].iter().any(|c| has(c)) {
+        v.push("curl");
+    }
+    v
+}
+
+/// File name of the opam release binary for this platform.
+fn opam_asset_suffix(os: &str, arm: bool) -> String {
+    format!("-{}-{}", if arm { "arm64" } else { "x86_64" }, if os == "macos" { "macos" } else { "linux" })
+}
+
+/// opam for Omega's own root only: nothing from the user's opam setup, no system packages (sudo).
+fn opam() -> Command {
+    let mut c = env::command(opam_exe());
+    for (k, _) in std::env::vars_os() {
+        let k = k.to_string_lossy().to_string();
+        if k.starts_with("OPAM") || matches!(k.as_str(), "CAML_LD_LIBRARY_PATH" | "OCAMLPATH" | "OCAMLTOP_INCLUDE_PATH" | "OCAMLFIND_CONF") {
+            c.env_remove(k);
+        }
+    }
+    c.env("OPAMROOT", opam_root()).envs([("OPAMYES", "1"), ("OPAMCOLOR", "never"), ("OPAMUTF8", "never"), ("OPAMNODEPEXTS", "1"), ("OPAMNOENVNOTICE", "1")]);
+    c.stdin(Stdio::null());
+    c
+}
+
+/// Updates (done, total) from a line of opam's output; true if a package finished.
+fn opam_progress(line: &str, done: &mut u64, total: &mut u64) -> bool {
+    let line = line.trim();
+    if let Some(rest) = line.strip_prefix("=== ") {
+        let mut w = rest.split_whitespace();
+        if let (Some("install" | "upgrade" | "recompile" | "downgrade"), Some(Ok(n))) = (w.next(), w.next().map(str::parse::<u64>)) {
+            *total += n;
+        }
+        return false;
+    }
+    if ["-> installed ", "\u{2217} installed "].iter().any(|p| line.starts_with(p)) {
+        *done += 1;
+        return true;
+    }
+    false
+}
+
+/// Runs opam, reporting finished packages as progress. A failure ends with what opam said.
+fn run_opam(app: &AppHandle, id: &str, args: &[&str]) -> Result<(), String> {
+    let mut child = opam().args(args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| format!("tools:ocaml_failed:{e}"))?;
+    let stderr = child.stderr.take();
+    let errors = std::thread::spawn(move || {
+        let mut text = String::new();
+        if let Some(mut pipe) = stderr {
+            let _ = pipe.read_to_string(&mut text);
+        }
+        text
+    });
+    let (mut done, mut total) = (0, 0);
+    let mut output = String::new();
+    if let Some(pipe) = child.stdout.take() {
+        for line in std::io::BufReader::new(pipe).lines().map_while(Result::ok) {
+            if opam_progress(&line, &mut done, &mut total) || line.starts_with("=== ") {
+                let _ = app.emit("tool-progress", Progress { id, done, total, stage: "build" });
+            }
+            output.push_str(&line);
+            output.push('\n');
+        }
+    }
+    let status = child.wait().map_err(|e| format!("tools:ocaml_failed:{e}"))?;
+    let errors = errors.join().unwrap_or_default();
+    if status.success() {
+        return Ok(());
+    }
+    let said = if errors.trim().is_empty() { output } else { errors };
+    Err(format!("tools:ocaml_failed:{}", tail_chars(&said, 600).replace('\n', " ")))
+}
+
+/// opam, an Omega-only opam root, a switch with the compiler, and dune. Run again it updates them.
+/// `--no-setup`: the user's shell profile is never touched.
+fn install_ocaml(app: &AppHandle) -> Result<String, String> {
+    if cfg!(windows) {
+        return Err("tools:unsupported:OCaml".into());
+    }
+    let missing = ocaml_missing(|c| env::which(c).is_some());
+    if !missing.is_empty() {
+        return Err(format!("tools:ocaml_missing:{}", missing.join(", ")));
+    }
+    let dir = ocaml_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    if !opam_exe().is_file() {
+        let suffix = opam_asset_suffix(OS, ARM);
+        let url = gh_asset("ocaml/opam", |n| n.starts_with("opam-") && n.ends_with(&suffix))?;
+        let tmp = dir.join(".opam.download");
+        download(app, "ocaml", &url, &tmp)?;
+        make_executable(&tmp);
+        std::fs::rename(&tmp, opam_exe()).map_err(|e| e.to_string())?;
+    }
+    let _ = app.emit("tool-progress", Progress { id: "ocaml", done: 0, total: 0, stage: "install" });
+    if !opam_root().join("config").is_file() {
+        let _ = std::fs::remove_dir_all(opam_root());
+        let mut args = vec!["init", "--bare", "--no-setup", "--disable-completion"];
+        if cfg!(target_os = "linux") && env::which("bwrap").is_none() {
+            args.push("--disable-sandboxing"); // opam's build sandbox needs bubblewrap
+        }
+        run_opam(app, "ocaml", &args)?;
+    }
+    let update = ocaml_bin().join("ocamlc").is_file();
+    if update {
+        run_opam(app, "ocaml", &["update"])?;
+    } else {
+        // An earlier attempt may have stopped halfway.
+        if opam_root().join(OCAML_SWITCH).exists() {
+            run_opam(app, "ocaml", &["switch", "remove", OCAML_SWITCH])?;
+        }
+        run_opam(app, "ocaml", &["switch", "create", OCAML_SWITCH, OCAML_COMPILER, "--no-switch"])?;
+    }
+    run_opam(app, "ocaml", &["install", "--switch", OCAML_SWITCH, "dune"])?;
+    if update {
+        run_opam(app, "ocaml", &["upgrade", "--switch", OCAML_SWITCH])?;
+    }
+    record("ocaml", &ocaml_bin())?;
+    Ok(env::norm(ocaml_bin()))
+}
+
+/// A package in Omega's switch, so it always matches the compiler. Run again it updates it.
+pub fn install_ocaml_package(app: &AppHandle, id: &str, package: &str, exe: &str) -> Result<String, String> {
+    if !ocaml_bin().join("ocamlc").is_file() {
+        return Err(format!("tools:ocaml_not_managed:{package}"));
+    }
+    let _ = app.emit("tool-progress", Progress { id, done: 0, total: 0, stage: "install" });
+    let path = ocaml_bin().join(exe);
+    if path.is_file() {
+        run_opam(app, id, &["update"])?;
+        run_opam(app, id, &["upgrade", "--switch", OCAML_SWITCH, package])?;
+    } else {
+        run_opam(app, id, &["install", "--switch", OCAML_SWITCH, package])?;
+    }
+    if !path.is_file() {
+        return Err(format!("tools:bin_missing:{exe}"));
+    }
+    env::rebuild();
+    Ok(env::norm(path))
+}
+
+/// Removes a package from Omega's switch.
+pub fn remove_ocaml_package(package: &str) -> Result<(), String> {
+    if !ocaml_bin().join("ocamlc").is_file() {
+        return Err(format!("installs:not_ours:{package}"));
+    }
+    let out = opam().args(["remove", "--switch", OCAML_SWITCH, package]).output().map_err(|e| e.to_string())?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(format!("tools:ocaml_failed:{}", tail_chars(&String::from_utf8_lossy(&out.stderr), 600)))
+    }
+}
+
+/// The version an upgrade would give, from a line like "- upgrade dune 3.24.0 to 3.25.0".
+fn opam_upgrade_target(text: &str, package: &str) -> Option<String> {
+    text.lines().find_map(|l| {
+        let w: Vec<&str> = l.split_whitespace().collect();
+        let i = w.iter().position(|x| *x == "upgrade")?;
+        (w.get(i + 1) == Some(&package) && w.get(i + 3) == Some(&"to")).then(|| w.get(i + 4).map(|v| v.to_string()))?
+    })
+}
+
+/// Refreshes opam's package list at most once in a few minutes: several items ask at once.
+fn opam_refresh() {
+    static LAST: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    if last.is_none_or(|t| t.elapsed() > std::time::Duration::from_secs(300)) {
+        let _ = opam().arg("update").output();
+        *last = Some(std::time::Instant::now());
+    }
+}
+
+/// Newest version of a package the switch's compiler can use.
+pub fn ocaml_latest(package: &str) -> Result<String, String> {
+    if !ocaml_bin().join("ocamlc").is_file() {
+        return Err(format!("installs:not_ours:{package}"));
+    }
+    opam_refresh();
+    let out = opam().args(["upgrade", "--switch", OCAML_SWITCH, "--dry-run", "--show-actions", package]).output().map_err(|e| e.to_string())?;
+    if let Some(v) = opam_upgrade_target(&String::from_utf8_lossy(&out.stdout), package) {
+        return Ok(v);
+    }
+    let now = opam().args(["list", "--switch", OCAML_SWITCH, "--installed", "--short", "--columns=version", package]).output().map_err(|e| e.to_string())?;
+    String::from_utf8_lossy(&now.stdout).lines().next().map(|v| v.trim().to_string()).filter(|v| !v.is_empty()).ok_or_else(|| format!("tools:no_version:{package}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ocaml_names_what_is_missing() {
+        assert!(ocaml_missing(|_| true).is_empty());
+        assert_eq!(ocaml_missing(|c| c != "make" && c != "patch"), ["make", "patch"]);
+        assert_eq!(ocaml_missing(|c| !["cc", "gcc", "clang"].contains(&c)), ["C compiler (gcc)"]);
+        assert_eq!(ocaml_missing(|c| c != "curl"), Vec::<&str>::new()); // wget is enough
+        assert_eq!(ocaml_missing(|c| c != "curl" && c != "wget"), ["curl"]);
+    }
+
+    #[test]
+    fn opam_asset_per_platform() {
+        assert_eq!(opam_asset_suffix("linux", false), "-x86_64-linux");
+        assert_eq!(opam_asset_suffix("linux", true), "-arm64-linux");
+        assert_eq!(opam_asset_suffix("macos", true), "-arm64-macos");
+    }
+
+    #[test]
+    fn opam_progress_counts_finished_packages() {
+        let (mut done, mut total) = (0, 0);
+        for l in ["The following actions will be performed:", "=== install 3 packages", "  - install dune 3.25.0", "-> retrieved dune.3.25.0", "-> installed dune.3.25.0", "\u{2217} installed base.v0"] {
+            opam_progress(l, &mut done, &mut total);
+        }
+        assert_eq!((done, total), (2, 3));
+    }
+
+    #[test]
+    fn opam_upgrade_target_reads_the_plan() {
+        let text = "=== upgrade 2 packages\n  - upgrade base 1.0 to 1.1\n  - upgrade dune 3.24.0 to 3.25.0 [required]\n";
+        assert_eq!(opam_upgrade_target(text, "dune").as_deref(), Some("3.25.0"));
+        assert_eq!(opam_upgrade_target(text, "earlybird"), None);
+        assert_eq!(opam_upgrade_target("Already up-to-date.\n", "dune"), None);
+    }
 
     #[test]
     fn exe_name_keeps_a_given_extension() {
