@@ -66,6 +66,7 @@ vi.mock("../terminal.svelte", () => ({
   setRunEcho: vi.fn(),
   taskState: () => task.state,
   interruptTask: (id: number) => task.interrupt(id),
+  runningPackageTask: (id: number) => (task.state.running && task.state.taskId === id ? !!task.state.packages : null),
 }));
 vi.mock("../layout.svelte", () => ({ showView: vi.fn() }));
 vi.mock("../editor", () => ({
@@ -403,6 +404,69 @@ test("guest: invalid input gets a message and isn't sent", async () => {
   ui.prompt = vi.fn(async () => "--index-url=https://evil.test") as never;
   await runnerRemote.run!({ id: "add", label: "Add…", cmd: "x" });
   expect(guestReqs()).toEqual([]);
+  expect(ui.toast.mock.calls[0][1]).toBe("error");
+  for (const h of endHooks) await h(true);
+});
+
+// ------------------------------------------------------------------ Stop with `packages`
+
+const IDLE = { running: false, kind: null, taskId: null, status: null };
+const stopReq = (id: number, taskId: number) => receive("g1", { t: "rpc.req", id, method: "run.stop", params: { taskId } });
+
+test("host: `packages` stops a package task", async () => {
+  hostWith(["packages"]);
+  task.state = { running: true, kind: "run", taskId: 30, status: "running", packages: true };
+  await stopReq(60, 30);
+  expect(task.interrupt).toHaveBeenCalledWith(30);
+  expect(replyTo("g1", 60)).toMatchObject({ ok: true, result: { stopped: true } });
+  task.state = IDLE;
+});
+
+test("host: `packages` can't stop a run that isn't a package task", async () => {
+  hostWith(["packages"]);
+  task.state = { running: true, kind: "run", taskId: 31, status: "running" };
+  await stopReq(61, 31);
+  expect(replyTo("g1", 61)).toMatchObject({ ok: false, error: { code: "forbidden" } });
+  expect(task.interrupt).not.toHaveBeenCalled();
+  task.state = IDLE;
+});
+
+test("host: a late Stop with `packages` doesn't reach the newer run", async () => {
+  hostWith(["packages"]);
+  task.interrupt.mockImplementationOnce(() => false);
+  task.state = { running: true, kind: "run", taskId: 33, status: "running" };
+  await stopReq(62, 32); // the package task 32 is over, 33 is the host's own run
+  expect(task.interrupt).toHaveBeenCalledWith(32);
+  expect(task.interrupt).not.toHaveBeenCalledWith(33);
+  expect(replyTo("g1", 62)).toMatchObject({ ok: true, result: { stopped: false } });
+  task.state = IDLE;
+});
+
+test("host: `run` still stops any task, no right stops none", async () => {
+  hostWith(["run"]);
+  task.state = { running: true, kind: "run", taskId: 34, status: "running", packages: true };
+  await stopReq(63, 34);
+  expect(task.interrupt).toHaveBeenCalledWith(34);
+  hostWith(["edit"]);
+  await stopReq(64, 34);
+  expect(replyTo("g1", 64)).toMatchObject({ ok: false, error: { code: "forbidden" } });
+  expect(task.interrupt).not.toHaveBeenCalled();
+  task.state = IDLE;
+});
+
+test("guest: with `packages` only, Stop calls the host for a package task and not for another", async () => {
+  await guestWithPackages(["packages"]);
+  await receive("host-peer", { t: "rpc.pub", topic: "run.state", payload: { running: true, kind: "run", taskId: 35, status: "running", packages: true } });
+  send.mockClear();
+  runnerRemote.stop!();
+  await vi.waitFor(() => expect(send).toHaveBeenCalledWith("host-peer", expect.objectContaining({ method: "run.stop", params: { taskId: 35 } })));
+  await receive("host-peer", { t: "rpc.res", id: send.mock.calls.find((c) => c[1].t === "rpc.req")![1].id, ok: true, result: { stopped: true } });
+
+  await receive("host-peer", { t: "rpc.pub", topic: "run.state", payload: { running: true, kind: "run", taskId: 36, status: "running" } });
+  send.mockClear();
+  ui.toast.mockClear();
+  await runnerRemote.stop!();
+  expect(send).not.toHaveBeenCalled();
   expect(ui.toast.mock.calls[0][1]).toBe("error");
   for (const h of endHooks) await h(true);
 });

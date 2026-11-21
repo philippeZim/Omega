@@ -131,6 +131,21 @@ describe("Build/Run tasks", () => {
     expect(T.taskState()).toMatchObject({ running: false, kind: "run", taskId: second.taskId, status: "stopped" });
   });
 
+  test("a package task is marked while it runs, and the mark doesn't carry over to the next run", async () => {
+    T.runCommand("uv sync", "/p", "uv", false, { packageTask: true });
+    await settle();
+    const pkg = T.taskState();
+    expect(pkg.packages).toBe(true);
+    expect(T.runningPackageTask(pkg.taskId!)).toBe(true);
+
+    T.runTask("run", "sleep 100", null, "Run", { focus: false });
+    await settle();
+    const plain = T.taskState();
+    expect(plain.packages).toBeUndefined();
+    expect(T.runningPackageTask(plain.taskId!)).toBe(false);
+    expect(T.runningPackageTask(pkg.taskId!)).toBeNull(); // a late Stop for the package task
+  });
+
   test("cancelTask / interruptRun end as stopped and report null", async () => {
     const onExit = vi.fn();
     T.runTask("run", "sleep 100", null, "Run", { focus: false, onExit });

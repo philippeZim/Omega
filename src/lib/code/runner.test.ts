@@ -205,4 +205,14 @@ describe("package actions on the host", () => {
     expect(ui.toast).toHaveBeenCalledWith("bad group", "error");
     expect(h.runCommand).not.toHaveBeenCalled();
   });
+
+  test("only package actions are marked as package tasks", async () => {
+    await refreshProject();
+    (runner.project as Project).kind = "uv";
+    await runAction(add(), "requests");
+    expect(h.runCommand.mock.calls[0][4]).toEqual({ packageTask: true });
+    h.runCommand.mockReset();
+    await runAction({ id: "fmt", label: "fmt", cmd: "uvx ruff format" });
+    expect(h.runCommand.mock.calls[0][4]).toBeUndefined();
+  });
 });

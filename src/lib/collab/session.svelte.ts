@@ -12,14 +12,14 @@ import { untrack } from "svelte";
 import { listen } from "@tauri-apps/api/event";
 import { collab, broadcast, onCollabMessage, sessionEndHooks } from "./collab.svelte";
 import { share, hostKeyChecked, syncSharedTabs, openRemote, isRemote } from "./share.svelte";
-import { blockedByCapability } from "./guard";
+import { blockedByCapability, guestCanStop } from "./guard";
 import { call, hasCapability, isObj, publish, registerMethod, registerTopic, rpcErrorText, RpcFail, subscribe } from "./rpc.svelte";
 import { app, activeTab, activate, closeTab, flushAutosave, newFile, openFile, setMode, setRoot } from "../state.svelte";
 import { runner, runAction, refreshProject, runnerRemote } from "../code/runner.svelte";
 import type { Action, Project } from "../code/projects";
 import { packageAction, PACKAGE_LIMITS, quotePackageArg, splitPackages, validPackages } from "../code/packageInput";
 import { pythonRemoveFlags, type Suggestion } from "../code/packages";
-import { remoteTerminal, writeTerminal, closeTerminal, terms, isTaskPty, setRunEcho, interruptTask, taskState, type TaskState } from "../terminal.svelte";
+import { remoteTerminal, writeTerminal, closeTerminal, terms, isTaskPty, setRunEcho, interruptTask, runningPackageTask, taskState, type TaskState } from "../terminal.svelte";
 import { showView } from "../layout.svelte";
 import * as ed from "../editor";
 import { fsApi, basename } from "../api";
@@ -144,9 +144,12 @@ registerMethod({
 
 registerMethod({
   name: "run.stop",
-  capability: "run",
+  capability: null, // `run` stops anything, `packages` only a package task: decided on the task itself
   validate: (raw) => (isObj(raw) && Number.isSafeInteger(raw.taskId) ? { taskId: raw.taskId as number } : null),
-  handle: ({ taskId }) => ({ stopped: interruptTask(taskId) }),
+  handle: ({ taskId }, { peer }) => {
+    if (!hasCapability(peer, "run") && (!hasCapability(peer, "packages") || runningPackageTask(taskId) === false)) throw new RpcFail("forbidden");
+    return { stopped: interruptTask(taskId) };
+  },
 });
 
 const isShortString = (v: unknown, max: number): v is string => typeof v === "string" && v.length <= max;
@@ -333,7 +336,8 @@ const isTaskState = (s: unknown): s is TaskState =>
   typeof s.running === "boolean" &&
   (s.kind === null || s.kind === "build" || s.kind === "run") &&
   (s.taskId === null || Number.isSafeInteger(s.taskId)) &&
-  (s.status === null || s.status === "running" || s.status === "ok" || s.status === "fail" || s.status === "stopped");
+  (s.status === null || s.status === "running" || s.status === "ok" || s.status === "fail" || s.status === "stopped") &&
+  (s.packages === undefined || s.packages === true);
 
 subscribe("run.state", (state) => {
   runner.remoteTask = isTaskState(state) ? state : null;
@@ -342,7 +346,8 @@ subscribe("run.state", (state) => {
 
 async function stopOnHost() {
   const task = runner.remoteTask;
-  if (blockedByCapability("run") || !task?.running || task.taskId === null) return;
+  if (!guestCanStop(task) && blockedByCapability("run")) return;
+  if (!task?.running || task.taskId === null) return;
   const r = await call("run.stop", { taskId: task.taskId });
   if (!r.ok) ui.toast(rpcErrorText(r.error.code), "error");
 }

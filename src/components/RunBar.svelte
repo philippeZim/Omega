@@ -8,7 +8,7 @@
   import { focusTerm } from "../lib/terminal.svelte";
   import { toggleView, isShown } from "../lib/layout.svelte";
   import { t } from "../lib/i18n/index.svelte";
-  import { guestCan } from "../lib/collab/guard";
+  import { guestCanStop } from "../lib/collab/guard";
 
   /** Width of the tab bar: below ~640px labels collapse to icons, below ~460px build/test/version move into the "more" menu. */
   let { width = 1000 }: { width?: number } = $props();
@@ -73,7 +73,7 @@
         </button>
       {/if}
       {#if runner.remoteTask?.running}
-        <button class="gbtn icon stop hoststop" disabled={!guestCan("run")} title={guestCan("run") ? t("ai.collab.stopOnHost") : t("ai.collab.capMissing", { cap: t("ai.collab.cap.run") })} onclick={stopRun} aria-label={t("ai.collab.stopOnHost")}>
+        <button class="gbtn icon stop hoststop" disabled={!guestCanStop(runner.remoteTask)} title={guestCanStop(runner.remoteTask) ? t("ai.collab.stopOnHost") : t("ai.collab.capMissing", { cap: t("ai.collab.cap.run") })} onclick={stopRun} aria-label={t("ai.collab.stopOnHost")}>
           <svg class="ico" width="10" height="10" viewBox="0 0 10 10"><rect width="10" height="10" rx="2.4" fill="currentColor"/></svg>
         </button>
       {/if}

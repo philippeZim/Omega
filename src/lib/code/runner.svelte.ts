@@ -2,6 +2,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { detectProject, type Action, type Project, TEMPLATES } from "./projects";
 import { versionSettings, type VersionSetting } from "./versions";
+import { packageAction } from "./packageInput";
 import { runCommand, runTask, cancelTask, interruptRun, type TaskState } from "../terminal.svelte";
 import { app, activeTab, save, setRoot, openFile, setMode } from "../state.svelte";
 import { ui } from "../ui.svelte";
@@ -186,6 +187,7 @@ export async function runAction(action: Action | null | undefined, checkedArg?: 
     cancelTask("run");
     runTask("build", pre, p.root, t("code.act.build"), { onExit: (code) => code === 0 && runTask("run", cmd, p.root, title) });
   } else if (BUILD_ACTIONS.has(a.id)) runTask("build", cmd, p.root, a.id === "build" ? t("code.act.build") : title);
+  else if (packageAction(p.kind, a.id)) runCommand(cmd, p.root, title, true, { packageTask: true });
   else runCommand(cmd, p.root, title);
   // Dependency changes may alter the project (e.g. new scripts).
   if (a.ask) setTimeout(refreshProject, 3000);
