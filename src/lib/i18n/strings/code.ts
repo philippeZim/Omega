@@ -267,6 +267,10 @@ export const en = {
   "code.lsp.metalsResumeTitle": "Start Metals for this project?",
   "code.lsp.metalsResumeMsg": "{name} changed this project without the Run permission. Metals executes the project's build files (build.sbt, .bsp), so check them first.",
   "code.lsp.metalsResumeOk": "Start Metals",
+  "code.lsp.ocamlPaused": "ocamllsp is paused: a guest without Run changed this project. Restart the server to allow it again.",
+  "code.lsp.ocamlResumeTitle": "Start ocamllsp for this project?",
+  "code.lsp.ocamlResumeMsg": "{name} changed this project without the Run permission. ocamllsp runs the preprocessors named by .merlin files and the build config, so check them first.",
+  "code.lsp.ocamlResumeOk": "Start ocamllsp",
 };
 export const de: Record<keyof typeof en, string> = {
   "code.key.ctrl": "Strg",
@@ -526,6 +530,10 @@ export const de: Record<keyof typeof en, string> = {
   "code.lsp.metalsResumeTitle": "Metals für dieses Projekt starten?",
   "code.lsp.metalsResumeMsg": "{name} hat dieses Projekt ohne Ausführen-Recht geändert. Metals führt die Build-Dateien des Projekts aus (build.sbt, .bsp), prüfe sie also vorher.",
   "code.lsp.metalsResumeOk": "Metals starten",
+  "code.lsp.ocamlPaused": "ocamllsp ist pausiert: Ein Gast ohne Ausführen-Recht hat dieses Projekt geändert. Starte den Server neu, um es wieder zu erlauben.",
+  "code.lsp.ocamlResumeTitle": "ocamllsp für dieses Projekt starten?",
+  "code.lsp.ocamlResumeMsg": "{name} hat dieses Projekt ohne Ausführen-Recht geändert. ocamllsp startet die Präprozessoren aus .merlin-Dateien und der Build-Konfiguration, prüfe sie also vorher.",
+  "code.lsp.ocamlResumeOk": "ocamllsp starten",
 };
 export const fr: Record<keyof typeof en, string> = {
   "code.key.ctrl": "Ctrl",
@@ -785,4 +793,8 @@ export const fr: Record<keyof typeof en, string> = {
   "code.lsp.metalsResumeTitle": "Démarrer Metals pour ce projet ?",
   "code.lsp.metalsResumeMsg": "{name} a modifié ce projet sans le droit d’exécution. Metals exécute les fichiers de build du projet (build.sbt, .bsp) : vérifiez-les d’abord.",
   "code.lsp.metalsResumeOk": "Démarrer Metals",
+  "code.lsp.ocamlPaused": "ocamllsp est en pause : un invité sans droit d’exécution a modifié ce projet. Redémarrez le serveur pour l’autoriser à nouveau.",
+  "code.lsp.ocamlResumeTitle": "Démarrer ocamllsp pour ce projet ?",
+  "code.lsp.ocamlResumeMsg": "{name} a modifié ce projet sans le droit d’exécution. ocamllsp lance les préprocesseurs indiqués par les fichiers .merlin et la configuration de build : vérifiez-les d’abord.",
+  "code.lsp.ocamlResumeOk": "Démarrer ocamllsp",
 };
