@@ -64,6 +64,30 @@ impl WriteQueue {
     }
 }
 
+/// Output of a guest's shell reaches the webview at most this fast. Beyond it the reader waits, so
+/// the PTY holds the program back (`yes`) instead of flooding the host's UI.
+const GUEST_OUTPUT_BYTES_PER_SEC: f64 = 1024.0 * 1024.0;
+const GUEST_OUTPUT_BURST: f64 = 128.0 * 1024.0;
+
+struct OutputPacer {
+    tokens: f64,
+    last: std::time::Instant,
+}
+
+impl OutputPacer {
+    fn new(now: std::time::Instant) -> Self {
+        Self { tokens: GUEST_OUTPUT_BURST, last: now }
+    }
+
+    /// How long to wait after passing on `n` bytes.
+    fn delay(&mut self, n: usize, now: std::time::Instant) -> std::time::Duration {
+        let earned = now.duration_since(self.last).as_secs_f64() * GUEST_OUTPUT_BYTES_PER_SEC;
+        self.last = now;
+        self.tokens = (self.tokens + earned).min(GUEST_OUTPUT_BURST) - n as f64;
+        std::time::Duration::from_secs_f64((-self.tokens).max(0.0) / GUEST_OUTPUT_BYTES_PER_SEC)
+    }
+}
+
 struct Session {
     master: Box<dyn MasterPty + Send>,
     writes: WriteQueue,
@@ -301,6 +325,7 @@ pub fn pty_spawn(app: AppHandle, id: String, cwd: Option<String>, cols: u16, row
         .insert(id.clone(), Session { master: pair.master, writes: WriteQueue::new(writer), child, kind: pty_kind });
 
     let app2 = app.clone();
+    let mut pacer = (pty_kind == PtyKind::GuestShell).then(|| OutputPacer::new(std::time::Instant::now()));
     std::thread::spawn(move || {
         let mut buf = [0u8; 16384];
         loop {
@@ -309,12 +334,15 @@ pub fn pty_spawn(app: AppHandle, id: String, cwd: Option<String>, cols: u16, row
                 Ok(n) => {
                     let data = base64::engine::general_purpose::STANDARD.encode(&buf[..n]);
                     let _ = app2.emit("pty-data", PtyData { id: id.clone(), data });
+                    if let Some(p) = &mut pacer {
+                        std::thread::sleep(p.delay(n, std::time::Instant::now()));
+                    }
                 }
             }
         }
         // Killed sessions are already gone from the map (no exit code then).
         let session = app2.state::<PtyState>().sessions.lock().unwrap().remove(&id);
-        let code = session.and_then(|mut s| s.child.wait().ok()).map(|st| st.exit_code() as i32);
+        let code = session.and_then(finish_session);
         let _ = app2.emit("pty-exit", PtyExit { id, code });
     });
     Ok(())
@@ -328,26 +356,74 @@ pub fn pty_write(app: AppHandle, id: String, data: String) -> Result<(), String>
     s.writes.push(data.into_bytes())
 }
 
-/// Whether these process arguments are a shell waiting for commands: a shell without `-c` or a
-/// script to run, or one started with `-i`.
+/// Whether these process arguments are a shell waiting for commands: no `-c`, no script to run,
+/// or explicitly interactive. Values of options (`--rcfile x`, `-o vi`) aren't scripts.
 fn is_interactive_shell(args: &[String]) -> bool {
     let Some(name) = args.first().map(|a| a.rsplit(['/', '\\']).next().unwrap_or(a).trim_start_matches('-').trim_end_matches(".exe").to_ascii_lowercase()) else { return true };
-    if !["sh", "bash", "zsh", "dash", "ksh", "mksh", "fish", "csh", "tcsh", "nu", "elvish", "xonsh", "pwsh", "powershell", "cmd"].contains(&name.as_str()) {
-        return false;
+    match name.as_str() {
+        "pwsh" | "powershell" => powershell_is_interactive(&args[1..]),
+        "cmd" => !args[1..].iter().any(|a| a.to_ascii_lowercase().starts_with("/c")),
+        "sh" | "bash" | "zsh" | "dash" | "ksh" | "mksh" | "fish" | "csh" | "tcsh" | "nu" | "elvish" | "xonsh" => posix_shell_is_interactive(&name, &args[1..]),
+        _ => false,
     }
-    for a in &args[1..] {
-        if a.starts_with("--") {
+}
+
+fn posix_shell_is_interactive(name: &str, args: &[String]) -> bool {
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        if a == "--" || a == "-" {
+            return it.next().is_none();
+        }
+        if let Some(long) = a.strip_prefix("--") {
+            let (long, has_value) = long.split_once('=').map_or((long, false), |(k, _)| (k, true));
+            match long {
+                "interactive" => return true,
+                "command" => return false,
+                "rcfile" | "init-file" | "init-command" if !has_value => {
+                    it.next();
+                }
+                _ => {}
+            }
             continue;
         }
-        let Some(flags) = a.strip_prefix('-') else { return false }; // a script
-        if flags.contains('i') {
+        let Some(flags) = a.strip_prefix('-').or_else(|| a.strip_prefix('+')) else { return false }; // a script
+        let on = a.starts_with('-');
+        let (mut interactive, mut command, mut stdin) = (false, false, false);
+        for (i, f) in flags.char_indices() {
+            match f {
+                'i' if on => interactive = true,
+                'c' if on => command = true,
+                's' if on => stdin = true,
+                // The rest of the word, or else the next argument, is this option's value.
+                'o' | 'O' | 'C' if f != 'C' || name == "fish" => {
+                    if i + 1 == flags.len() {
+                        it.next();
+                    }
+                    break;
+                }
+                _ => {}
+            }
+        }
+        if interactive || (stdin && !command) {
             return true;
         }
-        if flags.contains('c') {
+        if command {
             return false;
         }
     }
     true
+}
+
+/// PowerShell stays at its prompt unless told to run something, and with `-NoExit` even then.
+fn powershell_is_interactive(args: &[String]) -> bool {
+    let is = |a: &str, full: &str, shortest: usize| a.len() >= shortest && full.starts_with(a);
+    let opts: Vec<String> = args.iter().filter_map(|a| a.strip_prefix(['-', '/']).map(str::to_ascii_lowercase)).collect();
+    if opts.iter().any(|a| is(a, "noexit", 3)) {
+        return true;
+    }
+    let runs = opts.iter().any(|a| is(a, "file", 1) || is(a, "command", 1) || is(a, "encodedcommand", 1) || a == "ec");
+    // A bare first argument is a script for pwsh.
+    !runs && !args.first().is_some_and(|a| !a.starts_with(['-', '/']))
 }
 
 #[cfg(target_os = "linux")]
@@ -382,15 +458,18 @@ pub fn pty_write_guest(app: AppHandle, id: String, data: String, target: String)
     let state = app.state::<PtyState>();
     let mut sessions = state.sessions.lock().unwrap();
     let s = sessions.get_mut(&id).ok_or("pty:ended")?;
-    let accepted = match target.as_str() {
-        "task" => s.kind == PtyKind::Command && matches!(s.child.try_wait(), Ok(None)) && !shell_in_foreground(s),
-        "shell" => s.kind == PtyKind::GuestShell,
-        _ => false,
-    };
-    if !accepted {
+    if !guest_may_write(s, &target) {
         return Err("pty:ended".into());
     }
     s.writes.push_limited(data.into_bytes(), GUEST_QUEUE_BYTES)
+}
+
+fn guest_may_write(s: &mut Session, target: &str) -> bool {
+    match target {
+        "task" => s.kind == PtyKind::Command && matches!(s.child.try_wait(), Ok(None)) && !shell_in_foreground(s),
+        "shell" => s.kind == PtyKind::GuestShell,
+        _ => false,
+    }
 }
 
 #[tauri::command]
@@ -442,14 +521,13 @@ fn session_members(_: i32) -> Vec<i32> {
 fn kill_guest_processes(s: &mut Session) {
     let Some(pid) = s.child.process_id().map(|p| p as i32).filter(|p| *p > 1) else { return };
     let foreground = s.master.process_group_leader().filter(|p| *p > 1);
-    // A finished shell's id can be reused, so its group is only signalled while it's alive.
-    let alive = matches!(s.child.try_wait(), Ok(None));
-    unsafe {
-        if alive {
+    // A finished shell's ids can be reused, so its groups are only signalled while it's alive.
+    if matches!(s.child.try_wait(), Ok(None)) {
+        unsafe {
             libc::killpg(pid, libc::SIGKILL);
-        }
-        if let Some(group) = foreground {
-            libc::killpg(group, libc::SIGKILL);
+            if let Some(group) = foreground {
+                libc::killpg(group, libc::SIGKILL);
+            }
         }
     }
     // Repeated for what forked while the first pass ran.
@@ -465,6 +543,15 @@ fn kill_guest_processes(s: &mut Session) {
 }
 #[cfg(not(unix))]
 fn kill_guest_processes(_: &mut Session) {}
+
+/// The PTY's reader saw its end. A guest's shell that exited by itself takes along what it left
+/// running (`nohup job & exit`), like one that was ended.
+fn finish_session(mut s: Session) -> Option<i32> {
+    if s.kind == PtyKind::GuestShell {
+        kill_guest_processes(&mut s);
+    }
+    s.child.wait().ok().map(|st| st.exit_code() as i32)
+}
 
 fn end_session(mut s: Session) {
     if s.kind == PtyKind::GuestShell {
@@ -491,10 +578,19 @@ mod tests {
 
     #[test]
     fn tells_a_waiting_shell_from_a_program_or_script() {
-        for a in [&["bash"][..], &["-zsh"], &["/usr/bin/fish", "-l"], &["bash", "-i", "x.sh"], &["sh", "-s"], &["bash", "--login"]] {
+        for a in [
+            &["bash"][..], &["-zsh"], &["/usr/bin/fish", "-l"], &["bash", "-i", "x.sh"], &["sh", "-s"], &["bash", "--login"],
+            &["bash", "--rcfile", "x"], &["bash", "--init-file", "x"], &["bash", "--rcfile=x"], &["bash", "-o", "vi"], &["bash", "+o", "history"],
+            &["bash", "-O", "extglob"], &["zsh", "-o", "vi"], &["zsh", "-ovi"], &["fish", "-C", "echo hi"], &["fish", "--init-command", "x"],
+            &["pwsh"], &["pwsh", "-NoLogo"], &["pwsh", "-NoExit", "-File", "x.ps1"], &["powershell.exe", "-NoLogo"], &["cmd.exe", "/Q"], &["cmd", "/k", "x"],
+        ] {
             assert!(is_interactive_shell(&args(a)), "{a:?}");
         }
-        for a in [&["python3", "main.py"][..], &["bash", "run.sh"], &["bash", "-l", "-c", "python3 x.py"], &["sh", "-lc", "make"], &["node"]] {
+        for a in [
+            &["python3", "main.py"][..], &["bash", "run.sh"], &["bash", "-l", "-c", "python3 x.py"], &["sh", "-lc", "make"], &["node"],
+            &["bash", "--rcfile", "x", "run.sh"], &["bash", "-o", "errexit", "run.sh"], &["zsh", "-o", "vi", "-c", "x"], &["fish", "--command", "x"], &["bash", "--", "run.sh"],
+            &["pwsh", "-File", "x.ps1"], &["pwsh", "-f", "x.ps1"], &["pwsh", "-NoLogo", "-Command", "x"], &["powershell", "-ec", "AAAA"], &["pwsh", "x.ps1"], &["cmd.exe", "/Q", "/D", "/C", "x.cmd"],
+        ] {
             assert!(!is_interactive_shell(&args(a)), "{a:?}");
         }
         assert!(is_interactive_shell(&[]), "unknown counts as a shell");
@@ -562,8 +658,96 @@ mod tests {
         let job: i32 = std::fs::read_to_string(&file).unwrap().trim().parse().unwrap();
         assert_eq!(unsafe { libc::kill(job, 0) }, 0);
         end_session(s);
-        let gone = |p: i32| std::fs::read_to_string(format!("/proc/{p}/stat")).map_or(true, |st| st.rsplit_once(')').is_some_and(|(_, r)| r.trim_start().starts_with('Z')));
         assert!(wait_until(|| gone(job)), "the job survived");
+    }
+
+    #[cfg(target_os = "linux")]
+    fn gone(p: i32) -> bool {
+        std::fs::read_to_string(format!("/proc/{p}/stat")).map_or(true, |st| st.rsplit_once(')').is_some_and(|(_, r)| r.trim_start().starts_with('Z')))
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_guest_shell_that_exits_by_itself_takes_its_detached_jobs_along() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("pid");
+        let s = session(PtyKind::GuestShell, &format!("nohup sleep 9999 >/dev/null 2>&1 </dev/null & echo $! > {0}.tmp; mv {0}.tmp {0}; exit 3", file.display()));
+        let mut reader = s.master.try_clone_reader().unwrap();
+        // As in the reader thread: until the PTY reports its end.
+        let mut buf = [0u8; 1024];
+        while matches!(reader.read(&mut buf), Ok(n) if n > 0) {}
+        let job: i32 = std::fs::read_to_string(&file).unwrap().trim().parse().unwrap();
+        let survived_exit = !gone(job);
+        let code = finish_session(s);
+        let killed = wait_until(|| gone(job));
+        unsafe { libc::kill(job, libc::SIGKILL) };
+        assert!(survived_exit, "the job should outlive the shell until the session is finished");
+        assert!(killed, "the detached job survived");
+        assert_eq!(code, Some(3));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_commands_exit_leaves_its_detached_jobs_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("pid");
+        let s = session(PtyKind::Command, &format!("nohup sleep 30 >/dev/null 2>&1 </dev/null & echo $! > {0}.tmp; mv {0}.tmp {0}", file.display()));
+        let mut reader = s.master.try_clone_reader().unwrap();
+        let mut buf = [0u8; 1024];
+        while matches!(reader.read(&mut buf), Ok(n) if n > 0) {}
+        let job: i32 = std::fs::read_to_string(&file).unwrap().trim().parse().unwrap();
+        finish_session(s);
+        let alive = unsafe { libc::kill(job, 0) } == 0;
+        unsafe { libc::kill(job, libc::SIGKILL) };
+        assert!(alive, "the host's own task keeps its behaviour");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn guest_input_only_reaches_the_kind_it_names() {
+        let mut task = session(PtyKind::Command, "exec sleep 30");
+        assert!(wait_until(|| guest_may_write(&mut task, "task")));
+        assert!(!guest_may_write(&mut task, "shell"));
+        assert!(!guest_may_write(&mut task, "other"));
+        end_session(task);
+
+        let mut granted = session(PtyKind::GuestShell, "exec sleep 30");
+        assert!(guest_may_write(&mut granted, "shell"));
+        assert!(!guest_may_write(&mut granted, "task"));
+        end_session(granted);
+
+        let mut own = session(PtyKind::Shell, "exec sleep 30");
+        assert!(!guest_may_write(&mut own, "task"));
+        assert!(!guest_may_write(&mut own, "shell"));
+        end_session(own);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn task_input_stops_when_the_command_exited() {
+        let mut s = session(PtyKind::Command, "exit 0");
+        assert!(wait_until(|| matches!(s.child.try_wait(), Ok(Some(_)))));
+        assert!(!guest_may_write(&mut s, "task"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn task_input_stops_when_a_shell_waits_in_the_foreground() {
+        // What a login profile with `exec fish` leaves behind.
+        let mut s = session(PtyKind::Command, "exec /bin/sh -i");
+        assert!(wait_until(|| !guest_may_write(&mut s, "task")));
+        assert!(matches!(s.child.try_wait(), Ok(None)), "the shell is still there");
+        end_session(s);
+    }
+
+    #[test]
+    fn guest_output_is_paced_after_a_burst() {
+        let t = std::time::Instant::now();
+        let mut p = OutputPacer::new(t);
+        assert!(p.delay(GUEST_OUTPUT_BURST as usize, t).is_zero());
+        let wait = p.delay(1024 * 1024, t);
+        assert!((wait.as_secs_f64() - 1.0).abs() < 0.01, "{wait:?}");
+        assert!(p.delay(0, t + wait).as_millis() <= 1);
     }
 
     #[cfg(unix)]
