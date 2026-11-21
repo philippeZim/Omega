@@ -192,7 +192,7 @@ export function scrubTerminal(text: string, root: string | null, home: string | 
 }
 
 /** Where an escape sequence that the end of `text` leaves unfinished begins, or -1. */
-function openEscape(text: string): number {
+export function openEscape(text: string): number {
   for (let i = Math.max(0, text.length - MAX_ESCAPE); i < text.length; i++) {
     const c = text.charCodeAt(i);
     if (c !== 0x1b && (c < 0x90 || c > 0x9f)) continue;

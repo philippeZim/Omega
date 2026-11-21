@@ -80,9 +80,9 @@ export function onCollabMessage(fn: (peer: string, msg: Msg) => void) {
 export function send(peer: string, msg: Msg) {
   return invoke("collab_send", { peer, msg: JSON.stringify(msg) }).catch(() => {});
 }
-/** Host: send to every approved guest (optionally except one). */
+/** Host: send to every approved guest (optionally except one); settles when all were written. */
 export function broadcast(msg: Msg, except?: string) {
-  for (const p of collab.participants) if (p.role === "guest" && p.peer !== "self" && p.peer !== except) send(p.peer, msg);
+  return Promise.all(collab.participants.filter((p) => p.role === "guest" && p.peer !== "self" && p.peer !== except).map((p) => send(p.peer, msg)));
 }
 
 async function defaultName() {
