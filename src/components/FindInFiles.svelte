@@ -143,7 +143,8 @@
     preview = new EditorView({ parent: previewHost!, state: EditorState.create({ doc: "" }) });
     // Re-run the search after editing in the preview (positions may have moved).
     preview.contentDOM.addEventListener("blur", () => runSearch(50));
-    preview.contentDOM.addEventListener("focus", attachDoc);
+    // Not only on focus: an element focused while the window isn't active gets no focus event.
+    for (const type of ["focus", "mousedown", "keydown"]) preview.contentDOM.addEventListener(type, attachDoc);
   });
   onDestroy(() => {
     // Only a pending edit is written: an untouched preview must not overwrite a file changed on disk.
