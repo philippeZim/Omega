@@ -113,8 +113,4 @@
   @keyframes tipIn {
     from { opacity: 0; transform: translateY(-3px) scale(0.96); }
   }
-  .tip.above { animation-name: tipInUp; }
-  @keyframes tipInUp {
-    from { opacity: 0; transform: translateY(3px) scale(0.96); }
-  }
 </style>

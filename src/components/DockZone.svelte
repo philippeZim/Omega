@@ -165,13 +165,11 @@
        (backdrop-filter blur isn't reliable in every webview). */
     background: linear-gradient(var(--glass-strong), var(--glass-strong)), var(--bg);
     box-shadow: var(--glass-highlight), 0 24px 70px rgba(0, 0, 0, 0.7), 0 4px 14px rgba(0, 0, 0, 0.45);
-    animation: dock-in 0.18s cubic-bezier(0.3, 0.9, 0.3, 1);
+    /* No open animation: this is still glass (backdrop-filter) above the workspace, so WebKitGTK would flash. */
   }
   :global(:root[data-material="liquid"]) .dock.overlay { background: var(--glass-sheen), linear-gradient(var(--glass-strong), var(--glass-strong)), var(--bg); }
   .dock-left.overlay { left: 0; }
   .dock-right.overlay { right: 0; }
-  /* Opacity only: WebKitGTK flashes a stale frame when a transform animation ends. */
-  @keyframes dock-in { from { opacity: 0; } }
 
   .resizer { position: absolute; z-index: 5; }
   .dock-left .resizer { right: -6px; top: 0; bottom: 0; width: 6px; cursor: col-resize; }
