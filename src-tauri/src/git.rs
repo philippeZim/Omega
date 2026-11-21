@@ -276,8 +276,10 @@ pub struct Blame {
 
 /// `git blame` of a file. With `contents` the (unsaved) editor buffer is blamed instead of the
 /// file on disk, so line numbers always match the editor. None outside a repository / untracked.
+/// `no_textconv` is set for Code Together guests: they can edit `.gitattributes`, which picks the
+/// helper a blame would run.
 #[tauri::command]
-pub async fn git_blame(root: String, path: String, contents: Option<String>) -> Result<Option<Blame>, String> {
+pub async fn git_blame(root: String, path: String, contents: Option<String>, no_textconv: Option<bool>) -> Result<Option<Blame>, String> {
     use std::io::Write;
     use std::process::Stdio;
     tauri::async_runtime::spawn_blocking(move || {
@@ -291,6 +293,9 @@ pub async fn git_blame(root: String, path: String, contents: Option<String>) -> 
         let rel = std::path::Path::new(&path).strip_prefix(&top).map(|p| p.to_string_lossy().replace('\\', "/")).unwrap_or(path);
         let mut cmd = git_cmd(&top);
         cmd.args(["blame", "--porcelain"]);
+        if no_textconv.unwrap_or(false) {
+            cmd.arg("--no-textconv");
+        }
         if contents.is_some() {
             cmd.args(["--contents", "-"]);
         }
@@ -385,6 +390,31 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    #[test]
+    fn blame_for_guests_runs_no_textconv_helper() {
+        let dir = scratch("blame-textconv");
+        let root = dir.to_str().unwrap().to_string();
+        run_git(&dir, &["init", "-q"]);
+        let marker = dir.join("helper-ran");
+        let helper = dir.join("conv.sh");
+        std::fs::write(&helper, format!("#!/bin/sh\ntouch '{}'\ncat \"$1\"\n", marker.display())).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        run_git(&dir, &["config", "diff.x.textconv", helper.to_str().unwrap()]);
+        std::fs::write(dir.join(".gitattributes"), "*.txt diff=x\n").unwrap();
+        std::fs::write(dir.join("a.txt"), "one\n").unwrap();
+        run_git(&dir, &["add", "a.txt", ".gitattributes"]);
+        run_git(&dir, &["commit", "-q", "-m", "one"]);
+        let file = dir.join("a.txt").to_str().unwrap().to_string();
+        let blame = tauri::async_runtime::block_on(git_blame(root, file, Some("one\n".into()), Some(true))).unwrap();
+        assert_eq!(blame.map(|b| b.lines.len()), Some(1));
+        assert!(!marker.exists(), "the textconv helper ran");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     fn scratch(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("omega-git-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -431,7 +461,7 @@ mod tests {
         assert_eq!(direct.code, 128);
         assert!(direct.stderr.contains("safe.bareRepository"), "{}", direct.stderr);
         assert_eq!(block_on(git_head_file(root.clone(), file.clone())).unwrap(), None);
-        assert!(block_on(git_blame(root.clone(), file, Some("a\n".into()))).unwrap().is_none());
+        assert!(block_on(git_blame(root.clone(), file, Some("a\n".into()), None)).unwrap().is_none());
         let captured = block_on(crate::proc::run_capture("git".into(), vec!["status".into()], Some(root))).unwrap();
         assert_eq!(serde_json::to_value(&captured).unwrap()["code"], 128);
         assert!(!marker.exists(), "the planted core.fsmonitor ran");
