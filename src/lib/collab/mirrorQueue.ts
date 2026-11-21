@@ -2,17 +2,11 @@
  * Host: the Run and Build output waiting to go to guests, after it was scrubbed. Bounded: when a
  * program prints faster than guests take it, the oldest output goes and guests see one marker.
  */
-import { openEscape } from "./debugMirror";
+import { b64ToBytes, openEscape, textToB64 } from "./debugMirror";
 import { TERM_LIMITS } from "./guestInput";
 
 /** UTF-16 units in one queued piece: as base64 at most 128 KiB, so one always fits a message. */
 export const MIRROR_PIECE_CHARS = 32 * 1024;
-
-function toB64(text: string) {
-  let bin = "";
-  for (const b of new TextEncoder().encode(text)) bin += String.fromCharCode(b);
-  return btoa(bin);
-}
 
 /** Pieces of `text` that each end between characters and outside any escape sequence. */
 function pieces(text: string) {
@@ -43,14 +37,13 @@ export class MirrorQueue {
 
   /** `b64`: scrubbed output, whole characters. */
   push(b64: string) {
-    const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
-    const text = this.open + new TextDecoder().decode(bytes);
+    const text = this.open + new TextDecoder().decode(b64ToBytes(b64));
     const at = openEscape(text);
     this.open = at >= 0 ? text.slice(at) : "";
     const body = at >= 0 ? text.slice(0, at) : text;
     if (!body) return;
     for (const piece of pieces(body)) {
-      const chunk = toB64(piece);
+      const chunk = textToB64(piece);
       this.chunks.push(chunk);
       this.buffered += chunk.length;
     }

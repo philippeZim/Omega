@@ -596,6 +596,18 @@ test("host: while guests are slow, Run output waits in a bounded queue and one m
   }
 });
 
+test("guest: skipped Run output shows one marker before what follows (#154)", async () => {
+  const { writeTerminal } = await import("../terminal.svelte");
+  const { t } = await import("../i18n/index.svelte");
+  collab.role = "guest";
+  vi.mocked(writeTerminal).mockClear();
+  for (const h of handlers) await h("host-peer", { t: "term.data", skipped: true, chunks: [btoa("after")] });
+  const writes = vi.mocked(writeTerminal).mock.calls.map((c) => c[1] as string);
+  expect(writes.filter((w) => w.includes(t("ai.collab.shell.skipped"))).length).toBe(1);
+  expect(writes[0].startsWith("\x18\x1b[0m")).toBe(true); // ends a sequence the gap left open
+  expect(writes.at(-1)).toBe("after");
+});
+
 // ------------------------------------------------------------------ Run acts on the guest's file
 
 const fileRun = (file: string | null) => ({ id: "run", label: "Run", cmd: `uv run ${file}`, usesFile: true });
