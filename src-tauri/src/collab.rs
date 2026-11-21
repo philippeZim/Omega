@@ -1012,6 +1012,26 @@ mod tests {
         assert!(!may_serve(Some("main"), "main", None, Some(a)));
     }
 
+    /// Windows opens all of these as `later/hooks/pre-commit`, also while the folder doesn't exist.
+    #[cfg(windows)]
+    #[test]
+    fn a_hooks_folder_is_found_in_every_windows_spelling() {
+        let dir = std::env::temp_dir().join(format!("omega-hooks-spelling-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = dir.canonicalize().unwrap();
+        let git = |args: &[&str]| assert!(std::process::Command::new("git").args(args).current_dir(&dir).status().unwrap().success());
+        git(&["init", "-q"]);
+        git(&["config", "core.hooksPath", "later/hooks"]);
+        let root = dir.to_str().unwrap();
+        let spellings = ["LATER/hooks/pre-commit", "later/HOOKS/pre-commit", "later./hooks/pre-commit", "later /hooks/pre-commit", "later/hooks./pre-commit", "later/hooks::$INDEX_ALLOCATION/pre-commit"];
+        let paths: Vec<String> = spellings.iter().map(|s| format!("{root}/{s}")).collect();
+        assert_eq!(hooks_check(root, &paths).locked, [true; 6], "{spellings:?}");
+        assert_eq!(hooks_check(root, &[format!("{root}/LATER")]).structural, [true]);
+        assert_eq!(hooks_check(root, &[format!("{root}/other/pre-commit")]).locked, [false]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[cfg(unix)]
     #[test]
     fn hook_paths_are_found_by_resolved_path() {
