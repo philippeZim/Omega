@@ -259,6 +259,10 @@ export const en = {
   "code.term.localTitle": "Local (not host)",
   "code.act.badGroup": "This dependency is in a group whose name isn't valid. Rename the group in pyproject.toml.",
   "code.ver.badVersion": "Not a valid version: {value}",
+  "code.ad.scalaNeedsJdk": "Debugging Scala needs a JDK, but only a Java runtime (JRE) was found. Install a JDK so that javac is on the PATH.",
+  "code.ad.noScalaLsp": "Scala language server (Metals) not available",
+  "code.ad.scalaWaitBuild": "Waiting for Metals to import and compile the build…",
+  "code.ad.scalaNoSession": "Metals did not return a debug session",
 };
 export const de: Record<keyof typeof en, string> = {
   "code.key.ctrl": "Strg",
@@ -510,6 +514,10 @@ export const de: Record<keyof typeof en, string> = {
   "code.term.localTitle": "Lokal (nicht Host)",
   "code.act.badGroup": "Diese Abhängigkeit liegt in einer Gruppe mit ungültigem Namen. Benenne die Gruppe in der pyproject.toml um.",
   "code.ver.badVersion": "Keine gültige Version: {value}",
+  "code.ad.scalaNeedsJdk": "Zum Debuggen von Scala wird ein JDK benötigt, es wurde aber nur eine Java-Laufzeit (JRE) gefunden. Installiere ein JDK, sodass javac im PATH liegt.",
+  "code.ad.noScalaLsp": "Scala Language Server (Metals) nicht verfügbar",
+  "code.ad.scalaWaitBuild": "Warte, bis Metals den Build importiert und kompiliert hat …",
+  "code.ad.scalaNoSession": "Metals hat keine Debug-Sitzung geliefert",
 };
 export const fr: Record<keyof typeof en, string> = {
   "code.key.ctrl": "Ctrl",
@@ -761,4 +769,8 @@ export const fr: Record<keyof typeof en, string> = {
   "code.term.localTitle": "Local (pas l’hôte)",
   "code.act.badGroup": "Cette dépendance est dans un groupe au nom non valide. Renommez le groupe dans pyproject.toml.",
   "code.ver.badVersion": "Version non valide : {value}",
+  "code.ad.scalaNeedsJdk": "Le débogage de Scala nécessite un JDK, mais seul un environnement d’exécution Java (JRE) a été trouvé. Installez un JDK pour que javac soit dans le PATH.",
+  "code.ad.noScalaLsp": "Serveur de langage Scala (Metals) indisponible",
+  "code.ad.scalaWaitBuild": "En attente de l’import et de la compilation du build par Metals…",
+  "code.ad.scalaNoSession": "Metals n’a renvoyé aucune session de débogage",
 };

@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { fsApi, basename, dirname, joinPath } from "../api";
 import { langFor } from "../code/languages";
 import { detectProject, pythonEntry, cmakeConfigure, cmakeExecutable } from "../code/projects";
-import { toolsDir, clientFor, javaDebugBundles } from "../code/lsp.svelte";
+import { toolsDir, clientFor, fileUri, javaDebugBundles } from "../code/lsp.svelte";
 import { t } from "../i18n/index.svelte";
 import { exe, tmpPath, venvPython, IS_WIN, OS } from "../platform";
 import { ensureTools, withInstallProgress, type ToolId } from "../tools.svelte";
@@ -79,6 +79,37 @@ async function findPython(root: string, ctx: Ctx): Promise<string> {
 /** Path of the CMake build output, resolved the same way as Run (variables, comments). */
 export function cmakeProgram(root: string, lists: string): string {
   return joinPath(root, `build/${exe(cmakeExecutable(lists) ?? basename(root))}`);
+}
+
+/** Port of the session Metals' `debug-adapter-start` returned ("tcp://127.0.0.1:5005"). */
+export function metalsDebugPort(uri: string): number {
+  const port = Number(/:(\d+)\/?$/.exec(uri)?.[1]);
+  if (!port) throw new Error(t("code.ad.scalaNoSession"));
+  return port;
+}
+
+/** How long a Scala debug start waits: for the first build import, and for a main class after compiling. */
+export const scalaDebugWait = { importMs: 5 * 60_000, mainMs: 30_000, pollMs: 2000 };
+
+/**
+ * Asks Metals for a debug session. Right after opening a project it may still import or compile
+ * (it reports "no build target" or "no main"), so those answers are retried for a while.
+ */
+export async function startScalaSession<T>(start: () => Promise<T>, ctx: Pick<Ctx, "log">, wait = scalaDebugWait): Promise<T> {
+  const begin = Date.now();
+  let told = false;
+  for (;;) {
+    try {
+      return await start();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      const limit = /no main/i.test(msg) ? wait.mainMs : /build target|timeout/i.test(msg) ? wait.importMs : 0;
+      if (Date.now() - begin >= limit) throw e;
+      if (!told) ctx.log(t("code.ad.scalaWaitBuild"));
+      told = true;
+      await new Promise((r) => setTimeout(r, wait.pollMs));
+    }
+  }
 }
 
 export async function planFor(ctx: Ctx): Promise<Plan> {
@@ -205,6 +236,24 @@ export async function planFor(ctx: Ctx): Promise<Plan> {
         cwd: root,
         adapter: { kind: "port", port },
         launch: { type: "java", request: "launch", name: "Java", mainClass: main.mainClass, projectName: main.projectName, modulePaths, classPaths, cwd: root, console: "integratedTerminal" },
+      };
+    }
+
+    case "scala": {
+      await need(["jdk"]);
+      // Metals' debugger attaches through the JDK's debug interface (JDI), which a JRE lacks.
+      if (!(await which("javac"))) throw new Error(t("code.ad.scalaNeedsJdk"));
+      const lsp = await clientFor(langFor(ctx.file)!, ctx.file, ctx.workspace, async () => ctx.askInstall("Metals"));
+      if (!lsp) throw new Error(t("code.ad.noScalaLsp"));
+      const session = await startScalaSession(
+        () => lsp.request<{ name: string; uri: string }>("workspace/executeCommand", { command: "debug-adapter-start", arguments: [{ path: fileUri(ctx.file), runType: "run" }] }, 60000),
+        ctx,
+      );
+      return {
+        label: `Scala · ${session.name}`,
+        cwd: lsp.root,
+        adapter: { kind: "port", port: metalsDebugPort(session.uri) },
+        launch: { type: "scala", request: "launch", name: "Scala", noDebug: false },
       };
     }
   }
