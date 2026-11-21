@@ -37,6 +37,7 @@ export const guestChangeHooks = {
 
 export function onGuestChange(fn: () => void) {
   listeners.add(fn);
+  return () => void listeners.delete(fn);
 }
 
 /** Host: a guest changed something. `rel` is the shared key ("tab:<id>" for an unsaved tab). */

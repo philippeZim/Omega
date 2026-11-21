@@ -99,8 +99,7 @@ function resyncGuest(d: SharedDoc, peer: string) {
     d.resyncTimers.delete(peer);
     if (!d.cleanup.length || !d.subscribers.has(peer) || !isApproved(peer)) return;
     d.resyncedAt.set(peer, performance.now());
-    const tab = d.tabId ? app.tabs.find((x) => x.id === d.tabId) : null;
-    const state = { t: "doc.state", path: d.rel, name: tab?.name ?? basename(d.rel), update: b64(Y.encodeStateAsUpdate(d.ydoc)) };
+    const state = docStateFor(peer, d);
     if (fits(JSON.stringify(state))) send(peer, state);
     else send(peer, { t: "doc.error", path: d.rel, error: "too_large" });
   };

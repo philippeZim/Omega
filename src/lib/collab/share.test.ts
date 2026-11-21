@@ -1579,6 +1579,7 @@ test("real changes by a guest without run pause compiling, a passive guest doesn
   const accept = () => changes.resumeCompiling("t", "/p/a.tex");
   accept();
   hostFs({ "/p/a.tex": "one\n" });
+  (collab.participants[1] as { caps: string[] }).caps = ["edit"];
   await receive("g1", { t: "doc.open", path: "a.tex" });
   await receive("g2", { t: "doc.open", path: "a.tex" });
   const doc = share.sharedDocs().find((d) => d.rel === "a.tex")!;
@@ -1589,7 +1590,6 @@ test("real changes by a guest without run pause compiling, a passive guest doesn
     g.getText("content").insert(0, text);
     await receive(peer, { t: "doc.update", path: "a.tex", update: b64(Y.encodeStateAsUpdate(g, before)) });
   };
-  (collab.participants[1] as { caps: string[] }).caps = ["edit"];
   // Opening and listing change nothing; a guest with run and the host may edit.
   await fsList("g2", "", 900);
   await edit("g1", "with run\n");
@@ -1651,9 +1651,9 @@ test("an update held back on another guest's edit can't land under that guest's 
   changes.guestChangeHooks.mayRun = (peer) => !!(collab.participants as { peer: string; caps: string[] }[]).find((p) => p.peer === peer)?.caps.includes("run");
   changes.resumeCompiling("t", "/p/h.tex");
   hostFs({ "/p/h.tex": "abc" });
+  (collab.participants[1] as { caps: string[] }).caps = ["edit"]; // g2: no `run`
   await receive("g1", { t: "doc.open", path: "h.tex" });
   await receive("g2", { t: "doc.open", path: "h.tex" });
-  (collab.participants[1] as { caps: string[] }).caps = ["edit"]; // g2: no `run`
   const doc = share.sharedDocs().find((d) => d.rel === "h.tex")!;
   const ydoc = doc.ytext.doc!;
   const b = copyOf("h.tex", 1001);

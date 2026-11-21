@@ -12,6 +12,7 @@ import { listen } from "@tauri-apps/api/event";
 import { collab, broadcast, onCollabMessage, sessionEndHooks } from "./collab.svelte";
 import { share, hostKeyChecked, syncSharedTabs, openRemote, isRemote } from "./share.svelte";
 import { blockedByCapability, guestCanStop } from "./guard";
+import { noteGuestChange } from "./guestChanges";
 import { termOut } from "./debugMirror";
 import { call, hasCapability, isObj, publish, registerMethod, registerTopic, rpcErrorText, RpcFail, subscribe } from "./rpc.svelte";
 import { app, activeTab, activate, closeTab, flushAutosave, newFile, openFile, setMode, setRoot } from "../state.svelte";
@@ -136,6 +137,9 @@ registerMethod({
     const a = findAction(action);
     if (!a) throw new RpcFail("unavailable");
     if (packageAction(runner.project!.kind, a.id) && !hasCapability(peer, "packages")) throw new RpcFail("forbidden");
+    // A package action changes project files. (`run` is required above, so this only counts if that
+    // ever changes; packages.run is the path for guests without it.)
+    if (packageAction(runner.project!.kind, a.id)) noteGuestChange(peer, app.root ?? runner.project!.root);
     ui.toast(t("ai.collab.guestRuns", { name: guestName(peer), action: a.label }));
     // Not awaited: it can wait for the host (missing tools), and the guest sees the run state anyway.
     void Promise.resolve(runAction(a)).catch((e) => console.error("guest run", e));
@@ -184,6 +188,7 @@ registerMethod({
       if (runner.project?.root !== project.root || runner.project.kind !== project.kind) throw new RpcFail("unavailable");
       arg = [...flags, ...packages.map((x) => quotePackageArg(x))].join(" ");
     } else if (packages.length) throw new RpcFail("invalid_package");
+    noteGuestChange(peer, app.root ?? project.root); // before the task can change project files
     const label = a.label.replace("…", "");
     ui.toast(packages.length ? t("ai.collab.guestPackages", { name: guestName(peer), action: label, packages: packages.join(", ") }) : t("ai.collab.guestRuns", { name: guestName(peer), action: label }));
     void Promise.resolve(runAction(a, arg)).catch((e) => console.error("guest packages", e));

@@ -622,6 +622,66 @@ describe("pull, conflicts and hooks, on real clones", () => {
   }
   const hooksRan = () => (existsSync(join(dir, "hooks-ran")) ? readFileSync(join(dir, "hooks-ran"), "utf8") : "");
 
+  describe("a guest without run: what changes files pauses LaTeX auto-compile first", () => {
+    const NO_RUN = ["git", "git-remote", "edit"];
+    let stop: () => void;
+    let changes: typeof import("./guestChanges");
+    const paused = () => changes.isPaused(repo, null);
+    const accept = () => changes.resumeCompiling("t", `${repo}/a.txt`);
+    beforeEach(async () => {
+      changes = await import("./guestChanges");
+      changes.guestChangeHooks.mayRun = (peer) => !!h.collab.participants.find((p) => p.peer === peer)?.caps?.includes("run");
+      stop = changes.onGuestChange(() => paused() && h.order.push("paused"));
+    });
+    afterEach(() => {
+      stop();
+      accept();
+      changes.guestChangeHooks.mayRun = () => false;
+    });
+
+    test("git.switch, before the files change", async () => {
+      sh("branch", "other");
+      h.order.length = 0;
+      expect((await rpc("git.switch", { name: "other", remote: false }, NO_RUN)).ok).toBe(true);
+      expect(paused()).toBe(true);
+      expect(h.order.indexOf("paused")).toBeGreaterThanOrEqual(0);
+      expect(h.order.indexOf("paused")).toBeLessThan(h.order.indexOf("git switch"));
+    });
+
+    test("git.discard", async () => {
+      write("a.txt", "changed\n");
+      expect((await rpc("git.discard", { path: "a.txt" }, NO_RUN)).ok).toBe(true);
+      expect(paused()).toBe(true);
+    });
+
+    test("git.pull, git.continue and git.abort", async () => {
+      const { commitOther } = withRemote();
+      commitOther("a.txt", "theirs\n", "theirs");
+      commitHere("a.txt", "mine\n", "mine");
+      sh("config", "pull.rebase", "false");
+      expect((await rpc("git.pull", {}, NO_RUN)).result).toEqual({ upToDate: false, conflict: true });
+      expect(paused()).toBe(true);
+      accept();
+      expect((await rpc("git.abort", {}, NO_RUN)).ok).toBe(true);
+      expect(paused()).toBe(true);
+      accept();
+      await rpc("git.pull", {}, NO_RUN);
+      accept();
+      write("a.txt", "resolved\n");
+      expect((await rpc("git.continue", { message: "merged", paths: ["a.txt"] }, NO_RUN)).result).toEqual({ done: true, conflict: false });
+      expect(paused()).toBe(true);
+    });
+
+    test("a refused operation, reading, and a guest with run pause nothing", async () => {
+      expect(await code("git.switch", { name: "nope", remote: false }, NO_RUN)).toBe("invalid");
+      await rpc("git.branches", {}, NO_RUN);
+      expect(paused()).toBe(false);
+      sh("branch", "other");
+      expect((await rpc("git.switch", { name: "other", remote: false }, [...NO_RUN, "run"])).ok).toBe(true);
+      expect(paused()).toBe(false);
+    });
+  });
+
   test("a clean pull brings the commit and reloads the docs, with no hook", async () => {
     const { commitOther, remoteHead } = withRemote();
     commitOther("theirs.txt", "theirs\n", "theirs");

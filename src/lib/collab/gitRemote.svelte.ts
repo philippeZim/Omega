@@ -14,6 +14,7 @@ import { blockedByCapability, guestCan, type Capability } from "./guard";
 import { call, capabilityLabel, hasCapability, isObj, publish, registerMethod, registerTopic, rpcErrorText, RpcFail, subscribe, type RpcResult } from "./rpc.svelte";
 import { flushSharedDocs, guestScope, reloadSharedDocs, sharedDocUnsaved, type GuestScope } from "./share.svelte";
 import { guestMayWrite, hooksBlockReplace, hooksCheck } from "./hooksGuard";
+import { noteGuestChange } from "./guestChanges";
 import { GIT_LIMITS, SSH_BATCH, gitArgv, gitFailCode, scopeChanges, validBranch, validMessage, validPath, validPaths, type GitChange } from "./gitArgs";
 import { app, pathMoved, save, syncFromDisk } from "../state.svelte";
 import { fetchSettled, git, kind, refresh, setGuestGit, splitBranches, type Change, type GuestGitAction } from "../git/git.svelte";
@@ -436,6 +437,7 @@ registerMethod({
         if (read.kind !== "text" || (/^<{7}(?: |$)/m.test(read.text) && /^>{7}(?: |$)/m.test(read.text))) throw new RpcFail("conflict");
       }
       step();
+      noteGuestChange(peer, scope.root); // before the files change, so no compile starts in between
       if (argv.length) await must(scope, gitArgv.stage(argv));
       step();
       let r: Out;
@@ -463,6 +465,7 @@ registerMethod({
       const op = s?.raw.operation;
       if (!op) throw new RpcFail("failed");
       step();
+      noteGuestChange(peer, scope.root);
       await must(scope, gitArgv.abort(op === "merge" ? "merge" : "rebase"));
       return null;
     }, REPLACES_FILES),
@@ -481,6 +484,7 @@ registerMethod({
       if (app.tabs.some((x) => x.path === abs && x.dirty) || sharedDocUnsaved(path)) throw new RpcFail("unsaved_text");
       if (!(await guestMayWrite(peer, scope.root, found.flatMap((c) => (c.orig ? [c.orig, c.path] : [c.path])), true))) throw new RpcFail("hooks");
       step();
+      noteGuestChange(peer, scope.root);
       if (kind(found[0] as Change) === "new") {
         if (await invoke<boolean>("collab_tree_has_git", { path: abs }).catch(() => true)) throw new RpcFail("invalid");
         await must(scope, gitArgv.forget(path));
@@ -515,6 +519,7 @@ registerMethod({
       if ((await runIn(scope, gitArgv.hasRef(`refs/${remote ? "remotes" : "heads"}/${name}`))).code !== 0) throw new RpcFail("invalid");
       await saveShared(scope);
       step();
+      noteGuestChange(peer, scope.root);
       await must(scope, remote ? gitArgv.switchTrack(name) : gitArgv.switchLocal(name));
       return null;
     }, REPLACES_FILES),
@@ -561,6 +566,7 @@ registerMethod({
       await saveShared(scope);
       const ssh = await sshOpts(scope);
       step();
+      noteGuestChange(peer, scope.root);
       const r = await runIn(scope, gitArgv.pull(ssh));
       if (r.code === 0) return { upToDate: /Already up to date/.test(r.stdout), conflict: false };
       if ((await readStatus(scope))?.raw.operation) return { upToDate: false, conflict: true };
