@@ -437,6 +437,8 @@ export function listRemote(rel: string): Promise<{ name: string; rel: string; is
 // ------------------------------------------------------------------ file operations (guest → host)
 
 type FsOp = "create" | "mkdir" | "rename" | "delete";
+const FS_OPS: readonly unknown[] = ["create", "mkdir", "rename", "delete"] satisfies FsOp[];
+const isFsOp = (op: unknown): op is FsOp => FS_OPS.includes(op);
 
 /** A relative path inside the project: no empty parts, ".", ".." or backslashes. */
 const safeRel = (rel: unknown): rel is string =>
@@ -446,7 +448,8 @@ const safeRel = (rel: unknown): rel is string =>
  * Host: creates, renames or deletes a file for a guest (#133). Returns null, or an error: "invalid",
  * "exists", "unavailable" (codes the guest translates) or the file system's message.
  */
-async function hostFsOp(peer: string, op: FsOp, rel: unknown, toRel: unknown): Promise<string | null> {
+async function hostFsOp(peer: string, op: unknown, rel: unknown, toRel: unknown): Promise<string | null> {
+  if (!isFsOp(op)) return "invalid";
   if (!app.root) return "unavailable";
   if (!safeRel(rel) || (op === "rename" && !safeRel(toRel))) return "invalid";
   // Also through symlinks, nothing outside the shared folder (#138).
@@ -464,7 +467,7 @@ async function hostFsOp(peer: string, op: FsOp, rel: unknown, toRel: unknown): P
       await fsApi.rename(abs, to!);
       pathMoved(abs, to); // host tabs and shared docs follow
       ui.toast(t("ai.collab.guestRenamed", { name: who, file: rel, to: toRel as string }));
-    } else {
+    } else if (op === "delete") {
       await fsApi.remove(abs);
       pathMoved(abs, null);
       ui.toast(t("ai.collab.guestDeleted", { name: who, file: rel }));

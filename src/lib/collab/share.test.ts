@@ -527,3 +527,14 @@ test("host's presence doesn't name an active tab outside the project", async () 
   await share.publishPresence();
   expect(sent.at(-1)!.msg).toMatchObject({ t: "presence", peer: "host", file: null });
 });
+
+test("host rejects an unknown file operation instead of deleting", async () => {
+  const fs = hostFs({ "/p/a.txt": "a\n" });
+  for (const op of ["remove", "DELETE", "", "__proto__", "constructor", null, undefined, 7, ["delete"], { op: "delete" }]) {
+    sent.length = 0;
+    await receive("g1", { t: "fs.op", req: 9, op, path: "a.txt" });
+    expect(sent[0].msg).toEqual({ t: "fs.op.res", req: 9, error: "invalid" });
+  }
+  expect(fs.files.get("/p/a.txt")).toBe("a\n");
+  expect(fs.calls.filter((c) => c.cmd !== "collab_path_inside")).toEqual([]);
+});
