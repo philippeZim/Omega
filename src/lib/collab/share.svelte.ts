@@ -431,6 +431,40 @@ function applyDisk(d: SharedDoc, text: string) {
   }, "disk");
 }
 
+/** Host, before git replaces files: writes pending background text. False if some of it couldn't be. */
+export async function flushSharedDocs(): Promise<boolean> {
+  const open = [...docs.values()].filter((d) => !d.tabId && d.root === app.root && !d.rel.startsWith("tab:"));
+  await Promise.all(open.map(hostWrite));
+  return open.every((d) => !d.cleanup.length || d.ytext.toString() === d.disk);
+}
+
+/** Host: whether a background doc holds text that isn't in its file yet. */
+export const sharedDocUnsaved = (rel: string) => {
+  const d = docs.get(rel);
+  return !!d && !d.tabId && d.ytext.toString() !== d.disk;
+};
+
+/**
+ * Host, after git replaced files: background docs take the new content, for everybody. Text typed
+ * while git ran is kept and written over the new file, so it shows up as a change instead of
+ * vanishing. Returns the files where that happened.
+ */
+export async function reloadSharedDocs(): Promise<string[]> {
+  const kept: string[] = [];
+  for (const d of [...docs.values()]) {
+    if (d.tabId || d.root !== app.root || d.rel.startsWith("tab:")) continue;
+    if (d.ytext.toString() === d.disk) {
+      await hostReload(d);
+      continue;
+    }
+    kept.push(d.rel);
+    const now = await fsApi.readFile(joinPath(d.root!, d.rel)).catch(() => undefined);
+    if (now !== undefined) d.disk = now;
+    scheduleHostWrite(d);
+  }
+  return kept;
+}
+
 async function hostDoc(rel: string): Promise<SharedDoc | null> {
   if (rel.startsWith("tab:")) {
     // Only unsaved tabs are shared by id: a path here would be a file outside the project.
@@ -733,6 +767,27 @@ export async function guestReplaceInDoc(rel: string, plan: (text: string) => Pro
   }
   return { count, client: d.ydoc.clientID, clock: Y.getState(d.ydoc.store, d.ydoc.clientID) };
 }
+
+/**
+ * Guest: applies an edit made outside the editor (a reverted chunk in the diff) to a shared file.
+ * False if the file isn't open here or changed since `base`, whose offsets `changes` refers to.
+ */
+export function editSharedDoc(rel: string, base: string, changes: ChangeSet): boolean {
+  const d = docs.get(rel);
+  if (!d || d.ytext.toString() !== base) return false;
+  d.ydoc.transact(() => {
+    const parts: { from: number; to: number; text: string }[] = [];
+    changes.iterChanges((from, to, _fromB, _toB, inserted) => parts.push({ from, to, text: inserted.toString() }));
+    for (const p of parts.reverse()) {
+      if (p.to > p.from) d.ytext.delete(p.from, p.to - p.from);
+      if (p.text) d.ytext.insert(p.from, p.text);
+    }
+  }, "git-diff");
+  return true;
+}
+
+/** Guest: whether a shared file is open here. */
+export const sharedDocOpen = (rel: string) => docs.has(rel);
 
 /** Guest closed a shared tab. */
 export function onTabClosed(path: string | null) {

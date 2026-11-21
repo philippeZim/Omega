@@ -1265,3 +1265,62 @@ test("a preview closed before the host answers opens no tab and releases the doc
   expect(share.guestHasDoc("late.txt")).toBe(false);
   expect(sent.some((s) => s.msg.t === "doc.close" && s.msg.path === "late.txt")).toBe(true);
 });
+
+test("before git replaces files, pending shared text is written; a failed write is reported", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    const fs = hostFs({ "/p/a.txt": "original\n" });
+    await receive("g1", { t: "doc.open", path: "a.txt" });
+    await guestInsert("a.txt", 0, "Y");
+    expect(share.sharedDocUnsaved("a.txt")).toBe(true);
+    fs.failWrite = "disk full";
+    expect(await share.flushSharedDocs()).toBe(false);
+    expect(fs.files.get("/p/a.txt")).toBe("original\n");
+    fs.failWrite = null;
+    expect(await share.flushSharedDocs()).toBe(true);
+    expect(fs.files.get("/p/a.txt")).toBe("Yoriginal\n");
+    expect(share.sharedDocUnsaved("a.txt")).toBe(false);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("after a branch switch open docs show the new text to everybody", async () => {
+  const fs = hostFs({ "/p/a.txt": "on main\n" });
+  await receive("g1", { t: "doc.open", path: "a.txt" });
+  fs.files.set("/p/a.txt", "on feature\n");
+  expect(await share.reloadSharedDocs()).toEqual([]);
+  expect(guestCopy("a.txt")).toBe("on feature\n");
+});
+
+test("text typed while git ran survives the reload and is reported", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    const fs = hostFs({ "/p/a.txt": "on main\n" });
+    await receive("g1", { t: "doc.open", path: "a.txt" });
+    const g = await guestInsert("a.txt", 0, "Y");
+    fs.files.set("/p/a.txt", "on feature\n");
+    expect(await share.reloadSharedDocs()).toEqual(["a.txt"]);
+    await vi.advanceTimersByTimeAsync(800);
+    expect(fs.files.get("/p/a.txt")).toBe("Yon main\n");
+    expect(guestCopy("a.txt", g)).toBe("Yon main\n");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("guest: a chunk reverted in the diff reaches the host, unless the file changed meanwhile", async () => {
+  collab.role = "guest";
+  const h = new Y.Doc();
+  h.getText("content").insert(0, "one\ntwo\n");
+  await receive("host-peer", { t: "doc.state", path: "d.txt", name: "d.txt", update: b64(Y.encodeStateAsUpdate(h)) });
+  await vi.waitFor(() => expect(share.sharedDocOpen("d.txt")).toBe(true));
+  const { ChangeSet } = await import("@codemirror/state");
+  sent.length = 0;
+  expect(share.editSharedDoc("d.txt", "stale text", ChangeSet.of({ from: 0, to: 3, insert: "1" }, 10))).toBe(false);
+  expect(sent).toEqual([]);
+  expect(share.editSharedDoc("d.txt", "one\ntwo\n", ChangeSet.of([{ from: 0, to: 3, insert: "1" }, { from: 4, to: 7, insert: "2" }], 8))).toBe(true);
+  const update = sent.find((s) => s.peer === "host-peer" && s.msg.t === "doc.update")!.msg.update;
+  Y.applyUpdate(h, unb64(update));
+  expect(h.getText("content").toString()).toBe("1\n2\n");
+});
