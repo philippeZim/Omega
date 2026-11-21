@@ -42,6 +42,7 @@ pub fn run() {
             use tauri::Manager;
             let tools = app.path().app_data_dir().map(|d| d.join("tools")).unwrap_or_else(|_| env::home().join(".omega-tools"));
             env::init(tools);
+            std::thread::spawn(lang_shadow::sweep_stale);
             // Start the Claude Code IDE server before any terminal spawns (they get its port).
             let h = app.handle().clone();
             if let Err(e) = tauri::async_runtime::block_on(ide_ws::ide_start(h, serde_json::json!([]), vec![])) {
