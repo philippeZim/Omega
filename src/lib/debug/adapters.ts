@@ -417,6 +417,22 @@ export async function planFor(ctx: Ctx): Promise<Plan> {
       };
       held();
       await need(["ocaml"]);
+      if (alone) {
+        const adapter = await earlybird(ctx);
+        // The copy sits with the build output: ocamlc writes .cmi and .cmo next to its source.
+        const copy = await refreshBinCopy(ctx.file, "omega_main.ml");
+        const bin = dirname(copy);
+        const managed = await managedOcaml("ocamlc");
+        await buildUnlessPaused(managed ?? "ocamlc", ["-g", "-o", "omega_dbg.bc", "omega_main.ml"], bin, ctx, paused);
+        held();
+        return {
+          label: `OCaml · ${basename(ctx.file)}`,
+          cwd: root,
+          adapter: { kind: "stdio", cmd: adapter, args: ["debug"] },
+          launch: { type: "ocaml.earlybird", request: "launch", name: "OCaml", program: `${bin}/omega_dbg.bc`, cwd: root, stopOnEntry: false, console: "integratedTerminal", ...(managed ? { env: OCAML_PROGRAM_ENV } : {}) },
+          shadow: { file: ctx.file, copy },
+        };
+      }
       if (project?.kind !== "dune") throw new Error(t("code.ad.ocamlNeedsDune"));
       const target = await ocamlDebugTarget(root, ctx.file);
       const adapter = await earlybird(ctx);
