@@ -374,7 +374,12 @@
     border-top-color: var(--label);
     animation: spin 0.8s linear infinite;
   }
-  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes spin {
+    0%, 100% { border-color: var(--label) var(--label-3) var(--label-3) var(--label-3); }
+    25% { border-color: var(--label-3) var(--label) var(--label-3) var(--label-3); }
+    50% { border-color: var(--label-3) var(--label-3) var(--label) var(--label-3); }
+    75% { border-color: var(--label-3) var(--label-3) var(--label-3) var(--label); }
+  }
   .tool {
     display: inline-grid;
     place-items: center;
@@ -419,8 +424,8 @@
   .bar { height: 6px; margin: 12px 0 8px; border-radius: 999px; background: var(--recess); box-shadow: var(--recess-shadow); overflow: hidden; }
   .bar .fill, .topbar-progress .fill { position: relative; height: 100%; border-radius: inherit; background: var(--accent); transition: width 0.35s ease; overflow: hidden; }
   /* Moving sheen so the bar visibly lives even when a single step takes long. */
-  .bar .fill::after, .topbar-progress .fill::after { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.35), transparent); transform: translateX(-100%); animation: sheen 1.4s ease-in-out infinite; }
-  @keyframes sheen { to { transform: translateX(100%); } }
+  .bar .fill::after, .topbar-progress .fill::after { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.35), transparent) no-repeat; background-size: 50% 100%; background-position: -100% 0; animation: sheen 1.4s ease-in-out infinite; }
+  @keyframes sheen { to { background-position: 200% 0; } }
   .pc-sub { min-height: 16px; display: flex; gap: 5px; font-size: 11.5px; color: var(--label-2); font-variant-numeric: tabular-nums; white-space: nowrap; }
   .pc-file { overflow: hidden; text-overflow: ellipsis; color: var(--label-3); font-family: var(--mono); font-size: 11px; }
   .pc-hint { margin: 10px 0 0; font-size: 11.5px; color: var(--label-3); }

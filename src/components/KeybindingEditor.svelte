@@ -158,5 +158,5 @@
   .add, .reset { width: 26px; height: 26px; display: grid; place-items: center; border-radius: 8px; color: var(--label-2); background: rgba(var(--fg-rgb), 0.05); transition: background 0.15s; }
   .add:hover, .reset:hover { background: rgba(var(--fg-rgb), 0.12); color: var(--label); }
   .add:active, .reset:active { transform: scale(0.9); }
-  @keyframes pulse { 50% { opacity: 0.55; } }
+  @keyframes pulse { 50% { color: var(--label-3); } }
 </style>

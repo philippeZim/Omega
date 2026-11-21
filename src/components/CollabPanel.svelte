@@ -214,5 +214,10 @@
   .x:hover { background: var(--fill-2); color: var(--label); }
   .danger { color: var(--red); }
   .spin { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--label-3); border-top-color: var(--label); animation: spin 0.8s linear infinite; flex-shrink: 0; }
-  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes spin {
+    0%, 100% { border-color: var(--label) var(--label-3) var(--label-3) var(--label-3); }
+    25% { border-color: var(--label-3) var(--label) var(--label-3) var(--label-3); }
+    50% { border-color: var(--label-3) var(--label-3) var(--label) var(--label-3); }
+    75% { border-color: var(--label-3) var(--label-3) var(--label-3) var(--label); }
+  }
 </style>

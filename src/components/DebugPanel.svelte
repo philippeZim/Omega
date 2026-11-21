@@ -174,7 +174,7 @@
   .status.running .dot, .status.starting .dot { background: var(--green); animation: pulse 1.4s infinite; }
   .status.stopped .dot { background: var(--yellow); }
   .status.terminated .dot { background: var(--red); }
-  @keyframes pulse { 50% { opacity: 0.35; } }
+  @keyframes pulse { 50% { background-color: var(--label-3); } }
   .st { font-weight: 600; }
   .label { color: var(--label-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .scroll { flex: 1; overflow: auto; padding: 0 10px 20px; }

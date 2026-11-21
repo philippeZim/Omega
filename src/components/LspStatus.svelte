@@ -42,5 +42,5 @@
   .error .dot, .stopped .dot { background: var(--red, #e5534b); }
   .missing .dot { background: transparent; box-shadow: inset 0 0 0 1.5px var(--label-2); }
   .starting .dot, .installing .dot { background: var(--orange, #e0a030); animation: pulse 1s ease-in-out infinite alternate; }
-  @keyframes pulse { from { opacity: 0.35; } to { opacity: 1; } }
+  @keyframes pulse { from { background-color: var(--label-3); } }
 </style>
