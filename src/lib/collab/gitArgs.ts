@@ -120,6 +120,8 @@ export interface GitChange {
   x: string;
   y: string;
   orig: string | null;
+  /** Part of the repository's git hooks (see hooksGuard.ts). */
+  hook?: boolean;
 }
 
 /**

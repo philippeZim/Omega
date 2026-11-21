@@ -10,12 +10,13 @@
  */
 import { invoke } from "@tauri-apps/api/core";
 import { collab, sessionEndHooks } from "./collab.svelte";
-import { blockedByCapability, guestCan } from "./guard";
-import { call, hasCapability, isObj, publish, registerMethod, registerTopic, rpcErrorText, RpcFail, subscribe, type RpcResult } from "./rpc.svelte";
+import { blockedByCapability, guestCan, type Capability } from "./guard";
+import { call, capabilityLabel, hasCapability, isObj, publish, registerMethod, registerTopic, rpcErrorText, RpcFail, subscribe, type RpcResult } from "./rpc.svelte";
 import { flushSharedDocs, guestScope, reloadSharedDocs, sharedDocUnsaved, type GuestScope } from "./share.svelte";
+import { guestMayWrite, hooksBlockReplace, hooksCheck } from "./hooksGuard";
 import { GIT_LIMITS, SSH_BATCH, gitArgv, gitFailCode, scopeChanges, validBranch, validMessage, validPath, validPaths, type GitChange } from "./gitArgs";
 import { app, pathMoved, save, syncFromDisk } from "../state.svelte";
-import { fetchSettled, git, kind, refresh, setGuestGit, splitBranches, type Change } from "../git/git.svelte";
+import { fetchSettled, git, kind, refresh, setGuestGit, splitBranches, type Change, type GuestGitAction } from "../git/git.svelte";
 import { setRemoteHead } from "../git/gutter";
 import { setRemoteBlame, type Blame } from "../git/blame.svelte";
 import { onFilesChanged } from "../fsWatch.svelte";
@@ -38,6 +39,10 @@ export interface GitSnapshot {
   /** Whether "origin" exists. Its URL can hold credentials and stays on the host. */
   hasRemote: boolean;
   head: string;
+  /** The shared folder is the repository's root, so whole-repository actions are possible. */
+  atRepoRoot: boolean;
+  /** Git hooks live in the shared folder (matters to guests without `run`). */
+  hooksInProject: boolean;
 }
 
 export interface GitDiff {
@@ -105,22 +110,26 @@ async function readStatus(scope: GuestScope) {
   return { raw: s, prefix, ...scopeChanges(s.changes, prefix, allowedIn(scope)) };
 }
 
+const NO_REPO: GitSnapshot = { repo: false, branch: "", upstream: null, ahead: 0, behind: 0, changes: [], truncated: false, operation: "", hasCommits: false, hasRemote: false, head: "", atRepoRoot: true, hooksInProject: false };
+
 async function computeSnapshot(scope: GuestScope): Promise<GitSnapshot> {
   const s = await readStatus(scope);
-  if (!s) return { repo: false, branch: "", upstream: null, ahead: 0, behind: 0, changes: [], truncated: false, operation: "", hasCommits: false, hasRemote: false, head: "" };
-  const [origin, head] = await Promise.all([runIn(scope, gitArgv.origin()), runIn(scope, gitArgv.headSha())]);
+  if (!s) return NO_REPO;
+  const [origin, head, hooks] = await Promise.all([runIn(scope, gitArgv.origin()), runIn(scope, gitArgv.headSha()), hooksCheck(scope.root, s.changes.map((c) => c.path))]);
   return {
     repo: true,
     branch: s.raw.branch,
     upstream: s.raw.upstream,
     ahead: s.raw.ahead,
     behind: s.raw.behind,
-    changes: s.changes,
+    changes: s.changes.map((c, i) => (hooks.structural[i] ? { ...c, hook: true } : c)),
     truncated: s.truncated,
     operation: s.raw.operation === "rebase-apply" ? "rebase" : (s.raw.operation ?? ""),
     hasCommits: head.code === 0,
     hasRemote: origin.code === 0,
     head: head.code === 0 ? head.stdout.trim() : "",
+    atRepoRoot: s.prefix === "",
+    hooksInProject: hooks.inProject,
   };
 }
 
@@ -137,7 +146,7 @@ async function publishNow() {
   const seq = ++publishSeq;
   let next: GitSnapshot;
   try {
-    next = scope ? await computeSnapshot(scope) : { repo: false, branch: "", upstream: null, ahead: 0, behind: 0, changes: [], truncated: false, operation: "", hasCommits: false, hasRemote: false, head: "" };
+    next = scope ? await computeSnapshot(scope) : NO_REPO;
   } catch (e) {
     console.error("git status for guests", e);
     return;
@@ -284,9 +293,11 @@ async function writeOp<T>(peer: string, signal: AbortSignal, busy: Key, announce
   if (locked || git.busy) throw new RpcFail("busy");
   locked = true;
   git.busy = t(busy);
+  const hadRun = hasCapability(peer, "run");
   const step = () => {
     if (signal.aborted || !scope.live()) throw new RpcFail("unavailable");
     if (opts.rewrites && !hasCapability(peer, "edit")) throw new RpcFail("forbidden");
+    if (opts.rewrites && hadRun && !hasCapability(peer, "run")) throw new RpcFail("forbidden");
   };
   try {
     await fetchSettled();
@@ -295,6 +306,8 @@ async function writeOp<T>(peer: string, signal: AbortSignal, busy: Key, announce
       const prefix = await repoPrefix(scope);
       if (prefix === null) throw new RpcFail("unavailable");
       if (prefix) throw new RpcFail("whole_repo");
+      // Files of any branch can land in the hooks folder, and a guest without `run` may not change it.
+      if (opts.rewrites && (await hooksBlockReplace(peer, scope.root))) throw new RpcFail("hooks");
       step();
     }
     const value = await fn(scope, step);
@@ -466,6 +479,7 @@ registerMethod({
       // Discarding means the file's text goes. Text that isn't even saved yet wasn't in what the guest
       // confirmed, so it isn't discarded along with it.
       if (app.tabs.some((x) => x.path === abs && x.dirty) || sharedDocUnsaved(path)) throw new RpcFail("unsaved_text");
+      if (!(await guestMayWrite(peer, scope.root, found.flatMap((c) => (c.orig ? [c.orig, c.path] : [c.path])), true))) throw new RpcFail("hooks");
       step();
       if (kind(found[0] as Change) === "new") {
         if (await invoke<boolean>("collab_tree_has_git", { path: abs }).catch(() => true)) throw new RpcFail("invalid");
@@ -488,7 +502,7 @@ registerMethod({
       step();
       await must(scope, gitArgv.createBranch(name));
       return null;
-    }),
+    }, { wholeRepo: true }),
 });
 
 registerMethod({
@@ -598,6 +612,7 @@ const ERRORS: Record<string, Key> = {
   unavailable: "git.guestErr.unavailable",
   failed: "git.guestErr.failed",
   whole_repo: "git.guestErr.wholeRepo",
+  hooks: "git.guestErr.hooks",
 };
 const errorText = (code: string) => (ERRORS[code] ? t(ERRORS[code]) : rpcErrorText(code));
 
@@ -646,7 +661,37 @@ const guestContinue = async (andPush: boolean) => {
   if (andPush) await guestPush();
 };
 
+const NEEDS: Record<GuestGitAction, Capability[]> = {
+  pull: ["git-remote", "edit"],
+  push: ["git-remote"],
+  fetch: ["git-remote"],
+  commit: ["git"],
+  commitPush: ["git", "git-remote"],
+  discard: ["git", "edit"],
+  stage: ["git"],
+  switch: ["git", "edit"],
+  newBranch: ["git"],
+  continue: ["git", "edit"],
+  abort: ["git", "edit"],
+};
+const WHOLE_REPO: readonly GuestGitAction[] = ["pull", "switch", "newBranch", "continue", "abort"];
+const REPLACES: readonly GuestGitAction[] = ["pull", "switch", "continue", "abort"];
+
+/** Mirrors what the host would refuse, so the UI can say so first. The host still decides. */
+function refusal(action: GuestGitAction, c?: Change): string {
+  // While a merge or rebase is open, "Commit" continues it.
+  const acts: GuestGitAction[] = (action === "commit" || action === "commitPush") && git.operation ? [action, "continue"] : [action];
+  for (const a of acts) {
+    for (const cap of NEEDS[a]) if (!guestCan(cap)) return t("ai.collab.capMissing", { cap: capabilityLabel(cap) });
+    if (WHOLE_REPO.includes(a) && !guestChanges.atRepoRoot) return t("git.guestErr.wholeRepo");
+    if (REPLACES.includes(a) && !guestCan("run") && guestChanges.hooksInProject) return t("git.guestErr.hooks");
+  }
+  if (action === "discard" && !guestCan("run") && (c as GitChange | undefined)?.hook) return t("git.guestErr.hooks");
+  return "";
+}
+
 setGuestGit({
+  refusal,
   active: () => collab.role === "guest",
   async commit(andPush) {
     if (git.operation) return guestContinue(andPush);
@@ -738,12 +783,12 @@ setRemoteBlame(async (rel, contents) => {
   return r.ok ? r.value : null;
 });
 
-export const guestChanges = $state({ truncated: false });
+export const guestChanges = $state({ truncated: false, atRepoRoot: true, hooksInProject: false });
 let lastHead = "";
 
 function resetGuest() {
   lastHead = "";
-  guestChanges.truncated = false;
+  Object.assign(guestChanges, { truncated: false, atRepoRoot: true, hooksInProject: false });
   Object.assign(git, { repo: false, top: "", branch: "", upstream: null, ahead: 0, behind: 0, changes: [], excluded: [], remoteUrl: null, operation: "", hasCommits: true });
   git.headVersion++; // markers and blame of open tabs go too
 }
@@ -756,7 +801,7 @@ subscribe("git.status", (s) => {
   }
   const moved = s.head !== lastHead || s.branch !== git.branch;
   lastHead = s.head;
-  guestChanges.truncated = s.truncated;
+  Object.assign(guestChanges, { truncated: s.truncated, atRepoRoot: s.atRepoRoot, hooksInProject: s.hooksInProject });
   // `remoteUrl` only says that a remote exists: the guest never gets the URL.
   Object.assign(git, { repo: s.repo, top: "", branch: s.branch, upstream: s.upstream, ahead: s.ahead, behind: s.behind, changes: s.changes, operation: s.operation, hasCommits: s.hasCommits, remoteUrl: s.hasRemote ? "origin" : null });
   git.excluded = git.excluded.filter((p) => s.changes.some((c) => c.path === p));

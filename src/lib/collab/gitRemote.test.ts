@@ -23,6 +23,7 @@ const h = vi.hoisted(() => ({
   argv: [] as string[][],
   tabText: new Map<string, string>(),
   bounded: [] as string[],
+  hooksBroken: false,
 }));
 
 vi.mock("./collab.svelte", () => ({
@@ -100,6 +101,16 @@ vi.mock("@tauri-apps/api/core", () => ({
     }
     if (cmd === "git_status") return statusOf(a.root);
     if (cmd === "collab_tree_has_git") return false;
+    if (cmd === "collab_hooks_check") {
+      if (h.hooksBroken) throw new Error("cannot determine");
+      // The real resolution is tested in collab.rs; here: the configured folder, by plain path.
+      const cfg = gitRun(a.root, ["config", "--get", "core.hooksPath"]).stdout.trim();
+      const dir = cfg ? resolve(a.root, cfg) : "";
+      const inProject = !!dir && dir.startsWith(a.root + "/") && !dir.includes("/.git/");
+      const locked = a.paths.map((p: string) => !!dir && (p === dir || p.startsWith(dir + "/")));
+      const structural = a.paths.map((p: string, i: number) => locked[i] || (!!dir && dir.startsWith(p + "/")));
+      return { ok: true, inProject, locked, structural };
+    }
     if (cmd === "collab_read_bounded") {
       h.bounded.push(a.path);
       if (!existsSync(a.path)) return { kind: "missing" };
@@ -141,7 +152,7 @@ function statusOf(root: string) {
 
 const { RPC_LIMITS } = await import("./rpc.svelte");
 await import("./gitRemote.svelte");
-const { git } = await import("../git/git.svelte");
+const { git, autoFetch } = await import("../git/git.svelte");
 
 let dir = "";
 let repo = "";
@@ -189,6 +200,7 @@ beforeEach(() => {
   h.argv.length = 0;
   h.tabText.clear();
   h.bounded.length = 0;
+  h.hooksBroken = false;
   ui.toast.mockClear();
 });
 afterEach(async () => {
@@ -680,6 +692,87 @@ describe("pull, conflicts and hooks, on real clones", () => {
     expect((await rpc("git.pull", {})).ok).toBe(true);
     expect(readFileSync(join(repo, "a.txt"), "utf8")).toBe("work in progress\n");
     expect(existsSync(join(repo, "theirs.txt"))).toBe(true);
+  });
+});
+
+describe("git hooks and guests without run", () => {
+  const NO_RUN = ["git", "git-remote", "edit"];
+  const WITH_RUN = [...NO_RUN, "run"];
+  const husky = () => {
+    write(".husky/pre-commit", "#!/bin/sh\necho original\n");
+    commitHere("a.txt", "one\n", "x");
+    sh("config", "core.hooksPath", ".husky");
+  };
+
+  test("discard of a hook is refused without run, allowed with it", async () => {
+    husky();
+    write(".husky/pre-commit", "#!/bin/sh\necho changed\n");
+    expect(await code("git.discard", { path: ".husky/pre-commit" }, NO_RUN)).toBe("hooks");
+    expect(readFileSync(join(repo, ".husky/pre-commit"), "utf8")).toContain("changed");
+    expect((await rpc("git.discard", { path: ".husky/pre-commit" }, WITH_RUN)).ok).toBe(true);
+    expect(readFileSync(join(repo, ".husky/pre-commit"), "utf8")).toContain("original");
+  });
+
+  test("discarding an ordinary file still works without run", async () => {
+    husky();
+    write("a.txt", "changed\n");
+    expect((await rpc("git.discard", { path: "a.txt" }, NO_RUN)).ok).toBe(true);
+  });
+
+  test("a branch with another hook can't be checked out without run", async () => {
+    husky();
+    sh("switch", "-q", "-c", "evil");
+    write(".husky/pre-commit", "#!/bin/sh\necho evil\n");
+    sh("add", "-A");
+    sh("commit", "-q", "--no-verify", "-m", "evil hook");
+    sh("switch", "-q", "main");
+    expect(await code("git.switch", { name: "evil", remote: false }, NO_RUN)).toBe("hooks");
+    expect(readFileSync(join(repo, ".husky/pre-commit"), "utf8")).toContain("original");
+    expect((await rpc("git.switch", { name: "evil", remote: false }, WITH_RUN)).ok).toBe(true);
+  });
+
+  test.each([["git.pull", {}], ["git.abort", {}], ["git.continue", { message: "", paths: [] }]])("%s is refused without run when hooks are in the project", async (m, params) => {
+    husky();
+    expect(await code(m, params, NO_RUN)).toBe("hooks");
+  });
+
+  test("if the hooks can't be determined, a guest without run is refused", async () => {
+    write("a.txt", "changed\n");
+    h.hooksBroken = true;
+    expect(await code("git.discard", { path: "a.txt" }, NO_RUN)).toBe("hooks");
+    expect(readFileSync(join(repo, "a.txt"), "utf8")).toBe("changed\n");
+    expect((await rpc("git.discard", { path: "a.txt" }, WITH_RUN)).ok).toBe(true);
+  });
+
+  test("the host's background fetch fires no hook, a fetch the host asks for keeps them", async () => {
+    const { commitOther } = withRemote();
+    mkdirSync(join(dir, "h"));
+    const marker = join(dir, "ref-hook");
+    writeFileSync(join(dir, "h", "reference-transaction"), `#!/bin/sh\ntouch "${marker}"\n`);
+    chmodSync(join(dir, "h", "reference-transaction"), 0o755);
+    commitOther("theirs.txt", "theirs\n", "one");
+    sh("config", "core.hooksPath", join(dir, "h"));
+    rmSync(marker, { force: true });
+    Object.assign(git, { repo: true, top: repo, upstream: "origin/main", busy: "" });
+    vi.mocked(document.hasFocus).mockReturnValue(true);
+    const before = sh("rev-parse", "origin/main");
+    await autoFetch();
+    vi.mocked(document.hasFocus).mockReturnValue(false);
+    expect(sh("rev-parse", "origin/main")).not.toBe(before); // it really fetched
+    expect(existsSync(marker)).toBe(false);
+    commitOther("more.txt", "more\n", "two");
+    gitRun(repo, ["fetch", "--quiet"]);
+    expect(existsSync(marker)).toBe(true); // the same fetch without the guard does fire it
+  });
+
+  test("a new branch in a subfolder share is refused: it would move the host's HEAD", async () => {
+    write("sub/in.txt", "in\n");
+    sh("add", "-A");
+    sh("commit", "-q", "-m", "sub");
+    h.app.root = join(repo, "sub");
+    expect(await code("git.createBranch", { name: "topic" })).toBe("whole_repo");
+    expect(sh("branch", "--show-current")).toBe("main");
+    expect(sh("branch", "--list", "topic")).toBe("");
   });
 });
 

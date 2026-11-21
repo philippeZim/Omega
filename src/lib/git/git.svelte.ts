@@ -8,6 +8,7 @@ import { ui } from "../ui.svelte";
 import { joinPath, fsApi } from "../api";
 import { t, type Key } from "../i18n/index.svelte";
 import { gitErrorMessage } from "./errors";
+import { GIT_GUARD } from "../collab/gitArgs";
 
 export interface Change {
   path: string;
@@ -49,6 +50,9 @@ export async function run(args: string[], root = git.top || app.root): Promise<O
   return invoke<Out>("git", { root, args });
 }
 
+/** For what Omega runs by itself, not at the host's request: hooks and helpers stay off. */
+const runQuiet = (args: string[], root?: string) => run([...GIT_GUARD, ...args], root);
+
 async function runOk(args: string[], what: Key): Promise<Out | null> {
   const r = await run(args);
   if (r.code !== 0) {
@@ -71,12 +75,18 @@ export interface GuestGit {
   branches(): Promise<{ local: string[]; remote: string[] }>;
   switchBranch(name: string, remote: boolean): Promise<void>;
   newBranch(name: string): Promise<void>;
+  /** Why the host would refuse this action for this guest, "" if it wouldn't. */
+  refusal(action: GuestGitAction, c?: Change): string;
 }
+export type GuestGitAction = "pull" | "push" | "fetch" | "commit" | "commitPush" | "discard" | "stage" | "switch" | "newBranch" | "continue" | "abort";
 let guestGit: GuestGit | null = null;
 export const setGuestGit = (g: GuestGit | null) => void (guestGit = g);
 const asGuest = () => (guestGit?.active() ? guestGit : null);
 /** Whether the Git UI currently shows the host's repository of a Code Together session. */
 export const isGuestGit = () => !!asGuest();
+
+/** For buttons and menus: why a guest can't do this ("" for the host and for allowed actions). */
+export const guestRefusal = (action: GuestGitAction, c?: Change) => asGuest()?.refusal(action, c) ?? "";
 
 /** Guests can't create repositories or change remotes: those stay with the host. */
 function hostOnly() {
@@ -106,7 +116,7 @@ export async function refresh() {
     Object.assign(git, { repo: s.repo, top: s.top, branch: s.branch, upstream: s.upstream, ahead: s.ahead, behind: s.behind, changes: s.changes, operation: s.operation === "rebase-apply" ? "rebase" : (s.operation ?? "") });
     git.excluded = git.excluded.filter((p) => s.changes.some((c) => c.path === p));
     if (s.repo) {
-      const [remote, head] = await Promise.all([run(["remote", "get-url", "origin"], s.top), run(["rev-parse", "--verify", "-q", "HEAD"], s.top)]);
+      const [remote, head] = await Promise.all([runQuiet(["remote", "get-url", "origin"], s.top), runQuiet(["rev-parse", "--verify", "-q", "HEAD"], s.top)]);
       git.remoteUrl = remote.code === 0 ? remote.stdout.trim() : null;
       git.hasCommits = head.code === 0;
       // A commit, reset or amend made outside Omega moves HEAD without changing the branch name.
@@ -344,9 +354,9 @@ function startFetch(args: () => Promise<string[]>): Promise<Out | null> {
  * credential helpers. Plain `fetch` = the current branch's upstream remote.
  */
 async function backgroundFetchArgs(): Promise<string[]> {
-  const own = await run(["config", "--get", "core.sshCommand"]);
+  const own = await runQuiet(["config", "--get", "core.sshCommand"]);
   const ssh = own.code === 0 ? [] : ["-c", "core.sshCommand=ssh -o BatchMode=yes -o ConnectTimeout=15"];
-  return [...ssh, "-c", "credential.interactive=never", "fetch", "--quiet"];
+  return [...GIT_GUARD, ...ssh, "-c", "credential.interactive=never", "fetch", "--quiet"];
 }
 
 /** Background fetch so the behind count (↓) sees new remote commits. Silent: no toast on failure. */

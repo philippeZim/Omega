@@ -22,7 +22,7 @@ describe("headVersion (#69)", () => {
       if (cmd === "git_status") return { repo: true, top: "/repo", branch: "main", upstream: null, ahead: 0, behind: 0, changes: [] };
       if (cmd === "git") {
         const args = (payload as { args: string[] }).args;
-        if (args[0] === "rev-parse") return { code: 0, stdout: sha + "\n", stderr: "" };
+        if (args.includes("rev-parse")) return { code: 0, stdout: sha + "\n", stderr: "" };
         return { code: 0, stdout: "", stderr: "" };
       }
       return null;

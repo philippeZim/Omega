@@ -195,6 +195,7 @@ export const en = {
   "git.guestErr.failed": "Git failed on the host.",
   "git.guestKeptTyped": "Your text in {file} was kept: it was typed while Git changed the file.",
   "git.guestErr.wholeRepo": "This would also change files outside the shared folder, so only the host can do it.",
+  "git.guestErr.hooks": "This touches the project's Git hooks, which run as code on the host. It needs the “Run” permission.",
 };
 export const de: Record<keyof typeof en, string> = {
   "git.noFolderOpen": "Kein Ordner geöffnet",
@@ -392,6 +393,7 @@ export const de: Record<keyof typeof en, string> = {
   "git.guestErr.failed": "Git ist beim Host fehlgeschlagen.",
   "git.guestKeptTyped": "Dein Text in {file} wurde behalten: Er wurde getippt, während Git die Datei geändert hat.",
   "git.guestErr.wholeRepo": "Das würde auch Dateien außerhalb des geteilten Ordners ändern, deshalb kann das nur der Host.",
+  "git.guestErr.hooks": "Das betrifft die Git-Hooks des Projekts, die beim Host als Code laufen. Dafür brauchst du die Berechtigung „Ausführen“.",
 };
 export const fr: Record<keyof typeof en, string> = {
   "git.noFolderOpen": "Aucun dossier ouvert",
@@ -589,4 +591,5 @@ export const fr: Record<keyof typeof en, string> = {
   "git.guestErr.failed": "Git a échoué chez l’hôte.",
   "git.guestKeptTyped": "Votre texte dans {file} a été conservé : il a été saisi pendant que Git modifiait le fichier.",
   "git.guestErr.wholeRepo": "Cela modifierait aussi des fichiers hors du dossier partagé : seul l’hôte peut le faire.",
+  "git.guestErr.hooks": "Cela touche les hooks Git du projet, exécutés comme du code chez l’hôte. Il faut l’autorisation « Exécuter ».",
 };

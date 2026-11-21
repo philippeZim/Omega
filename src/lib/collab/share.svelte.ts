@@ -13,6 +13,7 @@ import { ChangeSet, EditorState, type ChangeSpec, type Extension } from "@codemi
 import { EditorView } from "@codemirror/view";
 import { collab, send, broadcast, onCollabMessage } from "./collab.svelte";
 import { blockedByCapability, guestCan } from "./guard";
+import { guestMayWrite, hookLocked, refreshHookLocks, resetHookLocks } from "./hooksGuard";
 import { call, fits, forgetRpcPeer, hasCapability, isApproved, isObj, onCapabilitiesChanged, registerMethod, rpcErrorText, RpcFail } from "./rpc.svelte";
 import { app, openFile, activeTab, activate, collabHooks, setMode, pathMoved, type Tab } from "../state.svelte";
 import type { Mode } from "../modes";
@@ -50,6 +51,8 @@ interface SharedDoc {
   writing?: Promise<void>;
   /** Host, background docs: the file content as last read or written, to notice outside changes. */
   disk?: string;
+  /** Guest: the host refuses edits here (a git hook, and this guest has no `run`). */
+  locked?: boolean;
   cleanup: (() => void)[];
 }
 
@@ -169,12 +172,12 @@ function binding(d: SharedDoc) {
     yCollab(d.ytext, d.awareness, { undoManager: d.undo }),
     viewActions.of({
       // Without `edit` the host would drop the step and this copy would drift.
-      "collab.undo": () => (guestCan("edit") && d.undo.undo(), true),
-      "collab.redo": () => (guestCan("edit") && d.undo.redo(), true),
+      "collab.undo": () => (guestCan("edit") && !d.locked && d.undo.undo(), true),
+      "collab.redo": () => (guestCan("edit") && !d.locked && d.undo.redo(), true),
     }),
     // The host drops edits without the capability. Read-only stops typing; the filter also stops
     // commands that change the text directly, so the guest's copy can't drift. Host changes pass.
-    ...(collab.role === "guest" && !guestCan("edit") ? [EditorState.readOnly.of(true), EditorState.changeFilter.of((tr) => tr.annotation(ySyncAnnotation) !== undefined)] : []),
+    ...(collab.role === "guest" && (!guestCan("edit") || d.locked) ? [EditorState.readOnly.of(true), EditorState.changeFilter.of((tr) => tr.annotation(ySyncAnnotation) !== undefined)] : []),
   ];
 }
 
@@ -686,8 +689,9 @@ function scrollToLine(line: number, range?: [number, number]) {
   v.dispatch({ selection, effects: EditorView.scrollIntoView(l.from, { y: "center" }) });
 }
 
-async function guestReceiveState(rel: string, update: Uint8Array, name?: string) {
+async function guestReceiveState(rel: string, update: Uint8Array, name?: string, locked = false) {
   const old = docs.get(rel);
+  if (locked && !old?.locked) ui.toast(t("git.guestErr.hooks"), "error");
   // A fresh copy for a tab that's already open (capability change): same tab, host's text.
   const kept = old?.tabId ? app.tabs.find((x) => x.id === old.tabId) : undefined;
   const sub = previewSubs.get(rel);
@@ -700,6 +704,7 @@ async function guestReceiveState(rel: string, update: Uint8Array, name?: string)
     dispose(old);
   }
   const d = makeDoc(rel, false);
+  d.locked = locked;
   Y.applyUpdate(d.ydoc, update, "remote");
   if (!tabless) {
     let tabId: string;
@@ -810,8 +815,8 @@ export function editSharedDoc(rel: string, base: string, changes: ChangeSet): bo
   return true;
 }
 
-/** Guest: whether a shared file is open here. */
-export const sharedDocOpen = (rel: string) => docs.has(rel);
+/** Guest: whether a shared file is open here and can be edited. */
+export const sharedDocOpen = (rel: string) => docs.has(rel) && !docs.get(rel)!.locked;
 
 /** Guest closed a shared tab. */
 export function onTabClosed(path: string | null) {
@@ -883,6 +888,9 @@ async function hostFsOp(peer: string, { op, path: rel, to: toRel }: FsOpParams, 
   const to = op === "rename" ? scope.abs(toRel as string) : null;
   // Moving or deleting a folder would take a nested repository's git folder with it.
   if ((op === "rename" || op === "delete") && (await invoke<boolean>("collab_tree_has_git", { path: abs }).catch(() => true))) return "invalid";
+  // Git hooks are code on the host: without `run` a guest can't write them, or move a folder holding them.
+  if (!(await guestMayWrite(peer, scope.root, op === "rename" ? [rel, toRel as string] : [rel], op === "rename" || op === "delete"))) return "hooks";
+  if (!live()) return "unavailable";
   const who = collab.participants.find((p) => p.peer === peer)?.name ?? t("ai.collab.guest");
   try {
     if ((op === "create" || op === "mkdir" || op === "rename") && (await fsApi.exists(to ?? abs))) return live() ? "exists" : "unavailable";
@@ -945,7 +953,7 @@ export async function remoteFsOp(op: FsOp, rel: string, to?: string): Promise<st
 
 /** Text for an error code of `remoteFsOp`. */
 export const opErrorText = (e: string, name: string) =>
-  e === "invalid" || e === "invalid_params" ? t("app.invalidEntryName", { name }) : e === "exists" ? t("code.existsAlready", { name }) : e === "unavailable" ? t("ai.collab.fileUnavailable") : rpcErrorText(e);
+  e === "invalid" || e === "invalid_params" ? t("app.invalidEntryName", { name }) : e === "exists" ? t("code.existsAlready", { name }) : e === "unavailable" ? t("ai.collab.fileUnavailable") : e === "hooks" ? t("git.guestErr.hooks") : rpcErrorText(e);
 
 /** Guest: new file or folder in the host's project (`dir`: relative folder, "" = project root). */
 export async function remoteCreate(dir: string, isDir: boolean) {
@@ -1027,6 +1035,46 @@ async function applyFollow() {
 
 const presenceOrder = new Map<string, number>();
 
+/** The full state of a doc for one guest. `locked`: this guest's edits to it are refused. */
+function docStateFor(peer: string, d: SharedDoc) {
+  const tab = d.tabId ? app.tabs.find((x) => x.id === d.tabId) : null;
+  return { t: "doc.state", path: d.rel, name: tab?.name ?? basename(d.rel), update: b64(Y.encodeStateAsUpdate(d.ydoc)), ...(hookLocked(peer, d.root, d.rel) ? { locked: true } : {}) };
+}
+
+const hookRefusals = new Map<string, number>();
+
+/** Host: an edit to a git hook was dropped. The guest's copy goes back to the host's, read-only. */
+async function refuseHookEdit(peer: string, d: SharedDoc) {
+  const key = `${peer}\0${d.rel}`;
+  const now = performance.now();
+  if (now - (hookRefusals.get(key) ?? -Infinity) < 1000) return;
+  hookRefusals.set(key, now);
+  if (d.root) await refreshHookLocks(d.root, [d.rel]);
+  if (!isApproved(peer) || !d.subscribers.has(peer) || docs.get(d.rel) !== d) return;
+  const state = docStateFor(peer, d);
+  if (fits(JSON.stringify(state))) send(peer, state);
+}
+
+const guestWithoutRun = () => collab.participants.some((p) => p.role === "guest" && !p.removing && !p.caps?.includes("run"));
+
+/** Host: follows changes of the hooks folder for open docs while a guest without `run` is here. */
+async function syncHookLocks() {
+  const root = app.root;
+  if (collab.role !== "host" || !root || !guestWithoutRun()) return;
+  const rels = [...docs.values()].filter((d) => d.root === root).map((d) => d.rel);
+  const changed = await refreshHookLocks(root, rels);
+  for (const rel of changed) {
+    const d = docs.get(rel);
+    if (!d) continue;
+    for (const peer of d.subscribers) {
+      if (hasCapability(peer, "run")) continue;
+      const state = docStateFor(peer, d);
+      if (fits(JSON.stringify(state))) send(peer, state);
+    }
+  }
+}
+setInterval(() => void syncHookLocks(), 3000);
+
 /** Host: a guest left. A presence message of theirs still being checked is dropped too. */
 export function forgetPeer(peer: string) {
   presenceOrder.delete(peer);
@@ -1072,8 +1120,11 @@ onCollabMessage(async (peer, msg) => {
       // Removed while the file was being checked or read: nothing of it goes out.
       if (!isApproved(peer)) return;
       if (!d) return send(peer, { t: "doc.error", path: msg.path, error: "unavailable" });
-      const tab = d.tabId ? app.tabs.find((t) => t.id === d.tabId) : null;
-      const state = { t: "doc.state", path: d.rel, name: tab?.name ?? basename(d.rel), update: b64(Y.encodeStateAsUpdate(d.ydoc)) };
+      if (!hasCapability(peer, "run") && d.root) {
+        await refreshHookLocks(d.root, [d.rel]);
+        if (!isApproved(peer) || docs.get(d.rel) !== d) return;
+      }
+      const state = docStateFor(peer, d);
       // Over the transport's limit the whole connection would drop.
       if (!fits(JSON.stringify(state))) return send(peer, { t: "doc.error", path: msg.path, error: "too_large" });
       d.subscribers.add(peer);
@@ -1085,7 +1136,10 @@ onCollabMessage(async (peer, msg) => {
       // Only from guests that have this doc open: a late edit to a same-named file of the previous
       // folder must not land in this one.
       const d = hostDocAt(msg.path);
-      if (d?.subscribers.has(peer) && hasCapability(peer, "edit")) Y.applyUpdate(d.ydoc, unb64(msg.update), peer);
+      if (d?.subscribers.has(peer) && hasCapability(peer, "edit")) {
+        if (hookLocked(peer, d.root, d.rel)) return refuseHookEdit(peer, d);
+        Y.applyUpdate(d.ydoc, unb64(msg.update), peer);
+      }
     } else if (msg.t === "aw") {
       const d = hostDocAt(msg.path);
       if (d?.subscribers.has(peer)) applyAwarenessUpdate(d.awareness, unb64(msg.update), peer);
@@ -1111,7 +1165,7 @@ onCollabMessage(async (peer, msg) => {
   } else if (msg.t === "root") {
     share.hostRoot = msg.name;
   } else if (msg.t === "doc.state") {
-    guestReceiveState(msg.path, unb64(msg.update), msg.name);
+    guestReceiveState(msg.path, unb64(msg.update), msg.name, msg.locked === true);
   } else if (msg.t === "doc.moved") {
     // The host renamed the file: the tab follows it (#127).
     const d = docs.get(msg.path);
@@ -1181,7 +1235,7 @@ onCollabMessage(async (peer, msg) => {
 // Guest: the host changed `edit`. Fresh copies drop edits it refused and switch the tabs read-only
 // (or back), so nothing diverges.
 onCapabilitiesChanged((before, now) => {
-  if (before.includes("edit") === now.includes("edit")) return;
+  if (before.includes("edit") === now.includes("edit") && before.includes("run") === now.includes("run")) return;
   for (const rel of docs.keys()) send(collab.hostPeer!, { t: "doc.open", path: rel });
 });
 
@@ -1201,6 +1255,8 @@ export async function teardownShare() {
   docs.clear();
   renamed.clear();
   presenceOrder.clear();
+  hookRefusals.clear();
+  resetHookLocks();
   share.presence = {};
   share.following = null;
   share.hostRoot = "";
@@ -1221,6 +1277,7 @@ collabHooks.pathMoved = (from, to) => onHostPathMoved(from, to);
 // shared files without a host tab are reloaded (open tabs follow the disk via state.svelte.ts).
 let fsTimer = 0;
 onFilesChanged((files) => {
+  if (files.some((f) => f.endsWith("/.git/config") || f.endsWith("/.gitconfig"))) void syncHookLocks();
   if (collab.role === "host" && app.root) {
     const changed = new Set(files);
     for (const d of docs.values()) if (!d.tabId && d.root && changed.has(joinPath(d.root, d.rel))) void hostReload(d);
