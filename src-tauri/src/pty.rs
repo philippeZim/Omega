@@ -722,12 +722,41 @@ mod tests {
         end_session(own);
     }
 
+    /// A command that has ended, while something else still is in the PTY's foreground.
+    #[cfg(unix)]
+    #[derive(Debug)]
+    struct Exited;
+    #[cfg(unix)]
+    impl portable_pty::ChildKiller for Exited {
+        fn kill(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+        fn clone_killer(&self) -> Box<dyn portable_pty::ChildKiller + Send + Sync> {
+            Box::new(Exited)
+        }
+    }
+    #[cfg(unix)]
+    impl Child for Exited {
+        fn try_wait(&mut self) -> std::io::Result<Option<portable_pty::ExitStatus>> {
+            Ok(Some(portable_pty::ExitStatus::with_exit_code(0)))
+        }
+        fn wait(&mut self) -> std::io::Result<portable_pty::ExitStatus> {
+            Ok(portable_pty::ExitStatus::with_exit_code(0))
+        }
+        fn process_id(&self) -> Option<u32> {
+            None
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn task_input_stops_when_the_command_exited() {
-        let mut s = session(PtyKind::Command, "exit 0");
-        assert!(wait_until(|| matches!(s.child.try_wait(), Ok(Some(_)))));
-        assert!(!guest_may_write(&mut s, "task"));
+        let mut s = session(PtyKind::Command, "exec sleep 30");
+        assert!(wait_until(|| guest_may_write(&mut s, "task")));
+        let mut real = std::mem::replace(&mut s.child, Box::new(Exited));
+        let refused = !guest_may_write(&mut s, "task");
+        let _ = real.kill();
+        assert!(refused, "input after the command's exit");
     }
 
     #[cfg(target_os = "linux")]
