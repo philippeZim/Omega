@@ -4,6 +4,10 @@
   import { terms, newTerminal, closeTerminal, focusTerm, listShells, shellPref, setDefaultShell, toggleSplit } from "../../lib/terminal.svelte";
   import { ui } from "../../lib/ui.svelte";
   import { t } from "../../lib/i18n/index.svelte";
+  import { guestGuard, localTerminalTitle } from "../../lib/collab/guard";
+
+  // A guest's shells run on its own machine, never on the host.
+  const isGuest = $derived(guestGuard.status() !== "none");
 
   let list: HTMLDivElement | undefined = $state();
 
@@ -23,7 +27,7 @@
       x: r.left,
       y: r.bottom + 4,
       items: [
-        ...shells.map((sh) => ({ label: `${sh.label}${sh.id === def ? " ✓" : ""}`, action: () => newTerminal(app.root, "shell", undefined, sh) })),
+        ...shells.map((sh) => ({ label: `${sh.label}${sh.id === def ? " ✓" : ""}`, action: () => newTerminal(app.root, "shell", localTerminalTitle(), sh) })),
         { label: "", separator: true },
         ...shells
           .filter((sh) => sh.id !== def)
@@ -48,7 +52,7 @@
     </div>
   {/each}
   </div>
-  <button class="add" title={t("code.term.new")} onclick={() => newTerminal(app.root)}><Glyph name="plus" size={10} /></button>
+  <button class="add" title={isGuest ? t("code.term.newLocal") : t("code.term.new")} aria-label={isGuest ? t("code.term.newLocal") : t("code.term.new")} onclick={() => newTerminal(app.root, "shell", localTerminalTitle())}><Glyph name="plus" size={10} /></button>
   <button class="add pick" title={t("code.term.chooseShell")} onclick={shellMenu}><Glyph name="chevron-down" size={10} /></button>
   {#if terms.tabs.length > 1 || terms.split}
     <button class="add split" class:on={terms.split} title={terms.split ? t("layout.termTabs") : t("layout.termSplit")} aria-label={t("layout.termSplit")} onclick={toggleSplit}>

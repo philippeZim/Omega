@@ -1,7 +1,7 @@
 <script lang="ts">
   import { app, activeTab } from "../lib/state.svelte";
   import { ui } from "../lib/ui.svelte";
-  import { runner, refreshProject, runAction, editRunCommand, resetRunCommand, chooseVersion } from "../lib/code/runner.svelte";
+  import { runner, runnerRemote, refreshProject, runAction, editRunCommand, resetRunCommand, chooseVersion } from "../lib/code/runner.svelte";
   import { startDebugging, stopDebugging } from "../lib/debug/debugger.svelte";
   import { dbg } from "../lib/debug/store.svelte";
   import { langFor } from "../lib/code/languages";
@@ -31,7 +31,8 @@
 
   const p = $derived(runner.project);
 
-  const runItems = () => [
+  // A guest can't change the host's run command yet: the entry says so instead of doing nothing.
+  const runItems = () => runnerRemote.project ? [{ label: t("code.rb.runCmdOnHost") }] : [
     { label: t("code.rb.editRunCmd"), action: editRunCommand },
     ...(p?.defaultRun !== undefined ? [{ label: t("code.rb.resetRunCmd"), action: resetRunCommand }] : []),
   ];
