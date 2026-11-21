@@ -382,8 +382,9 @@ fn to_project(f: &str, project: Option<&Path>) -> String {
     let p = Path::new(f);
     let real = canonical(project);
     let rel = p.strip_prefix(project).ok().or_else(|| real.as_deref().and_then(|r| p.strip_prefix(r).ok()));
-    match rel.and_then(|r| r.to_str()) {
-        Some(r) if safe_rel(r) && guest_path_ok(project, p) && p.is_file() => r.to_string(),
+    // Project paths use "/"; on Windows "\" is only the separator here, and safe_rel refuses it.
+    match rel.and_then(|r| r.to_str()).map(|r| if cfg!(windows) { r.replace('\\', "/") } else { r.to_string() }) {
+        Some(r) if safe_rel(&r) && guest_path_ok(project, p) && p.is_file() => r,
         _ => String::new(),
     }
 }
