@@ -162,7 +162,7 @@ export function debugExtension(path: string): Extension {
     provide: (f) => EditorView.decorations.from(f),
   });
 
-  const sync = (view: EditorView) => {
+  const sync = (view: EditorView, moved = false) => {
     const lines: { line: number; condition?: string }[] = [];
     const field = view.state.field(bpField, false);
     if (!field) return; // mode switched away meanwhile
@@ -170,7 +170,7 @@ export function debugExtension(path: string): Extension {
       lines.push({ line: view.state.doc.lineAt(from).number, condition: v.condition });
     });
     lines.sort((a, b) => a.line - b.line);
-    setBreakpointLines(path, lines);
+    setBreakpointLines(path, lines, moved);
   };
 
   let timer: number | undefined;
@@ -178,6 +178,12 @@ export function debugExtension(path: string): Extension {
 
   const toggleAt = (view: EditorView, pos: number, condition?: string | null) => {
     if (shared && blockedByCapability("debug")) return;
+    if (dbgHooks.hosting()) {
+      // Start from the shared list, so this click can't also claim a marker guests have withdrawn.
+      clearTimeout(timer);
+      sync(view, true);
+      view.dispatch({ effects: debugRefresh.of(null) });
+    }
     view.dispatch({ effects: toggleBp.of({ pos, condition }) });
     sync(view);
   };
@@ -266,7 +272,7 @@ export function debugExtension(path: string): Extension {
       if (u.docChanged && own) {
         clearTimeout(timer);
         // Shared: at once, so a state update from the host can't put the marker back meanwhile.
-        timer = window.setTimeout(() => sync(u.view), shared ? 0 : 400);
+        timer = window.setTimeout(() => sync(u.view, true), shared ? 0 : 400);
       }
     }),
     EditorView.baseTheme({

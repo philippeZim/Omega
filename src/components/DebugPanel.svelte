@@ -1,7 +1,7 @@
 <script lang="ts">
   import Glyph from "./Glyph.svelte";
   import VarTree from "./VarTree.svelte";
-  import { dbg, setBreakpointLines } from "../lib/debug/store.svelte";
+  import { adoptBreakpoint, dbg, setBreakpointLines } from "../lib/debug/store.svelte";
   import {
     startDebugging, stopDebugging, restartDebugging, continueRun, stepOver, stepInto, stepOut, pause,
     selectFrame, selectThread, addWatch, removeWatch, toggleWatch,
@@ -155,6 +155,7 @@
             <span class="bdot" class:cond={b.condition} class:unverified={b.verified === false}></span>
             <span class="bfile">{fileName(b.path)}:{b.line}</span>
             {#if b.condition}<span class="bcond">{b.condition}</span>{/if}
+            {#if b.guest}<button class="keep" title={t("ai.collab.dbg.keepHint")} onclick={(e) => { e.stopPropagation(); adoptBreakpoint(b.path, b.line); }}>{t("ai.collab.dbg.keep")}</button>{/if}
             <button class="rm" onclick={(e) => { e.stopPropagation(); removeBp(b.path, b.line); }} aria-label={t("code.dbg.remove")}><Glyph name="x" size={8} /></button>
           </div>
         {:else}
@@ -211,4 +212,6 @@
   .bfile { white-space: nowrap; }
   .bcond { flex: 1; color: var(--orange); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .bp .rm { margin-left: auto; }
+  .keep { flex-shrink: 0; padding: 1px 8px; border-radius: 999px; font-family: var(--font); font-size: 11px; color: var(--label-2); background: var(--fill); }
+  .keep:hover { background: var(--fill-2); color: var(--label); }
 </style>

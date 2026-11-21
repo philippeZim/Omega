@@ -146,6 +146,8 @@ export const en = {
   "ai.collab.dbg.skipped": "… {count} lines skipped",
   "ai.collab.dbg.noSetVariable": "The debugger can't change variables",
   "ai.collab.dbg.tooMany": "Too many breakpoints",
+  "ai.collab.dbg.keep": "Keep",
+  "ai.collab.dbg.keepHint": "Set by a guest, so it ends with the session. Keep it as your own breakpoint.",
 };
 export const de: Record<keyof typeof en, string> = {
   "ai.noActiveFile": "Keine Datei aktiv",
@@ -293,6 +295,8 @@ export const de: Record<keyof typeof en, string> = {
   "ai.collab.dbg.skipped": "… {count} Zeilen übersprungen",
   "ai.collab.dbg.noSetVariable": "Der Debugger kann Variablen nicht ändern",
   "ai.collab.dbg.tooMany": "Zu viele Haltepunkte",
+  "ai.collab.dbg.keep": "Behalten",
+  "ai.collab.dbg.keepHint": "Von einem Gast gesetzt, endet daher mit der Sitzung. Als eigenen Haltepunkt behalten.",
 };
 export const fr: Record<keyof typeof en, string> = {
   "ai.noActiveFile": "Aucun fichier actif",
@@ -440,4 +444,6 @@ export const fr: Record<keyof typeof en, string> = {
   "ai.collab.dbg.skipped": "… {count} lignes ignorées",
   "ai.collab.dbg.noSetVariable": "Le débogueur ne peut pas modifier les variables",
   "ai.collab.dbg.tooMany": "Trop de points d’arrêt",
+  "ai.collab.dbg.keep": "Garder",
+  "ai.collab.dbg.keepHint": "Défini par un invité, il disparaît avec la session. Le garder comme votre point d’arrêt.",
 };
