@@ -56,9 +56,9 @@ const MARKERS: [string, ProjectKind][] = [
   ["settings.gradle", "gradle"],
   ["build.gradle.kts", "gradle"],
   ["build.gradle", "gradle"],
-  ["package.json", "pnpm"],
-  // build.sbt first: an sbt project stays on sbt even if it also has a project.scala.
+  // Before package.json (Scala.js builds have both) and project.scala: such a project stays on sbt.
   ["build.sbt", "sbt"],
+  ["package.json", "pnpm"],
   ["project.scala", "scala-cli"],
 ];
 
@@ -401,7 +401,7 @@ export function scalaScriptMain(relPath: string): string | null {
 export function scalaCliRun(script: string | null): string {
   if (!script) return "scala-cli run .";
   const main = scalaScriptMain(script);
-  return main ? `scala-cli run . --main-class ${main}` : `scala-cli run ${q(script)}`;
+  return main ? `scala-cli run . --main-class ${main}` : `scala-cli run ${q(script.startsWith("-") ? `./${script}` : script)}`;
 }
 
 /** Compiler commands per OS: GCC on Linux, Apple clang on macOS, LLVM-MinGW clang on Windows. */
