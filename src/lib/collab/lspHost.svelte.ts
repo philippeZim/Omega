@@ -14,7 +14,7 @@ import {
 import { guestPathOk, guestScope, sharedDocListeners, sharedDocs, type GuestScope, type SharedDocView } from "./share.svelte";
 import { app } from "../state.svelte";
 import { fsApi, joinPath } from "../api";
-import { isForeignLang } from "../code/langOverride.svelte";
+import { isForeignLang, onLanguageOverride } from "../code/langOverride.svelte";
 import { langFor, type LangInfo } from "../code/languages";
 import { clientFor, fileUri, neverInstall, restartListeners, stopGuestServers, toolsDir, uriPath, workspaceSymbols, type LspClient, type WorkspaceSymbol } from "../code/lsp.svelte";
 import { editsForDoc, MAX_FIXES, quickFixesFor } from "../code/lspExtension";
@@ -138,6 +138,9 @@ export function reconcileLspSessions() {
     publish("lsp.docs", { docs: { [rel]: entry } });
   }
 }
+
+// The host chose another language: a session on the old one ends now, not at the next tab change.
+onLanguageOverride(() => reconcileLspSessions());
 
 function startSession(abs: string, doc: SharedDocView, lang: LangInfo) {
   const s: LspSession = {
