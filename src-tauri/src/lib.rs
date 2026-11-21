@@ -112,6 +112,7 @@ pub fn run() {
             latex::latex_compile,
             pty::pty_spawn,
             pty::pty_write,
+            pty::pty_write_guest,
             pty::pty_resize,
             pty::pty_kill,
             pty::pty_kill_all,

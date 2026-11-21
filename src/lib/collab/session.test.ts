@@ -67,6 +67,7 @@ vi.mock("../terminal.svelte", () => ({
   taskState: () => task.state,
   interruptTask: (id: number) => task.interrupt(id),
   runningPackageTask: (id: number) => (task.state.running && task.state.taskId === id ? !!task.state.packages : null),
+  writeTaskInput: vi.fn(async () => "ok"),
 }));
 vi.mock("../layout.svelte", () => ({ showView: vi.fn() }));
 vi.mock("../editor", () => ({

@@ -13,7 +13,7 @@
 
   // Always have at least one shell when the view is shown.
   $effect(() => {
-    if (shown && terms.tabs.length === 0) newTerminal(app.root, "shell", localTerminalTitle());
+    if (shown && !terms.active && terms.tabs.every((t) => t.kind === "guest-shell")) newTerminal(app.root, "shell", localTerminalTitle());
   });
 
   $effect(() => {

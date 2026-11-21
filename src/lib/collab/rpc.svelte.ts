@@ -238,13 +238,25 @@ export function publish<T extends RpcTopic>(topic: T, payload: PayloadOf<T> | nu
   return true;
 }
 
-/** Host: turns one capability of a guest on or off, effective immediately. */
-export function setCapability(peer: string, cap: Capability, on: boolean) {
+const revokedListeners = new Set<(peer: string, cap: Capability) => void>();
+/** Host: runs when a guest loses a capability. */
+export function onCapabilityRevoked(fn: (peer: string, cap: Capability) => void) {
+  revokedListeners.add(fn);
+  return () => revokedListeners.delete(fn);
+}
+
+/**
+ * Host: turns one capability of a guest on or off, effective immediately. `terminal` is control
+ * over the host's computer: it only turns on with `confirmed`, see `requestCapability`.
+ */
+export function setCapability(peer: string, cap: Capability, on: boolean, opts: { confirmed?: boolean } = {}) {
   const p = approved(peer);
   if (!p || !CAPABILITIES.includes(cap) || !!p.caps?.includes(cap) === on) return;
+  if (cap === "terminal" && on && !opts.confirmed) return;
   const before = p.caps ?? [];
   p.caps = CAPABILITIES.filter((c) => (c === cap ? on : before.includes(c)));
   send(peer, { t: "rpc.caps", caps: [...p.caps] });
+  if (!on) for (const fn of revokedListeners) fn(peer, cap);
   const st = peers.get(peer);
   if (!st) return;
   if (!on) for (const r of st.running.values()) if (r.capability === cap) r.controller.abort("forbidden");

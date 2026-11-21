@@ -166,7 +166,7 @@ export const TOOLS: Tool[] = [
       project: runner.project ? { tool: runner.project.label, root: runner.project.root, run: runner.project.run?.cmd, build: runner.project.build?.cmd } : null,
       git: git.repo ? { branch: git.branch, ahead: git.ahead, behind: git.behind, remote: git.remoteUrl, changes: git.changes.map((c) => `${c.x}${c.y} ${c.path}`) } : null,
       debugger: { status: dbg.status, label: dbg.label, stopReason: dbg.stopReason, location: dbg.exec, panel: isShown("debug") },
-      terminal: { visible: isShown("terminal"), split: terms.split, tabs: terms.tabs.map((t) => ({ id: t.id, title: t.title, kind: t.kind, exited: t.exited, status: t.status, code: t.code, active: t.id === terms.active })) },
+      terminal: { visible: isShown("terminal"), split: terms.split, tabs: terms.tabs.filter((t) => t.kind !== "guest-shell").map((t) => ({ id: t.id, title: t.title, kind: t.kind, exited: t.exited, status: t.status, code: t.code, active: t.id === terms.active })) },
       collab: collab.role ? { role: collab.role, status: collab.status, ticket: collab.ticket || undefined, participants: collab.participants.map((p) => ({ name: p.name, role: p.role, direct: p.direct, rtt: p.rtt, addr: p.addr })), pendingRequests: collab.requests.map((r) => r.name) } : collab.error ? { role: null, error: collab.error } : null,
       recentToasts: toastLog.slice(-8),
     }),
@@ -436,7 +436,7 @@ export const TOOLS: Tool[] = [
     run: async ({ selector, text, scale }) => {
       const el = selector || text ? findElements({ selector, text, all: true })[0] : document.body;
       if (!el) throw new Error("Element nicht gefunden");
-      const base = { pixelRatio: scale ?? 1, backgroundColor: "#030304", filter: (n: Node) => !(n instanceof HTMLElement && (n.classList.contains("tip") || n.classList.contains("cm-widgetBuffer"))) };
+      const base = { pixelRatio: scale ?? 1, backgroundColor: "#030304", filter: (n: Node) => !(n instanceof HTMLElement && (n.classList.contains("tip") || n.classList.contains("cm-widgetBuffer") || "guestText" in n.dataset)) };
       // A resource that fails to load (font/image) rejects with a bare Event → retry without them.
       const PIXEL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
       let url: string;
@@ -496,7 +496,7 @@ export const TOOLS: Tool[] = [
     description: "Schreibt Text direkt in ein Terminal (wie Tippen; Steuerzeichen erlaubt, z.B. \\r für Enter, \\x03 für Strg+C).",
     inputSchema: obj({ text: str("Text bzw. Steuerzeichen"), id: str("Terminal-ID aus get_state (Standard: aktives)"), enter: bool("Danach Enter senden") }, ["text"]),
     run: async ({ text, id, enter }) => {
-      const tid = id ?? terms.active;
+      const tid = toolTerminal(id);
       if (!tid) throw new Error("Kein Terminal offen");
       await sendInput(tid, text + (enter ? "\r" : ""));
       return `geschrieben an ${tid}`;
@@ -506,7 +506,7 @@ export const TOOLS: Tool[] = [
     name: "terminal_read",
     description: "Liest die letzten Zeilen eines Terminals (Standard: aktives).",
     inputSchema: obj({ id: str("Terminal-ID aus get_state (optional)"), lines: num("Standard 60") }),
-    run: ({ id, lines }) => readTerminal(id ?? terms.active, lines ?? 60),
+    run: ({ id, lines }) => readTerminal(toolTerminal(id), lines ?? 60),
   },
   {
     name: "show_view",
@@ -559,7 +559,7 @@ export const TOOLS: Tool[] = [
     description: "Schließt ein Terminal und beendet seine Shell (Standard: aktives). Der nächste Run-Befehl startet bei Bedarf einen neuen Run-Terminal.",
     inputSchema: obj({ id: str("Terminal-ID aus get_state (optional)") }),
     run: ({ id }) => {
-      const tid = id ?? terms.active;
+      const tid = toolTerminal(id);
       if (!tid || !terms.tabs.some((t) => t.id === tid)) throw new Error("Terminal nicht gefunden");
       closeTerminal(tid);
       return `geschlossen: ${tid}`;
@@ -572,6 +572,12 @@ const TERM_KEYS: Record<string, string> = {
   ArrowUp: "\x1b[A", ArrowDown: "\x1b[B", ArrowRight: "\x1b[C", ArrowLeft: "\x1b[D",
   Home: "\x1b[H", End: "\x1b[F", PageUp: "\x1b[5~", PageDown: "\x1b[6~",
 };
+
+/** The terminal a tool acts on. A guest's shell is never one: its content is the guest's words. */
+function toolTerminal(id?: string | null): string | null {
+  const tid = id ?? terms.active;
+  return terms.tabs.find((t) => t.id === tid)?.kind === "guest-shell" ? null : tid;
+}
 
 /** Terminal id if keyboard focus is inside a terminal (xterm ignores synthetic key events). */
 function focusedTerminal(): string | null {

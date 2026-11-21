@@ -61,7 +61,8 @@ export function findElements(opts: { text?: string; selector?: string; exact?: b
   let els: HTMLElement[];
   if (opts.selector) els = [...document.querySelectorAll<HTMLElement>(opts.selector)];
   else els = [...document.querySelectorAll<HTMLElement>(INTERACTIVE)];
-  els = els.filter(visible);
+  // A guest's shell output must not become input for the host's AI tools.
+  els = els.filter((el) => visible(el) && !el.closest("[data-guest-text]"));
   if (!opts.all) els = els.filter(reachable);
   if (opts.text) {
     const q = opts.text.toLowerCase().trim();

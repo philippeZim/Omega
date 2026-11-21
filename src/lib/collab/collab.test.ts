@@ -193,6 +193,78 @@ test("start rights: approve applies them, a rejoin can't get more, later changes
   expect(s.collab.startCaps).toEqual(DEFAULT_CAPABILITIES);
 });
 
+test("start rights: `terminal` can't be switched on without the confirmation", async () => {
+  const s = await freshSession((cmd) => (cmd === "collab_host" ? "omega-t" : null));
+  await s.startHosting();
+  s.setStartCapability("terminal", true);
+  expect(s.collab.startCaps).not.toContain("terminal");
+  s.approve({ peer: "g1", name: "Gast" });
+  expect(s.collab.participants.find((p) => p.peer === "g1")?.caps).not.toContain("terminal");
+  s.setStartCapability("terminal", true, { confirmed: true });
+  expect(s.collab.startCaps).toContain("terminal");
+  await s.leave();
+  expect(s.collab.startCaps).not.toContain("terminal");
+});
+
+test("start rights with `terminal`: every approval asks by name, and no is a guest without it", async () => {
+  const s = await freshSession((cmd) => (cmd === "collab_host" ? "omega-t" : null));
+  const { ui } = await import("../ui.svelte");
+  await s.startHosting();
+  s.setStartCapability("terminal", true, { confirmed: true });
+  const caps = (peer: string) => s.collab.participants.find((p) => p.peer === peer)?.caps;
+  const ask = vi.spyOn(ui, "choose");
+  for (const peer of ["ada", "bob", "cy", "dee"]) s.collab.requests.push({ peer, name: peer.toUpperCase() });
+
+  ask.mockResolvedValueOnce("full");
+  await s.approve(s.collab.requests[0]);
+  expect(ask.mock.calls.at(-1)![0]).toContain("ADA");
+  expect(caps("ada")).toContain("terminal");
+
+  ask.mockResolvedValueOnce("without");
+  await s.approve(s.collab.requests[0]);
+  expect(ask.mock.calls.at(-1)![0]).toContain("BOB");
+  expect(caps("bob")).toBeDefined();
+  expect(caps("bob")).not.toContain("terminal");
+  expect(caps("bob")).toContain("run");
+
+  // Dismissing the dialog isn't a yes.
+  ask.mockResolvedValueOnce(null as never);
+  await s.approve(s.collab.requests[0]);
+  expect(caps("cy")).not.toContain("terminal");
+
+  // Denied while the host was deciding: nobody gets in. A second click doesn't ask twice.
+  let answer: (v: string) => void = () => {};
+  ask.mockImplementationOnce(() => new Promise((r) => (answer = r as (v: string) => void)));
+  const req = s.collab.requests[0];
+  const pending = s.approve(req);
+  const calls = ask.mock.calls.length;
+  await s.approve(req);
+  expect(ask.mock.calls.length).toBe(calls);
+  s.deny(req);
+  answer("full");
+  await pending;
+  expect(caps("dee")).toBeUndefined();
+  ask.mockRestore();
+  await s.leave();
+});
+
+test("host: kicking a guest and ending the session run the peer-gone hooks at once", async () => {
+  const s = await freshSession((cmd) => (cmd === "collab_host" ? "omega-t" : null));
+  await s.startHosting();
+  const gone: string[] = [];
+  s.peerGoneHooks.push((peer) => gone.push(peer));
+  s.approve({ peer: "g1", name: "Eins" });
+  s.approve({ peer: "g2", name: "Zwei" });
+  s.approve({ peer: "g3", name: "Drei" });
+  s.kick("g1");
+  expect(gone).toEqual(["g1"]); // synchronously, before the connection closes
+  await emit("collab-closed", { peer: "g2", reason: "closed" });
+  expect(gone).toEqual(["g1", "g2"]);
+  void s.leave();
+  expect(gone).toContain("g3");
+  s.peerGoneHooks.length = 0;
+});
+
 test("host: join requests are bounded, the excess is told it's busy, and the host hears once", async () => {
   const s = await freshSession((cmd) => (cmd === "collab_host" ? "omega-t" : null));
   await s.startHosting();

@@ -133,9 +133,36 @@ function nextColor() {
   return PEER_COLORS.find((c) => !used.has(c)) ?? PEER_COLORS[collab.participants.length % PEER_COLORS.length];
 }
 
-export function approve(req: JoinRequest) {
+const askingTerminal = new Set<string>();
+
+/**
+ * Host: lets a guest in with the start rights. `terminal` among them is control over this computer,
+ * so it's asked for each guest by name; without a yes the guest joins without it.
+ */
+export function approve(req: JoinRequest): void | Promise<void> {
+  if (collab.startCaps.includes("terminal")) return approveAsking(req);
+  admit(req, false);
+}
+
+async function approveAsking(req: JoinRequest) {
+  if (askingTerminal.has(req.peer)) return;
+  askingTerminal.add(req.peer);
+  try {
+    const choice = await ui.choose(t("ai.collab.shell.confirmTitle", { name: req.name }), t("ai.collab.shell.confirmBody", { name: req.name }), [
+      { label: t("ai.collab.shell.withoutTerminal"), value: "without", primary: true },
+      { label: t("ai.collab.shell.confirmOk"), value: "full", danger: true },
+    ]);
+    // Denied, gone or the session ended while the host was deciding.
+    if (collab.role !== "host" || !collab.requests.some((r) => r.peer === req.peer)) return;
+    admit(req, choice === "full");
+  } finally {
+    askingTerminal.delete(req.peer);
+  }
+}
+
+function admit(req: JoinRequest, terminal: boolean) {
   collab.requests = collab.requests.filter((r) => r.peer !== req.peer);
-  const p: Participant = { peer: req.peer, name: req.name, color: nextColor(), role: "guest", caps: [...collab.startCaps] };
+  const p: Participant = { peer: req.peer, name: req.name, color: nextColor(), role: "guest", caps: collab.startCaps.filter((c) => c !== "terminal" || terminal) };
   collab.participants.push(p);
   send(req.peer, { t: "welcome", you: { peer: p.peer, name: p.name, color: p.color }, version: PROTOCOL_VERSION, caps: p.caps, participants: collab.participants.map(publicInfo) });
   // The new guest has the list from its welcome.
@@ -147,13 +174,14 @@ export function approve(req: JoinRequest) {
  * Host: the rights of guests approved from now on; guests already here keep theirs. Guests have no
  * identity that survives a rejoin, so this is what limits someone who leaves and comes back.
  */
-export function setStartCapability(cap: Capability, on: boolean) {
+export function setStartCapability(cap: Capability, on: boolean, opts: { confirmed?: boolean } = {}) {
+  if (cap === "terminal" && on && !opts.confirmed) return; // see requestStartCapability
   collab.startCaps = CAPABILITIES.filter((c) => (c === cap ? on : collab.startCaps.includes(c)));
 }
 
 /** Approves the oldest pending request (command palette). */
 export function approveNext() {
-  if (collab.requests[0]) approve(collab.requests[0]);
+  if (collab.requests[0]) void approve(collab.requests[0]);
 }
 
 /** Reads an invite code from the clipboard, if there is one. */
@@ -183,6 +211,7 @@ export function kick(peer: string) {
   // Refused from now on, not only once the connection is closed below.
   const p = collab.participants.find((x) => x.peer === peer);
   if (p) p.removing = true;
+  peerGone(peer);
   void import("./share.svelte").then((m) => m.forgetPeer(peer));
   send(peer, { t: "kicked" });
   setTimeout(() => invoke("collab_kick", { peer }), 200);
@@ -216,12 +245,27 @@ export async function join(ticket: string) {
 /** Run after a session ended and the shared docs are gone (`wasGuest`: we were a guest). */
 export const sessionEndHooks: ((wasGuest: boolean) => Promise<void> | void)[] = [];
 
+/** Host: a guest is gone (removed, left or the session ends). Runs at once, before any cleanup. */
+export const peerGoneHooks: ((peer: string) => void)[] = [];
+function peerGone(peer: string) {
+  for (const h of peerGoneHooks) {
+    try {
+      h(peer);
+    } catch (e) {
+      console.error("collab peer gone hook", e);
+    }
+  }
+}
+
 let leaving = false;
 export async function leave() {
   if (leaving) return;
   leaving = true;
   const wasGuest = collab.role === "guest";
-  if (collab.role === "host") broadcast({ t: "ended" });
+  if (collab.role === "host") {
+    for (const p of [...collab.participants]) if (p.role === "guest") peerGone(p.peer);
+    broadcast({ t: "ended" });
+  }
   // Mark as idle first so the connection-closed events of our own leave don't show an error.
   collab.status = "idle";
   // Whatever fails here, the session state below is still reset, or Leave would stop working.
@@ -318,6 +362,7 @@ listen<{ peer: string; reason: string }>("collab-closed", (e) => {
     collab.participants = collab.participants.filter((x) => x.peer !== peer);
     collab.requests = collab.requests.filter((x) => x.peer !== peer);
     if (p) {
+      peerGone(peer);
       void import("./share.svelte").then((m) => m.forgetPeer(peer));
       ui.toast(t("ai.collab.left", { name: p.name }));
       broadcast({ t: "participants", participants: collab.participants.map(publicInfo) });

@@ -26,6 +26,8 @@
   import "./lib/collab/session.svelte";
   import "./lib/collab/lspHost.svelte";
   import "./lib/collab/lspGuest.svelte";
+  import { guestShells } from "./lib/collab/guestShell.svelte";
+  import GuestShellBar from "./components/GuestShellBar.svelte";
   import "./lib/ai/control.svelte";
   import "./lib/ai/ide.svelte";
   import DiffView from "./components/DiffView.svelte";
@@ -135,6 +137,9 @@
 <ContextMenu />
 {#if collab.open}
   <CollabPanel />
+{/if}
+{#if guestShells.list.length}
+  <GuestShellBar />
 {/if}
 <Toasts />
 <ToolProgress />

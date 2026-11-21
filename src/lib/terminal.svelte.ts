@@ -16,8 +16,8 @@ export function setTerminalKeyFilter(fn: typeof terminalKeyFilter) {
   terminalKeyFilter = fn;
 }
 
-/** "build"/"run": one command per start (see `runTask`); "remote": mirror of the collab host's Run terminal (no local shell). */
-export type TermKind = "shell" | "build" | "run" | "remote";
+/** "build"/"run": one command per start (see `runTask`); "remote": a terminal on the collab host (no local shell); "guest-shell": the host's read-only view of a shell it granted a guest. */
+export type TermKind = "shell" | "build" | "run" | "remote" | "guest-shell";
 /** State of a Build/Run tab's last command. */
 export type TaskStatus = "running" | "ok" | "fail" | "stopped";
 
@@ -33,6 +33,8 @@ export interface TermTab {
   taskId?: number;
   /** build/run: the current command changes packages (a guest with `packages` may stop it). */
   packageTask?: boolean;
+  /** Collab guest: this tab is a real shell on the host's machine. */
+  hostShell?: boolean;
 }
 
 // Where and whether the terminal view is shown is managed by layout.svelte.ts.
@@ -69,9 +71,16 @@ interface Instance {
   /** Id of the PTY currently behind this tab (a Build/Run tab gets a new one per command). */
   pty: string;
   /** build/run: command of the current start, when it started, and what happens when it ends. */
-  task?: { cmd: string; started: number; stopRequested: boolean; onExit?: (code: number | null) => void };
+  task?: { cmd: string; started: number; stopRequested: boolean; guestInput?: boolean; onExit?: (code: number | null) => void };
   /** remote: where typed input goes (the host's Run terminal). */
   onInput?: (data: string) => void;
+  /** remote: the tab changed size. */
+  onResized?: () => void;
+  /** remote, guest-shell: the tab is being closed. */
+  onClose?: () => void;
+  /** guest-shell: output handed to xterm and not parsed yet, and whether some had to be dropped. */
+  viewPending?: number;
+  viewSkipped?: boolean;
   shell: string | null;
   term: Terminal;
   fit: FitAddon;
@@ -85,6 +94,13 @@ const instances = new Map<string, Instance>();
 const ptyTab = new Map<string, string>();
 const ptyOf = (id: string) => instances.get(id)?.pty ?? id;
 
+/** Keyboard or paste input of a tab: a host terminal gets it via `onInput`, a view takes none. */
+function typeInto(id: string, data: string) {
+  const inst = instances.get(id);
+  if (inst?.kind === "remote") inst.onInput?.(data);
+  else if (inst?.kind !== "guest-shell") invoke("pty_write", { id: ptyOf(id), data }).catch(() => {});
+}
+
 /**
  * Called after a tool install changed the effective PATH. Build/Run commands get a fresh process
  * (and so the new PATH) every time; open shells keep theirs, like in any terminal.
@@ -97,10 +113,13 @@ listen<{ id: string; data: string }>("pty-data", (e) => {
   const tid = ptyTab.get(e.payload.id);
   const inst = tid ? instances.get(tid) : undefined;
   if (!inst) return;
+  if (inst.kind === "guest-shell" && !viewHasRoom(inst, e.payload.id, e.payload.data.length)) return;
   const bin = Uint8Array.from(atob(e.payload.data), (c) => c.charCodeAt(0));
   let d = decoder.get(e.payload.id);
   if (!d) decoder.set(e.payload.id, (d = new TextDecoder()));
-  inst.term.write(d.decode(bin, { stream: true }));
+  const text = d.decode(bin, { stream: true });
+  if (inst.kind === "guest-shell") writeView(inst, text, e.payload.data.length);
+  else inst.term.write(text);
 });
 listen<{ id: string; code: number | null }>("pty-exit", (e) => {
   const tid = ptyTab.get(e.payload.id);
@@ -113,6 +132,27 @@ listen<{ id: string; code: number | null }>("pty-exit", (e) => {
   tab.exited = true;
   inst.term.write(`\r\n\x1b[90m${t("code.term.exited")}\x1b[0m\r\n`);
 });
+
+/** Most unparsed output of a guest's shell the host's view holds; the rest is skipped, not queued. */
+export const VIEW_MAX_PENDING = 512 * 1024;
+
+function viewHasRoom(inst: Instance, pty: string, size: number) {
+  if ((inst.viewPending ?? 0) + size <= VIEW_MAX_PENDING) return true;
+  inst.viewSkipped = true;
+  decoder.delete(pty); // a cut can fall inside a character
+  return false;
+}
+
+function writeView(inst: Instance, text: string, size: number) {
+  inst.viewPending = (inst.viewPending ?? 0) + size;
+  inst.term.write(text, () => {
+    inst.viewPending! -= size;
+    if (!inst.viewSkipped || inst.viewPending! > VIEW_MAX_PENDING / 2) return;
+    inst.viewSkipped = false;
+    // CAN ends a sequence the cut may have left open, so the marker is shown as text.
+    inst.term.write(`\x18\x1b[0m\r\n\x1b[2m${t("ai.collab.shell.skipped")}\x1b[0m\r\n`);
+  });
+}
 
 const theme = {
   background: "rgba(0,0,0,0)",
@@ -181,7 +221,7 @@ export function newTerminal(cwd: string | null, kind: TermKind = "shell", title?
       return false;
     }
     if (IS_MAC && e.metaKey && !e.ctrlKey && !e.altKey && e.key.toLowerCase() === "v") {
-      navigator.clipboard.readText().then((t) => invoke("pty_write", { id: ptyOf(id), data: t }));
+      navigator.clipboard.readText().then((t) => typeInto(id, t));
       return false;
     }
     if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "c") {
@@ -189,19 +229,19 @@ export function newTerminal(cwd: string | null, kind: TermKind = "shell", title?
       return false;
     }
     if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "v") {
-      navigator.clipboard.readText().then((t) => invoke("pty_write", { id: ptyOf(id), data: t }));
+      navigator.clipboard.readText().then((t) => typeInto(id, t));
       return false;
     }
     // App shortcuts that are allowed in the terminal (mode switch, terminal toggle, debugger keys …).
     if (terminalKeyFilter(e)) return false;
     return true;
   });
-  term.onData((data) => {
+  term.onData((data) => typeInto(id, data));
+  term.onResize(({ cols, rows }) => {
     const inst = instances.get(id);
-    if (inst?.kind === "remote") inst.onInput?.(data);
-    else invoke("pty_write", { id: ptyOf(id), data }).catch(() => {});
+    if (inst?.kind === "remote") inst.onResized?.();
+    else if (inst?.kind !== "guest-shell") invoke("pty_resize", { id: ptyOf(id), cols, rows }).catch(() => {});
   });
-  term.onResize(({ cols, rows }) => instances.get(id)?.kind !== "remote" && invoke("pty_resize", { id: ptyOf(id), cols, rows }).catch(() => {}));
 
   const el = document.createElement("div");
   el.className = "term-host";
@@ -213,8 +253,12 @@ export function newTerminal(cwd: string | null, kind: TermKind = "shell", title?
   while (terms.tabs.some((t) => t.title === `Terminal ${n}`)) n++;
   terms.tabs.push({ id, title: title ?? (kind === "run" ? t("common.run") : kind === "build" ? t("code.act.build") : shell ? shell.label : `Terminal ${n}`), kind, exited: false });
   counter++;
-  terms.active = id;
-  showView("terminal");
+  // A guest opening a shell must not take over the host's view or focus, or become the terminal
+  // that tools read by default: only the host's View button selects it.
+  if (kind !== "guest-shell") {
+    terms.active = id;
+    showView("terminal");
+  }
   return id;
 }
 
@@ -228,7 +272,7 @@ export async function attach(id: string, container: HTMLElement, cwdFallback: st
     inst.term.open(inst.el);
   }
   fitTerm(id);
-  if (inst.kind === "remote") inst.spawned = true;
+  if (inst.kind === "remote" || inst.kind === "guest-shell") inst.spawned = true;
   if (!inst.spawned) {
     inst.spawned = true;
     await leftoversKilled;
@@ -241,7 +285,8 @@ export async function attach(id: string, container: HTMLElement, cwdFallback: st
 export function fitTerm(id: string | null) {
   if (!id) return;
   const inst = instances.get(id);
-  if (!inst?.term.element || !inst.el.isConnected || inst.el.clientHeight < 10) return;
+  // A guest's shell keeps the guest's size, the host only watches it.
+  if (!inst?.term.element || inst.kind === "guest-shell" || !inst.el.isConnected || inst.el.clientHeight < 10) return;
   try {
     inst.fit.fit();
   } catch {
@@ -258,20 +303,25 @@ function discardTerminal(id: string): number {
   const pty = ptyOf(id);
   invoke("pty_kill", { id: pty });
   ptyTab.delete(pty);
-  instances.get(id)?.term.dispose();
-  instances.get(id)?.el.remove();
+  const closing = instances.get(id);
+  closing?.term.dispose();
+  closing?.el.remove();
   instances.delete(id);
   decoder.delete(pty);
   const i = terms.tabs.findIndex((t) => t.id === id);
   terms.tabs.splice(i, 1);
+  closing?.onClose?.();
   return i;
 }
 
 export function closeTerminal(id: string) {
   const i = discardTerminal(id);
-  if (terms.active === id) terms.active = terms.tabs[Math.max(0, i - 1)]?.id ?? null;
+  if (terms.active === id) {
+    const next = terms.tabs[Math.max(0, i - 1)];
+    terms.active = (next?.kind === "guest-shell" ? terms.tabs.find((x) => x.kind !== "guest-shell") : next)?.id ?? null;
+  }
   // Closing the last terminal hides the panel instead of spawning a new shell.
-  if (!terms.tabs.length) hideView("terminal");
+  if (!terms.tabs.some((x) => x.kind !== "guest-shell") && !terms.active) hideView("terminal");
 }
 
 // ------------------------------------------------------------------ Build / Run tabs
@@ -345,6 +395,7 @@ export function runTask(kind: "build" | "run", cmd: string, cwd: string | null, 
   tab.exited = false;
   inst.cwd = cwd;
   inst.task = { cmd, started: Date.now(), stopRequested: false, onExit: opts.onExit };
+  delete inst.el.dataset.guestText;
   inst.term.reset();
   echo(inst, `${DIM}$ ${cmd.replace(/\r?\n/g, " ")}${RESET}\r\n`);
   terms.active = tab.id;
@@ -386,11 +437,65 @@ export function cancelTask(kind: "build" | "run") {
   invoke("pty_kill", { id: inst.pty }).catch(() => {});
 }
 
-/** Collab guest: a terminal tab that shows the host's Run output; typing goes to `onInput`. */
-export function remoteTerminal(title: string, onInput: (data: string) => void): string {
+/** Collab guest: a terminal tab that shows output from the host; typing goes to `onInput`. */
+export function remoteTerminal(title: string, onInput: (data: string) => void, opts: { hostShell?: boolean; onResize?: () => void; onClose?: () => void } = {}): string {
   const id = newTerminal(null, "remote", title);
-  instances.get(id)!.onInput = onInput;
+  const inst = instances.get(id)!;
+  inst.onInput = onInput;
+  inst.onResized = opts.onResize;
+  inst.onClose = opts.onClose;
+  if (opts.hostShell) terms.tabs.find((x) => x.id === id)!.hostShell = true;
   return id;
+}
+
+/** Collab guest: the host side of this tab is gone. */
+export function markTerminalExited(id: string) {
+  const tab = terms.tabs.find((x) => x.id === id);
+  if (tab) tab.exited = true;
+}
+
+export function terminalSize(id: string) {
+  const inst = instances.get(id);
+  return inst ? { cols: inst.term.cols, rows: inst.term.rows } : null;
+}
+
+/** Collab host: the read-only tab of a guest's shell. Doesn't take the view or the focus. */
+export function openGuestShellView(title: string, cols: number, rows: number, onClose: () => void): string {
+  const id = newTerminal(null, "guest-shell", title);
+  const inst = instances.get(id)!;
+  inst.spawned = true;
+  inst.onClose = onClose;
+  inst.term.options.disableStdin = true;
+  inst.el.dataset.guestText = ""; // kept out of the AI tools' DOM lookups and screenshots
+  inst.term.resize(cols, rows);
+  return id;
+}
+
+/** Collab host: starts the shell behind a view. A view closed meanwhile takes the shell with it. */
+export async function spawnGuestShell(id: string, cwd: string, cols: number, rows: number) {
+  await leftoversKilled;
+  if (!instances.has(id)) return;
+  await invoke("pty_spawn", { id, cwd, cols, rows, kind: "guest-shell", shell: null });
+  if (!instances.has(id)) await invoke("pty_kill", { id });
+}
+
+const guestWrite = (id: string, data: string, target: "task" | "shell"): Promise<"ok" | "busy" | "ended"> =>
+  invoke("pty_write_guest", { id, data, target }).then(
+    () => "ok" as const,
+    (e) => (String(e) === "pty:busy" ? ("busy" as const) : ("ended" as const)),
+  );
+
+/** Collab host: a guest's input for its shell. */
+export function writeGuestShell(id: string, data: string) {
+  return instances.get(id)?.kind === "guest-shell" ? guestWrite(id, data, "shell") : Promise.resolve("ended" as const);
+}
+
+/** Collab host: follows the size of the guest's terminal. */
+export function resizeGuestShell(id: string, cols: number, rows: number) {
+  const inst = instances.get(id);
+  if (inst?.kind !== "guest-shell") return;
+  inst.term.resize(cols, rows);
+  invoke("pty_resize", { id, cols, rows }).catch(() => {});
 }
 
 /** Writes output into a terminal (remote mirrors). */
@@ -409,6 +514,9 @@ export const isTaskPty = (pty: string) => {
 
 /** Sends input to a terminal tab: its shell, or the program running in a Build/Run tab (own PTY per run). */
 export function sendInput(id: string, data: string): Promise<void> {
+  const inst = instances.get(id);
+  if (inst?.kind === "guest-shell") return Promise.reject(new Error("read-only terminal"));
+  if (inst?.kind === "remote") return Promise.resolve(inst.onInput?.(data));
   return invoke("pty_write", { id: ptyOf(id), data });
 }
 
@@ -435,6 +543,19 @@ export function interruptTask(taskId: number): boolean {
   if (runningTaskTab()?.taskId !== taskId) return false;
   interruptRun();
   return true;
+}
+
+/**
+ * Collab host: a guest's input for the running command. Only reaches exactly `taskId`, while it runs
+ * and nobody asked it to stop; the backend also refuses a PTY that isn't a live command.
+ */
+export function writeTaskInput(taskId: number, data: string): Promise<"ok" | "busy" | "ended"> {
+  const tab = runningTaskTab();
+  const inst = tab && instances.get(tab.id);
+  if (tab?.taskId !== taskId || !inst?.task || inst.task.stopRequested || inst.pty !== `${tab.id}.${taskId}`) return Promise.resolve("ended");
+  inst.task.guestInput = true;
+  inst.el.dataset.guestText = "";
+  return guestWrite(inst.pty, data, "task");
 }
 
 /** Whether the running command `taskId` is a package task; null when that command isn't running. */
@@ -468,10 +589,17 @@ export function toggleTerminal() {
   toggleView("terminal");
 }
 
+/** Whether this tab's content is kept away from the AI tools. */
+export const isGuestText = (id: string) => !!instances.get(id) && "guestText" in instances.get(id)!.el.dataset;
+
+export const GUEST_INPUT_WITHHELD = "[Not shown: a Code Together guest typed into this run.]";
+
 /** Last `lines` lines of a terminal's buffer (for the control MCP). */
-export function readTerminal(id = terms.active, lines = 60): string {
+export function readTerminal(id: string | null = terms.active, lines = 60): string {
   const inst = id ? instances.get(id) : null;
-  if (!inst) return "";
+  // What a guest typed or ran must not become instructions for the host's AI tools.
+  if (!inst || inst.kind === "guest-shell") return "";
+  if (inst.task?.guestInput) return GUEST_INPUT_WITHHELD;
   const buf = inst.term.buffer.active;
   const out: string[] = [];
   const end = buf.baseY + buf.cursorY;

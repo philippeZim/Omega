@@ -18,6 +18,8 @@ export const guestGuard = {
   hosting: (): boolean => false,
   /** Whether the host allows this (always true when not a guest). */
   can: (_cap: Capability): boolean => true,
+  /** Opens a shell on the host (set once the guest shell module is loaded). */
+  openHostShell: null as null | (() => void),
 };
 
 export const guestCan = (cap: Capability) => guestGuard.can(cap);
