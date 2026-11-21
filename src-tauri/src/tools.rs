@@ -1,6 +1,7 @@
 //! Tools Omega can install by itself into its app-data folder (`tools/`), per OS and CPU:
 //! uv (Python), tectonic (LaTeX), Node.js, pnpm, CMake, Ninja, clangd, a JDK, Gradle, Rust (rustup),
-//! a C/C++ compiler (llvm-mingw on Windows, Xcode Command Line Tools on macOS) and Git on Windows.
+//! Scala CLI with Coursier, sbt, a C/C++ compiler (llvm-mingw on Windows, Xcode Command Line Tools
+//! on macOS) and Git on Windows.
 //! Installed tools are recorded in `tools/managed.json` (tool id → folder with its executables);
 //! those folders are appended to the PATH of everything Omega starts (see `env.rs`).
 use crate::env;
@@ -125,7 +126,8 @@ fn make_executable(_p: &Path) {
 }
 
 fn exe_name(name: &str) -> String {
-    if cfg!(windows) { format!("{name}.exe") } else { name.to_string() }
+    // A name with an extension is complete already (sbt.bat).
+    if cfg!(windows) && !name.contains('.') { format!("{name}.exe") } else { name.to_string() }
 }
 
 /// Folder below `root` that contains executable `name` (breadth-first, a few levels deep).
@@ -260,6 +262,11 @@ fn plan(id: &str) -> Result<Plan, String> {
             let url = v["downloadUrl"].as_str().ok_or("tools:no_version:Gradle")?.to_string();
             Plan { url, exe: "gradle" }
         }
+        "sbt" => {
+            // The official runner: it starts whichever sbt a project's build.properties asks for.
+            let url = gh_asset("sbt/sbt", |n| n.starts_with("sbt-") && n.ends_with(if cfg!(windows) { ".zip" } else { ".tgz" }))?;
+            Plan { url, exe: if cfg!(windows) { "sbt.bat" } else { "sbt" } }
+        }
         "git" if cfg!(windows) => {
             let suffix = if ARM { "-arm64.zip" } else { "-64-bit.zip" };
             let url = gh_asset("git-for-windows/git", |n| n.starts_with("mingit-") && n.ends_with(suffix) && !n.contains("busybox"))?;
@@ -277,7 +284,7 @@ fn plan(id: &str) -> Result<Plan, String> {
 /// Which tool ids can be installed automatically on this OS.
 #[tauri::command]
 pub fn tool_installable() -> Vec<&'static str> {
-    let mut v = vec!["uv", "tectonic", "node", "pnpm", "cmake", "ninja", "clangd", "jdk", "gradle", "rust"];
+    let mut v = vec!["uv", "tectonic", "node", "pnpm", "cmake", "ninja", "clangd", "jdk", "gradle", "rust", "scala", "sbt"];
     if cfg!(windows) {
         v.extend(["git", "cc"]);
     }
@@ -300,6 +307,9 @@ pub fn tool_install_blocking(app: &AppHandle, id: &str) -> Result<String, String
 fn install(app: &AppHandle, id: &str) -> Result<String, String> {
     if id == "rust" {
         return install_rust(app);
+    }
+    if id == "scala" {
+        return install_scala(app);
     }
     if cfg!(target_os = "macos") && (id == "cc" || id == "git") {
         // Apple's installer dialog; the tools appear in /usr/bin once the user finished it.
@@ -352,9 +362,127 @@ fn install_rust(app: &AppHandle) -> Result<String, String> {
     Ok(env::norm(bin))
 }
 
+/// Download URLs of the two native launchers of the Scala toolchain for this platform. There is
+/// no Windows ARM build; the x86-64 one runs there under emulation.
+fn scala_urls(os: &str, arm: bool) -> [(&'static str, String); 2] {
+    let (triple, ext) = match (os, arm) {
+        ("windows", _) => ("x86_64-pc-win32", "zip"),
+        ("macos", false) => ("x86_64-apple-darwin", "gz"),
+        ("macos", true) => ("aarch64-apple-darwin", "gz"),
+        (_, false) => ("x86_64-pc-linux", "gz"),
+        (_, true) => ("aarch64-pc-linux", "gz"),
+    };
+    [
+        ("scala-cli", format!("https://github.com/VirtusLab/scala-cli/releases/latest/download/scala-cli-{triple}.{ext}")),
+        ("cs", format!("https://github.com/coursier/launchers/raw/master/cs-{triple}.{ext}")),
+    ]
+}
+
+/// Writes the content of a gzip'ed single file (not a tar) to `out` as an executable.
+fn gunzip_exe(archive: &Path, out: &Path) -> Result<(), String> {
+    let f = std::fs::File::open(archive).map_err(|e| e.to_string())?;
+    let mut w = std::fs::File::create(out).map_err(|e| e.to_string())?;
+    std::io::copy(&mut flate2::read::GzDecoder::new(f), &mut w).map_err(|e| format!("tools:unpack_failed:{e}"))?;
+    make_executable(out);
+    Ok(())
+}
+
+/// Downloads one native launcher into `dir` (directly in it, whatever the archive's layout).
+fn fetch_launcher(app: &AppHandle, progress: &str, name: &str, url: &str, dir: &Path) -> Result<(), String> {
+    let tmp = env::tools_dir().join(format!(".{name}.download"));
+    let r = download(app, progress, url, &tmp).and_then(|_| if url.ends_with(".gz") { gunzip_exe(&tmp, &dir.join(exe_name(name))) } else { unpack(&tmp, url, dir, &exe_name(name)) });
+    let _ = std::fs::remove_file(&tmp);
+    r?;
+    let bin = find_bin(dir, name).ok_or_else(|| format!("tools:bin_missing:{name}"))?;
+    if bin != dir {
+        std::fs::rename(bin.join(exe_name(name)), dir.join(exe_name(name))).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Scala CLI (build and run) and Coursier (fetches Metals), side by side in `tools/scala`.
+fn install_scala(app: &AppHandle) -> Result<String, String> {
+    let tools = env::tools_dir();
+    let staging = tools.join(".scala.new");
+    let _ = std::fs::remove_dir_all(&staging);
+    std::fs::create_dir_all(&staging).map_err(|e| e.to_string())?;
+    if let Err(e) = scala_urls(OS, ARM).iter().try_for_each(|(name, url)| fetch_launcher(app, "scala", name, url, &staging)) {
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(e);
+    }
+    let dest = tools.join("scala");
+    let _ = std::fs::remove_dir_all(&dest);
+    std::fs::rename(&staging, &dest).map_err(|e| e.to_string())?;
+    record("scala", &dest)?;
+    Ok(env::norm(dest))
+}
+
+/// Latest Metals release. Maven's "latest" can be a release candidate; this list is Metals' own.
+pub fn metals_latest() -> Result<String, String> {
+    get_json("https://scalameta.org/metals/latests.json")?["release"].as_str().map(String::from).ok_or_else(|| "tools:no_version:Metals".to_string())
+}
+
+/// Bootstraps the Metals launcher into `tools/metals`. Coursier comes from the PATH (the managed
+/// Scala toolchain has it); with a system scala-cli alone, a temporary copy is fetched for this.
+pub fn install_metals(app: &AppHandle) -> Result<String, String> {
+    let version = metals_latest()?;
+    let dir = env::tools_dir().join("metals");
+    let staging = env::tools_dir().join(".metals.new");
+    let _ = std::fs::remove_dir_all(&staging);
+    std::fs::create_dir_all(&staging).map_err(|e| e.to_string())?;
+    let file = if cfg!(windows) { "metals.bat" } else { "metals" };
+    let cs = match env::which("cs") {
+        Some(p) => p,
+        None => {
+            let [_, (name, url)] = scala_urls(OS, ARM);
+            fetch_launcher(app, "lsp-scala", name, &url, &staging)?;
+            staging.join(exe_name(name))
+        }
+    };
+    let mut c = env::command(&cs);
+    c.args(["bootstrap", "--java-opt", "-Xss4m", "--java-opt", "-XX:+UseStringDeduplication"]);
+    if cfg!(windows) {
+        c.arg("--bat=true");
+    }
+    let out = c.arg(format!("org.scalameta:metals_2.13:{version}")).arg("-o").arg(staging.join("metals")).arg("-f").output().map_err(|e| e.to_string())?;
+    if !out.status.success() || !staging.join(file).is_file() {
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(String::from_utf8_lossy(&out.stderr).chars().take(800).collect());
+    }
+    if cs.starts_with(&staging) {
+        let _ = std::fs::remove_file(&cs);
+    }
+    std::fs::write(staging.join(".omega-version"), &version).map_err(|e| e.to_string())?;
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::rename(&staging, &dir).map_err(|e| e.to_string())?;
+    Ok(env::norm(dir.join(file)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scala_urls_per_platform() {
+        let urls = |os, arm| scala_urls(os, arm).map(|(_, u)| u.rsplit('/').next().unwrap().to_string());
+        assert_eq!(urls("linux", false), ["scala-cli-x86_64-pc-linux.gz", "cs-x86_64-pc-linux.gz"]);
+        assert_eq!(urls("linux", true), ["scala-cli-aarch64-pc-linux.gz", "cs-aarch64-pc-linux.gz"]);
+        assert_eq!(urls("macos", true), ["scala-cli-aarch64-apple-darwin.gz", "cs-aarch64-apple-darwin.gz"]);
+        assert_eq!(urls("windows", true), ["scala-cli-x86_64-pc-win32.zip", "cs-x86_64-pc-win32.zip"]);
+    }
+
+    #[test]
+    fn gunzip_exe_writes_an_executable() {
+        let t = tempfile::tempdir().unwrap();
+        let (gz, out) = (t.path().join("a.gz"), t.path().join("a"));
+        let mut w = flate2::write::GzEncoder::new(std::fs::File::create(&gz).unwrap(), flate2::Compression::default());
+        w.write_all(b"\x7fELF launcher").unwrap();
+        w.finish().unwrap();
+        gunzip_exe(&gz, &out).unwrap();
+        assert_eq!(std::fs::read(&out).unwrap(), b"\x7fELF launcher");
+        #[cfg(unix)]
+        assert_eq!(mode(&out), 0o755);
+    }
 
     #[cfg(unix)]
     fn mode(p: &Path) -> u32 {

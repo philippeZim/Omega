@@ -26,8 +26,8 @@ pub struct Owner {
     package: String,
 }
 
-const TOOLS: &[&str] = &["uv", "tectonic", "node", "pnpm", "cmake", "ninja", "jdk", "gradle", "rust", "git", "cc"];
-const LSPS: &[&str] = &["python", "typescript", "java", "rust", "clangd"];
+const TOOLS: &[&str] = &["uv", "tectonic", "node", "pnpm", "cmake", "ninja", "jdk", "gradle", "rust", "git", "cc", "scala", "sbt"];
+const LSPS: &[&str] = &["python", "typescript", "java", "rust", "clangd", "scala"];
 const DEBUGGERS: &[&str] = &["codelldb", "debugpy", "jsdebug", "javadebug"];
 
 fn all_ids() -> Vec<String> {
@@ -54,6 +54,9 @@ fn tool_cmds(id: &str) -> &'static [&'static str] {
         "ninja" => &["ninja"],
         "gradle" => &["gradle"],
         "git" => &["git"],
+        "scala" => &["scala-cli"],
+        "sbt" if cfg!(windows) => &["sbt.bat"],
+        "sbt" => &["sbt"],
         _ => &[],
     }
 }
@@ -95,6 +98,8 @@ fn version_arg(cmd: &str) -> &'static [&'static str] {
     match cmd {
         "java" => &["-version"],
         "cl" => &[],
+        // Plain `sbt --version` boots sbt and creates project/ and target/ in the current folder.
+        "sbt" | "sbt.bat" => &["--script-version"],
         _ => &["--version"],
     }
 }
@@ -162,7 +167,8 @@ fn locate(id: &str) -> (&'static str, Option<PathBuf>, Option<String>) {
                 let v = if name == "cc" && cfg!(windows) { name_version(&t.join("cc"), "llvm-mingw-") } else { exe_version(&exe, version_arg(cmd)) };
                 return omega(exe, v);
             }
-            system_tool(tool_cmds(name), true)
+            // A system sbt may be a launcher without --script-version, which would boot sbt here.
+            system_tool(tool_cmds(name), name != "sbt")
         }
         ("lsp", "python") => {
             let d = t.join("python").join("node_modules");
@@ -193,6 +199,13 @@ fn locate(id: &str) -> (&'static str, Option<PathBuf>, Option<String>) {
                     (if manifest.contains_key("rust") { "omega" } else { "system" }, Some(p), v)
                 }
                 None => ("missing", None, None),
+            }
+        }
+        ("lsp", "scala") => {
+            let d = t.join("metals");
+            match env::which(&env::norm(d.join("metals"))) {
+                Some(p) => omega(p, std::fs::read_to_string(d.join(".omega-version")).ok().map(|s| s.trim().to_string())),
+                None => system_tool(&["metals"], false),
             }
         }
         ("debug", "codelldb") => {
@@ -489,6 +502,9 @@ fn latest(id: &str) -> Result<Option<String>, String> {
             let r = json(&format!("https://api.adoptium.net/v3/assets/latest/21/hotspot?architecture={arch}&image_type=jdk&os={os}&vendor=eclipse"))?;
             r[0]["version"]["semver"].as_str().and_then(extract_version).ok_or("installs:no_version:JDK")?
         }
+        "tool:scala" => gh_latest("VirtusLab/scala-cli")?,
+        "tool:sbt" => gh_latest("sbt/sbt")?,
+        "lsp:scala" => crate::tools::metals_latest()?,
         "tool:gradle" => json("https://services.gradle.org/versions/current")?["version"].as_str().map(String::from).ok_or("installs:no_version:Gradle")?,
         "tool:git" if cfg!(windows) => gh_latest("git-for-windows/git")?,
         "tool:cc" if cfg!(windows) => gh_latest("mstorsjo/llvm-mingw")?,
@@ -577,6 +593,7 @@ fn uninstall(id: &str) -> Result<(), String> {
         }
         ("lsp", "python") => remove_dir(&t.join("python")),
         ("lsp", "typescript") => remove_dir(&t.join("typescript")),
+        ("lsp", "scala") => remove_dir(&t.join("metals")),
         ("lsp", "java") => {
             remove_dir(&t.join("jdtls"))?;
             remove_dir(&t.join("jdtls-config"))

@@ -11,7 +11,7 @@ import { ui } from "./ui.svelte";
 import { t } from "./i18n/index.svelte";
 import { OS } from "./platform";
 
-export type ToolId = "uv" | "tectonic" | "node" | "pnpm" | "cmake" | "ninja" | "clangd" | "jdk" | "gradle" | "rust" | "git" | "cc";
+export type ToolId = "uv" | "tectonic" | "node" | "pnpm" | "cmake" | "ninja" | "clangd" | "jdk" | "gradle" | "rust" | "git" | "cc" | "scala" | "sbt";
 
 interface ToolInfo {
   label: string;
@@ -35,6 +35,8 @@ export const TOOLS: Record<ToolId, ToolInfo> = {
   gradle: { label: "Gradle", cmds: ["gradle"], mb: 140 },
   rust: { label: "Rust (rustup)", cmds: ["cargo"], mb: 300 },
   git: { label: "Git", cmds: ["git"], mb: 60 },
+  scala: { label: "Scala CLI + Coursier", cmds: ["scala-cli"], mb: 75 },
+  sbt: { label: "sbt", cmds: ["sbt"], mb: 60 },
   cc: {
     // A getter so the label follows the UI language (#63).
     get label() {

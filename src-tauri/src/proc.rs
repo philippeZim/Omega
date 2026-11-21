@@ -254,6 +254,7 @@ pub async fn install_server(app: AppHandle, kind: String) -> Result<String, Stri
                 Ok("rust-analyzer".into())
             }
             "clangd" => crate::tools::tool_install_blocking(&app, "clangd"),
+            "scala" => crate::tools::install_metals(&app),
             _ => Err(format!("proc:no_auto_install:{kind}")),
         }
     })
