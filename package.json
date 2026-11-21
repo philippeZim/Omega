@@ -1,7 +1,7 @@
 {
   "name": "omega",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Omega – an editor for text, Markdown, LaTeX and code",
   "repository": "github:philippeZim/Omega",
   "license": "GPL-3.0-or-later",
