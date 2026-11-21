@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { fsApi, basename, dirname, joinPath } from "../api";
 import { langFor } from "../code/languages";
 import { detectProject, pythonEntry, cmakeConfigure, cmakeExecutable } from "../code/projects";
-import { duneProjectIssue, duneSourcePath, duneTarget, findDuneExecutables, pickExecutable, sameToolchain } from "../code/dune";
+import { duneProjectIssue, duneSourcePath, nearestDuneProject, duneTarget, findDuneExecutables, pickExecutable, sameToolchain } from "../code/dune";
 import { toolsDir, clientFor, fileUri, javaDebugBundles, metalsPausedFor, ocamlPauseRoot } from "../code/lsp.svelte";
 import { onGuestChange, toolPausedBy } from "../collab/guestChanges";
 import { t } from "../i18n/index.svelte";
@@ -182,10 +182,11 @@ async function earlybird(ctx: Ctx): Promise<string> {
 
 /** The bytecode target to debug. Never changes the project's dune files: it says what to add. */
 async function ocamlDebugTarget(root: string, file: string) {
-  const issue = duneProjectIssue(await fsApi.readFile(joinPath(root, "dune-project")).catch(() => ""));
-  if (issue) throw new Error(t(issue === "lang" ? "code.ad.ocamlNeedsLang" : "code.ad.ocamlNeedsMap"));
   const target = pickExecutable(await findDuneExecutables(root), file, root);
   if (!target) throw new Error(t("code.ad.ocamlNoExe"));
+  const projectFile = (await nearestDuneProject(root, target.dir, exists)) ?? "dune-project";
+  const issue = duneProjectIssue(await fsApi.readFile(joinPath(root, projectFile)).catch(() => ""));
+  if (issue) throw new Error(t(issue === "lang" ? "code.ad.ocamlNeedsLang" : "code.ad.ocamlNeedsMap", { file: projectFile }));
   if (!target.byte) throw new Error(t("code.ad.ocamlNoByte", { name: target.name, file: joinPath(target.dir || ".", "dune") }));
   return target;
 }

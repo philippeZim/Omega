@@ -282,13 +282,34 @@ describe("Debugging OCaml", () => {
 
   test("a project that maps its workspace root gets a hint instead of ignored breakpoints", async () => {
     disk.set("/d/dune-project", "(lang dune 3.7)\n");
-    await expect(planFor(ctx())).rejects.toThrow(t("code.ad.ocamlNeedsMap"));
+    await expect(planFor(ctx())).rejects.toThrow(t("code.ad.ocamlNeedsMap", { file: "dune-project" }));
     expect(ipc.builds).toEqual([]);
   });
 
   test("an old dune language version gets a hint", async () => {
     disk.set("/d/dune-project", "(lang dune 2.9)\n");
-    await expect(planFor(ctx())).rejects.toThrow(t("code.ad.ocamlNeedsLang"));
+    await expect(planFor(ctx())).rejects.toThrow(t("code.ad.ocamlNeedsLang", { file: "dune-project" }));
+  });
+
+  test("a root with only dune-workspace uses the package's dune-project", async () => {
+    disk.clear();
+    disk.set("/d/dune-workspace", "(lang dune 3.7)\n");
+    disk.set("/d/pkg/dune-project", GOOD_PROJECT);
+    disk.set("/d/pkg/bin/dune", BYTE_EXE);
+    disk.set("/d/pkg/bin/main.ml", "");
+    const plan = await planFor({ ...ctx(), file: "/d/pkg/bin/main.ml" });
+    expect(ipc.builds).toEqual([["dune", "build", "./pkg/bin/main.bc"]]);
+    expect(plan.launch.program).toBe("/d/_build/default/pkg/bin/main.bc");
+  });
+
+  test("the package's own setting decides, not the root's", async () => {
+    disk.clear();
+    disk.set("/d/dune-project", GOOD_PROJECT);
+    disk.set("/d/pkg/dune-project", "(lang dune 3.7)\n");
+    disk.set("/d/pkg/bin/dune", BYTE_EXE);
+    disk.set("/d/pkg/bin/main.ml", "");
+    await expect(planFor({ ...ctx(), file: "/d/pkg/bin/main.ml" })).rejects.toThrow(t("code.ad.ocamlNeedsMap", { file: "pkg/dune-project" }));
+    expect(ipc.builds).toEqual([]);
   });
 
   test("without a dune project it says so", async () => {

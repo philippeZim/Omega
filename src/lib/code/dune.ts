@@ -118,6 +118,18 @@ export function pickExecutable(exes: DuneExe[], file: string | null, root: strin
 export const duneTarget = (e: DuneExe, ext: "exe" | "bc") => `./${e.dir ? `${e.dir}/` : ""}${e.name}.${ext}`;
 
 /**
+ * The dune-project that governs a folder: the nearest one going up to `root`. Dune reads
+ * `(map_workspace_root)` from it, not from the workspace root.
+ */
+export async function nearestDuneProject(root: string, dir: string, exists: (p: string) => Promise<boolean>): Promise<string | null> {
+  for (let rel = dir; ; rel = rel.includes("/") ? rel.slice(0, rel.lastIndexOf("/")) : "") {
+    const file = rel ? `${rel}/dune-project` : "dune-project";
+    if (await exists(joinPath(root, file))) return file;
+    if (!rel) return null;
+  }
+}
+
+/**
  * What keeps a project from debugging: without dune 3.7's `(map_workspace_root false)` the
  * bytecode names sources under /workspace_root, and Earlybird runs past every breakpoint.
  */
