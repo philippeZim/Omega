@@ -307,6 +307,7 @@ pub fn watch_dir(app: tauri::AppHandle, window: tauri::WebviewWindow, path: Opti
     use std::time::Duration;
 
     let owner = window.label().to_string();
+    crate::windows::set_root(&app, &owner, path.as_deref());
     let mut watchers = WATCHERS.lock().map_err(err)?;
     watchers.remove(&owner); // drops (stops) the old watcher, which also ends its debounce thread
     if let Ok(mut roots) = ROOTS.lock() {

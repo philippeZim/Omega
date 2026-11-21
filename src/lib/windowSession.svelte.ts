@@ -1,0 +1,52 @@
+// A window's start and its session: the tabs it had open come back, and what the backend asked it
+// to open (`omega <folder|file>`, a restored window) is opened here.
+import { invoke } from "@tauri-apps/api/core";
+import { fsApi } from "./api";
+import { activate, app, flushAutosave, openFile, setMode, setRoot, unsavedTabs } from "./state.svelte";
+import { parseSession, sessionOf, type Session } from "./windowSessionData";
+import type { Mode } from "./modes";
+import { listen } from "./windowEvents";
+import { pruneWindows, unscopedStorage } from "./windowStorage";
+
+const KEY = "session";
+
+async function restoreTabs(saved: Session) {
+  // Opening a file switches to its mode; the window comes back in the mode it was in.
+  const mode = app.mode as Mode;
+  for (const f of saved.files) if (await fsApi.exists(f).catch(() => false)) await openFile(f);
+  const active = app.tabs.find((t) => t.path === saved.active);
+  if (active) activate(active.id);
+  if (app.mode !== mode) setMode(mode);
+}
+
+const prune = (open: string[]) => pruneWindows(unscopedStorage(), open);
+
+let booted = false;
+
+export async function bootWindow() {
+  if (booted) return;
+  booted = true;
+  listen<number>("window-unsaved-query", async (e) => {
+    await flushAutosave().catch(() => {});
+    void invoke("window_unsaved_reply", { call: e.payload, count: unsavedTabs().length });
+  });
+  listen("windows-changed", () => void invoke<string[]>("window_labels").then(prune).catch(() => {}));
+
+  const boot = await invoke<{ root: string | null; files: string[]; windows: string[] }>("window_boot").catch(() => null);
+  if (boot?.windows?.length) prune(boot.windows);
+  if (boot?.root) setRoot(boot.root);
+  // A workspace put aside for a Code Together session is brought back by the session code.
+  const saved = localStorage.getItem("collab.guestSnapshot") ? null : parseSession(localStorage.getItem(KEY));
+  if (saved) await restoreTabs(saved);
+  for (const f of boot?.files ?? []) await openFile(f);
+
+  // Saved from here on, so the empty start can't overwrite the session.
+  $effect.root(() => {
+    $effect(() => {
+      const text = JSON.stringify(sessionOf(app.tabs.map((t) => ({ id: t.id, path: t.path })), app.activeId));
+      try {
+        localStorage.setItem(KEY, text);
+      } catch {}
+    });
+  });
+}

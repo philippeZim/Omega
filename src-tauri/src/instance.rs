@@ -22,29 +22,74 @@ pub fn apply(config: &mut tauri::Config) {
     if let Some(url) = std::env::var("OMEGA_DEV_URL").ok().and_then(|u| u.parse().ok()) {
         config.build.dev_url = Some(url);
     }
+    for w in config.app.windows.iter_mut() {
+        // Created in `windows::restore`, which knows the last session's windows.
+        w.create = false;
+    }
     let Some(name) = name() else { return };
     for w in config.app.windows.iter_mut() {
         w.title = format!("Omega – {name}");
         w.data_store_identifier = Some(store_id(&name)); // macOS: own WKWebsiteDataStore
-        // Created in `create_windows` instead, with an absolute data directory (the config's
-        // relative `dataDirectory` isn't resolved against the app's data dir).
-        w.create = false;
     }
 }
 
-/// Instance mode: creates the config windows with their own webview data directory
-/// (`<app local data>/instances/<name>`: localStorage, caches).
-pub fn create_windows(app: &tauri::App) -> tauri::Result<()> {
+/// Builder for a window from the config. In instance mode it gets the instance's own webview data
+/// directory (`<app local data>/instances/<name>`: localStorage, caches); the config's relative
+/// `dataDirectory` isn't resolved against the app's data dir.
+pub fn window_builder<'a>(app: &'a tauri::AppHandle, w: &tauri::utils::config::WindowConfig) -> tauri::Result<tauri::WebviewWindowBuilder<'a, tauri::Wry, tauri::AppHandle>> {
     use tauri::Manager;
-    let Some(name) = name() else { return Ok(()) };
+    let builder = tauri::WebviewWindowBuilder::from_config(app, w)?;
+    let Some(name) = name() else { return Ok(builder) };
     let dir = app.path().app_local_data_dir()?.join("instances").join(&name);
-    for w in app.config().app.windows.clone() {
-        tauri::WebviewWindowBuilder::from_config(app.handle(), &w)?
-            .data_directory(dir.clone())
-            .initialization_script(FRAMES_WHEN_HIDDEN)
-            .build()?;
-    }
-    Ok(())
+    Ok(builder.data_directory(dir).initialization_script(FRAMES_WHEN_HIDDEN).focused(false))
+}
+
+/// Hyprland desktop of test instances (`OMEGA_TEST_WORKSPACE`, default 5; empty turns it off).
+fn test_workspace() -> Option<String> {
+    name()?;
+    std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE")?;
+    let ws = std::env::var("OMEGA_TEST_WORKSPACE").unwrap_or_else(|_| "5".into());
+    (!ws.is_empty()).then_some(ws)
+}
+
+fn hypr_json(what: &str) -> Option<Value> {
+    let out = std::process::Command::new("hyprctl").args([what, "-j"]).output().ok()?;
+    serde_json::from_slice(&out.stdout).ok()
+}
+
+fn hypr_dispatch(arg: String) {
+    let _ = std::process::Command::new("hyprctl").args(["dispatch", &arg]).output();
+}
+
+/// This process's windows that aren't on the test desktop yet.
+fn stray_windows(clients: &Value, pid: u64, ws: &str) -> Vec<String> {
+    clients.as_array().into_iter().flatten()
+        .filter(|c| c["pid"].as_u64() == Some(pid))
+        .filter(|c| c["workspace"]["id"].as_i64().map(|i| i.to_string()).as_deref() != Some(ws) && c["workspace"]["name"].as_str() != Some(ws))
+        .filter_map(|c| c["address"].as_str().map(str::to_string))
+        .collect()
+}
+
+/// A test instance's new window never stays on the user's desktop: it moves to the test desktop
+/// without following it, and the focus goes back to where it was.
+pub fn to_test_desktop() {
+    let Some(ws) = test_workspace() else { return };
+    let pid = std::process::id() as u64;
+    let before = hypr_json("activewindow").filter(|w| w["pid"].as_u64() != Some(pid)).and_then(|w| w["address"].as_str().map(str::to_string));
+    std::thread::spawn(move || {
+        for _ in 0..50 {
+            let stray = hypr_json("clients").map(|c| stray_windows(&c, pid, &ws)).unwrap_or_default();
+            for addr in &stray {
+                hypr_dispatch(format!(r#"hl.dsp.window.move({{ workspace = "{ws}", follow = false, window = "address:{addr}" }})"#));
+            }
+            if !stray.is_empty() {
+                if let Some(prev) = &before {
+                    hypr_dispatch(format!(r#"hl.dsp.focus({{ window = "address:{prev}" }})"#));
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    });
 }
 
 /// Test instances run on a desktop nobody looks at (Hyprland workspace 5). WebKit then pauses
@@ -87,6 +132,7 @@ pub fn exit_on_signal(app: &tauri::AppHandle) {
             use tokio::signal::unix::{signal, SignalKind};
             let (Ok(mut term), Ok(mut int)) = (signal(SignalKind::terminate()), signal(SignalKind::interrupt())) else { return };
             tokio::select! { _ = term.recv() => {}, _ = int.recv() => {} }
+            crate::windows::exiting(&app);
             app.exit(0);
         });
     }
@@ -183,6 +229,16 @@ fn remove_stale_in(dir: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finds_only_this_process_windows_off_the_test_desktop() {
+        let clients = json!([
+            { "pid": 7, "address": "0xa", "workspace": { "id": 1, "name": "1" } },
+            { "pid": 7, "address": "0xb", "workspace": { "id": 5, "name": "5" } },
+            { "pid": 8, "address": "0xc", "workspace": { "id": 1, "name": "1" } },
+        ]);
+        assert_eq!(stray_windows(&clients, 7, "5"), ["0xa"]);
+    }
 
     #[test]
     fn store_id_is_stable_and_distinct() {

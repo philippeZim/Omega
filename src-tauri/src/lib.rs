@@ -34,6 +34,7 @@ pub fn run() {
         .manage(ide_ws::IdeState::default())
         .manage(codex_ipc::CodexState::default())
         .manage(windows::FocusState::default())
+        .manage(windows::Registry::default())
         .on_page_load(|webview, payload| {
             use tauri::Manager;
             if payload.event() == tauri::webview::PageLoadEvent::Started {
@@ -60,7 +61,7 @@ pub fn run() {
                 eprintln!("IDE-Server: {e}");
             }
             codex_ipc::start(app.handle());
-            instance::create_windows(app)?;
+            windows::restore(app.handle()).map_err(|e| Box::<dyn std::error::Error>::from(e))?;
             instance::exit_on_signal(app.handle());
             Ok(())
         })
@@ -119,6 +120,12 @@ pub fn run() {
             collab::collab_read_bounded,
             collab::collab_hooks_check,
             instance::instance_info,
+            windows::window_new,
+            windows::window_boot,
+            windows::window_labels,
+            windows::windows_unsaved,
+            windows::window_unsaved_reply,
+            windows::windows_prepare_exit,
             mcp_control::mcp_control_start,
             mcp_control::mcp_control_stop,
             mcp_control::mcp_reply,
@@ -163,12 +170,17 @@ pub fn run() {
         })
         .expect("error while building tauri application")
         .run(|app, event| {
-            if let tauri::RunEvent::Exit = event {
-                ide_ws::cleanup(app);
-                codex_ipc::cleanup(app);
-                power::cleanup();
-                instance::withdraw();
-                lang_shadow::cleanup();
+            match event {
+                // Windows closing from here on are part of the quit and stay in the saved session.
+                tauri::RunEvent::ExitRequested { .. } => windows::exiting(app),
+                tauri::RunEvent::Exit => {
+                    ide_ws::cleanup(app);
+                    codex_ipc::cleanup(app);
+                    power::cleanup();
+                    instance::withdraw();
+                    lang_shadow::cleanup();
+                }
+                _ => {}
             }
         });
 }

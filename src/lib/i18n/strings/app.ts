@@ -203,6 +203,8 @@ export const en = {
   "app.deletedOnDisk": "\"{name}\" was deleted on disk. The tab keeps its content; Ctrl+S writes the file again.",
   "app.invalidRenameName": "Invalid name \"{name}\": it can't contain \"/\" or \"\\\" and can't be empty, \".\" or \"..\"",
   "app.linkIsFolder": "The link points to a folder, not a file: {path}",
+  "app.newWindow": "New Window",
+  "app.newWindowFailed": "Couldn't open a new window: {error}",
 };
 export const de: Record<keyof typeof en, string> = {
   "app.report.button": "Problem oder Idee melden",
@@ -403,6 +405,8 @@ export const de: Record<keyof typeof en, string> = {
   "app.deletedOnDisk": "„{name}“ wurde auf der Festplatte gelöscht. Der Tab behält den Inhalt; Strg+S schreibt die Datei neu.",
   "app.invalidRenameName": "Ungültiger Name „{name}“: kein „/“ oder „\\“, nicht leer und nicht „.“ oder „..“",
   "app.linkIsFolder": "Der Link zeigt auf einen Ordner, nicht auf eine Datei: {path}",
+  "app.newWindow": "Neues Fenster",
+  "app.newWindowFailed": "Neues Fenster konnte nicht geöffnet werden: {error}",
 };
 export const fr: Record<keyof typeof en, string> = {
   "app.report.button": "Signaler un problème ou une idée",
@@ -603,4 +607,6 @@ export const fr: Record<keyof typeof en, string> = {
   "app.deletedOnDisk": "« {name} » a été supprimé du disque. L'onglet garde son contenu ; Ctrl+S réécrit le fichier.",
   "app.invalidRenameName": "Nom invalide « {name} » : sans « / » ni « \\ », ni vide, ni « . » ou « .. »",
   "app.linkIsFolder": "Le lien pointe vers un dossier, pas vers un fichier : {path}",
+  "app.newWindow": "Nouvelle fenêtre",
+  "app.newWindowFailed": "Impossible d'ouvrir une nouvelle fenêtre : {error}",
 };

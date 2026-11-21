@@ -38,6 +38,8 @@
     const pretty = (p: string) => (home && p.startsWith(home) ? "~" + p.slice(home.length) : p);
     const recents = recentFolders.filter((f) => f !== app.root).slice(0, 8);
     ui.openMenu(new MouseEvent("contextmenu", { clientX: r.left, clientY: r.bottom + 8 }), [
+      { label: t("app.newWindow"), shortcut: shortcutLabel("window.new"), action: () => void newWindow() },
+      { separator: true, label: "" },
       { label: t("app.openFolder") + "…", shortcut: shortcutLabel("file.openFolder"), action: openFolder },
       { label: t("app.newProject") + "…", action: openNewProject },
       { label: t("app.cloneRepo"), action: cloneRepo },
@@ -52,6 +54,7 @@
   import { report } from "../lib/report.svelte";
   import { MODES } from "../lib/modes";
   import { shortcutLabel, withShortcut } from "../lib/commands.svelte";
+  import { newWindow } from "../lib/windowActions";
   import { basename } from "../lib/api";
   import { openNewProject } from "../lib/code/runner.svelte";
   import { settings } from "../lib/settings.svelte";
