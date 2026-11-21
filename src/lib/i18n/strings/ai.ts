@@ -71,6 +71,7 @@ export const en = {
   "ai.collab.saveCopyTitle": "Save a copy in the host's project",
   "ai.collab.saveCopyFailed": "{name} was created, but the copy couldn't be opened",
   "ai.collab.saveCopyNoFolder": "The host has no folder open, so there's nowhere to save a copy.",
+  "ai.collab.createdNotOpened": "{path} is on your computer. It wasn't opened because you're a guest in a session.",
 };
 export const de: Record<keyof typeof en, string> = {
   "ai.noActiveFile": "Keine Datei aktiv",
@@ -143,6 +144,7 @@ export const de: Record<keyof typeof en, string> = {
   "ai.collab.saveCopyTitle": "Kopie im Projekt des Hosts speichern",
   "ai.collab.saveCopyFailed": "{name} wurde angelegt, die Kopie ließ sich aber nicht öffnen",
   "ai.collab.saveCopyNoFolder": "Der Host hat keinen Ordner geöffnet, daher kann keine Kopie gespeichert werden.",
+  "ai.collab.createdNotOpened": "{path} liegt auf deinem Computer. Es wurde nicht geöffnet, weil du Gast in einer Sitzung bist.",
 };
 export const fr: Record<keyof typeof en, string> = {
   "ai.noActiveFile": "Aucun fichier actif",
@@ -215,4 +217,5 @@ export const fr: Record<keyof typeof en, string> = {
   "ai.collab.saveCopyTitle": "Enregistrer une copie dans le projet de l’hôte",
   "ai.collab.saveCopyFailed": "{name} a été créé, mais la copie n’a pas pu être ouverte",
   "ai.collab.saveCopyNoFolder": "L’hôte n’a aucun dossier ouvert : impossible d’enregistrer une copie.",
+  "ai.collab.createdNotOpened": "{path} se trouve sur votre ordinateur. Il n’a pas été ouvert, car vous êtes invité dans une session.",
 };

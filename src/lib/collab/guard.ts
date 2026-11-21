@@ -20,5 +20,15 @@ export function blockedAsGuest(): boolean {
   return true;
 }
 
+/**
+ * For flows that were already running when the user became a guest (clone, new project): their
+ * result stays on disk but must not open in the session. Returns true (after saying so) to stop.
+ */
+export function keptOutOfSession(path: string): boolean {
+  if (guestGuard.status() === "none") return false;
+  ui.toast(t("ai.collab.createdNotOpened", { path }));
+  return true;
+}
+
 /** Title for a shell on the guest's own machine, so nobody takes it for the host's. */
 export const localTerminalTitle = () => (guestGuard.status() === "none" ? undefined : t("code.term.localTitle"));

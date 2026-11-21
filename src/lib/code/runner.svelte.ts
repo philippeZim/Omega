@@ -9,7 +9,7 @@ import { onFilesChanged } from "../fsWatch.svelte";
 import { t } from "../i18n/index.svelte";
 import { ensureTools } from "../tools.svelte";
 import { cd, q } from "../platform";
-import { blockedAsGuest } from "../collab/guard";
+import { blockedAsGuest, keptOutOfSession } from "../collab/guard";
 
 export const runner = $state({
   project: null as Project | null,
@@ -189,6 +189,7 @@ export async function createProject(templateId: string, parent: string, name: st
   if (tpl.id === "empty") {
     await fsApi.createDir(dir);
     runner.newProject = false;
+    if (keptOutOfSession(dir)) return;
     setRoot(dir);
     refreshProject();
     return;
@@ -201,19 +202,25 @@ export async function createProject(templateId: string, parent: string, name: st
     for (const [rel, content] of Object.entries(plan.files ?? {})) await fsApi.writeFile(joinPath(dir, rel), content);
   }
   runner.newProject = false;
+  // Became a guest meanwhile: an in-parent tool hasn't created anything yet, so don't start it.
+  if (plan.inParent ? blockedAsGuest() : keptOutOfSession(dir)) return;
   setMode(tpl.mode ?? "code");
   const cmd = plan.cmds.join(" && ");
   if (cmd) runCommand(plan.inParent ? cmd : `${cd(dir)} && ${cmd}`, plan.inParent ? parent : null, t("code.newProjectTitle", { name }));
   // Open the folder as soon as the project file exists (tools differ in which source files they create).
   for (let i = 0; i < 240; i++) {
     if (i) await new Promise((r) => setTimeout(r, 500));
-    if (!(await fsApi.exists(joinPath(dir, tpl.marker)))) continue;
+    const created = await fsApi.exists(joinPath(dir, tpl.marker));
+    if (keptOutOfSession(dir)) return;
+    if (!created) continue;
     setRoot(dir);
     // Give the tool a moment to write its source files, then open the best candidate.
     for (let j = 0; j < 20; j++) {
       for (const rel of tpl.open) {
         const f = joinPath(dir, rel.replace("{name}", name.replace(/-/g, "_")));
-        if (await fsApi.exists(f)) {
+        const found = await fsApi.exists(f);
+        if (keptOutOfSession(dir)) return;
+        if (found) {
           await openFile(f);
           refreshProject();
           return;

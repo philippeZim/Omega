@@ -10,8 +10,8 @@ const m = vi.hoisted(() => ({
 
 vi.mock("../state.svelte", () => ({
   app: { tabs: [], root: "/repo", treeVersion: 0 },
-  setRoot: () => {},
-  openFile: async () => {},
+  setRoot: vi.fn(),
+  openFile: vi.fn(async () => {}),
   save: async () => {},
   syncFromDisk: () => {},
 }));
@@ -100,4 +100,24 @@ test("Clone doesn't open during a guest session", async () => {
   await cloneRepo();
   guestGuard.status = () => "none";
   expect(cloneTabRequested.value).toBe(false);
+});
+
+test("a clone that finishes after becoming a guest stays out of the session", async () => {
+  const { guestGuard } = await import("../collab/guard");
+  const { setRoot, openFile } = await import("../state.svelte");
+  vi.mocked(setRoot).mockClear();
+  vi.mocked(openFile).mockClear();
+  mockIPC((cmd) => {
+    if (cmd === "git") {
+      guestGuard.status = () => "connected";
+      return { code: 0, stdout: "", stderr: "" };
+    }
+    return cmd === "path_exists" ? true : null;
+  });
+  const result = await cloneInto("https://example.com/r.git", "/home/me/r");
+  guestGuard.status = () => "none";
+  expect(result).toBeNull();
+  expect(setRoot).not.toHaveBeenCalled();
+  expect(openFile).not.toHaveBeenCalled();
+  expect(m.toast.map(([text]) => text.split(" ")[0])).toEqual(["ai.collab.createdNotOpened"]);
 });
