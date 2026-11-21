@@ -88,6 +88,10 @@
     if (!cloning) runner.newProject = false;
   }
 
+  // A drag from inside the dialog that ends on the backdrop (e.g. selecting text) also fires a
+  // click there, so only a press that started on the backdrop may close the dialog.
+  let pressedBackdrop = false;
+
   // Focus the dialog when it opens, so typing and Enter work without clicking into it first.
   let sheet = $state<HTMLElement>();
   $effect(() => {
@@ -99,7 +103,7 @@
 <svelte:window onkeydown={(e) => e.key === "Escape" && runner.newProject && !e.defaultPrevented && (e.preventDefault(), close())} />
 
 {#if runner.newProject}
-  <div class="backdrop" role="presentation" onclick={close}>
+  <div class="backdrop" role="presentation" onmousedown={(e) => (pressedBackdrop = e.target === e.currentTarget)} onclick={() => pressedBackdrop && close()}>
     <div class="sheet" role="dialog" tabindex="-1" bind:this={sheet} onclick={(e) => e.stopPropagation()} onkeydown={(e) => { if (e.key === "Enter" && !(e.target as HTMLElement).closest(".repos")) submit(); }}>
       <div class="seg">
         <button class:on={tab === "new"} onclick={() => (tab = "new")}>{t("code.np.newProject")}</button>
