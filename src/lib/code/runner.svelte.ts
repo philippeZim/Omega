@@ -75,10 +75,10 @@ function customRunCmd(root: string): string | null {
 
 /** Replaces the detected run action with the user's command, keeping the original for "reset". */
 function withCustomRun(p: Project): Project {
-  const cmd = customRunCmd(p.root);
+  const cmd = p.isolated ? null : customRunCmd(p.root);
   if (!cmd) return p;
   // The build step stays: a custom command usually starts the same program with other arguments.
-  return { ...p, defaultRun: p.run, run: { id: "run", label: t("common.run"), cmd, pre: p.run?.pre, setup: p.run?.setup, shortcut: p.run?.shortcut ?? "Shift+F10", usesFile: cmd.includes("{file}") || (!!p.run?.pre && p.run.usesFile) } };
+  return { ...p, defaultRun: p.run, run: { id: "run", label: t("common.run"), cmd, pre: p.run?.pre, setup: p.run?.setup, prepare: p.run?.prepare, shortcut: p.run?.shortcut ?? "Shift+F10", usesFile: cmd.includes("{file}") || (!!p.run?.pre && p.run.usesFile) } };
 }
 
 export async function editRunCommand() {
@@ -86,6 +86,8 @@ export async function editRunCommand() {
   if (!p) return;
   // A guest's project is the host's: a command stored here would never run.
   if (runnerRemote.project) return ui.toast(t("code.rb.runCmdOnHost"));
+  // It would be stored for the folder and replace how the project's own files run.
+  if (p.isolated) return ui.toast(t("code.lang.noCustomRun"));
   const v = await ui.prompt(t("code.rb.runCmdTitle"), p.run?.cmd ?? "", t("code.rb.runCmdPlaceholder"), undefined, undefined, true);
   if (v === null) return;
   try {
@@ -217,6 +219,11 @@ async function launch(a: Action, p: Project, activeFile: () => string | null | u
     else cmd = `${a.setup.cmd} && ${cmd}`;
   }
   if (allowed && !(await allowed())) return;
+  try {
+    await a.prepare?.();
+  } catch (e) {
+    return ui.toast(t("code.lang.copyFailed", { error: e instanceof Error ? e.message : String(e) }), "error");
+  }
   const title = `${p.label}: ${a.label.replace("…", "")}`;
   const view = allowed ? { focus: false, background: true } : {};
   if (pre) {

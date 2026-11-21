@@ -4,6 +4,8 @@ import { fsApi, basename, dirname, joinPath, isRoot } from "../api";
 import { q, cd, exe, IS_WIN, OS, runRel, rmrf, tmpPath } from "../platform";
 import type { ToolId } from "../tools.svelte";
 import { langFor, type LangId } from "./languages";
+import { effectiveLang, isForeignLang, overrideFor } from "./langOverride.svelte";
+import { overrideRun } from "./langRun";
 import { suggestPythonAdd, suggestPythonRemove, pythonRemoveArg, suggestNodeAdd, suggestNodeRemove, type Suggest } from "./packages";
 import { validScriptName } from "./packageInput";
 import { duneTarget, findDuneExecutables, pickExecutable } from "./dune";
@@ -33,6 +35,8 @@ export interface Action {
   needs?: ToolId[];
   /** What it runs follows the file open in the editor. */
   usesFile?: boolean;
+  /** Runs after saving, right before the command (refreshes a private copy of the file). */
+  prepare?: () => Promise<void>;
 }
 
 export interface Project {
@@ -47,6 +51,8 @@ export interface Project {
   more: Action[];
   /** Tools every action of this project needs. */
   needs: ToolId[];
+  /** One file run on its own in a language the user chose: the folder's custom command doesn't apply. */
+  isolated?: boolean;
 }
 
 const which = (c: string) => invoke<string | null>("which_cmd", { cmd: c }).catch(() => null);
@@ -84,9 +90,10 @@ async function findProject(file: string | null, workspace: string | null): Promi
   let dir = file ? dirname(file) : workspace;
   const stop = workspace ? dirname(workspace) : "/";
   let found: { kind: ProjectKind; root: string } | null = null;
-  const mojoFile = !!file && isMojoFile(file);
+  const chosen = overrideFor(file);
+  const mojoFile = !!file && (chosen ? chosen === "mojo" : isMojoFile(file));
   // A Python, C or other source file in a pixi folder keeps the behaviour it has without Mojo.
-  const lang = file ? langFor(file)?.id : undefined;
+  const lang = file ? effectiveLang(file)?.id : undefined;
   const mayBeMojo = !lang || lang === "mojo" || lang === "toml";
   while (dir && dir !== stop && !isRoot(dir)) {
     if (mojoFile && (await isMojoProject(dir, true))) return found ?? { kind: "mojo", root: dir };
@@ -153,7 +160,7 @@ export async function findPythonMain(root: string): Promise<string | null> {
  * without a Python file, the project's entry file (see findPythonMain).
  */
 export async function pythonEntry(file: string | null, root: string): Promise<{ kind: "file"; file: string } | { kind: "script"; name: string; target: string } | { kind: "none" }> {
-  const isPy = file && langFor(file)?.id === "python";
+  const isPy = file && effectiveLang(file)?.id === "python";
   if (isPy) {
     const text = await fsApi.readFile(file).catch(() => "");
     if (MAIN_GUARD.test(text)) return { kind: "file", file };
@@ -246,14 +253,24 @@ const RUN = "Shift+F10", BUILD = "Ctrl+F9";
 const TSX_DLX = "pnpm dlx --allow-build=esbuild tsx";
 
 /** Action whose label and argument prompt follow the UI language (getters re-read the locale). */
-function act(id: string, label: Key, cmd: string, opts: { shortcut?: string; ask?: () => string; suggest?: Suggest; arg?: Action["arg"]; pre?: string; setup?: Action["setup"]; usesFile?: boolean } = {}): Action {
-  return { id, cmd, pre: opts.pre, setup: opts.setup, usesFile: opts.usesFile, shortcut: opts.shortcut, suggest: opts.suggest, arg: opts.arg, get label() { return t(label); }, get ask() { return opts.ask?.(); } };
+function act(id: string, label: Key, cmd: string, opts: { shortcut?: string; ask?: () => string; suggest?: Suggest; arg?: Action["arg"]; pre?: string; setup?: Action["setup"]; usesFile?: boolean; prepare?: Action["prepare"] } = {}): Action {
+  return { id, cmd, pre: opts.pre, setup: opts.setup, usesFile: opts.usesFile, prepare: opts.prepare, shortcut: opts.shortcut, suggest: opts.suggest, arg: opts.arg, get label() { return t(label); }, get ask() { return opts.ask?.(); } };
 }
 const askPkg = (example: string) => () => t("code.act.askPackage", { example });
 const askPkgPlain = () => t("code.act.askPackagePlain");
 
+/**
+ * Which project kinds a file set to another language still belongs to. pnpm is missing on purpose:
+ * node and tsx go by the extension, so such a file always runs through its private copy.
+ */
+const PROJECT_LANGS: Partial<Record<ProjectKind, LangId[]>> = { cargo: ["rust"], uv: ["python"], cmake: ["c", "cpp"], gradle: ["java"], sbt: ["scala"], "scala-cli": ["scala"], dune: ["ocaml"], mojo: ["mojo"] };
+
+export const fitsProject = (kind: ProjectKind, lang: LangId | undefined) => !!lang && !!PROJECT_LANGS[kind]?.includes(lang);
+
 export async function detectProject(file: string | null, workspace: string | null): Promise<Project | null> {
-  const p = await findProject(file, workspace);
+  let p = await findProject(file, workspace);
+  const foreign = !!file && isForeignLang(file);
+  if (foreign && p && !fitsProject(p.kind, effectiveLang(file)?.id)) p = null;
   const rel = (f: string, root: string) => (f.startsWith(root + "/") ? f.slice(root.length + 1) : f);
 
   if (p?.kind === "cargo")
@@ -277,7 +294,9 @@ export async function detectProject(file: string | null, workspace: string | nul
 
   if (p?.kind === "uv") {
     const entry = await pythonEntry(file, p.root);
-    const target = uvRunTarget(entry, entry.kind === "file" ? rel(entry.file, p.root) : "");
+    const uvTarget = uvRunTarget(entry, entry.kind === "file" ? rel(entry.file, p.root) : "");
+    // `uv run name` looks for a command unless the name ends in .py.
+    const target = uvTarget && entry.kind === "file" && isForeignLang(entry.file) ? `python ${uvTarget}` : uvTarget;
     return {
       ...p,
       label: "uv",
@@ -439,6 +458,22 @@ export async function detectProject(file: string | null, workspace: string | nul
 
   // No project: run the single file with the language's default tool.
   if (!file) return null;
+  if (foreign) {
+    const own = await overrideRun(effectiveLang(file)!.id, file, TSX_DLX);
+    if (!own) return null; // JSON, TOML: nothing to run, so no Run button
+    const opts = { pre: own.pre, usesFile: true, prepare: own.prepare };
+    return {
+      kind: "file",
+      root: dirname(file),
+      needs: own.needs,
+      isolated: true,
+      get label() { return t("code.project.file"); },
+      run: act("run", "common.run", own.cmd, { ...opts, shortcut: RUN }),
+      build: own.pre ? act("build", "code.act.build", own.pre, { ...opts, shortcut: BUILD }) : null,
+      test: null,
+      more: [],
+    };
+  }
   const lang = langFor(file)?.id;
   const single = await singleFileRun(lang, file);
   if (!single) return null;
