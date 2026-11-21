@@ -17,6 +17,7 @@
   import * as ed from "../lib/editor";
   import { detectEol, toDisk, type Eol } from "../lib/eol";
   import { langFor } from "../lib/code/languages";
+  import { effectiveLang } from "../lib/code/langOverride.svelte";
   import { baseTheme, codeHighlight } from "../lib/theme";
   import { t } from "../lib/i18n/index.svelte";
 
@@ -122,7 +123,7 @@
       info = "git.diff.binary";
       return;
     }
-    const lang = langFor(file);
+    const lang = effectiveLang(file);
     const common = [lineNumbers(), lang ? lang.ext() : [], syntaxHighlighting(codeHighlight), baseTheme, EditorView.editorAttributes.of({ class: "mode-code" })];
     view = new MergeView({
       parent: host!,

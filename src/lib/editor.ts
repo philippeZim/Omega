@@ -183,6 +183,19 @@ export function configure(cfg: EditorConfig) {
   if (effects.length) view.dispatch({ effects });
 }
 
+/**
+ * This editor's document `id` has a new path or language: new highlighting and tooling, same text,
+ * cursor and undo history. Also for a background tab, whose stored path would otherwise be stale.
+ */
+export function refreshLanguage(id: string, path: string | null) {
+  const d = docs.get(id);
+  if (!d?.cfg) return; // not shown yet: it's configured with the current path when activated
+  d.cfg = { ...d.cfg, path };
+  const effects = modeConf.reconfigure(modeExtensions(d.cfg.mode, path));
+  if (id === activeId && view) view.dispatch({ effects });
+  else d.state = d.state.update({ effects }).state;
+}
+
 export function getText(id: string): string {
   if (id === activeId && view) return view.state.doc.toString();
   return docs.get(id)?.state.doc.toString() ?? "";

@@ -14,6 +14,7 @@ import {
 import { guestPathOk, guestScope, sharedDocListeners, sharedDocs, type GuestScope, type SharedDocView } from "./share.svelte";
 import { app } from "../state.svelte";
 import { fsApi, joinPath } from "../api";
+import { isForeignLang, onLanguageOverride } from "../code/langOverride.svelte";
 import { langFor, type LangInfo } from "../code/languages";
 import { clientFor, fileUri, neverInstall, restartListeners, stopGuestServers, toolsDir, uriPath, workspaceSymbols, type LspClient, type WorkspaceSymbol } from "../code/lsp.svelte";
 import { editsForDoc, MAX_FIXES, quickFixesFor } from "../code/lspExtension";
@@ -106,6 +107,8 @@ const wanted = () => {
   for (const doc of sharedDocs()) {
     // Unsaved tabs have no file a server could resolve imports from, on the host either.
     if (!doc.subscribers.size || !doc.root || doc.root !== app.root || doc.rel.startsWith("tab:")) continue;
+    // Set to another language by the host: its server works on a private copy guests don't reach.
+    if (isForeignLang(joinPath(doc.root, doc.rel))) continue;
     const lang = langFor(doc.rel);
     if (lang?.server) out.set(joinPath(doc.root, doc.rel), { doc, lang });
   }
@@ -135,6 +138,9 @@ export function reconcileLspSessions() {
     publish("lsp.docs", { docs: { [rel]: entry } });
   }
 }
+
+// The host chose another language: a session on the old one ends now, not at the next tab change.
+onLanguageOverride(() => reconcileLspSessions());
 
 function startSession(abs: string, doc: SharedDocView, lang: LangInfo) {
   const s: LspSession = {

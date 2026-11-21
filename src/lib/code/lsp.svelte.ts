@@ -9,6 +9,7 @@ import { IS_WIN, OS, platform } from "../platform";
 import { ensureTools, mojoInstallHint, withInstallProgress, serverProgressId, type ToolId } from "../tools.svelte";
 import { metalsPausedBy, onGuestChange, resumeTool, toolChangeCount, toolPausedBy, type PausedTool } from "../collab/guestChanges";
 import type { LangInfo } from "./languages";
+import { isForeignLang } from "./langOverride.svelte";
 
 type Json = any;
 
@@ -18,7 +19,12 @@ export type ServerStatus = "starting" | "ready" | "missing" | "installing" | "er
 export const lspState = $state({
   status: {} as Record<string, ServerStatus>,
   message: {} as Record<string, string>,
+  /** How a file set to another language is served (see `setLspRoute`). */
+  routes: {} as Record<string, LspRoute>,
 });
+
+/** pending: still deciding; project: the project's server; shadow: a private copy; none: no server. */
+export type LspRoute = "pending" | "project" | "shadow" | "none";
 
 /** file URI for a path ("/a/b" → file:///a/b, "C:/a" → file:///c%3A/a like VS Code). */
 export const fileUri = (path: string) => {
@@ -79,6 +85,8 @@ export class LspClient {
   failed = false;
   /** TypeScript project whose dependencies are still being installed: a failed start is not reported. */
   quiet = false;
+  /** Runs on a private copy of one file, so it ends with that file (see `releasePrivate`). */
+  privateCopy = false;
   /** Documents an editor has open (between `open` and `close`). */
   private editorDocs = new Set<string>();
   /** uri -> live text of a document kept open for Code Together guests (see `feed`). */
@@ -330,6 +338,83 @@ function stopIdle() {
     }
 }
 
+// ---------------------------------------------------------- files set to another language
+
+/** Real file -> the private copy its language server works on (see langRun.ts). */
+const shadows = new Map<string, string>();
+/** Folder of such a copy -> the real file. */
+const shadowRoots = new Map<string, string>();
+
+/** Private copy -> its real file and the folder its server runs in (above it for a Java package). */
+const copies = new Map<string, { real: string; root: string }>();
+
+export function registerShadow(real: string, copy: string, root = dirname(copy)) {
+  shadows.set(real, copy);
+  copies.set(copy, { real, root });
+  shadowRoots.set(root, real);
+  lspState.routes[real] = "shadow";
+}
+
+export const setLspRoute = (path: string, route: LspRoute) => void (lspState.routes[path] = route);
+
+/** The file the language server sees for `file`. */
+export const shadowOf = (file: string) => shadows.get(file) ?? file;
+
+/** The real file behind a path a language server reported. */
+export const realPathOf = (path: string) => copies.get(path)?.real ?? path;
+
+/** Guest pauses are about the real project, also for a server working on a private copy. */
+const pauseRootOf = (root: string) => {
+  const real = shadowRoots.get(root);
+  return real ? dirname(real) : root;
+};
+
+/** A private copy's server has no document left: it stops, also while it's still starting. */
+function stopPrivate(root: string) {
+  for (const [key, c] of clients) {
+    if (c.root !== root || c.docs.size || c.stopping) continue;
+    if (lspState.status[key] === "starting") {
+      c.failed = c.stopping = true;
+      invoke("proc_kill", { id: c.id }).catch(() => {});
+    } else c.stop();
+    clients.delete(key);
+    delete lspState.status[key];
+    delete lspState.message[key];
+  }
+}
+
+/** A server that finished starting after its file was closed: nobody will use it. */
+export function releasePrivate(c: LspClient) {
+  if (c.privateCopy && !shadowRoots.has(c.root)) stopPrivate(c.root);
+}
+
+/** The file's tab closed, it moved, or its language changed: no server keeps it open. */
+export function closeLspDoc(path: string) {
+  const copy = shadows.get(path);
+  for (const c of [...clients.values()]) {
+    c.close(fileUri(path));
+    if (copy) c.close(fileUri(copy));
+  }
+  shadows.delete(path);
+  delete lspState.routes[path];
+  if (!copy) return;
+  const root = copies.get(copy)?.root ?? dirname(copy);
+  stopPrivate(root);
+  copies.delete(copy);
+  shadowRoots.delete(root);
+}
+
+/** The file was saved: a private copy is refreshed first, since servers re-read the disk on save. */
+export async function saveLspDoc(path: string, text: string) {
+  const copy = shadows.get(path);
+  if (copy) {
+    await invoke("lang_copy", { file: path, part: "lsp", name: copy.slice((copies.get(copy)?.root ?? dirname(copy)).length + 1), link: false }).catch(() => {});
+    if (shadows.get(path) !== copy) return;
+  }
+  const uri = fileUri(copy ?? path);
+  for (const c of clients.values()) c.save(uri, text);
+}
+
 const ROOT_MARKERS: Record<ServerKind, string[]> = {
   python: ["pyproject.toml", "setup.py", "requirements.txt", ".git"],
   clangd: ["compile_commands.json", "CMakeLists.txt", "Makefile", ".git"],
@@ -429,9 +514,12 @@ async function resolveCommand(kind: ServerKind, root: string): Promise<{ cmd: st
     case "java": {
       let h = 0;
       for (const c of root) h = (h * 31 + c.charCodeAt(0)) | 0;
-      const data = `${tools}/jdtls-workspace/${(h >>> 0).toString(16)}`;
+      // A private copy's index stays beside it (not in it: jdtls would import its own data) and goes when the app exits.
+      const data = shadowRoots.has(root) ? `${dirname(root)}/jdtls-data` : `${tools}/jdtls-workspace/${(h >>> 0).toString(16)}`;
       const bundles = await javaDebugBundles();
-      const init = bundles.length ? { bundles } : undefined;
+      // jdtls would take the file's folder for the source root, and a package's folder is not one.
+      const sources = shadowRoots.has(root) ? { settings: { java: { project: { sourcePaths: ["."] } } } } : {};
+      const init = bundles.length || shadowRoots.has(root) ? { ...(bundles.length ? { bundles } : {}), ...sources } : undefined;
       // Omega's own jdtls is started with `java -jar` directly (its bin/jdtls wrapper needs Python).
       const home = `${tools}/jdtls`;
       const launcher = (await fsApi.listDir(`${home}/plugins`).catch(() => [])).find((e) => /^org\.eclipse\.equinox\.launcher_.*\.jar$/.test(e.name));
@@ -532,7 +620,7 @@ const PAUSABLE: Partial<Record<ServerKind, { tool: PausedTool; paused: Key; titl
 /** A guest without `run` changed this project: the server would execute that text, so it stays off. */
 function serverHeld(kind: ServerKind, key: string, root: string) {
   const p = PAUSABLE[kind];
-  if (!p || toolPausedBy(p.tool, root) === null) return false;
+  if (!p || toolPausedBy(p.tool, pauseRootOf(root)) === null) return false;
   lspState.status[key] = "stopped";
   lspState.message[key] = t(p.paused);
   return true;
@@ -582,6 +670,10 @@ export async function clientFor(
   const kind = lang.server;
   if (!kind) return null;
   stopIdle();
+  // A private copy is on its own: no project, and no marker file in a folder above it counts.
+  const shadowRoot = copies.get(file)?.root;
+  const shadow = shadowRoot !== undefined;
+  if (shadow) workspace = null;
   // A file outside the open folder (Go to Definition into a library, the Rust std sources, system
   // headers) is served by the server already running for the folder, not a new one rooted there.
   if (workspace && !within(file, workspace)) {
@@ -590,7 +682,7 @@ export async function clientFor(
     // Never index the toolchain itself (rust-analyzer's flycheck writes target/ into it).
     if (kind === "rust" && /\/lib\/rustlib\/src\//.test(file)) return null;
   }
-  const root = await findRoot(file, ROOT_MARKERS[kind], workspace);
+  const root = shadowRoot ?? (await findRoot(file, ROOT_MARKERS[kind], workspace));
   const key = `${kind}|${root}`;
   if (serverHeld(kind, key, root)) return null;
   if (askInstall !== neverInstall) guestServers.delete(key); // the host wants this one itself
@@ -643,8 +735,11 @@ export async function clientFor(
     const waitInstall = kind === "typescript" && (await tsInstallMissing(root));
     // Last check, with no await before the process starts: the steps above can take minutes.
     if (serverHeld(kind, key, root)) return null;
-    const c = new LspClient(kind, root, cmd.cmd, cmd.args, cmd.init);
+    // rust-analyzer needs a Cargo.toml unless it's told which lone files to look at.
+    const init = shadow && kind === "rust" ? { checkOnSave: true, detachedFiles: [file] } : cmd.init;
+    const c = new LspClient(kind, root, cmd.cmd, cmd.args, init);
     c.quiet = waitInstall;
+    c.privateCopy = shadow;
     clients.set(key, c);
     try {
       await c.ready;
@@ -741,16 +836,25 @@ export async function restartServer(
 ): Promise<LspClient | null> {
   const kind = lang.server;
   if (!kind) return null;
-  const root = await findRoot(file, ROOT_MARKERS[kind], workspace);
+  if (isForeignLang(file)) {
+    const route = lspState.routes[file];
+    if (route === "pending" || route === undefined) return null;
+    if (route === "none") {
+      for (const l of restartListeners) l(); // its editor tries again
+      return null;
+    }
+  }
+  file = shadowOf(file);
+  const root = copies.get(file)?.root ?? (await findRoot(file, ROOT_MARKERS[kind], workspace));
   const key = `${kind}|${root}`;
   if (starting.has(key)) return starting.get(key)!;
   const pausable = PAUSABLE[kind];
-  const by = pausable ? toolPausedBy(pausable.tool, root) : null;
+  const by = pausable ? toolPausedBy(pausable.tool, pauseRootOf(root)) : null;
   if (pausable && by !== null) {
     // The host's explicit decision. It covers what it was asked about, not a change during the dialog.
     const seen = toolChangeCount(pausable.tool);
     if (!(await ui.confirm(t(pausable.title), t(pausable.msg, { name: by }), t(pausable.ok)))) return null;
-    if (!resumeTool(pausable.tool, root, seen)) {
+    if (!resumeTool(pausable.tool, pauseRootOf(root), seen)) {
       serverHeld(kind, key, root);
       return null;
     }
@@ -805,6 +909,13 @@ export async function workspaceSymbols(query: string): Promise<WorkspaceSymbol[]
 
 export function statusFor(lang: LangInfo | null, file: string | null): { status: ServerStatus | null; message?: string } {
   if (!lang?.server || !file) return { status: null };
+  if (isForeignLang(file)) {
+    // Until it's known where this file goes, the project's server says nothing about it.
+    const route = lspState.routes[file];
+    if (route === "none") return { status: null };
+    if (route === "pending" || route === undefined) return { status: "starting" };
+  }
+  file = shadowOf(file);
   // Find the client whose root contains the file (most specific).
   let best: string | null = null;
   for (const key of Object.keys(lspState.status)) {

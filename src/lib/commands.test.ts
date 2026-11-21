@@ -19,6 +19,7 @@ vi.mock("./updater.svelte", () => stub());
 vi.mock("./report.svelte", () => stub());
 vi.mock("./settings.svelte", () => stub());
 vi.mock("./code/runner.svelte", () => stub());
+vi.mock("./code/langMenu", () => stub());
 vi.mock("./debug/debugger.svelte", () => stub());
 vi.mock("./debug/store.svelte", () => stub({ dbg: { status: "idle" } }));
 vi.mock("./terminal.svelte", () => stub());

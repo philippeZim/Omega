@@ -12,7 +12,8 @@ import { Highlight, InlineMath, BlockMath, WikiLink } from "./markdown/syntax";
 import { livePreview } from "./markdown/livePreview";
 import { codeHighlight, proseLayout } from "./theme";
 import { latexExtensions } from "./latex/language";
-import { langFor, indentFor } from "./code/languages";
+import { indentFor } from "./code/languages";
+import { effectiveLang } from "./code/langOverride.svelte";
 import { lspExtension } from "./code/lspExtension";
 import { remoteLsp } from "./code/remoteLsp";
 import { debugExtension } from "./debug/editorExt";
@@ -68,7 +69,7 @@ export function modeExtensions(mode: Mode, rawPath: string | null): Extension {
         EditorView.editorAttributes.of({ class: "mode-latex" }),
       ];
     case "code": {
-      const lang = langFor(rawPath);
+      const lang = effectiveLang(rawPath);
       return [
         rawPath && lang?.server ? debugExtension(rawPath) : [],
         rawPath ? gitBlame(rawPath) : [],

@@ -115,7 +115,13 @@ export function indentFor(lang: LangInfo | null): Extension {
   return [unit, indentUnit.from(unit)];
 }
 
+/** The language the file's extension stands for. Use `effectiveLang` where a user's choice counts. */
 export function langFor(path: string | null): LangInfo | null {
   if (!path) return null;
   return BY_EXT[extname(path)] ?? null;
 }
+
+/** Every language once, in the order of the picker; the plain variant (no JSX, no interface file). */
+export const LANGUAGES: LangInfo[] = ["py", "c", "cpp", "java", "js", "ts", "rs", "json", "toml", "scala", "ml", "mojo"].map((e) => BY_EXT[e]);
+
+export const langById = (id: string): LangInfo | null => LANGUAGES.find((l) => l.id === id) ?? null;

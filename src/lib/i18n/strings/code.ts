@@ -279,6 +279,14 @@ export const en = {
   "code.ad.ocamlNoByte": "{name} has no bytecode target, which debugging needs. Add (modes byte exe) to its stanza in {file}.",
   "code.ad.ocamlMismatch": "Earlybird ({adapter}) and the OCaml compiler ({compiler}) come from different installations. Install Earlybird in the same opam switch.",
   "code.ad.mojoFireExt": "Mojo no longer compiles .🔥 files. Rename this file to .mojo to run or debug it.",
+  "code.lang.plain": "Plain text",
+  "code.lang.title": "Language of this file: {lang} (from its name). Click to change.",
+  "code.lang.titleChosen": "Language of this file: {lang} (chosen by you). Click to change.",
+  "code.lang.automatic": "Automatic ({lang})",
+  "code.lang.needsFile": "Open a saved file to choose its language.",
+  "code.lang.noCustomRun": "This file runs on its own in the language you chose, so the folder's custom command doesn't apply.",
+  "code.lang.copyFailed": "Could not prepare the file for running: {error}",
+  "code.ad.javaNeedsJdk": "Debugging Java needs a full JDK (javac and its debug interface), not just a JRE.",
 };
 export const de: Record<keyof typeof en, string> = {
   "code.key.ctrl": "Strg",
@@ -550,6 +558,14 @@ export const de: Record<keyof typeof en, string> = {
   "code.ad.ocamlNoByte": "{name} hat kein Bytecode-Ziel, das zum Debuggen nötig ist. Ergänze (modes byte exe) in seiner Stanza in {file}.",
   "code.ad.ocamlMismatch": "Earlybird ({adapter}) und der OCaml-Compiler ({compiler}) stammen aus verschiedenen Installationen. Installiere Earlybird im selben opam-Switch.",
   "code.ad.mojoFireExt": "Mojo kompiliert keine .🔥-Dateien mehr. Benenne die Datei in .mojo um, um sie auszuführen oder zu debuggen.",
+  "code.lang.plain": "Nur Text",
+  "code.lang.title": "Sprache dieser Datei: {lang} (aus dem Namen). Zum Ändern klicken.",
+  "code.lang.titleChosen": "Sprache dieser Datei: {lang} (von dir gewählt). Zum Ändern klicken.",
+  "code.lang.automatic": "Automatisch ({lang})",
+  "code.lang.needsFile": "Öffne eine gespeicherte Datei, um ihre Sprache zu wählen.",
+  "code.lang.noCustomRun": "Diese Datei läuft für sich in der gewählten Sprache, der eigene Befehl des Ordners gilt hier nicht.",
+  "code.lang.copyFailed": "Die Datei konnte nicht zum Ausführen vorbereitet werden: {error}",
+  "code.ad.javaNeedsJdk": "Zum Debuggen von Java braucht es ein vollständiges JDK (javac und seine Debug-Schnittstelle), nicht nur eine JRE.",
 };
 export const fr: Record<keyof typeof en, string> = {
   "code.key.ctrl": "Ctrl",
@@ -821,4 +837,12 @@ export const fr: Record<keyof typeof en, string> = {
   "code.ad.ocamlNoByte": "{name} n’a pas de cible bytecode, nécessaire au débogage. Ajoutez (modes byte exe) à sa stanza dans {file}.",
   "code.ad.ocamlMismatch": "Earlybird ({adapter}) et le compilateur OCaml ({compiler}) proviennent d’installations différentes. Installez Earlybird dans le même switch opam.",
   "code.ad.mojoFireExt": "Mojo ne compile plus les fichiers .🔥. Renommez ce fichier en .mojo pour l’exécuter ou le déboguer.",
+  "code.lang.plain": "Texte brut",
+  "code.lang.title": "Langage de ce fichier : {lang} (d’après son nom). Cliquez pour le changer.",
+  "code.lang.titleChosen": "Langage de ce fichier : {lang} (choisi par vous). Cliquez pour le changer.",
+  "code.lang.automatic": "Automatique ({lang})",
+  "code.lang.needsFile": "Ouvrez un fichier enregistré pour choisir son langage.",
+  "code.lang.noCustomRun": "Ce fichier s’exécute seul dans le langage choisi : la commande personnalisée du dossier ne s’applique pas.",
+  "code.lang.copyFailed": "Impossible de préparer le fichier pour l’exécution : {error}",
+  "code.ad.javaNeedsJdk": "Le débogage Java nécessite un JDK complet (javac et son interface de débogage), pas seulement un JRE.",
 };

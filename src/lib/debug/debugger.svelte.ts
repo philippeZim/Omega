@@ -23,6 +23,10 @@ let tcpPort: number | null = null;
 let serverProcId: string | null = null;
 let lastPlan: { file: string; byGuest: boolean } | null = null;
 let sourcePath: Plan["sourcePath"];
+/** The debugged file when the adapter works on a private copy of it. */
+let shadow: Plan["shadow"];
+const toAdapter = (path: string) => (shadow && path === shadow.file ? shadow.copy : path);
+const fromAdapter = (path: string) => (shadow && normPath(path) === shadow.copy ? shadow.file : path);
 /** Bumped by every start and stop: a start that is no longer the newest ends itself. */
 let startGen = 0;
 /** A start is between its first step and a connected adapter. */
@@ -94,7 +98,7 @@ async function sendBreakpoints(s: DapSession, path: string) {
   const list = dbg.breakpoints[path] ?? [];
   try {
     const r = await s.request("setBreakpoints", {
-      source: { path: IS_WIN ? path.replace(/\//g, "\\") : path, name: path.split("/").pop() },
+      source: { path: IS_WIN ? toAdapter(path).replace(/\//g, "\\") : toAdapter(path), name: toAdapter(path).split("/").pop() },
       breakpoints: list.map((b) => ({ line: b.line, condition: b.condition || undefined })),
       lines: list.map((b) => b.line),
     });
@@ -201,6 +205,7 @@ async function runStart(gen: number, file: string, actor: string, byGuest: boole
   if (stale()) return;
 
   sourcePath = plan.sourcePath;
+  shadow = plan.shadow;
   dbg.label = plan.label;
   log(t("code.dbg.starting", { label: plan.label }));
   const s = newSession(plan.label);
@@ -413,7 +418,7 @@ function onEvent(s: DapSession, ev: Json) {
       break;
     case "breakpoint":
       if (b.breakpoint?.source?.path && b.breakpoint.line) {
-        const list = dbg.breakpoints[normPath(b.breakpoint.source.path)];
+        const list = dbg.breakpoints[normPath(fromAdapter(b.breakpoint.source.path))];
         const bp = list?.find((x) => x.line === b.breakpoint.line);
         if (bp) {
           bp.verified = b.breakpoint.verified;
@@ -551,7 +556,7 @@ async function loadStack() {
     (f): Frame => ({
       id: f.id,
       name: f.name,
-      path: f.source?.path ? normPath(f.source.path) : null,
+      path: f.source?.path ? normPath(fromAdapter(f.source.path)) : null,
       line: f.line,
       column: f.column,
       subtle: f.presentationHint === "subtle" || f.source?.presentationHint === "deemphasize" || !f.source?.path,

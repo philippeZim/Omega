@@ -18,7 +18,8 @@ vi.mock("@tauri-apps/api/window", () => ({
 }));
 vi.mock("./latex/controller.svelte", () => ({ schedule: vi.fn() }));
 vi.mock("./code/lspExtension", () => ({ setLspHooks: vi.fn() }));
-vi.mock("./code/lsp.svelte", () => ({ allClients: () => [], fileUri: (p: string) => "file://" + p }));
+const lspDocs = vi.hoisted(() => ({ close: vi.fn(), save: vi.fn(async () => {}) }));
+vi.mock("./code/lsp.svelte", () => ({ allClients: () => [], fileUri: (p: string) => "file://" + p, closeLspDoc: lspDocs.close, saveLspDoc: lspDocs.save }));
 vi.mock("./markdown/livePreview", () => ({ setLinkHandler: vi.fn(), resolvePath: vi.fn() }));
 vi.mock("./modes", () => ({ modeForExtension: () => null }));
 vi.mock("./fsWatch.svelte", () => ({ onFilesChanged: vi.fn(), watchRoot: vi.fn() }));
@@ -734,5 +735,25 @@ describe("guest text in an unsaved tab and Metals", () => {
     fs.failWrite = null;
     expect(await saveAs(id, "/w/build.sbt")).toBe(true);
     expect(g.metalsPausedBy("/w")).not.toBeNull();
+  });
+});
+
+describe("language server documents follow the tab", () => {
+  test("closing, saving and renaming go through the path, which maps to a private copy", async () => {
+    await setup({ "/p/a": "x", "/p/b": "y" });
+    lspDocs.close.mockClear();
+    lspDocs.save.mockClear();
+    const a = await open("/p/a");
+    const b = await open("/p/b");
+    await st.save(b.id);
+    expect(lspDocs.save).toHaveBeenCalledWith("/p/b", "y");
+
+    // `a` is in the background when it's renamed.
+    st.pathMoved("/p/a", "/p/c");
+    expect(lspDocs.close).toHaveBeenCalledWith("/p/a");
+    expect(ed.refreshLanguage).toHaveBeenCalledWith(a.id, "/p/c");
+
+    await st.closeTab(b.id);
+    expect(lspDocs.close).toHaveBeenCalledWith("/p/b");
   });
 });

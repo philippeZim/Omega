@@ -15,6 +15,7 @@ import { checkForUpdates } from "./updater.svelte";
 import { report } from "./report.svelte";
 import { settings, setSize } from "./settings.svelte";
 import { runner, runAction, stopRun, openNewProject } from "./code/runner.svelte";
+import { openLanguageMenu } from "./code/langMenu";
 import * as debug from "./debug/debugger.svelte";
 import { dbg } from "./debug/store.svelte";
 import { setTerminalKeyFilter } from "./terminal.svelte";
@@ -134,6 +135,7 @@ const APP_COMMANDS: CommandDef[] = [
   { id: "layout.moveBottom", group: "window", keys: ["Mod-Alt-Shift-ArrowDown"], run: () => moveFocused("bottom"), inTerminal: true },
   { id: "layout.reset", group: "window", keys: [], run: resetLayout },
 
+  { id: "code.language", group: "code", keys: [], run: () => openLanguageMenu(), modes: ["code"] },
   { id: "run.run", group: "run", keys: ["Shift-F10"], run: () => runAction(runner.project?.run), modes: ["code"] },
   { id: "run.build", group: "run", keys: ["Mod-F9"], run: () => runAction(runner.project?.build), modes: ["code"] },
   { id: "run.test", group: "run", keys: [], run: () => runAction(runner.project?.test), modes: ["code"] },

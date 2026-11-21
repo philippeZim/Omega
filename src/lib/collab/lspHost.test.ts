@@ -43,7 +43,7 @@ vi.mock("./share.svelte", () => ({
 vi.mock("@tauri-apps/api/path", () => ({ tempDir: async () => "/tmp" }));
 vi.mock("../state.svelte", () => ({ app: h.app }));
 vi.mock("../api", () => ({ joinPath: (a: string, b: string) => `${a}/${b}`, fsApi: { homeDir: async () => "/home/me" } }));
-vi.mock("../code/languages", () => ({ langFor: (p: string) => (p.endsWith(".py") ? { server: "python", lspId: "python" } : null) }));
+vi.mock("../code/languages", () => ({ langById: (id: string) => ({ id }), langFor: (p: string) => (p.endsWith(".py") ? { id: "python", server: "python", lspId: "python" } : null) }));
 vi.mock("../code/lsp.svelte", () => ({
   clientFor: h.clientFor,
   fileUri: (p: string) => `file://${p}`,
@@ -62,6 +62,7 @@ vi.mock("../code/lspExtension", () => ({
 
 const { reconcileLspSessions, lspSessionFor, syncSession } = await import("./lspHost.svelte");
 const { LSP_LIMITS, textHash } = await import("./lspProtocol");
+const { setLanguageOverride } = await import("../code/langOverride.svelte");
 
 function fakeClient() {
   const c = {
@@ -642,4 +643,22 @@ test("the guest hears when the host has no server for a file", async () => {
   h.clientFor.mockResolvedValue(null);
   await ready();
   expect(lastDocs()["a.py"].unavailable).toBe("no_server");
+});
+
+test("a file the host set to another language gets no guest session, and a running one ends at once", async () => {
+  doc("a.py");
+  reconcileLspSessions();
+  await settle();
+  expect(h.client.feed).toHaveBeenCalledOnce();
+  setLanguageOverride("/p/a.py", "scala");
+  try {
+    await settle();
+    expect(h.client.unfeed).toHaveBeenCalledWith(URI);
+    h.clientFor.mockClear();
+    reconcileLspSessions();
+    await settle();
+    expect(h.clientFor).not.toHaveBeenCalled();
+  } finally {
+    setLanguageOverride("/p/a.py", null);
+  }
 });

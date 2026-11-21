@@ -1,14 +1,15 @@
 /** Per-language debug setup: adapter installation, build step and DAP launch configuration. */
 import { invoke } from "@tauri-apps/api/core";
 import { fsApi, basename, dirname, joinPath } from "../api";
-import { langFor } from "../code/languages";
-import { detectProject, pythonEntry, cmakeConfigure, cmakeExecutable } from "../code/projects";
+import { effectiveLang } from "../code/langOverride.svelte";
+import { refreshBinCopy, refreshRunCopy, runCopyName, shadowForLsp, workDir } from "../code/langRun";
+import { detectProject, runsAlone, pythonEntry, cmakeConfigure, cmakeExecutable } from "../code/projects";
 import { duneProjectIssue, duneSourcePath, nearestDuneProject, duneTarget, findDuneExecutables, pickExecutable, sameToolchain } from "../code/dune";
 import { OCAML_PROGRAM_ENV, managedOcaml } from "../code/ocamlTools";
 import { mojoCompiles, mojoStem } from "../code/mojo";
-import { toolsDir, clientFor, fileUri, javaDebugBundles, metalsPausedFor, ocamlPauseRoot } from "../code/lsp.svelte";
+import { toolsDir, clientFor, fileUri, javaDebugBundles, metalsPausedFor, ocamlPauseRoot, registerShadow } from "../code/lsp.svelte";
 import { onGuestChange, toolPausedBy } from "../collab/guestChanges";
-import { t } from "../i18n/index.svelte";
+import { t, type Key } from "../i18n/index.svelte";
 import { exe, tmpPath, venvPython, IS_WIN, OS } from "../platform";
 import { ensureTools, mojoInstallHint, withInstallProgress, type ToolId } from "../tools.svelte";
 
@@ -24,6 +25,8 @@ export interface Plan {
   launch: Json;
   /** The file to show for a path the adapter reports (a build copy → its source). */
   sourcePath?: (path: string) => Promise<string>;
+  /** The adapter works on a private copy of `file`: breakpoints and stops are translated. */
+  shadow?: { file: string; copy: string };
 }
 
 export interface Ctx {
@@ -139,8 +142,8 @@ let buildRuns = 0;
  * A build that a guest change stops at once. The kill is repeated until the build has ended,
  * because a change can arrive before the backend has registered the process.
  */
-export async function buildUnlessPaused(cmd: string, args: string[], cwd: string, ctx: Pick<Ctx, "log">, paused: () => boolean) {
-  const stopped = () => new Error(t("code.lsp.ocamlPaused"));
+export async function buildUnlessPaused(cmd: string, args: string[], cwd: string, ctx: Pick<Ctx, "log">, paused: () => boolean, pausedText: Key = "code.lsp.ocamlPaused") {
+  const stopped = () => new Error(t(pausedText));
   if (paused()) throw stopped();
   const id = `ocaml-build-${++buildRuns}`;
   const kill = () => void invoke("proc_kill", { id }).catch(() => {});
@@ -213,10 +216,24 @@ async function mojoDebugger(tools: string, ctx: Ctx) {
 }
 
 export async function planFor(ctx: Ctx): Promise<Plan> {
-  const lang = langFor(ctx.file)?.id;
+  const info = effectiveLang(ctx.file);
+  const lang = info?.id;
   const project = await detectProject(ctx.file, ctx.workspace);
   const root = project?.root ?? dirname(ctx.file);
   const tools = await toolsDir();
+  const alone = await runsAlone(ctx.file, ctx.workspace);
+  const ownCopy = async () => {
+    const name = runCopyName(lang!, await fsApi.readFile(ctx.file))!;
+    const copy = await refreshRunCopy(ctx.file, name);
+    return { file: ctx.file, copy };
+  };
+  /** The language server's private copy: jdtls and Metals debug what they have compiled. */
+  const ownServerCopy = async () => {
+    const { copy, root: serverRoot } = await shadowForLsp(ctx.file, info!);
+    registerShadow(ctx.file, copy, serverRoot);
+    return copy;
+  };
+  const ownProgram = async () => `${await workDir(ctx.file, "bin")}/${exe("omega_dbg")}`;
 
   switch (lang) {
     case "python": {
@@ -260,6 +277,9 @@ export async function planFor(ctx: Ctx): Promise<Plan> {
         // Prefer the binary whose sources contain the open file.
         const best = exes.find((m) => ctx.file.startsWith(dirname(m.target.src_path))) ?? exes[exes.length - 1];
         program = best.executable;
+      } else if (alone) {
+        program = await ownProgram();
+        await capture("rustc", ["-g", "--crate-name", "omega_main", ctx.file, "-o", program], root, ctx);
       } else {
         program = await tmpPath(exe(`omega-dbg-${basename(ctx.file).replace(/\.rs$/, "")}`));
         await capture("rustc", ["-g", ctx.file, "-o", program], root, ctx);
@@ -287,10 +307,11 @@ export async function planFor(ctx: Ctx): Promise<Plan> {
         program = cmakeProgram(root, lists);
       } else {
         await need(["cc"]);
-        program = await tmpPath(exe(`omega-dbg-${basename(ctx.file).replace(/\.\w+$/, "")}`));
+        program = alone ? await ownProgram() : await tmpPath(exe(`omega-dbg-${basename(ctx.file).replace(/\.\w+$/, "")}`));
         const linux = OS === "linux";
         const cc = lang === "c" ? (linux ? "gcc" : "clang") : linux ? "g++" : "clang++";
-        await capture(cc, ["-g", "-O0", ...(lang === "cpp" ? ["-std=c++20"] : []), ctx.file, "-o", program, ...(lang === "c" && linux ? ["-lm"] : [])], root, ctx);
+        // `-x` makes the compiler take the real file whatever its name, so debug info points at it.
+        await capture(cc, ["-g", "-O0", ...(lang === "cpp" ? ["-std=c++20"] : []), ...(alone ? ["-x", lang === "c" ? "c" : "c++"] : []), ctx.file, "-o", program, ...(lang === "c" && linux ? ["-lm"] : [])], root, ctx);
       }
       return {
         label: `${lang === "c" ? "C" : "C++"} · ${basename(program)}`,
@@ -306,28 +327,40 @@ export async function planFor(ctx: Ctx): Promise<Plan> {
       await need(lang === "typescript" ? ["node", "pnpm"] : ["node"]);
       await ensure("jsdebug", server, t("code.ad.jsdebug"), ctx);
       const node = (await which("node")) ?? "node";
-      const launch: Json = { type: "pwa-node", request: "launch", name: "Node", program: ctx.file, cwd: root, console: "integratedTerminal", sourceMaps: true, skipFiles: ["<node_internals>/**"] };
+      const shadow = alone ? await ownCopy() : undefined;
+      const launch: Json = { type: "pwa-node", request: "launch", name: "Node", program: shadow?.copy ?? ctx.file, cwd: root, console: "integratedTerminal", sourceMaps: true, skipFiles: ["<node_internals>/**"] };
       if (lang === "typescript") {
         const tsx = joinPath(root, IS_WIN ? "node_modules/.bin/tsx.cmd" : "node_modules/.bin/tsx");
         if (await exists(tsx)) launch.runtimeExecutable = tsx;
         else {
-          launch.runtimeExecutable = (await which("pnpm")) ?? "npx";
-          launch.runtimeArgs = /pnpm(\.exe|\.cmd)?$/i.test(launch.runtimeExecutable) ? ["dlx", "tsx"] : ["-y", "tsx"];
+          // One node process with tsx's loader. Through `pnpm dlx` the debugger attaches to pnpm,
+          // whose session ends while the program waits for it.
+          const tsxDir = `${tools}/tsx`;
+          const loader = `${tsxDir}/node_modules/tsx/dist/loader.mjs`;
+          if (!(await exists(loader))) {
+            await fsApi.createDir(tsxDir).catch(() => {});
+            await capture("pnpm", ["add", "--dir", tsxDir, "--allow-build=esbuild", "tsx"], tsxDir, ctx);
+          }
+          launch.runtimeExecutable = node;
+          launch.runtimeArgs = ["--import", fileUri(loader)];
         }
       }
-      return { label: `Node · ${basename(ctx.file)}`, cwd: root, adapter: { kind: "tcp", cmd: node, args: [server, "{port}", "127.0.0.1"] }, launch };
+      return { label: `Node · ${basename(ctx.file)}`, cwd: root, adapter: { kind: "tcp", cmd: node, args: [server, "{port}", "127.0.0.1"] }, launch, shadow };
     }
 
     case "java": {
       const dir = `${tools}/java-debug`;
       await need(["jdk"]);
+      // jdtls compiles with its own compiler, but the debugger attaches through the JDK's JDI.
+      if (alone && !(await which("javac"))) throw new Error(t("code.ad.javaNeedsJdk"));
       const hasJar = (await javaDebugBundles()).length > 0;
       if (!hasJar) await ensure("javadebug", `${dir}/__missing__`, t("code.ad.javadebug"), ctx);
-      const lsp = await clientFor(langFor(ctx.file)!, ctx.file, ctx.workspace, async () => ctx.askInstall("Eclipse JDT Language Server"), true);
+      const javaFile = alone ? await ownServerCopy() : ctx.file;
+      const lsp = await clientFor(info!, javaFile, ctx.workspace, async () => ctx.askInstall("Eclipse JDT Language Server"), true);
       if (!lsp) throw new Error(t("code.ad.noJavaLsp"));
       ctx.log(t("code.ad.resolvingMain"));
       const mains: Json[] = (await lsp.request("workspace/executeCommand", { command: "vscode.java.resolveMainClass", arguments: [] }, 60000)) ?? [];
-      const main = mains.find((m) => m.filePath === ctx.file) ?? mains[0];
+      const main = mains.find((m) => m.filePath === javaFile) ?? mains[0];
       if (!main) throw new Error(t("code.ad.noMain"));
       const [modulePaths, classPaths] = await lsp.request("workspace/executeCommand", { command: "vscode.java.resolveClasspath", arguments: [main.mainClass, main.projectName] }, 60000);
       const port: number = await lsp.request("workspace/executeCommand", { command: "vscode.java.startDebugSession", arguments: [] }, 30000);
@@ -336,6 +369,7 @@ export async function planFor(ctx: Ctx): Promise<Plan> {
         cwd: root,
         adapter: { kind: "port", port },
         launch: { type: "java", request: "launch", name: "Java", mainClass: main.mainClass, projectName: main.projectName, modulePaths, classPaths, cwd: root, console: "integratedTerminal" },
+        shadow: alone ? { file: ctx.file, copy: javaFile } : undefined,
       };
     }
 
@@ -343,11 +377,19 @@ export async function planFor(ctx: Ctx): Promise<Plan> {
       await need(["jdk"]);
       // Metals' debugger attaches through the JDK's debug interface (JDI), which a JRE lacks.
       if (!(await which("javac"))) throw new Error(t("code.ad.scalaNeedsJdk"));
-      const lsp = await clientFor(langFor(ctx.file)!, ctx.file, ctx.workspace, async () => ctx.askInstall("Metals"));
       const paused = () => metalsPausedFor(ctx.file, ctx.workspace);
+      let scalaFile = ctx.file;
+      if (alone) {
+        // Before anything is written or started: Metals compiles this text, and macros run then.
+        if (await paused()) throw new Error(t("code.lsp.metalsPaused"));
+        await need(["scala"]);
+        scalaFile = await ownServerCopy();
+        await buildUnlessPaused("scala-cli", ["setup-ide", "."], dirname(scalaFile), ctx, () => toolPausedBy("metals", dirname(ctx.file)) !== null, "code.lsp.metalsPaused");
+      }
+      const lsp = await clientFor(info!, scalaFile, ctx.workspace, async () => ctx.askInstall("Metals"));
       if (!lsp) throw new Error(t((await paused()) ? "code.lsp.metalsPaused" : "code.ad.noScalaLsp"));
       const session = await startScalaSession(
-        () => lsp.request<{ name: string; uri: string }>("workspace/executeCommand", { command: "debug-adapter-start", arguments: [{ path: fileUri(ctx.file), runType: "run" }] }, 60000),
+        () => lsp.request<{ name: string; uri: string }>("workspace/executeCommand", { command: "debug-adapter-start", arguments: [{ path: fileUri(scalaFile), runType: "run" }] }, 60000),
         ctx,
       ).catch(async (e) => {
         throw (await paused()) ? new Error(t("code.lsp.metalsPaused")) : e;
@@ -362,6 +404,7 @@ export async function planFor(ctx: Ctx): Promise<Plan> {
         cwd: lsp.root,
         adapter: { kind: "port", port },
         launch: { type: "scala", request: "launch", name: "Scala", noDebug: false },
+        shadow: alone ? { file: ctx.file, copy: scalaFile } : undefined,
       };
     }
 
@@ -374,6 +417,22 @@ export async function planFor(ctx: Ctx): Promise<Plan> {
       };
       held();
       await need(["ocaml"]);
+      if (alone) {
+        const adapter = await earlybird(ctx);
+        // The copy sits with the build output: ocamlc writes .cmi and .cmo next to its source.
+        const copy = await refreshBinCopy(ctx.file, "omega_main.ml");
+        const bin = dirname(copy);
+        const managed = await managedOcaml("ocamlc");
+        await buildUnlessPaused(managed ?? "ocamlc", ["-g", "-o", "omega_dbg.bc", "omega_main.ml"], bin, ctx, paused);
+        held();
+        return {
+          label: `OCaml · ${basename(ctx.file)}`,
+          cwd: root,
+          adapter: { kind: "stdio", cmd: adapter, args: ["debug"] },
+          launch: { type: "ocaml.earlybird", request: "launch", name: "OCaml", program: `${bin}/omega_dbg.bc`, cwd: root, stopOnEntry: false, console: "integratedTerminal", ...(managed ? { env: OCAML_PROGRAM_ENV } : {}) },
+          shadow: { file: ctx.file, copy },
+        };
+      }
       if (project?.kind !== "dune") throw new Error(t("code.ad.ocamlNeedsDune"));
       const target = await ocamlDebugTarget(root, ctx.file);
       const adapter = await earlybird(ctx);
@@ -395,16 +454,18 @@ export async function planFor(ctx: Ctx): Promise<Plan> {
     }
 
     case "mojo": {
-      if (!mojoCompiles(ctx.file)) throw new Error(t("code.ad.mojoFireExt"));
+      if (!alone && !mojoCompiles(ctx.file)) throw new Error(t("code.ad.mojoFireExt"));
       const { adapter, mojo } = await mojoDebugger(tools, ctx);
       await need(["cc"]); // mojo links with the system's C compiler
-      const program = await tmpPath(exe(`omega-dbg-${mojoStem(ctx.file).replace(/[^\w.-]/g, "_")}`));
-      await capture(mojo, ["build", "-O0", "-g", ctx.file, "-o", program], root, ctx);
+      const shadow = alone ? await ownCopy() : undefined;
+      const program = alone ? await ownProgram() : await tmpPath(exe(`omega-dbg-${mojoStem(ctx.file).replace(/[^\w.-]/g, "_")}`));
+      await capture(mojo, ["build", "-O0", "-g", shadow?.copy ?? ctx.file, "-o", program], root, ctx);
       return {
         label: `Mojo · ${basename(ctx.file)}`,
         cwd: root,
         adapter: { kind: "stdio", cmd: adapter, args: [] },
         launch: { type: "mojo-lldb", request: "launch", name: "Mojo", program, args: [], cwd: root, stopOnEntry: false },
+        shadow,
       };
     }
   }

@@ -14,7 +14,8 @@
   import * as ed from "../lib/editor";
   import { runViewAction } from "../lib/editorActions";
   import { detectEol, toDisk, type Eol } from "../lib/eol";
-  import { langFor, indentFor } from "../lib/code/languages";
+  import { indentFor } from "../lib/code/languages";
+  import { effectiveLang } from "../lib/code/langOverride.svelte";
   import { baseTheme, codeHighlight } from "../lib/theme";
   import { formatKey } from "../lib/keys";
   import { t } from "../lib/i18n/index.svelte";
@@ -66,7 +67,7 @@
   }
 
   function previewState(text: string, file: string, shared?: Extension) {
-    const lang = langFor(file);
+    const lang = effectiveLang(file);
     return EditorState.create({
       doc: text,
       extensions: [
