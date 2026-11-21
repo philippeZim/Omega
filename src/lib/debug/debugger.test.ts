@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { mockIPC } from "@tauri-apps/api/mocks";
 import { emit } from "@tauri-apps/api/event";
 
@@ -10,6 +10,8 @@ const m = vi.hoisted(() => ({
   openFile: null as any,
   toast: null as any,
   runCommand: null as any,
+  /** Holds proc_spawn open until resolved. */
+  spawnGate: null as Promise<unknown> | null,
 }));
 
 vi.mock("../state.svelte", () => ({
@@ -91,10 +93,14 @@ beforeEach(async () => {
   m.openFile = vi.fn(async () => {});
   m.toast = vi.fn();
   m.runCommand = vi.fn();
+  m.spawnGate = null;
   mockIPC(
     (cmd, args: any) => {
       ipc.push([cmd, args]);
-      if (cmd === "proc_spawn") fake.id = args.id;
+      if (cmd === "proc_spawn") {
+        fake.id = args.id;
+        if (m.spawnGate) return m.spawnGate;
+      }
       if (cmd === "proc_send" && args.id === fake.id) fake.onSend(args.msg);
       return null;
     },
@@ -459,7 +465,7 @@ describe("debugger controller with a fake adapter", () => {
     expect(S.dbg.status).toBe("terminated");
     expect(S.dbg.console.at(-1)).toEqual({ text: "no debugger for .xyz", kind: "error" });
     expect(ipc.some(([c]) => c === "proc_spawn")).toBe(false);
-    vi.doUnmock("./adapters");
+    vi.doMock("./adapters", () => ({ planFor: async () => m.plan })); // back to the file's own mock
   });
 
   test("without a saved file it only toasts", async () => {
@@ -467,5 +473,88 @@ describe("debugger controller with a fake adapter", () => {
     await D.startDebugging();
     expect(m.toast).toHaveBeenCalledWith(expect.any(String), "error");
     expect(S.dbg.status).toBe("idle");
+  });
+});
+
+describe("a stop or a second start during a start", () => {
+  const deferred = <T = void>() => {
+    let resolve!: (v: T) => void;
+    const promise = new Promise<T>((r) => (resolve = r));
+    return { promise, resolve };
+  };
+  const spawns = () => ipc.filter(([c]) => c === "proc_spawn").length;
+  // The fake adapter answers on a timer: let the last replies land before the environment goes.
+  afterEach(() => new Promise((r) => setTimeout(r, 10)));
+
+  test("stop while the plan is prepared launches nothing", async () => {
+    const plan = m.plan;
+    const gate = deferred<any>();
+    m.plan = gate.promise;
+    const start = D.startDebugging();
+    await vi.waitFor(() => expect(S.dbg.status).toBe("starting"));
+    await D.stopDebugging();
+    gate.resolve(plan);
+    await start;
+    await settle();
+    expect(spawns()).toBe(0);
+    expect(S.dbg.status).toBe("terminated");
+  });
+
+  test("two overlapping starts run one adapter", async () => {
+    const plan = m.plan;
+    const gate = deferred<any>();
+    m.plan = gate.promise;
+    const first = D.startDebugging();
+    const second = D.startDebugging();
+    gate.resolve(plan);
+    await Promise.all([first, second]);
+    await vi.waitFor(() => expect(S.dbg.status).toBe("stopped"));
+    expect(spawns()).toBe(1);
+    expect(fake.commands().filter((c) => c === "launch")).toHaveLength(1);
+  });
+
+  test("stop while the adapter is spawning kills it and sends no launch", async () => {
+    const gate = deferred<unknown>();
+    m.spawnGate = gate.promise;
+    const start = D.startDebugging();
+    await vi.waitFor(() => expect(spawns()).toBe(1));
+    await D.stopDebugging();
+    const killsBefore = ipc.filter(([c, a]) => c === "proc_kill" && a.id === fake.id).length;
+    gate.resolve(null);
+    await start;
+    await settle();
+    expect(ipc.filter(([c, a]) => c === "proc_kill" && a.id === fake.id).length).toBeGreaterThan(killsBefore);
+    expect(fake.commands()).not.toContain("launch");
+    expect(S.dbg.status).toBe("terminated");
+  });
+
+  test("a stop during a restart doesn't start it again", async () => {
+    await startAndStop();
+    fake.noReply.add("disconnect");
+    const restart = D.hostDebug.restart("/p/main.py", "Bob");
+    await vi.waitFor(() => expect(fake.commands()).toContain("disconnect"));
+    const spawned = spawns();
+    const stop = D.stopLocal();
+    await fake.exit();
+    await Promise.all([restart, stop]);
+    await settle();
+    expect(spawns()).toBe(spawned);
+  });
+
+  test("a start that throws doesn't count as in progress afterwards", async () => {
+    S.dbgHooks.beforeStart = async () => {
+      throw new Error("save failed");
+    };
+    await expect(D.startDebugging()).rejects.toThrow("save failed");
+    expect(D.hostDebug.starting()).toBe(false);
+  });
+
+  test("the guest's name is gone once the session has ended, however it ended", async () => {
+    await D.hostDebug.start("/p/main.py", "Bob");
+    await vi.waitFor(() => expect(S.dbg.status).toBe("stopped"));
+    expect(S.dbg.actor).toBe("Bob");
+    await fake.exit();
+    await vi.waitFor(() => expect(S.dbg.status).toBe("terminated"));
+    expect(S.dbg.actor).toBe("");
   });
 });

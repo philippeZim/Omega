@@ -12,6 +12,7 @@ import { listen } from "@tauri-apps/api/event";
 import { collab, broadcast, onCollabMessage, sessionEndHooks } from "./collab.svelte";
 import { share, hostKeyChecked, syncSharedTabs, openRemote, isRemote } from "./share.svelte";
 import { blockedByCapability, guestCanStop } from "./guard";
+import { termOut } from "./debugMirror";
 import { call, hasCapability, isObj, publish, registerMethod, registerTopic, rpcErrorText, RpcFail, subscribe } from "./rpc.svelte";
 import { app, activeTab, activate, closeTab, flushAutosave, newFile, openFile, setMode, setRoot } from "../state.svelte";
 import { runner, runAction, refreshProject, runnerRemote } from "../code/runner.svelte";
@@ -228,6 +229,10 @@ setRunEcho((text) => {
   queueOut(btoa(bin));
 });
 function queueOut(b64: string) {
+  const out = termOut.filter ? termOut.filter(b64, queueRaw) : b64;
+  if (out) queueRaw(out);
+}
+function queueRaw(b64: string) {
   outBuf += b64 + "|";
   if (!outTimer)
     outTimer = window.setTimeout(() => {

@@ -2,7 +2,9 @@
 import { RangeSet, StateEffect, StateField, type Extension, type EditorState } from "@codemirror/state";
 import { Decoration, EditorView, GutterMarker, ViewPlugin, gutter, gutterLineClass, hoverTooltip, type DecorationSet } from "@codemirror/view";
 import { viewActions } from "../editorActions";
-import { dbg, dbgHooks, setBreakpointLines } from "./store.svelte";
+import { ySyncAnnotation } from "y-codemirror.next";
+import { dbg, dbgHooks, setBreakpointLines, SHARED_BP } from "./store.svelte";
+import { blockedByCapability } from "../collab/guard";
 import { t } from "../i18n/index.svelte";
 
 /** While stopped: hovering an identifier (incl. a.b.c chains) shows its current value. */
@@ -160,7 +162,7 @@ export function debugExtension(path: string): Extension {
     provide: (f) => EditorView.decorations.from(f),
   });
 
-  const sync = (view: EditorView) => {
+  const sync = (view: EditorView, moved = false) => {
     const lines: { line: number; condition?: string }[] = [];
     const field = view.state.field(bpField, false);
     if (!field) return; // mode switched away meanwhile
@@ -168,12 +170,20 @@ export function debugExtension(path: string): Extension {
       lines.push({ line: view.state.doc.lineAt(from).number, condition: v.condition });
     });
     lines.sort((a, b) => a.line - b.line);
-    setBreakpointLines(path, lines);
+    setBreakpointLines(path, lines, moved);
   };
 
   let timer: number | undefined;
+  const shared = path.startsWith(SHARED_BP);
 
   const toggleAt = (view: EditorView, pos: number, condition?: string | null) => {
+    if (shared && blockedByCapability("debug")) return;
+    if (dbgHooks.hosting()) {
+      // Start from the shared list, so this click can't also claim a marker guests have withdrawn.
+      clearTimeout(timer);
+      sync(view, true);
+      view.dispatch({ effects: debugRefresh.of(null) });
+    }
     view.dispatch({ effects: toggleBp.of({ pos, condition }) });
     sync(view);
   };
@@ -257,9 +267,12 @@ export function debugExtension(path: string): Extension {
     }),
     viewActions.of({ "debug.toggleBreakpoint": (v) => (toggleAt(v, v.state.selection.main.head), true) }),
     EditorView.updateListener.of((u) => {
-      if (u.docChanged) {
+      // Shared file: whoever typed moves the breakpoints, so a remote edit isn't reported back.
+      const own = !shared || u.transactions.some((tr) => tr.docChanged && tr.annotation(ySyncAnnotation) === undefined);
+      if (u.docChanged && own) {
         clearTimeout(timer);
-        timer = window.setTimeout(() => sync(u.view), 400);
+        // Shared: at once, so a state update from the host can't put the marker back meanwhile.
+        timer = window.setTimeout(() => sync(u.view, true), shared ? 0 : 400);
       }
     }),
     EditorView.baseTheme({

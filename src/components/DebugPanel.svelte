@@ -1,7 +1,7 @@
 <script lang="ts">
   import Glyph from "./Glyph.svelte";
   import VarTree from "./VarTree.svelte";
-  import { dbg, setBreakpointLines } from "../lib/debug/store.svelte";
+  import { adoptBreakpoint, dbg, setBreakpointLines } from "../lib/debug/store.svelte";
   import {
     startDebugging, stopDebugging, restartDebugging, continueRun, stepOver, stepInto, stepOut, pause,
     selectFrame, selectThread, addWatch, removeWatch, toggleWatch,
@@ -18,6 +18,9 @@
   const running = $derived(dbg.status === "running" || dbg.status === "starting");
   const live = $derived(stopped || running);
   const bpList = $derived(Object.entries(dbg.breakpoints).filter(([p]) => inProject(p)).flatMap(([p, list]) => list.map((b) => ({ path: p, ...b }))));
+
+  /** File name for display; shared files of a session carry the `collab:` prefix. */
+  const fileName = (p: string) => p.replace(/^collab:/, "").split("/").pop();
 
   function toggleSection(k: string) {
     open[k] = !open[k];
@@ -85,6 +88,7 @@
     <span class="dot"></span>
     <span class="st">{t(`code.dbg.status.${dbg.status}`)}{stopped && dbg.stopReason ? ` · ${stopReasonLabel(dbg.stopReason)}` : ""}</span>
     {#if dbg.label && dbg.status !== "idle"}<span class="label">{dbg.label}</span>{/if}
+    {#if dbg.actor && dbg.status !== "idle"}<span class="label">{t("ai.collab.dbg.by", { name: dbg.actor })}</span>{/if}
   </div>
 
   <div class="scroll">
@@ -132,9 +136,9 @@
           </div>
         {/if}
         {#each dbg.frames as f (f.id)}
-          <button class="frame" class:on={f.id === dbg.frameId} class:subtle={f.subtle} title={f.path ? `${f.name} · ${f.path}:${f.line}` : f.name} onclick={() => selectFrame(f)}>
+          <button class="frame" class:on={f.id === dbg.frameId} class:subtle={f.subtle} title={f.path ? `${f.name} · ${f.path.replace(/^collab:/, "")}:${f.line}` : f.name} onclick={() => selectFrame(f)}>
             <span class="fname">{f.name}</span>
-            {#if f.path}<span class="floc">{f.path.split("/").pop()}:{f.line}</span>{/if}
+            {#if f.path}<span class="floc">{fileName(f.path)}:{f.line}</span>{/if}
           </button>
         {:else}
           <p class="hint">—</p>
@@ -149,8 +153,9 @@
         {#each bpList as b (b.path + b.line)}
           <div class="bp" role="button" tabindex="-1" onclick={() => gotoBp(b.path, b.line)} onkeydown={() => {}}>
             <span class="bdot" class:cond={b.condition} class:unverified={b.verified === false}></span>
-            <span class="bfile">{b.path.split("/").pop()}:{b.line}</span>
+            <span class="bfile">{fileName(b.path)}:{b.line}</span>
             {#if b.condition}<span class="bcond">{b.condition}</span>{/if}
+            {#if b.guest}<button class="keep" title={t("ai.collab.dbg.keepHint")} onclick={(e) => { e.stopPropagation(); adoptBreakpoint(b.path, b.line); }}>{t("ai.collab.dbg.keep")}</button>{/if}
             <button class="rm" onclick={(e) => { e.stopPropagation(); removeBp(b.path, b.line); }} aria-label={t("code.dbg.remove")}><Glyph name="x" size={8} /></button>
           </div>
         {:else}
@@ -207,4 +212,6 @@
   .bfile { white-space: nowrap; }
   .bcond { flex: 1; color: var(--orange); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .bp .rm { margin-left: auto; }
+  .keep { flex-shrink: 0; padding: 1px 8px; border-radius: 999px; font-family: var(--font); font-size: 11px; color: var(--label-2); background: var(--fill); }
+  .keep:hover { background: var(--fill-2); color: var(--label); }
 </style>

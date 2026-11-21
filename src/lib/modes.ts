@@ -70,7 +70,7 @@ export function modeExtensions(mode: Mode, rawPath: string | null): Extension {
     case "code": {
       const lang = langFor(rawPath);
       return [
-        path && lang?.server ? debugExtension(path) : [],
+        rawPath && lang?.server ? debugExtension(rawPath) : [],
         path ? gitBlame(path) : [],
         path ? gitGutter(path) : [],
         lineNumbers(),

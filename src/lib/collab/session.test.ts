@@ -78,6 +78,9 @@ const ui = fakeUi();
 vi.mock("../ui.svelte", () => ({ ui }));
 
 await import("./session.svelte");
+// Registered once on load; later tests clear the mock's call list.
+const { setRunEcho: registerEcho } = await import("../terminal.svelte");
+const runEcho = vi.mocked(registerEcho).mock.calls[0][0]!;
 const { runner, runAction, runnerRemote } = await import("../code/runner.svelte");
 const { guestGuard } = await import("./guard");
 
@@ -470,4 +473,25 @@ test("guest: with `packages` only, Stop calls the host for a package task and no
   expect(send).not.toHaveBeenCalled();
   expect(ui.toast.mock.calls[0][1]).toBe("error");
   for (const h of endHooks) await h(true);
+});
+
+test("host: what the Run terminal mirrors to guests passes the debugger's filter, in order", async () => {
+  const { termOut } = await import("./debugMirror");
+  const enc = (x: string) => btoa(x);
+  const dec = (x: string) => atob(x);
+  collab.role = "host";
+  collab.participants = [{ peer: "self", role: "host" }, { peer: "g1", role: "guest" }];
+  broadcast.mockClear();
+  termOut.filter = (b64, later) => {
+    later(enc("held "));
+    return enc(dec(b64).replace("/home/alice/proj/", ""));
+  };
+  try {
+    runEcho("$ python /home/alice/proj/main.py");
+    await new Promise((r) => setTimeout(r, 45));
+  } finally {
+    termOut.filter = null;
+  }
+  const sent = broadcast.mock.calls.map((c) => c[0] as Msg).filter((m) => m.t === "term.data");
+  expect(sent.flatMap((m) => m.chunks as string[]).map(dec).join("")).toBe("held $ python main.py");
 });
