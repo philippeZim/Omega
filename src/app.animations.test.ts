@@ -18,7 +18,7 @@ const onGlass = [
   "components/DockZone.svelte",
   "components/FindInFiles.svelte",
   "components/KeybindingEditor.svelte",
-  "components/LspStatus.svelte",
+  "components/LspDot.svelte",
   "components/PdfPanel.svelte",
   "components/Select.svelte",
   "components/Toasts.svelte",

@@ -1,3 +1,4 @@
+import type { ServerStatus } from "./code/lsp.svelte";
 import { t } from "./i18n/index.svelte";
 import type { Suggest } from "./code/packages";
 
@@ -17,6 +18,8 @@ export interface MenuItem {
   disabled?: boolean;
   /** Tooltip, e.g. why the entry is disabled. */
   title?: string;
+  /** A read-only status row: the label with a language server dot and an optional message. */
+  info?: { status: ServerStatus; message?: string };
 }
 
 interface DialogState {
