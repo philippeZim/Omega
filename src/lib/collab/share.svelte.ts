@@ -9,7 +9,7 @@ import * as Y from "yjs";
 import { Awareness, encodeAwarenessUpdate, applyAwarenessUpdate, removeAwarenessStates } from "y-protocols/awareness";
 import { yCollab, ySyncAnnotation } from "y-codemirror.next";
 import { invoke } from "@tauri-apps/api/core";
-import { ChangeSet, EditorState, type ChangeSpec } from "@codemirror/state";
+import { ChangeSet, EditorState, type ChangeSpec, type Extension } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { collab, send, broadcast, onCollabMessage } from "./collab.svelte";
 import { blockedByCapability, guestCan } from "./guard";
@@ -74,6 +74,9 @@ export const share = $state({
 
 const lighten = (hex: string) => hex + "33";
 
+/** Origin of a guest's own Replace: its undo stack tracks it, and background tabs mirror it. */
+const GUEST_REPLACE = "guest-replace";
+
 function makeDoc(rel: string, isHost: boolean): SharedDoc {
   const ydoc = new Y.Doc();
   const ytext = ydoc.getText("content");
@@ -81,7 +84,7 @@ function makeDoc(rel: string, isHost: boolean): SharedDoc {
   awareness.setLocalStateField("user", { name: collab.me.name, color: collab.me.color, colorLight: lighten(collab.me.color) });
   // Undo only covers edits made in this editor (yCollab adds its origin when bound): not the
   // initial load of the text (origin null), which would otherwise be the first undo step (#126).
-  const undo = new Y.UndoManager(ytext, { trackedOrigins: new Set() });
+  const undo = new Y.UndoManager(ytext, { trackedOrigins: new Set([GUEST_REPLACE]) });
   const d: SharedDoc = { rel, root: app.root, ydoc, ytext, awareness, undo, tabId: null, subscribers: new Set(), cleanup: [] };
 
   // Local Yjs changes → network. Origin = peer id for remote updates, so they aren't echoed back.
@@ -107,7 +110,8 @@ function makeDoc(rel: string, isHost: boolean): SharedDoc {
   // (the yCollab plugin only lives in the visible editor).
   const onText = (e: Y.YTextEvent, tr: Y.Transaction) => {
     // Only network changes (origin = peer id / "remote"); local edits come from the visible editor.
-    if (typeof tr.origin !== "string") return;
+    // A Find preview is a second editor on the doc, so its edits and undo steps count here too.
+    if (typeof tr.origin !== "string" && !previewSubs.has(d.rel)) return;
     if (!d.tabId || ed.isActive(d.tabId) || !ed.hasDoc(d.tabId)) return;
     const changes: ChangeSpec[] = [];
     let pos = 0;
@@ -234,23 +238,55 @@ export function guestScope(): GuestScope | null {
   };
 }
 
-/** Host: the text of every project file open in the session, which can be ahead of the disk. */
-export function hostLiveTexts(scope: GuestScope): Record<string, string> {
-  const out: Record<string, string> = {};
+/** Host: the live text of one project file, if it's open in the session. */
+export function hostLiveText(scope: GuestScope, rel: string): string | undefined {
+  const d = docs.get(rel);
+  if (d && d.root === scope.root) return d.ytext.toString();
+  const tab = app.tabs.find((x) => x.path === scope.abs(rel));
+  return tab ? ed.getText(tab.id) : undefined;
+}
+
+/**
+ * Host: the text of the project files open in the session, which can be ahead of the disk, up to
+ * the given sizes. `omitted` are open files that didn't fit: their disk copy may be out of date.
+ */
+export function hostLiveTexts(scope: GuestScope, maxFile = Infinity, maxTotal = Infinity) {
+  const live = new Map<string, string>();
   for (const tab of app.tabs) {
     const rel = tab.path ? scope.rel(tab.path) : null;
-    if (rel) out[rel] = ed.getText(tab.id);
+    if (rel) live.set(rel, ed.getText(tab.id));
   }
   // A shared doc is the newest copy, also of a file with a tab.
-  for (const d of docs.values()) if (d.root === scope.root && !d.rel.startsWith("tab:")) out[d.rel] = d.ytext.toString();
-  return out;
+  for (const d of docs.values()) if (d.root === scope.root && !d.rel.startsWith("tab:")) live.set(d.rel, d.ytext.toString());
+  const texts: Record<string, string> = {};
+  const omitted: string[] = [];
+  let total = 0;
+  for (const [rel, text] of live) {
+    if (text.length > maxFile || total + text.length > maxTotal) omitted.push(rel);
+    else {
+      texts[rel] = text;
+      total += text.length;
+    }
+  }
+  return { texts, omitted };
+}
+
+/** Host: whether a guest's update up to `clock` has arrived in the shared doc. */
+export function hostDocHasClock(rel: string, client: number, clock: number) {
+  const d = hostDocAt(rel);
+  return !!d && Y.getState(d.ydoc.store, client) >= clock;
 }
 
 export interface ReplacePlan {
   /** (from, to, text) in UTF-16 offsets, ascending. */
   edits: [number, number, string][];
   count: number;
+  /** Version of the text the plan is for. */
+  version: string;
 }
+
+/** Host: disk writes of a guest's Replace in progress. Opening that file waits for them. */
+const diskReplaces = new Map<string, Promise<unknown>>();
 
 /** Applied by the host for a guest: a string origin, so it reaches every guest and background tab. */
 const REPLACE_ORIGIN = "search-replace";
@@ -266,6 +302,7 @@ export async function hostReplaceIn(scope: GuestScope, rel: string, plan: (text:
     if (!scope.live()) throw new RpcFail("unavailable");
   };
   if (!safeRel(rel) || !(await scope.check(rel))) throw new RpcFail("unavailable");
+  await invoke("guest_write_check", { root: scope.root, rel });
   const abs = scope.abs(rel);
   const isOpen = () => docs.has(rel) || app.tabs.some((x) => x.path === abs);
   // The text can change while the plan is computed: then plan again on the new text.
@@ -289,28 +326,27 @@ export async function hostReplaceIn(scope: GuestScope, rel: string, plan: (text:
       }, REPLACE_ORIGIN);
       return count;
     }
-    const read = () => invoke<string | null>("guest_read_text", { root: scope.root, rel });
-    const text = await read();
+    const text = await invoke<string | null>("guest_read_text", { root: scope.root, rel });
     if (text === null) throw new RpcFail("unreadable");
-    const { edits, count } = await plan(text);
+    const { edits, count, version } = await plan(text);
     stop();
     if (!count) return 0;
+    // No await from here to the write: a doc opened by now takes this change as a live edit.
     if (isOpen()) continue;
-    // Last look before writing: still allowed, and nobody changed the file meanwhile.
-    if (!(await scope.check(rel))) throw new RpcFail("unavailable");
-    const now = await read();
-    stop();
-    if (isOpen() || now !== text) continue;
     let out = "";
     let pos = 0;
     for (const [from, to, insert] of edits) {
       out += text.slice(pos, from) + insert;
       pos = to;
     }
-    await fsApi.writeFile(abs, out + text.slice(pos)).catch((e) => {
-      console.error("guest replace", e);
-      throw new RpcFail("write_failed");
-    });
+    const writing = invoke("guest_write_text", { root: scope.root, rel, expected: version, content: out + text.slice(pos) });
+    const settled = writing.catch(() => {});
+    diskReplaces.set(rel, settled);
+    try {
+      await writing;
+    } finally {
+      if (diskReplaces.get(rel) === settled) diskReplaces.delete(rel);
+    }
     return count;
   }
   throw new RpcFail("busy");
@@ -391,6 +427,14 @@ async function hostDoc(rel: string): Promise<SharedDoc | null> {
   if (!root || !(await guestPathOk(rel, root)) || app.root !== root) return null;
   const existing = docs.get(rel);
   if (existing) return existing;
+  // A guest's Replace is being written: read the file after it, not halfway.
+  const replacing = diskReplaces.get(rel);
+  if (replacing) {
+    await replacing;
+    if (app.root !== root) return null;
+    const opened = docs.get(rel);
+    if (opened) return opened;
+  }
   const abs = joinPath(root, rel);
   const tab = app.tabs.find((t) => t.path === abs);
   let text: string;
@@ -563,27 +607,106 @@ async function guestReceiveState(rel: string, update: Uint8Array, name?: string)
   const old = docs.get(rel);
   // A fresh copy for a tab that's already open (capability change): same tab, host's text.
   const kept = old?.tabId ? app.tabs.find((x) => x.id === old.tabId) : undefined;
+  const sub = previewSubs.get(rel);
+  const forPreview = previewRequests.delete(rel);
+  const tabless = !kept && !pendingOpens.has(rel) && (!!sub || forPreview);
+  // The preview moved on before the host answered.
+  if (tabless && !sub) return void send(collab.hostPeer!, { t: "doc.close", path: rel });
   if (old) {
     if (kept) ed.setCollab(kept.id, null);
     dispose(old);
   }
   const d = makeDoc(rel, false);
   Y.applyUpdate(d.ydoc, update, "remote");
-  let tabId: string;
-  if (kept) {
-    const dirty = kept.dirty;
-    ed.replaceDocText(kept.id, d.ytext.toString());
-    kept.dirty = dirty;
-    tabId = kept.id;
-  } else {
-    const { openVirtual } = await import("../state.svelte");
-    tabId = openVirtual(REMOTE + rel, name || basename(rel), d.ytext.toString());
+  if (!tabless) {
+    let tabId: string;
+    if (kept) {
+      const dirty = kept.dirty;
+      ed.replaceDocText(kept.id, d.ytext.toString());
+      kept.dirty = dirty;
+      tabId = kept.id;
+    } else {
+      const { openVirtual } = await import("../state.svelte");
+      tabId = openVirtual(REMOTE + rel, name || basename(rel), d.ytext.toString());
+    }
+    d.tabId = tabId;
+    ed.setCollab(tabId, binding(d));
+    const p = pendingOpens.get(rel);
+    pendingOpens.delete(rel);
+    if (p?.line) setTimeout(() => scrollToLine(p.line!, p.range), 50);
   }
-  d.tabId = tabId;
-  ed.setCollab(tabId, binding(d));
-  const p = pendingOpens.get(rel);
-  pendingOpens.delete(rel);
-  if (p?.line) setTimeout(() => scrollToLine(p.line!, p.range), 50);
+  previewSubs.get(d.rel)?.onDoc(binding(d), d.ytext.toString());
+}
+
+// ------------------------------------------------------------------ Find preview (guest)
+
+interface PreviewSub {
+  rel: string;
+  /** The editor binding and text of the doc; null when the doc is gone. */
+  onDoc: (ext: Extension | null, text: string) => void;
+}
+const previewSubs = new Map<string, PreviewSub>();
+/** Previews whose `doc.open` the host hasn't answered yet. */
+const previewRequests = new Set<string>();
+
+/**
+ * Guest: edits a file in the Find preview through its shared doc, with no tab needed. `onDoc` gets a
+ * new binding whenever the doc is replaced (e.g. the host changed `edit`). Returns the way to stop.
+ */
+export function guestPreviewDoc(rel: string, onDoc: PreviewSub["onDoc"]): () => void {
+  const sub: PreviewSub = { rel, onDoc };
+  previewSubs.set(rel, sub);
+  const d = docs.get(rel);
+  if (d) onDoc(binding(d), d.ytext.toString());
+  else {
+    previewRequests.add(rel);
+    send(collab.hostPeer!, { t: "doc.open", path: rel });
+  }
+  return () => {
+    if (previewSubs.get(sub.rel) !== sub) return;
+    previewSubs.delete(sub.rel);
+    const cur = docs.get(sub.rel);
+    if (!cur || cur.tabId) return;
+    if (collab.role === "guest" && collab.hostPeer) send(collab.hostPeer, { t: "doc.close", path: sub.rel });
+    dispose(cur);
+    docs.delete(sub.rel);
+  };
+}
+
+/** The doc under a preview went away. */
+function dropPreview(rel: string) {
+  const sub = previewSubs.get(rel);
+  if (!sub) return;
+  previewSubs.delete(rel);
+  sub.onDoc(null, "");
+}
+
+/** Guest: whether this file is open here as a shared doc. */
+export const guestHasDoc = (rel: string) => docs.has(rel);
+
+/**
+ * Guest: a Replace in its own copy of a shared doc, so it lands on this guest's undo stack and
+ * reaches the host like typing. `client` and `clock` identify the update for a delivery check.
+ */
+export async function guestReplaceInDoc(rel: string, plan: (text: string) => Promise<ReplacePlan>) {
+  const d = docs.get(rel);
+  if (!d) return null;
+  const text = d.ytext.toString();
+  const { edits, count } = await plan(text);
+  if (docs.get(rel) !== d || !d.cleanup.length || d.ytext.toString() !== text) throw new RpcFail("changed");
+  if (!guestCan("edit")) throw new RpcFail("forbidden");
+  if (count) {
+    d.undo.stopCapturing();
+    d.ydoc.transact(() => {
+      for (let i = edits.length - 1; i >= 0; i--) {
+        const [from, to, insert] = edits[i];
+        d.ytext.delete(from, to - from);
+        if (insert) d.ytext.insert(from, insert);
+      }
+    }, GUEST_REPLACE);
+    d.undo.stopCapturing();
+  }
+  return { count, client: d.ydoc.clientID, clock: Y.getState(d.ydoc.store, d.ydoc.clientID) };
 }
 
 /** Guest closed a shared tab. */
@@ -592,6 +715,11 @@ export function onTabClosed(path: string | null) {
   const rel = path!.slice(REMOTE.length);
   const d = docs.get(rel);
   if (!d) return;
+  // A Find preview is still on this doc: it stays, without the tab.
+  if (previewSubs.has(rel)) {
+    d.tabId = null;
+    return;
+  }
   send(collab.hostPeer!, { t: "doc.close", path: rel });
   dispose(d);
   docs.delete(rel);
@@ -884,11 +1012,18 @@ onCollabMessage(async (peer, msg) => {
     docs.delete(msg.path);
     d.rel = msg.to;
     docs.set(msg.to, d);
+    const sub = previewSubs.get(msg.path);
+    if (sub) {
+      previewSubs.delete(msg.path);
+      sub.rel = msg.to;
+      previewSubs.set(msg.to, sub);
+    }
     const tab = d.tabId ? app.tabs.find((x) => x.id === d.tabId) : null;
     if (tab) Object.assign(tab, { path: REMOTE + msg.to, name: msg.name || basename(msg.to) });
   } else if (msg.t === "doc.gone" && (msg.reason === "deleted" || msg.reason === "folder")) {
     // The host deleted the file or left its folder: keep the text as an unsaved local tab instead
     // of editing into nothing (#134).
+    dropPreview(msg.path);
     const d = docs.get(msg.path);
     if (!d) return;
     const tab = d.tabId ? app.tabs.find((x) => x.id === d.tabId) : null;
@@ -901,11 +1036,15 @@ onCollabMessage(async (peer, msg) => {
     dispose(d);
     docs.delete(msg.path);
   } else if (msg.t === "doc.gone") {
+    dropPreview(msg.path);
     const d = docs.get(msg.path);
     if (d?.tabId) {
       const { closeTab } = await import("../state.svelte");
       ed.setCollab(d.tabId, null);
       await closeTab(d.tabId, true);
+    } else if (d) {
+      dispose(d);
+      docs.delete(msg.path);
     }
   } else if (msg.t === "fs.changed") {
     share.treeGen++;
@@ -917,6 +1056,8 @@ onCollabMessage(async (peer, msg) => {
     if (d) applyAwarenessUpdate(d.awareness, unb64(msg.update), "remote");
   } else if (msg.t === "doc.error") {
     pendingOpens.delete(msg.path);
+    previewRequests.delete(msg.path);
+    dropPreview(msg.path);
     ui.toast(`${msg.path}: ${msg.error === "unavailable" ? t("ai.collab.fileUnavailable") : msg.error === "too_large" ? rpcErrorText("too_large") : msg.error}`, "error");
   } else if (msg.t === "participants") {
     // Someone left: their cursor label and follow target go too.
@@ -940,6 +1081,8 @@ onCapabilitiesChanged((before, now) => {
 /** Session ended: unbind host tabs, close guest tabs, drop all shared docs. */
 export async function teardownShare() {
   const { closeTab } = await import("../state.svelte");
+  previewRequests.clear();
+  for (const rel of [...previewSubs.keys()]) dropPreview(rel);
   for (const d of docs.values()) {
     if (d.tabId) {
       ed.setCollab(d.tabId, null);

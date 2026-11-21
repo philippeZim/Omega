@@ -13,6 +13,8 @@ export interface Hit {
   line: number;
   ranges: [number, number][];
   text: string;
+  /** Code Together guests: version of the whole line, so a Replace can tell if it changed. */
+  version?: string;
 }
 
 export type Scope = "project" | "folder" | "open";
@@ -100,6 +102,8 @@ function remoteQuery(): RemoteQuery {
 }
 
 let remoteRun: AbortController | null = null;
+/** File -> version of the text the current guest's results came from. */
+let remoteVersions: Record<string, string> = {};
 
 async function runRemoteSearch(remote: RemoteSearch) {
   const q = remoteQuery();
@@ -109,6 +113,7 @@ async function runRemoteSearch(remote: RemoteSearch) {
   }
   const id = (currentId = nextSearchId());
   const run = (remoteRun = new AbortController());
+  remoteVersions = {};
   const r = await remote.text(q, run.signal);
   if (id !== currentId || run.signal.aborted) return;
   find.running = false;
@@ -116,6 +121,7 @@ async function runRemoteSearch(remote: RemoteSearch) {
     find.error = r.message;
     return;
   }
+  remoteVersions = r.value.versions;
   find.hits = r.value.hits;
   find.files = r.value.files;
   find.total = r.value.total;
@@ -234,7 +240,9 @@ export async function replaceInFile(file: string, onlyLine?: number): Promise<nu
   const remote = activeRemote();
   if (remote) {
     if (!remote.mayReplace()) return 0;
-    const report = await remote.replace(remoteQuery(), find.replacement, [file], onlyLine);
+    const hit = onlyLine === undefined ? undefined : find.hits.find((h) => h.file === file && h.line === onlyLine);
+    const target = onlyLine === undefined ? { file, version: remoteVersions[file] } : { file, line: onlyLine, lineVersion: hit?.version };
+    const report = await remote.replace(remoteQuery(), find.replacement, [target]);
     toastReplaceProblems(report, 1, false);
     return report.replaced;
   }
@@ -280,16 +288,23 @@ function toastReplaceProblems(r: ReplaceReport, total: number, limited: boolean)
 async function replaceAllRemote(remote: RemoteSearch) {
   if (!remote.mayReplace()) return;
   const q = remoteQuery();
-  const m = await remote.matching(q);
-  if (!m.ok) return ui.toast(m.message, "error");
-  const { files, truncated } = m.value;
-  if (!files.length) return;
-  const more = find.truncated || truncated;
-  const ok = await ui.confirm(t("git.search.replaceAllTitle"), t("git.search.replaceAllBody", { summary: matchSummary(find.total, files.length, more ? "+" : ""), text: find.replacement }), t("git.search.replaceAll"), true);
+  // Only what the search showed, each file at the version it was seen in.
+  const seen = [...new Set(find.hits.map((h) => h.file))];
+  const targets = seen.map((file) => ({ file, version: remoteVersions[file] }));
+  let limited = false;
+  if (find.truncated) {
+    // The list stopped at its cap: the rest is covered by the "+" in the question below.
+    const m = await remote.matching(q);
+    if (!m.ok) return ui.toast(m.message, "error");
+    for (const file of m.value.files) if (!seen.includes(file)) targets.push({ file, version: m.value.versions[file] });
+    limited = m.value.truncated;
+  }
+  if (!targets.length) return;
+  const ok = await ui.confirm(t("git.search.replaceAllTitle"), t("git.search.replaceAllBody", { summary: matchSummary(find.total, targets.length, find.truncated ? "+" : ""), text: find.replacement }), t("git.search.replaceAll"), true);
   if (!ok) return;
-  const report = await remote.replace(q, find.replacement, files);
+  const report = await remote.replace(q, find.replacement, targets);
   if (report.replaced) ui.toast(t("git.search.replaced", { n: report.replaced, files: filesLabel(report.changed) }));
-  toastReplaceProblems(report, files.length, truncated);
+  toastReplaceProblems(report, targets.length, limited);
   runSearch(0);
 }
 
