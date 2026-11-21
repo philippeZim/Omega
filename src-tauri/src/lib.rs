@@ -15,6 +15,7 @@ mod tools;
 mod installs;
 mod power;
 mod instance;
+mod lang_shadow;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -53,6 +54,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             env::platform_info,
+            lang_shadow::lang_workdir,
+            lang_shadow::lang_copy,
             env::refresh_path,
             tools::tool_install,
             tools::tool_installable,
@@ -153,6 +156,7 @@ pub fn run() {
                 codex_ipc::cleanup(app);
                 power::cleanup();
                 instance::withdraw();
+                lang_shadow::cleanup();
             }
         });
 }
