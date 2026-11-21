@@ -56,6 +56,8 @@ export const dbg = $state({
   watches: JSON.parse(localStorage.getItem("watches") || "[]").map((expr: string) => ({ expr, value: "", ref: 0, children: null, expanded: false })) as Watch[],
   console: [] as { text: string; kind: "out" | "err" | "info" | "error" | "build" | "input" | "result" }[],
   exec: null as { path: string; line: number } | null,
+  /** Code Together: the guest whose action the session last followed ("" = the host). */
+  actor: "",
   breakpoints: loadBps() as Record<string, Breakpoint[]>,
   /** Bumps whenever editor-visible debug state changes (breakpoints, execution line). */
   version: 0,
@@ -64,12 +66,39 @@ export const dbg = $state({
 export const dbgHooks = {
   breakpointsChanged: (_path: string) => {},
   hover: async (_expr: string): Promise<string | null> => null,
+  /** A console line was added (null: the console was cleared). */
+  logged: (_line: { text: string; kind: string } | null) => {},
+  /** Before a debug start saves files: lets the session write what only it holds. */
+  beforeStart: async () => {},
 };
+
+/** Breakpoints of a Code Together host live under this prefix on guests and never reach localStorage. */
+export const SHARED_BP = "collab:";
+
+/** Guest side of Code Together: the debugger's actions go to the host while `active()`. */
+export interface DebugRemote {
+  active(): boolean;
+  start(): Promise<void>;
+  stop(): Promise<void>;
+  restart(): Promise<void>;
+  step(cmd: "continue" | "next" | "stepIn" | "stepOut"): Promise<void>;
+  pause(): Promise<void>;
+  selectThread(id: number): Promise<void>;
+  selectFrame(f: Frame): Promise<void>;
+  toggleNode(n: VarNode): Promise<void>;
+  toggleWatch(i: number): Promise<void>;
+  setVariable(n: VarNode, value: string): Promise<void>;
+  evaluateWatches(): Promise<void>;
+  replEval(expr: string): Promise<void>;
+  hover(expr: string): Promise<string | null>;
+  breakpointsChanged(path: string): void;
+}
+export const dbgRemote = { impl: null as DebugRemote | null };
 
 export function saveBreakpoints() {
   const clean: Record<string, Breakpoint[]> = {};
   for (const [p, list] of Object.entries(dbg.breakpoints))
-    if (list.length) clean[p] = list.map(({ line, condition }) => (condition ? { line, condition } : { line }));
+    if (list.length && !p.startsWith(SHARED_BP)) clean[p] = list.map(({ line, condition }) => (condition ? { line, condition } : { line }));
   localStorage.setItem("breakpoints", JSON.stringify(clean));
 }
 

@@ -2,7 +2,7 @@
 import { backendErrorText } from "../backendError";
 import { DapSession } from "./dap";
 import { planFor, type Plan } from "./adapters";
-import { dbg, dbgHooks, saveWatches, type Frame, type VarNode } from "./store.svelte";
+import { dbg, dbgHooks, dbgRemote, saveWatches, SHARED_BP, type Frame, type VarNode } from "./store.svelte";
 import { debugRefresh } from "./editorExt";
 import { app, activeTab, openFile, save, setMode, inRoot } from "../state.svelte";
 import { ui } from "../ui.svelte";
@@ -13,7 +13,6 @@ import { IS_WIN } from "../platform";
 import { showView } from "../layout.svelte";
 import { normPath } from "../api";
 import { t, i18n, type Key } from "../i18n/index.svelte";
-import { collab } from "../collab/collab.svelte";
 
 type Json = any;
 
@@ -25,6 +24,10 @@ let serverProcId: string | null = null;
 let lastPlan: { file: string } | null = null;
 const initialized = new Map<DapSession, () => void>();
 const configured = new Set<DapSession>();
+/** Code Together: guests are driving, so the host's editor and layout stay where the host is. */
+let quiet = false;
+/** The guest-side implementation while connected to a host. */
+const remote = () => (dbgRemote.impl?.active() ? dbgRemote.impl : null);
 
 // ------------------------------------------------------------------ console
 
@@ -32,6 +35,7 @@ export function log(text: string, kind: (typeof dbg.console)[number]["kind"] = "
   if (!text) return;
   dbg.console.push({ text, kind });
   if (dbg.console.length > 2000) dbg.console.splice(0, dbg.console.length - 2000);
+  dbgHooks.logged({ text, kind });
 }
 
 // ------------------------------------------------------------------ editor refresh
@@ -46,6 +50,7 @@ dbgHooks.hover = (expr) => hoverValue(expr);
 
 dbgHooks.breakpointsChanged = (path) => {
   refreshEditor();
+  if (path.startsWith(SHARED_BP)) return dbgRemote.impl?.breakpointsChanged(path);
   for (const s of sessions) if (configured.has(s)) sendBreakpoints(s, path);
 };
 
@@ -99,6 +104,8 @@ async function sendBreakpoints(s: DapSession, path: string) {
 /** Breakpoints are stored for all projects; only those of the open project (and the debugged
  *  file, which may lie outside it) are listed and sent to the adapter. */
 export function inProject(path: string) {
+  // A guest's own breakpoints stay out of the host's session (and untouched for after it).
+  if (remote()) return path.startsWith(SHARED_BP);
   return !app.root || inRoot(path, app.root) || path === lastPlan?.file;
 }
 
@@ -123,24 +130,34 @@ async function launchSession(s: DapSession, request: "launch" | "attach", args: 
 // ------------------------------------------------------------------ start / stop
 
 export async function startDebugging() {
-  // Collab guest: the program lives on the host's machine; remote debugging isn't supported yet.
-  if (collab.role === "guest" && collab.status === "connected") return ui.toast(t("ai.collab.debugHostOnly"), "error");
+  const r = remote();
+  if (r) return r.start();
   const tab = activeTab();
   if (!tab?.path) return ui.toast(t("code.dbg.saveFirst"), "error");
-  if (dbg.status !== "idle" && dbg.status !== "terminated") await stopDebugging();
+  quiet = false;
+  dbg.actor = "";
+  await startFile(tab.path);
+}
+
+async function startFile(file: string) {
+  if (dbg.status !== "idle" && dbg.status !== "terminated") await stopLocal();
+  await dbgHooks.beforeStart();
   for (const t of app.tabs) if (t.dirty && t.path) await save(t.id);
-  setMode("code");
-  showView("debug");
+  if (!quiet) {
+    setMode("code");
+    showView("debug");
+  }
   dbg.console = [];
+  dbgHooks.logged(null);
   dbg.status = "starting";
   dbg.label = t("code.dbg.preparing");
   resetPause();
-  lastPlan = { file: tab.path };
+  lastPlan = { file };
 
   let plan: Plan;
   try {
     plan = await planFor({
-      file: tab.path,
+      file,
       workspace: app.root,
       log,
       askInstall: (name) => ui.confirm(t("code.dbg.installTitle"), t("code.dbg.installMsg", { name }), t("code.install")),
@@ -171,11 +188,19 @@ export async function startDebugging() {
     await launchSession(s, "launch", plan.launch);
   } catch (e) {
     log(t("code.dbg.debugStartFailed", { err: backendErrorText(e) }), "error");
-    await stopDebugging();
+    await stopLocal();
   }
 }
 
 export async function stopDebugging() {
+  const r = remote();
+  if (r) return r.stop();
+  dbg.actor = "";
+  return stopLocal();
+}
+
+/** Ends the session on this machine, also while connected to a host. */
+export async function stopLocal() {
   const all = [...sessions].reverse();
   for (const s of all) {
     if (!s.alive) continue;
@@ -211,8 +236,10 @@ function cleanup() {
  *  CodeLLDB ends the session on `restart` without the launch config, and only a fresh start
  *  runs the build step (cargo/cmake) again so the restarted program has the latest changes. */
 export async function restartDebugging() {
+  const r = remote();
+  if (r) return r.restart();
   const file = lastPlan?.file;
-  await stopDebugging();
+  await stopLocal();
   if (file && activeTab()?.path !== file) await openFile(file);
   await startDebugging();
 }
@@ -250,11 +277,28 @@ async function step(cmd: "continue" | "next" | "stepIn" | "stepOut") {
   }
 }
 
-export const continueRun = () => step("continue");
-export const stepOver = () => step("next");
-export const stepInto = () => step("stepIn");
-export const stepOut = () => step("stepOut");
+/** A step from this machine's own buttons: on a guest it goes to the host. */
+function ownStep(cmd: "continue" | "next" | "stepIn" | "stepOut") {
+  const r = remote();
+  if (r) return r.step(cmd);
+  quiet = false;
+  dbg.actor = "";
+  return step(cmd);
+}
+
+export const continueRun = () => ownStep("continue");
+export const stepOver = () => ownStep("next");
+export const stepInto = () => ownStep("stepIn");
+export const stepOut = () => ownStep("stepOut");
 export async function pause() {
+  const r = remote();
+  if (r) return r.pause();
+  quiet = false;
+  dbg.actor = "";
+  return pauseLocal();
+}
+
+async function pauseLocal() {
   if (active && dbg.status === "running") await active.request("pause", threadArgs()).catch((e) => log(String(e), "error"));
 }
 
@@ -289,7 +333,7 @@ function onEvent(s: DapSession, ev: Json) {
     case "terminated":
       if (s === root || !s.parent) {
         log(t("code.dbg.sessionEnded"));
-        stopDebugging();
+        stopLocal();
       }
       break;
     case "breakpoint":
@@ -394,6 +438,13 @@ async function exceptionText(s: DapSession, b: Json): Promise<string> {
 }
 
 export async function selectThread(id: number) {
+  const r = remote();
+  if (r) return r.selectThread(id);
+  quiet = false;
+  return applyThread(id);
+}
+
+async function applyThread(id: number) {
   dbg.threadId = id;
   await loadStack();
 }
@@ -417,19 +468,28 @@ async function loadStack() {
     }),
   );
   const first = dbg.frames.find((f) => !f.subtle) ?? dbg.frames[0];
-  if (first) await selectFrame(first);
+  if (first) await applyFrame(first);
 }
 
 export async function selectFrame(f: Frame) {
+  const r = remote();
+  if (r) return r.selectFrame(f);
+  quiet = false;
+  return applyFrame(f);
+}
+
+async function applyFrame(f: Frame) {
   if (!active) return;
   dbg.frameId = f.id;
   if (f.path) {
     dbg.exec = { path: f.path, line: f.line };
-    if (activeTab()?.path !== f.path) await openFile(f.path);
-    const view = ed.getView();
-    if (view && f.line <= view.state.doc.lines) {
-      const line = view.state.doc.line(f.line);
-      view.dispatch({ selection: { anchor: line.from }, scrollIntoView: true });
+    if (!quiet) {
+      if (activeTab()?.path !== f.path) await openFile(f.path);
+      const view = ed.getView();
+      if (view && f.line <= view.state.doc.lines) {
+        const line = view.state.doc.line(f.line);
+        view.dispatch({ selection: { anchor: line.from }, scrollIntoView: true });
+      }
     }
   } else dbg.exec = null;
   refreshEditor();
@@ -498,6 +558,8 @@ async function fetchVars(ref: number, prefix: string): Promise<VarNode[]> {
 }
 
 export async function toggleNode(n: VarNode) {
+  const r = remote();
+  if (r) return r.toggleNode(n);
   if (!n.ref) return;
   if (!n.expanded && !n.children) {
     try {
@@ -511,6 +573,8 @@ export async function toggleNode(n: VarNode) {
 }
 
 export async function setVariable(n: VarNode, value: string) {
+  const remoteImpl = remote();
+  if (remoteImpl) return remoteImpl.setVariable(n, value);
   if (!active?.capabilities.supportsSetVariable) return ui.toast(t("code.dbg.noSetVariable"), "error");
   try {
     const r = await active.request("setVariable", { variablesReference: n.parentRef, name: n.name, value });
@@ -530,6 +594,8 @@ export async function evaluate(expression: string, context: "watch" | "repl" | "
 }
 
 export async function evaluateWatches() {
+  const r = remote();
+  if (r) return r.evaluateWatches();
   for (const w of dbg.watches) {
     if (dbg.status !== "stopped") {
       w.value = "";
@@ -551,6 +617,8 @@ export async function evaluateWatches() {
 }
 
 export async function toggleWatch(i: number) {
+  const r = remote();
+  if (r) return r.toggleWatch(i);
   const w = dbg.watches[i];
   if (!w?.ref) return;
   if (!w.expanded && !w.children) w.children = await fetchVars(w.ref, `watch:${w.expr}`).catch(() => []);
@@ -570,13 +638,13 @@ export function removeWatch(i: number) {
 }
 
 export async function replEval(expr: string) {
+  const rem = remote();
+  if (rem) return rem.replEval(expr);
   log(`› ${expr}`, "input");
   try {
     const r = await evaluate(expr, "repl");
     log(r.result, "result");
-    // The expression may have assigned a variable: refresh Variables, not just the watches.
-    if (dbg.status === "stopped" && dbg.frameId !== null) await loadScopes(dbg.frameId, true);
-    await evaluateWatches();
+    await refreshAfterChange();
   } catch (e) {
     log(String(e instanceof Error ? e.message : e), "error");
   }
@@ -584,6 +652,8 @@ export async function replEval(expr: string) {
 
 /** Hover in the editor while stopped: evaluates the expression under the mouse. */
 export async function hoverValue(expr: string): Promise<string | null> {
+  const rem = remote();
+  if (rem) return rem.hover(expr);
   if (dbg.status !== "stopped" || !active) return null;
   try {
     const r = await evaluate(expr, "hover");
@@ -592,6 +662,84 @@ export async function hoverValue(expr: string): Promise<string | null> {
     return null;
   }
 }
+
+/** The expression may have assigned a variable: refresh Variables, not just the watches. */
+async function refreshAfterChange() {
+  if (dbg.status === "stopped" && dbg.frameId !== null) await loadScopes(dbg.frameId, true);
+  await evaluateWatches();
+}
+
+// ------------------------------------------------------------------ Code Together host
+
+/**
+ * What the host's RPC handlers (collab/debugRemote.svelte.ts) may do with the running session: a
+ * closed list of typed actions. There is deliberately no way to send a DAP request by name.
+ * `actor` is the guest's name; while guests drive, the host's editor and layout don't jump.
+ */
+export const hostDebug = {
+  /** Bumped whenever run state changes: references from an older value are stale. */
+  gen: () => runGen,
+  live: () => !!active,
+  localLive: () => !!root,
+  canRestart: () => !!lastPlan?.file,
+  async start(file: string, actor: string) {
+    quiet = true;
+    dbg.actor = actor;
+    await startFile(file);
+  },
+  async stop(actor: string) {
+    dbg.actor = actor;
+    await stopLocal();
+  },
+  async restart(actor: string) {
+    const file = lastPlan?.file;
+    if (!file) return;
+    quiet = true;
+    dbg.actor = actor;
+    await stopLocal();
+    await startFile(file);
+  },
+  step(cmd: "continue" | "next" | "stepIn" | "stepOut", actor: string) {
+    quiet = true;
+    dbg.actor = actor;
+    return step(cmd);
+  },
+  pause(actor: string) {
+    quiet = true;
+    dbg.actor = actor;
+    return pauseLocal();
+  },
+  selectThread(id: number) {
+    quiet = true;
+    return applyThread(id);
+  },
+  selectFrame(f: Frame) {
+    quiet = true;
+    return applyFrame(f);
+  },
+  async variables(ref: number): Promise<Json[]> {
+    if (!active) throw new Error("no session");
+    return (await active.request("variables", { variablesReference: ref })).variables ?? [];
+  },
+  async evaluate(expression: string, context: "watch" | "repl" | "hover", frameId: number) {
+    if (!active) throw new Error("no session");
+    return active.request("evaluate", { expression, frameId, context });
+  },
+  async setVariable(ref: number, name: string, value: string) {
+    if (!active?.capabilities.supportsSetVariable) return null;
+    const r = await active.request("setVariable", { variablesReference: ref, name, value });
+    await refreshAfterChange();
+    return r.value as string;
+  },
+  refresh: refreshAfterChange,
+  log,
+  /** Back to normal: the host's own session follows its editor again. */
+  release() {
+    quiet = false;
+    dbg.actor = "";
+  },
+  refreshEditor,
+};
 
 function resetPause() {
   dbg.stopReason = "";

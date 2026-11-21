@@ -378,6 +378,13 @@ function hostWrite(d: SharedDoc) {
   return d.writing;
 }
 
+/** Host: writes the shared text of files without a tab now, e.g. before a debug run reads them. */
+export async function flushBackgroundDocs() {
+  const pending = [...docs.values()].filter((d) => !d.tabId && d.root === app.root);
+  for (const d of pending) clearTimeout(d.writeTimer);
+  await Promise.all(pending.map(hostWrite));
+}
+
 async function writeBackgroundDoc(d: SharedDoc) {
   if (d.tabId || !d.root || !d.cleanup.length) return;
   const abs = joinPath(d.root, d.rel);
