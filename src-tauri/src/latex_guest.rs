@@ -379,7 +379,9 @@ fn tail(s: &str, max: usize) -> &str {
 /// An absolute path from the compile as a project-relative one; "" if it isn't a project file.
 fn to_project(f: &str, project: Option<&Path>) -> String {
     let Some(project) = project else { return String::new() };
-    let p = Path::new(f);
+    // `canonical` drops the `\\?\` prefix, so a path that has it would never match.
+    let plain = if cfg!(windows) { f.strip_prefix(r"\\?\").filter(|r| !r.starts_with("UNC\\")).unwrap_or(f) } else { f };
+    let p = Path::new(plain);
     let real = canonical(project);
     let rel = p.strip_prefix(project).ok().or_else(|| real.as_deref().and_then(|r| p.strip_prefix(r).ok()));
     // Project paths use "/"; on Windows "\" is only the separator here, and safe_rel refuses it.
