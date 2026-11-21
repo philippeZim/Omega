@@ -1229,13 +1229,14 @@ mod tests {
     #[test]
     fn the_runner_clears_another_switch_and_puts_its_own_first() {
         let t = tempfile::tempdir().unwrap();
-        write_ocaml_runner(t.path()).unwrap();
-        let out = Command::new(t.path().join("run"))
+        // The runner keeps the path it was called by, and macOS's tmpdir is behind a symlink.
+        let real = t.path().canonicalize().unwrap();
+        write_ocaml_runner(&real).unwrap();
+        let out = Command::new(real.join("run"))
             .args(["sh", "-c", r#"echo "$OPAM_SWITCH_PREFIX|$OPAMROOT|$CAML_LD_LIBRARY_PATH|$OCAMLPATH|$KEEP|${PATH%%:*}""#])
             .envs([("OPAM_SWITCH_PREFIX", "/other"), ("OPAMROOT", "/other"), ("CAML_LD_LIBRARY_PATH", "/other"), ("OCAMLPATH", "/other"), ("KEEP", "kept")])
             .output()
             .unwrap();
-        let real = t.path().canonicalize().unwrap();
         assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), format!("||||kept|{}/root/omega/bin", real.display()));
     }
 
