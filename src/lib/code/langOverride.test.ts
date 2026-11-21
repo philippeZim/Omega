@@ -139,6 +139,13 @@ describe("Run for a file set to another language", () => {
     expect(p.run!.cmd).toBe("/private/x/bin/omega_out");
   });
 
+  test.each(["c", "cpp", "rust"] as const)("Build compiles %s once", async (id) => {
+    choose(`${PY}/prog`, id);
+    const p = (await detectProject(`${PY}/prog`, PY))!;
+    expect(p.build!.cmd).toBe(p.run!.pre);
+    expect(p.build!.pre).toBeUndefined();
+  });
+
   test("the project's Python files still run through the project", async () => {
     choose(`${PY}/prog`, "c");
     const p = (await detectProject(`${PY}/main.py`, PY))!;

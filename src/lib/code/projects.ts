@@ -461,14 +461,14 @@ export async function detectProject(file: string | null, workspace: string | nul
   if (foreign) {
     const own = await overrideRun(effectiveLang(file)!.id, file, TSX_DLX);
     if (!own) return null; // JSON, TOML: nothing to run, so no Run button
-    const opts = { pre: own.pre, usesFile: true, prepare: own.prepare };
+    const opts = { usesFile: true, prepare: own.prepare };
     return {
       kind: "file",
       root: dirname(file),
       needs: own.needs,
       isolated: true,
       get label() { return t("code.project.file"); },
-      run: act("run", "common.run", own.cmd, { ...opts, shortcut: RUN }),
+      run: act("run", "common.run", own.cmd, { ...opts, pre: own.pre, shortcut: RUN }),
       build: own.pre ? act("build", "code.act.build", own.pre, { ...opts, shortcut: BUILD }) : null,
       test: null,
       more: [],
