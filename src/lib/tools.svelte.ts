@@ -11,7 +11,7 @@ import { ui } from "./ui.svelte";
 import { t } from "./i18n/index.svelte";
 import { OS } from "./platform";
 
-export type ToolId = "uv" | "tectonic" | "node" | "pnpm" | "cmake" | "ninja" | "clangd" | "jdk" | "gradle" | "rust" | "git" | "cc" | "scala" | "sbt" | "ocaml";
+export type ToolId = "uv" | "tectonic" | "node" | "pnpm" | "cmake" | "ninja" | "clangd" | "jdk" | "gradle" | "rust" | "git" | "cc" | "scala" | "sbt" | "ocaml" | "mojo";
 
 interface ToolInfo {
   label: string;
@@ -38,6 +38,7 @@ export const TOOLS: Record<ToolId, ToolInfo> = {
   scala: { label: "Scala CLI + Coursier", cmds: ["scala-cli"], mb: 75 },
   sbt: { label: "sbt", cmds: ["sbt"], mb: 60 },
   ocaml: { label: "OCaml (opam, dune)", cmds: ["dune"], mb: 600 },
+  mojo: { label: "Mojo (compiler, LSP, LLDB)", cmds: ["mojo"], mb: 300 },
   cc: {
     // A getter so the label follows the UI language (#63).
     get label() {
@@ -71,9 +72,15 @@ const canInstall = async (id: ToolId) => (await (installable ??= invoke<string[]
 /** How to get a tool by hand when Omega can't install it (Linux system compilers). */
 function manualHint(id: ToolId): string {
   if (id === "ocaml" && OS === "windows") return t("tools.ocamlWindows");
+  if (id === "mojo") return t(OS === "windows" ? "tools.mojoWindows" : "tools.mojoUnsupported");
   if (id === "cc" || id === "git")
     return "sudo apt install build-essential git   # Debian/Ubuntu\nsudo dnf install gcc gcc-c++ git          # Fedora\nsudo pacman -S base-devel git             # Arch";
   return "";
+}
+
+/** Why Omega can't install Mojo on this system, empty if it can. */
+export async function mojoInstallHint(): Promise<string> {
+  return (await canInstall("mojo")) ? "" : manualHint("mojo");
 }
 
 /**

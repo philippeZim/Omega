@@ -50,7 +50,7 @@ let latest: Sel | null = null;
 
 function languageId(path: string) {
   const ext = path.split(".").pop() ?? "";
-  return ({ py: "python", ts: "typescript", tsx: "typescriptreact", js: "javascript", jsx: "javascriptreact", rs: "rust", scala: "scala", sc: "scala", ml: "ocaml", mli: "ocaml.interface", c: "c", h: "c", cpp: "cpp", cc: "cpp", hpp: "cpp", java: "java", md: "markdown", tex: "latex", json: "json", toml: "toml", html: "html", css: "css", sh: "shellscript" } as Record<string, string>)[ext] ?? "plaintext";
+  return ({ py: "python", ts: "typescript", tsx: "typescriptreact", js: "javascript", jsx: "javascriptreact", rs: "rust", scala: "scala", sc: "scala", ml: "ocaml", mli: "ocaml.interface", mojo: "mojo", "🔥": "mojo", c: "c", h: "c", cpp: "cpp", cc: "cpp", hpp: "cpp", java: "java", md: "markdown", tex: "latex", json: "json", toml: "toml", html: "html", css: "css", sh: "shellscript" } as Record<string, string>)[ext] ?? "plaintext";
 }
 
 const findTab = (p: string) => app.tabs.find((t) => t.path === p);
