@@ -319,6 +319,24 @@ fn appimage_changes(appdir: &str, current: &dyn Fn(&str) -> Option<String>, laun
     out
 }
 
+/// True if the value names the AppDir itself, not a neighbour that only shares its prefix.
+fn mentions_appdir(value: &str, appdir: &str) -> bool {
+    value.match_indices(appdir).any(|(i, _)| !value[i + appdir.len()..].starts_with(|c: char| c.is_alphanumeric() || matches!(c, '_' | '-' | '.')))
+}
+
+/// Variables outside the lists that still point into the AppDir (a GTK or GStreamer module path
+/// from a newer linuxdeploy, say): AppDir entries leave a path list, anything else is removed.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn appdir_leftovers(appdir: &str, vars: impl Iterator<Item = (String, String)>) -> Vec<(String, Option<String>)> {
+    let listed = |k: &str| APPIMAGE_RUNTIME.contains(&k) || APPIMAGE_REPLACED.contains(&k) || APPIMAGE_PREPENDED.contains(&k);
+    vars.filter(|(k, v)| !listed(k) && mentions_appdir(v, appdir))
+        .map(|(k, v)| {
+            let clean = strip_appdir(&v, appdir).filter(|c| !mentions_appdir(c, appdir));
+            (k, clean)
+        })
+        .collect()
+}
+
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn parse_environ(bytes: &[u8]) -> HashMap<String, String> {
     bytes
@@ -350,8 +368,15 @@ fn detect_appimage_fix() -> AppImageFix {
         return AppImageFix::default();
     }
     let launch = launch_env(&appimage);
+    let mut vars = appimage_changes(&appdir, &|k| std::env::var(k).ok(), launch.as_ref());
+    // A value that isn't UTF-8 can't be edited safely, so it goes if it names the AppDir.
+    let all: Vec<(String, String, bool)> = std::env::vars_os()
+        .filter_map(|(k, v)| Some((k.into_string().ok()?, v.to_string_lossy().into_owned(), v.to_str().is_some())))
+        .collect();
+    vars.extend(appdir_leftovers(&appdir, all.iter().filter(|e| e.2).map(|e| (e.0.clone(), e.1.clone()))));
+    vars.extend(all.iter().filter(|e| !e.2 && mentions_appdir(&e.1, &appdir)).map(|e| (e.0.clone(), None)));
     AppImageFix {
-        vars: appimage_changes(&appdir, &|k| std::env::var(k).ok(), launch.as_ref()),
+        vars,
         leave_cwd: std::env::current_dir().is_ok_and(|d| d.starts_with(&appdir)),
     }
 }
@@ -582,6 +607,24 @@ mod tests {
     fn a_value_the_user_set_and_apprun_kept_is_left_alone() {
         let c = changes(&[("APPDIR", "/tmp/appimage_extracted_a"), ("PERLLIB", "/mine")], Some(&[("PERLLIB", "/mine")]));
         assert!(!c.contains_key("PERLLIB"));
+    }
+
+    #[test]
+    fn any_other_variable_pointing_into_the_appdir_is_cleaned() {
+        let a = "/tmp/appimage_extracted_a";
+        let env = [
+            ("GIO_EXTRA_MODULES", "/tmp/appimage_extracted_a/usr/lib/gio:/opt/gio"),
+            ("GST_PLUGIN_PATH", "/tmp/appimage_extracted_a/usr/lib/gst"),
+            ("GDK_FLAGS", "--dir=/tmp/appimage_extracted_a/usr/share"),
+            ("NEIGHBOUR", "/tmp/appimage_extracted_ab/bin"),
+            ("EDITOR", "vim"),
+            ("PATH", "/tmp/appimage_extracted_a/usr/bin:/usr/bin"),
+        ];
+        let got: HashMap<_, _> = appdir_leftovers(a, env.iter().map(|(k, v)| (k.to_string(), v.to_string()))).into_iter().collect();
+        assert_eq!(got["GIO_EXTRA_MODULES"].as_deref(), Some("/opt/gio"));
+        assert_eq!(got["GST_PLUGIN_PATH"], None);
+        assert_eq!(got["GDK_FLAGS"], None);
+        assert_eq!(got.len(), 3, "the lists handle PATH, others stay: {got:?}");
     }
 
     #[test]

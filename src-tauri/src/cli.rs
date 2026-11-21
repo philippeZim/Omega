@@ -748,10 +748,6 @@ mod tests {
     }
 
     #[test]
-    fn a_dying_appimage_mount_leaves_the_environment() {
-    }
-
-    #[test]
     fn finds_the_app_bundle() {
         assert_eq!(app_bundle(Path::new("/Applications/Omega.app/Contents/MacOS/ide")).unwrap(), Path::new("/Applications/Omega.app"));
         assert!(app_bundle(Path::new("/usr/bin/ide")).is_none());
