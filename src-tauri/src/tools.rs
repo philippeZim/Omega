@@ -604,13 +604,19 @@ fn mojo_launcher(prefix: &Path, command: &str) -> String {
     )
 }
 
+/// The debug adapter command for one OS. The Mojo LLDB plugin is a `.dylib` on macOS, a `.so` on Linux.
+fn mojo_dap_command(os: &str) -> String {
+    let ext = if os == "macos" { "dylib" } else { "so" };
+    format!("\"$P/bin/_mojo-lldb-dap\" --pre-init-command \"?!plugin load \\\"$P/lib/libMojoLLDB.{ext}\\\"\"")
+}
+
 fn write_mojo_launchers() -> Result<(), String> {
     let bin = mojo_bin();
     std::fs::create_dir_all(&bin).map_err(|e| e.to_string())?;
     let prefix = mojo_prefix();
     // The SDK's mojo-lldb-dap script doesn't load the Mojo plugin, so variables would stay empty.
-    let dap = "\"$P/bin/_mojo-lldb-dap\" --pre-init-command \"?!plugin load \\\"$P/lib/libMojoLLDB.so\\\"\"";
-    for (name, command) in [("mojo", "\"$P/bin/mojo\""), ("mojo-lsp-server", "\"$P/bin/mojo-lsp-server\""), ("omega-mojo-dap", dap)] {
+    let dap = mojo_dap_command(OS);
+    for (name, command) in [("mojo", "\"$P/bin/mojo\""), ("mojo-lsp-server", "\"$P/bin/mojo-lsp-server\""), ("omega-mojo-dap", dap.as_str())] {
         let file = bin.join(name);
         std::fs::write(&file, mojo_launcher(&prefix, command)).map_err(|e| e.to_string())?;
         make_executable(&file);
@@ -1082,6 +1088,13 @@ pub fn ocaml_latest(package: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mojo_dap_loads_the_plugin_with_the_os_extension() {
+        assert!(mojo_dap_command("macos").contains("libMojoLLDB.dylib\\\"\""));
+        assert!(mojo_dap_command("linux").contains("libMojoLLDB.so\\\"\""));
+        assert!(!mojo_dap_command("linux").contains("dylib"));
+    }
 
     #[test]
     fn mojo_runs_only_on_the_systems_modular_builds_for() {
