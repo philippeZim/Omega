@@ -395,7 +395,7 @@ async function writeBackgroundDoc(d: SharedDoc) {
   // overwriting it (#128).
   const now = await fsApi.readFile(abs).catch(() => undefined);
   if (!d.cleanup.length) return;
-  if (now !== undefined && d.disk !== undefined && now !== d.disk) return applyDisk(d, now);
+  if (now !== undefined && d.disk !== undefined && now !== d.disk) return d.ytext.toString() !== text ? keepTyped(d, now) : applyDisk(d, now);
   // Deleted meanwhile: don't bring the file back (#134).
   if (now === undefined && d.disk !== undefined && !(await fsApi.exists(abs).catch(() => true))) return hostFileGone(d);
   const before = d.disk;
@@ -404,14 +404,34 @@ async function writeBackgroundDoc(d: SharedDoc) {
 }
 
 /** Host: a background doc's file changed on disk → everybody gets the new content. */
-async function hostReload(d: SharedDoc) {
-  if (d.tabId || !d.root) return;
-  if (!(await guestPathOk(d.rel, d.root))) return docs.get(d.rel) === d ? hostUnshare(d) : undefined; // e.g. now a symlink
+async function hostReload(d: SharedDoc): Promise<boolean> {
+  if (d.tabId || !d.root) return false;
+  const before = d.ytext.toString();
+  if (!(await guestPathOk(d.rel, d.root))) {
+    if (docs.get(d.rel) === d) hostUnshare(d); // e.g. now a symlink
+    return false;
+  }
   const abs = joinPath(d.root, d.rel);
   const text = await fsApi.readFile(abs).catch(() => undefined);
-  if (d.tabId || docs.get(d.rel) !== d) return;
-  if (text !== undefined) applyDisk(d, text);
-  else if (!(await fsApi.exists(abs).catch(() => true))) hostFileGone(d); // deleted outside Omega
+  if (d.tabId || docs.get(d.rel) !== d) return false;
+  if (text === undefined) {
+    if (!(await fsApi.exists(abs).catch(() => true))) hostFileGone(d); // deleted outside Omega
+    return false;
+  }
+  // Typed while the file was being read: that text must not be replaced by what's on disk.
+  if (text !== d.disk && d.ytext.toString() !== before) {
+    keepTyped(d, text);
+    return true;
+  }
+  applyDisk(d, text);
+  return false;
+}
+
+/** The file changed under text nobody has saved yet: the text stays and goes over the new file. */
+function keepTyped(d: SharedDoc, disk: string | undefined) {
+  if (disk !== undefined) d.disk = disk;
+  scheduleHostWrite(d);
+  ui.toast(t("git.guestKeptTyped", { file: d.rel }));
 }
 
 function applyDisk(d: SharedDoc, text: string) {
@@ -454,13 +474,17 @@ export async function reloadSharedDocs(): Promise<string[]> {
   for (const d of [...docs.values()]) {
     if (d.tabId || d.root !== app.root || d.rel.startsWith("tab:")) continue;
     if (d.ytext.toString() === d.disk) {
-      await hostReload(d);
+      if (await hostReload(d)) kept.push(d.rel);
       continue;
     }
-    kept.push(d.rel);
     const now = await fsApi.readFile(joinPath(d.root!, d.rel)).catch(() => undefined);
-    if (now !== undefined) d.disk = now;
-    scheduleHostWrite(d);
+    if (docs.get(d.rel) !== d || d.tabId) continue;
+    // Git left this file alone: the pending write simply goes ahead.
+    if (now === d.disk) scheduleHostWrite(d);
+    else {
+      kept.push(d.rel);
+      keepTyped(d, now);
+    }
   }
   return kept;
 }

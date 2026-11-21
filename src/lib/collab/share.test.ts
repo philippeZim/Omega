@@ -1309,6 +1309,63 @@ test("text typed while git ran survives the reload and is reported", async () =>
   }
 });
 
+test("typing during the reload's file read survives, is written and reported", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    const fs = hostFs({ "/p/a.txt": "on main\n" });
+    await receive("g1", { t: "doc.open", path: "a.txt" });
+    fs.files.set("/p/a.txt", "on feature\n");
+    let typed: Y.Doc | undefined;
+    fs.beforeRead = async () => {
+      fs.beforeRead = () => {};
+      typed = await guestInsert("a.txt", 0, "Y");
+    };
+    expect(await share.reloadSharedDocs()).toEqual(["a.txt"]);
+    await vi.advanceTimersByTimeAsync(800);
+    expect(fs.files.get("/p/a.txt")).toBe("Yon main\n");
+    expect(guestCopy("a.txt", typed)).toBe("Yon main\n");
+    expect(ui.toasts.some((x: { text: string }) => x.text.includes("a.txt"))).toBe(true);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("typing during the background write's check of the file survives an outside change", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    const fs = hostFs({ "/p/a.txt": "original\n" });
+    await receive("g1", { t: "doc.open", path: "a.txt" });
+    const g = await guestInsert("a.txt", 0, "A");
+    fs.files.set("/p/a.txt", "outside\n");
+    fs.beforeRead = async () => {
+      fs.beforeRead = () => {};
+      await guestInsert("a.txt", 0, "B", g);
+    };
+    await vi.advanceTimersByTimeAsync(800);
+    await vi.advanceTimersByTimeAsync(800);
+    expect(fs.files.get("/p/a.txt")).toBe("BAoriginal\n");
+    expect(guestCopy("a.txt", g)).toBe("BAoriginal\n");
+    expect(ui.toasts.some((x: { text: string }) => x.text.includes("a.txt"))).toBe(true);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("a pending edit in a file git didn't touch is just written, without a warning", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    const fs = hostFs({ "/p/a.txt": "same\n" });
+    await receive("g1", { t: "doc.open", path: "a.txt" });
+    await guestInsert("a.txt", 0, "Y");
+    expect(await share.reloadSharedDocs()).toEqual([]);
+    await vi.advanceTimersByTimeAsync(800);
+    expect(fs.files.get("/p/a.txt")).toBe("Ysame\n");
+    expect(ui.toasts).toEqual([]);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 test("guest: a chunk reverted in the diff reaches the host, unless the file changed meanwhile", async () => {
   collab.role = "guest";
   const h = new Y.Doc();
