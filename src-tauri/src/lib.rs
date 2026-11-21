@@ -38,7 +38,7 @@ pub fn run() {
         .on_page_load(|webview, payload| {
             use tauri::Manager;
             if payload.event() == tauri::webview::PageLoadEvent::Started {
-                collab::frontend_loading(webview.app_handle());
+                collab::frontend_loading(webview.app_handle(), webview.label());
                 windows::page_loading(webview.app_handle(), webview.label());
             }
         })

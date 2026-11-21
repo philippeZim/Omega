@@ -276,6 +276,11 @@ fn walk_files(root: &str, cap: usize, keep_link: &dyn Fn(&Path, bool) -> bool, s
 /// One watcher per window, on that window's project.
 static WATCHERS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, notify::RecommendedWatcher>>> = std::sync::LazyLock::new(Default::default);
 
+/// The project folder open in a window.
+pub fn root_of(owner: &str) -> Option<PathBuf> {
+    ROOTS.lock().ok()?.get(owner).cloned()
+}
+
 /// The window is gone: stops its watcher and forgets its project.
 pub fn forget_window(owner: &str) {
     if let Ok(mut w) = WATCHERS.lock() {

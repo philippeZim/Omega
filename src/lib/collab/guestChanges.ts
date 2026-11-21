@@ -1,3 +1,5 @@
+import { onGlobalChange } from "../windowStorage";
+
 /**
  * Which projects hold text from a guest without `run`. TeX can read and write files, so the host
  * doesn't compile such text by itself: auto-compile pauses until the host presses Compile. Counts
@@ -30,11 +32,30 @@ const roots = loadRoots();
 const tabs = new Map<string, string>();
 const listeners = new Set<() => void>();
 
+/** Stores that couldn't be written: this window's copy is the only true one. */
+const unwritten = new Set<string>();
+
 function store(key: string, map: Map<string, string>) {
   try {
     localStorage.setItem(key, JSON.stringify(Object.fromEntries(map)));
+    unwritten.delete(key);
   } catch {
     // Storage is off: the pause still holds until the app closes.
+    unwritten.add(key);
+  }
+}
+
+/** Takes over what another window stored. Unreadable or missing data never lifts a pause. */
+function refresh(key: string, map: Map<string, string>) {
+  if (unwritten.has(key)) return;
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw === null) return;
+    const next = parseRoots(raw);
+    map.clear();
+    for (const [k, v] of next) map.set(k, v);
+  } catch {
+    // Keep what we have.
   }
 }
 const saveRoots = () => store(KEY, roots);
@@ -70,6 +91,16 @@ const PAUSES = { metals, ocaml };
 export type PausedTool = keyof typeof PAUSES;
 const allPauses = Object.values(PAUSES);
 
+/** The pauses hold for the whole app: every decision reads what any window stored last. */
+function fresh() {
+  refresh(KEY, roots);
+  for (const tool of allPauses) refresh(tool.key, tool.roots);
+}
+onGlobalChange([KEY, METALS_KEY, OCAML_KEY], () => {
+  fresh();
+  for (const fn of listeners) fn();
+});
+
 function pauseTool(tool: ToolPause, root: string, name: string) {
   tool.roots.set(root, name);
   store(tool.key, tool.roots);
@@ -90,6 +121,7 @@ export function onGuestChange(fn: () => void) {
 /** Host: a guest changed something. `rel` is the shared key ("tab:<id>" for an unsaved tab). */
 export function noteGuestChange(peer: string, root: string | null, rel?: string) {
   if (guestChangeHooks.mayRun(peer)) return;
+  fresh();
   const name = guestChangeHooks.name(peer);
   if (rel?.startsWith("tab:")) {
     tabs.set(rel.slice(4), name);
@@ -134,6 +166,7 @@ export function texRootOf(path: string | null, text: string): string | null {
  * also looks at the root it names, so a tab elsewhere can't compile a paused project through it.
  */
 export function pausedBy(tabId: string, path: string | null, text?: string): string | null {
+  fresh();
   const tab = tabs.get(tabId);
   if (tab !== undefined) return tab;
   const root = rootOf(path) ?? (text === undefined ? undefined : rootOf(texRootOf(path, text)));
@@ -143,6 +176,7 @@ export function pausedBy(tabId: string, path: string | null, text?: string): str
 /** A file or folder moved: its pause goes with it, also when it leaves the paused project. */
 export function moveGuestChange(from: string, to: string | null) {
   if (to === null) return;
+  fresh();
   const latexMoved = moveIn(roots, from, to);
   if (latexMoved) saveRoots();
   let toolMoved = false;
@@ -178,7 +212,10 @@ const pausedIn = (tool: ToolPause, root: string) => {
 };
 
 /** Who changed this project, a folder inside it or a folder around it; null if the tool may run. */
-export const toolPausedBy = (tool: PausedTool, root: string): string | null => pausedIn(PAUSES[tool], root);
+export const toolPausedBy = (tool: PausedTool, root: string): string | null => {
+  fresh();
+  return pausedIn(PAUSES[tool], root);
+};
 export const metalsPausedBy = (root: string) => toolPausedBy("metals", root);
 
 /**
@@ -187,6 +224,7 @@ export const metalsPausedBy = (root: string) => toolPausedBy("metals", root);
  * by the listeners before the file exists). Returns what to call if the write fails.
  */
 export function toolsBeforeSave(tabId: string, oldPath: string | null, path: string): () => void {
+  fresh();
   const undo: (() => void)[] = [];
   for (const tool of allPauses) {
     const pending = tool.tabs.get(tabId);
@@ -211,6 +249,7 @@ export const metalsChangeCount = () => toolChangeCount("metals");
 export function resumeTool(name: PausedTool, root: string, seen: number): boolean {
   const tool = PAUSES[name];
   if (seen !== tool.changes) return false;
+  fresh();
   for (const r of [...tool.roots.keys()]) if (related(root, r)) tool.roots.delete(r);
   store(tool.key, tool.roots);
   return true;
@@ -218,10 +257,14 @@ export function resumeTool(name: PausedTool, root: string, seen: number): boolea
 export const resumeMetals = (root: string, seen: number) => resumeTool("metals", root, seen);
 
 /** The same for a guest's compile, which names a project or an unsaved tab. */
-export const isPaused = (root: string | null, tabId: string | null) => (tabId ? tabs.has(tabId) : !!root && roots.has(root));
+export const isPaused = (root: string | null, tabId: string | null) => {
+  fresh();
+  return tabId ? tabs.has(tabId) : !!root && roots.has(root);
+};
 
 /** The host pressed Compile: it accepts the text as it is now. */
 export function resumeCompiling(tabId: string, path: string | null, text?: string) {
+  fresh();
   tabs.delete(tabId);
   const targets = [path, text === undefined ? null : texRootOf(path, text)];
   let changed = false;

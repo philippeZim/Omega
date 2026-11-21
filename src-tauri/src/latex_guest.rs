@@ -126,7 +126,8 @@ fn read_image(root: &Path, rel: &str) -> Result<GuestImage, &'static str> {
 
 /// Host: a project image for a guest's Markdown preview. Errors are stable codes without paths.
 #[tauri::command]
-pub async fn collab_read_image(root: String, rel: String) -> Result<GuestImage, String> {
+pub async fn collab_read_image(app: AppHandle, window: tauri::WebviewWindow, root: String, rel: String) -> Result<GuestImage, String> {
+    crate::collab::guard(&app, &window, Some(&root)).map_err(|_| "asset_missing".to_string())?;
     tauri::async_runtime::spawn_blocking(move || read_image(Path::new(&root), &rel).map_err(str::to_string))
         .await
         .map_err(|_| "asset_missing".to_string())?
@@ -527,6 +528,7 @@ struct JobProgress {
 /// Host: compiles a shared file for a guest. Errors are stable codes without paths.
 #[tauri::command]
 pub async fn latex_guest_compile(app: AppHandle, window: tauri::WebviewWindow, job: String, root: Option<String>, file: Option<String>, content: String, overlays: Vec<Overlay>) -> Result<GuestCompile, String> {
+    crate::collab::guard(&app, &window, root.as_deref()).map_err(|_| "compile_failed".to_string())?;
     let cancel = jobs().claim(&job)?;
     let slot = Slot;
     let tectonic = crate::env::which("tectonic").ok_or("tectonic_missing")?;

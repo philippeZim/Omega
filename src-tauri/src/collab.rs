@@ -15,7 +15,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio::time::timeout;
 
@@ -124,6 +124,8 @@ pub struct CollabState {
     hosting: Mutex<bool>,
     /// The limits of the running hosting session.
     limits: Mutex<Option<Arc<JoinLimits>>>,
+    /// The window that started the session. There is at most one session in the app.
+    owner: std::sync::Mutex<Option<String>>,
 }
 
 /// Refills continuously up to `burst`; each connection takes one token.
@@ -501,16 +503,16 @@ fn connect_refused(e: &ConnectError) -> bool {
 
 /// Pumps an admitted peer's incoming messages into `collab-msg` events until it disconnects.
 /// `first` is a message already read from the stream (the join message).
-async fn pump(app: AppHandle, peer_id: String, peer: Arc<Peer>, mut recv: RecvStream, first: Option<Vec<u8>>) {
-    let _ = app.emit("collab-connected", PeerEvent { peer: peer_id.clone() });
+async fn pump(app: AppHandle, owner: String, peer_id: String, peer: Arc<Peer>, mut recv: RecvStream, first: Option<Vec<u8>>) {
+    crate::windows::emit(&app, &owner, "collab-connected", PeerEvent { peer: peer_id.clone() });
     if let Some(buf) = first {
-        let _ = app.emit("collab-msg", MsgEvent { peer: peer_id.clone(), msg: String::from_utf8_lossy(&buf).into() });
+        crate::windows::emit(&app, &owner, "collab-msg", MsgEvent { peer: peer_id.clone(), msg: String::from_utf8_lossy(&buf).into() });
     }
 
     let reason = loop {
         match next_frame(&mut recv, &peer).await {
             Ok(Some(buf)) => {
-                let _ = app.emit("collab-msg", MsgEvent { peer: peer_id.clone(), msg: String::from_utf8_lossy(&buf).into() });
+                crate::windows::emit(&app, &owner, "collab-msg", MsgEvent { peer: peer_id.clone(), msg: String::from_utf8_lossy(&buf).into() });
             }
             Ok(None) => {}
             Err(e) => break close_code(&peer.conn).unwrap_or(e),
@@ -518,7 +520,7 @@ async fn pump(app: AppHandle, peer_id: String, peer: Arc<Peer>, mut recv: RecvSt
     };
     app.state::<CollabState>().peers.lock().await.remove(&peer_id);
     peer.conn.close(0u32.into(), b"bye");
-    let _ = app.emit("collab-closed", ClosedEvent { peer: peer_id, reason });
+    crate::windows::emit(&app, &owner, "collab-closed", ClosedEvent { peer: peer_id, reason });
 }
 
 /// Marks `ep` as hosting and returns the limits for a new accept loop (None: it already runs). A
@@ -539,8 +541,55 @@ async fn claim_hosting(state: &CollabState, ep: &Endpoint) -> Result<Option<Arc<
 
 /// Starts hosting; returns the invite code (base64 of the endpoint address incl. relay URL).
 #[tauri::command]
-pub async fn collab_host(app: AppHandle) -> Result<String, String> {
-    let ep = endpoint(&app).await?;
+pub async fn collab_host(app: AppHandle, window: tauri::WebviewWindow) -> Result<String, String> {
+    let owner = window.label().to_string();
+    let claimed = claim(&mut app.state::<CollabState>().owner.lock().unwrap(), &owner)?;
+    let r = host(&app, &owner).await;
+    if r.is_err() && claimed {
+        release(&app, &owner);
+    }
+    r
+}
+
+/// Takes the session for `label`. True if it wasn't this window's already.
+fn claim(slot: &mut Option<String>, label: &str) -> Result<bool, String> {
+    match slot.as_deref() {
+        Some(o) if o == label => Ok(false),
+        Some(_) => Err("collab:other_window".into()),
+        None => {
+            *slot = Some(label.to_string());
+            Ok(true)
+        }
+    }
+}
+
+fn release(app: &AppHandle, label: &str) {
+    let state = app.state::<CollabState>();
+    let mut owner = state.owner.lock().unwrap();
+    if owner.as_deref() == Some(label) {
+        *owner = None;
+    }
+}
+
+fn is_owner(app: &AppHandle, label: &str) -> bool {
+    app.state::<CollabState>().owner.lock().unwrap().as_deref() == Some(label)
+}
+
+/// Whether a request served for a guest may run: only the session's window, and only on the
+/// project that window has open now, so a guest can never reach another window's project.
+fn may_serve(owner: Option<&str>, label: &str, open_root: Option<&Path>, requested: Option<&Path>) -> bool {
+    owner == Some(label) && requested.is_none_or(|r| open_root == Some(r))
+}
+
+/// `may_serve` for a command. `root` is the project the request names; `None`: no project (an unsaved tab).
+pub fn guard(app: &AppHandle, window: &tauri::WebviewWindow, root: Option<&str>) -> Result<(), String> {
+    let owner = app.state::<CollabState>().owner.lock().unwrap().clone();
+    let open = crate::fs::root_of(window.label());
+    if may_serve(owner.as_deref(), window.label(), open.as_deref(), root.map(Path::new)) { Ok(()) } else { Err("collab:not_owner".into()) }
+}
+
+async fn host(app: &AppHandle, owner: &str) -> Result<String, String> {
+    let ep = endpoint(app).await?;
     // Wait (briefly) until we're reachable via a relay so the invite contains its URL.
     let _ = tokio::time::timeout(std::time::Duration::from_secs(8), ep.online()).await;
     let addr = ep.addr();
@@ -549,17 +598,17 @@ pub async fn collab_host(app: AppHandle) -> Result<String, String> {
 
     let state = app.state::<CollabState>();
     if let Some(limits) = claim_hosting(&state, &ep).await? {
-        let (app2, app3) = (app.clone(), app.clone());
+        let (app2, app3, owner2, owner3) = (app.clone(), app.clone(), owner.to_string(), owner.to_string());
         let peers = state.peers.clone();
         tauri::async_runtime::spawn(accept_joins(
             ep,
             limits,
             peers,
             move |j: Joined| {
-                tauri::async_runtime::spawn(pump(app2.clone(), j.handle, j.peer, j.recv, Some(j.hello)));
+                tauri::async_runtime::spawn(pump(app2.clone(), owner2.clone(), j.handle, j.peer, j.recv, Some(j.hello)));
             },
             move |count| {
-                let _ = app3.emit("collab-refused", RefusedEvent { count });
+                crate::windows::emit(&app3, &owner3, "collab-refused", RefusedEvent { count });
             },
         ));
     }
@@ -576,9 +625,19 @@ fn parse_ticket(ticket: &str) -> Result<EndpointAddr, String> {
 
 /// Joins a session; returns the peer id of the host.
 #[tauri::command]
-pub async fn collab_join(app: AppHandle, ticket: String) -> Result<String, String> {
-    let addr = parse_ticket(&ticket)?;
-    let ep = endpoint(&app).await?;
+pub async fn collab_join(app: AppHandle, window: tauri::WebviewWindow, ticket: String) -> Result<String, String> {
+    let owner = window.label().to_string();
+    let claimed = claim(&mut app.state::<CollabState>().owner.lock().unwrap(), &owner)?;
+    let r = join(&app, &owner, &ticket).await;
+    if r.is_err() && claimed {
+        release(&app, &owner);
+    }
+    r
+}
+
+async fn join(app: &AppHandle, owner: &str, ticket: &str) -> Result<String, String> {
+    let addr = parse_ticket(ticket)?;
+    let ep = endpoint(app).await?;
     let conn = tokio::time::timeout(std::time::Duration::from_secs(25), ep.connect(addr, ALPN))
         .await
         .map_err(|_| "collab:timeout".to_string())?
@@ -593,13 +652,16 @@ pub async fn collab_join(app: AppHandle, ticket: String) -> Result<String, Strin
         }
     };
     let peer = state.peers.lock().await.get(&handle).cloned().ok_or("collab:not_connected")?;
-    let (app2, handle2) = (app.clone(), handle.clone());
-    tauri::async_runtime::spawn(async move { pump(app2, handle2, peer, recv, None).await });
+    let (app2, handle2, owner2) = (app.clone(), handle.clone(), owner.to_string());
+    tauri::async_runtime::spawn(async move { pump(app2, owner2, handle2, peer, recv, None).await });
     Ok(handle)
 }
 
 #[tauri::command]
-pub async fn collab_send(app: AppHandle, peer: String, msg: String) -> Result<(), String> {
+pub async fn collab_send(app: AppHandle, window: tauri::WebviewWindow, peer: String, msg: String) -> Result<(), String> {
+    if !is_owner(&app, window.label()) {
+        return Err("collab:not_connected".into());
+    }
     let p = app.state::<CollabState>().peers.lock().await.get(&peer).cloned().ok_or("collab:not_connected")?;
     allow_outgoing(&p, &msg)?;
     let bytes = msg.into_bytes();
@@ -610,7 +672,10 @@ pub async fn collab_send(app: AppHandle, peer: String, msg: String) -> Result<()
 
 /// Disconnects one peer.
 #[tauri::command]
-pub async fn collab_kick(app: AppHandle, peer: String) {
+pub async fn collab_kick(app: AppHandle, window: tauri::WebviewWindow, peer: String) {
+    if !is_owner(&app, window.label()) {
+        return;
+    }
     if let Some(p) = app.state::<CollabState>().peers.lock().await.remove(&peer) {
         p.conn.close(1u32.into(), b"removed");
     }
@@ -618,8 +683,11 @@ pub async fn collab_kick(app: AppHandle, peer: String) {
 
 /// Ends the session: closes all connections and the endpoint.
 #[tauri::command]
-pub async fn collab_stop(app: AppHandle) {
-    stop_session(&app.state::<CollabState>()).await;
+pub async fn collab_stop(app: AppHandle, window: tauri::WebviewWindow) {
+    if is_owner(&app, window.label()) {
+        stop_session(&app.state::<CollabState>()).await;
+        release(&app, window.label());
+    }
 }
 
 /// Closes every connection and the endpoint. The hosting lock is held until the session is gone,
@@ -636,12 +704,17 @@ async fn stop_session(state: &CollabState) {
     }
 }
 
-/// The webview is (re)loading, so the UI that controlled this session is gone and the new one starts
-/// without it. Ends the session instead of leaving guests attached to a host nobody can control.
-pub fn frontend_loading(app: &AppHandle) {
-    let app = app.clone();
+/// A window is (re)loading or closed. If it owns the session, the UI that controlled it is gone:
+/// ends the session instead of leaving guests attached to a host nobody can control. Any other
+/// window's load leaves the session alone.
+pub fn frontend_loading(app: &AppHandle, label: &str) {
+    if !is_owner(app, label) {
+        return;
+    }
+    let (app, label) = (app.clone(), label.to_string());
     tauri::async_runtime::spawn(async move {
         stop_session(&app.state::<CollabState>()).await;
+        release(&app, &label);
     });
 }
 
@@ -697,8 +770,8 @@ pub(crate) fn guest_path_ok(root: &Path, path: &Path) -> bool {
 
 /// Host: checks a path a guest asked for against the shared folder (see `guest_path_ok`).
 #[tauri::command]
-pub fn collab_path_inside(root: String, path: String) -> bool {
-    guest_path_ok(Path::new(&root), Path::new(&path))
+pub fn collab_path_inside(app: AppHandle, window: tauri::WebviewWindow, root: String, path: String) -> bool {
+    guard(&app, &window, Some(&root)).is_ok() && guest_path_ok(Path::new(&root), Path::new(&path))
 }
 
 /// The most `collab_read_bounded` reads, whatever the caller asks for.
@@ -744,7 +817,8 @@ fn read_bounded(path: &Path, max: u64) -> BoundedRead {
 
 /// Host: a project file for a guest, with the same path check as every guest path.
 #[tauri::command]
-pub async fn collab_read_bounded(root: String, path: String, max: u64) -> Result<BoundedRead, String> {
+pub async fn collab_read_bounded(app: AppHandle, window: tauri::WebviewWindow, root: String, path: String, max: u64) -> Result<BoundedRead, String> {
+    guard(&app, &window, Some(&root))?;
     tauri::async_runtime::spawn_blocking(move || {
         if !guest_path_ok(Path::new(&root), Path::new(&path)) {
             return BoundedRead::Missing;
@@ -832,7 +906,8 @@ fn hooks_check(root: &str, paths: &[String]) -> HooksCheck {
 
 /// Host: which of these paths are the repository's effective hooks, by resolved path.
 #[tauri::command]
-pub async fn collab_hooks_check(root: String, paths: Vec<String>) -> Result<HooksCheck, String> {
+pub async fn collab_hooks_check(app: AppHandle, window: tauri::WebviewWindow, root: String, paths: Vec<String>) -> Result<HooksCheck, String> {
+    guard(&app, &window, Some(&root))?;
     tauri::async_runtime::spawn_blocking(move || hooks_check(&root, &paths)).await.map_err(|e| e.to_string())
 }
 
@@ -880,7 +955,10 @@ pub struct ConnInfo {
 
 /// Whether the selected path to a peer is direct or via relay (+ round-trip time).
 #[tauri::command]
-pub async fn collab_conn_info(app: AppHandle, peer: String) -> Option<ConnInfo> {
+pub async fn collab_conn_info(app: AppHandle, window: tauri::WebviewWindow, peer: String) -> Option<ConnInfo> {
+    if !is_owner(&app, window.label()) {
+        return None;
+    }
     let p = app.state::<CollabState>().peers.lock().await.get(&peer).cloned()?;
     let paths = p.conn.paths();
     let sel = paths.iter().find(|x| x.is_selected())?;
@@ -895,6 +973,28 @@ pub async fn collab_conn_info(app: AppHandle, peer: String) -> Option<ConnInfo> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn one_session_belongs_to_one_window() {
+        let mut slot = None;
+        assert_eq!(claim(&mut slot, "main"), Ok(true));
+        assert_eq!(claim(&mut slot, "main"), Ok(false));
+        assert_eq!(claim(&mut slot, "w-b"), Err("collab:other_window".to_string()));
+        assert_eq!(slot.as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn a_guest_request_only_reaches_the_owner_windows_open_project() {
+        let (a, b) = (Path::new("/p/a"), Path::new("/p/b"));
+        assert!(may_serve(Some("main"), "main", Some(a), Some(a)));
+        assert!(may_serve(Some("main"), "main", Some(a), None));
+        // Another window's project, from the owner.
+        assert!(!may_serve(Some("main"), "main", Some(a), Some(b)));
+        // Another window asking, also for its own project.
+        assert!(!may_serve(Some("main"), "w-b", Some(b), Some(b)));
+        assert!(!may_serve(None, "main", Some(a), Some(a)));
+        assert!(!may_serve(Some("main"), "main", None, Some(a)));
+    }
 
     #[cfg(unix)]
     #[test]

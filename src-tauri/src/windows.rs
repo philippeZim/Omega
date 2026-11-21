@@ -89,6 +89,7 @@ pub fn destroyed(app: &AppHandle, label: &str) {
     crate::ide_ws::forget_window(app, label);
     crate::codex_ipc::forget_window(app, label);
     crate::mcp_control::forget_window(app, label);
+    crate::collab::frontend_loading(app, label);
     page_loading(app, label);
 }
 

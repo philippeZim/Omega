@@ -133,7 +133,7 @@ export async function startHosting() {
     // Ended while it was starting: that is not a failed start.
     if (collab.role !== "host" || collab.status !== "starting") return;
     collab.status = "error";
-    collab.error = String(e);
+    collab.error = collabErrorText(e);
   }
 }
 

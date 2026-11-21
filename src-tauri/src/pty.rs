@@ -460,6 +460,7 @@ fn shell_in_foreground(_: &Session) -> bool {
 /// lands in a live Build/Run command, "shell" only in a shell granted to a guest. Never blocks.
 #[tauri::command(async)]
 pub fn pty_write_guest(app: AppHandle, window: tauri::WebviewWindow, id: String, data: String, target: String) -> Result<(), String> {
+    crate::collab::guard(&app, &window, None).map_err(|_| "pty:ended".to_string())?;
     let state = app.state::<PtyState>();
     let mut sessions = state.sessions.lock().unwrap();
     let s = sessions.get_mut(&crate::windows::key(window.label(), &id)).ok_or("pty:ended")?;
