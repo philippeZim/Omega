@@ -23,6 +23,7 @@ vi.mock("@xterm/xterm", () => ({
     attachCustomKeyEventHandler() {}
     onData(cb: (d: string) => void) { this.dataCb = cb; }
     onResize() {}
+    resize(c: number, r: number) { this.cols = c; this.rows = r; }
     open(el: HTMLElement) { this.element = el; }
     write(s: string) { this.written.push(s); }
     reset() { this.written = []; }
@@ -278,6 +279,67 @@ describe("shell terminals", () => {
     expect(T.terms.active).toBeNull();
     expect(hideView).toHaveBeenCalledWith("terminal");
     expect(calls.some(([c, arg]) => c === "pty_kill" && arg.id === b)).toBe(true);
+  });
+
+  test("guest input only reaches the exact running task, never a later one", async () => {
+    T.runTask("run", "python a.py", null, "Run", { focus: false });
+    await settle();
+    const first = T.taskState().taskId!;
+    const pty = spawns()[0].id;
+    expect(await T.writeTaskInput(first, "Ada\r")).toBe("ok");
+    expect(calls).toContainEqual(["pty_write_guest", expect.objectContaining({ id: pty, data: "Ada\r", target: "task" })]);
+
+    T.runTask("run", "python b.py", null, "Run", { focus: false });
+    await settle();
+    const pty2 = spawns()[1].id;
+    calls.length = 0;
+    expect(await T.writeTaskInput(first, "late\r")).toBe("ended");
+    expect(calls.some(([c]) => c === "pty_write_guest" || c === "pty_write")).toBe(false);
+
+    const second = T.taskState().taskId!;
+    await emit("pty-exit", { id: pty2, code: 0 });
+    expect(await T.writeTaskInput(second, "after exit\r")).toBe("ended");
+    expect(calls.some(([c]) => c === "pty_write_guest" || c === "pty_write")).toBe(false);
+  });
+
+  test("no guest input after Stop was requested", async () => {
+    T.runTask("run", "sleep 9", null, "Run", { focus: false });
+    await settle();
+    const id = T.taskState().taskId!;
+    T.interruptTask(id);
+    calls.length = 0;
+    expect(await T.writeTaskInput(id, "x")).toBe("ended");
+    expect(calls.some(([c]) => c === "pty_write_guest")).toBe(false);
+  });
+
+  test("a guest's shell view is read-only and takes neither the view nor the focus", async () => {
+    const own = T.newTerminal(null);
+    const onClose = vi.fn();
+    const id = T.openGuestShellView("Ada's shell", 100, 30, onClose);
+    expect(T.terms.active).toBe(own);
+    expect(lastTerm()).toMatchObject({ cols: 100, rows: 30 });
+    expect(lastTerm().options.disableStdin).toBe(true);
+    await T.spawnGuestShell(id, "/p", 100, 30);
+    expect(spawns().at(-1)).toMatchObject({ id, cwd: "/p", kind: "guest-shell", shell: null });
+
+    calls.length = 0;
+    lastTerm().dataCb("typed by the host\r");
+    await expect(T.sendInput(id, "from a tool")).rejects.toThrow();
+    await settle();
+    expect(calls.some(([c]) => c === "pty_write")).toBe(false);
+
+    T.closeTerminal(id);
+    expect(onClose).toHaveBeenCalledOnce();
+    expect(calls.some(([c, a]) => c === "pty_kill" && a.id === id)).toBe(true);
+  });
+
+  test("a view closed while its shell starts kills the shell", async () => {
+    const id = T.openGuestShellView("Ada's shell", 80, 24, () => {});
+    const spawning = T.spawnGuestShell(id, "/p", 80, 24);
+    T.closeTerminal(id);
+    await spawning;
+    await settle();
+    expect(spawns().some((s) => s.id === id)).toBe(false);
   });
 
   test("remote terminals route typing to onInput instead of a pty", async () => {

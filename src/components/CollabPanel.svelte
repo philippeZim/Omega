@@ -1,6 +1,6 @@
 <script lang="ts">
   import Glyph from "./Glyph.svelte";
-  import { collab, startHosting, join, leave, approve, deny, kick, setMyName, setStartCapability, clipboardTicket, isMe as isMeOf } from "../lib/collab/collab.svelte";
+  import { collab, startHosting, join, leave, approve, deny, kick, setMyName, clipboardTicket, isMe as isMeOf } from "../lib/collab/collab.svelte";
   import { onMount, tick } from "svelte";
 
   let codeInput: HTMLInputElement | undefined = $state();
@@ -15,7 +15,8 @@
   import { ui } from "../lib/ui.svelte";
   import { app } from "../lib/state.svelte";
   import { share, follow } from "../lib/collab/share.svelte";
-  import { setCapability, capabilityLabel } from "../lib/collab/rpc.svelte";
+  import { capabilityLabel } from "../lib/collab/rpc.svelte";
+  import { requestCapability, requestStartCapability } from "../lib/collab/guestShell.svelte";
   import { CAPABILITIES } from "../lib/collab/guard";
   import { t } from "../lib/i18n/index.svelte";
 
@@ -84,6 +85,7 @@
           <button class="btn small primary" onclick={() => approve(r)}>{t("ai.collab.allow")}</button>
         </div>
       {/each}
+      {#if collab.requests.length && collab.startCaps.includes("terminal")}<p class="err">{t("ai.collab.shell.startWarning")}</p>{/if}
       {#if collab.refused}<p class="hint">{t("ai.collab.refusedCount", { count: collab.refused })}</p>{/if}
     {/if}
 
@@ -115,7 +117,7 @@
           <div class="caps" role="group" aria-label={t("ai.collab.capabilities")}>
             {#each CAPABILITIES as cap (cap)}
               {@const on = !!p.caps?.includes(cap)}
-              <button class="followbtn cap" class:on role="switch" aria-checked={on} title={t(`ai.collab.capHint.${cap}`)} onclick={() => setCapability(p.peer, cap, !on)}>{capabilityLabel(cap)}</button>
+              <button class="followbtn cap" class:on role="switch" aria-checked={on} title={t(`ai.collab.capHint.${cap}`)} onclick={() => requestCapability(p.peer, cap, !on)}>{capabilityLabel(cap)}</button>
             {/each}
           </div>
         {:else if collab.role === "guest" && isMe}
@@ -133,7 +135,7 @@
       <div class="caps start" role="group" aria-labelledby="startcaps">
         {#each CAPABILITIES as cap (cap)}
           {@const on = collab.startCaps.includes(cap)}
-          <button class="followbtn cap" class:on role="switch" aria-checked={on} title={t(`ai.collab.capHint.${cap}`)} onclick={() => setStartCapability(cap, !on)}>{capabilityLabel(cap)}</button>
+          <button class="followbtn cap" class:on role="switch" aria-checked={on} title={t(`ai.collab.capHint.${cap}`)} onclick={() => requestStartCapability(cap, !on)}>{capabilityLabel(cap)}</button>
         {/each}
       </div>
       <p class="hint starthint">{t("ai.collab.startRightsHint")}</p>

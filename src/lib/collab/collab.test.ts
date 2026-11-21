@@ -193,6 +193,36 @@ test("start rights: approve applies them, a rejoin can't get more, later changes
   expect(s.collab.startCaps).toEqual(DEFAULT_CAPABILITIES);
 });
 
+test("start rights: `terminal` can't be switched on without the confirmation", async () => {
+  const s = await freshSession((cmd) => (cmd === "collab_host" ? "omega-t" : null));
+  await s.startHosting();
+  s.setStartCapability("terminal", true);
+  expect(s.collab.startCaps).not.toContain("terminal");
+  s.approve({ peer: "g1", name: "Gast" });
+  expect(s.collab.participants.find((p) => p.peer === "g1")?.caps).not.toContain("terminal");
+  s.setStartCapability("terminal", true, { confirmed: true });
+  expect(s.collab.startCaps).toContain("terminal");
+  await s.leave();
+  expect(s.collab.startCaps).not.toContain("terminal");
+});
+
+test("host: kicking a guest and ending the session run the peer-gone hooks at once", async () => {
+  const s = await freshSession((cmd) => (cmd === "collab_host" ? "omega-t" : null));
+  await s.startHosting();
+  const gone: string[] = [];
+  s.peerGoneHooks.push((peer) => gone.push(peer));
+  s.approve({ peer: "g1", name: "Eins" });
+  s.approve({ peer: "g2", name: "Zwei" });
+  s.approve({ peer: "g3", name: "Drei" });
+  s.kick("g1");
+  expect(gone).toEqual(["g1"]); // synchronously, before the connection closes
+  await emit("collab-closed", { peer: "g2", reason: "closed" });
+  expect(gone).toEqual(["g1", "g2"]);
+  void s.leave();
+  expect(gone).toContain("g3");
+  s.peerGoneHooks.length = 0;
+});
+
 test("host: join requests are bounded, the excess is told it's busy, and the host hears once", async () => {
   const s = await freshSession((cmd) => (cmd === "collab_host" ? "omega-t" : null));
   await s.startHosting();

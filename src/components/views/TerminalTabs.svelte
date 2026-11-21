@@ -47,6 +47,7 @@
       {:else}
         <span class="dot" class:run={tab.kind === "run" || tab.kind === "build"} class:busy={tab.status === "running"} title={tab.status === "running" ? t("code.term.stRunning") : undefined}></span>
       {/if}
+      {#if tab.hostShell}<span class="onhost">{t("ai.collab.shell.tabBadge")}</span>{/if}
       <span class="label" title={tab.title}>{tab.title}</span>
       <button class="x" onclick={(e) => { e.stopPropagation(); closeTerminal(tab.id); }} aria-label={t("common.close")}><Glyph name="x" size={8} /></button>
     </div>
@@ -54,6 +55,9 @@
   </div>
   <button class="add" title={isGuest ? t("code.term.newLocal") : t("code.term.new")} aria-label={isGuest ? t("code.term.newLocal") : t("code.term.new")} onclick={() => newTerminal(app.root, "shell", localTerminalTitle())}><Glyph name="plus" size={10} /></button>
   <button class="add pick" title={t("code.term.chooseShell")} onclick={shellMenu}><Glyph name="chevron-down" size={10} /></button>
+  {#if isGuest && guestGuard.status() === "connected" && guestGuard.can("terminal") && guestGuard.openHostShell}
+    <button class="hostshell" title={t("ai.collab.shell.openHint")} onclick={() => guestGuard.openHostShell?.()}>{t("ai.collab.shell.open")}</button>
+  {/if}
   {#if terms.tabs.length > 1 || terms.split}
     <button class="add split" class:on={terms.split} title={terms.split ? t("layout.termTabs") : t("layout.termSplit")} aria-label={t("layout.termSplit")} onclick={toggleSplit}>
       {#if terms.split}
@@ -89,6 +93,9 @@
   .dot.run { background: var(--green); }
   .x { width: 18px; height: 18px; display: grid; place-items: center; border-radius: 50%; color: var(--label-2); }
   .x:hover { background: var(--fill-2); color: var(--label); }
+  .onhost { padding: 1px 6px; border-radius: 999px; font-size: 10px; font-weight: 700; color: #fff; background: var(--red); }
+  .hostshell { height: 24px; padding: 0 10px; border-radius: 999px; font-size: 11.5px; color: var(--red); background: rgba(var(--fg-rgb), 0.07); }
+  .hostshell:hover { background: rgba(var(--fg-rgb), 0.14); }
   .add { width: 28px; height: 28px; display: grid; place-items: center; border-radius: 50%; color: var(--label-2); }
   .add.pick { margin-left: -4px; }
   .add:hover { background: var(--fill-hover); color: var(--label); }

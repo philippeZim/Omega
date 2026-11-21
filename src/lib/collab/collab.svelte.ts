@@ -147,7 +147,8 @@ export function approve(req: JoinRequest) {
  * Host: the rights of guests approved from now on; guests already here keep theirs. Guests have no
  * identity that survives a rejoin, so this is what limits someone who leaves and comes back.
  */
-export function setStartCapability(cap: Capability, on: boolean) {
+export function setStartCapability(cap: Capability, on: boolean, opts: { confirmed?: boolean } = {}) {
+  if (cap === "terminal" && on && !opts.confirmed) return; // see requestStartCapability
   collab.startCaps = CAPABILITIES.filter((c) => (c === cap ? on : collab.startCaps.includes(c)));
 }
 
@@ -183,6 +184,7 @@ export function kick(peer: string) {
   // Refused from now on, not only once the connection is closed below.
   const p = collab.participants.find((x) => x.peer === peer);
   if (p) p.removing = true;
+  peerGone(peer);
   void import("./share.svelte").then((m) => m.forgetPeer(peer));
   send(peer, { t: "kicked" });
   setTimeout(() => invoke("collab_kick", { peer }), 200);
@@ -216,12 +218,27 @@ export async function join(ticket: string) {
 /** Run after a session ended and the shared docs are gone (`wasGuest`: we were a guest). */
 export const sessionEndHooks: ((wasGuest: boolean) => Promise<void> | void)[] = [];
 
+/** Host: a guest is gone (removed, left or the session ends). Runs at once, before any cleanup. */
+export const peerGoneHooks: ((peer: string) => void)[] = [];
+function peerGone(peer: string) {
+  for (const h of peerGoneHooks) {
+    try {
+      h(peer);
+    } catch (e) {
+      console.error("collab peer gone hook", e);
+    }
+  }
+}
+
 let leaving = false;
 export async function leave() {
   if (leaving) return;
   leaving = true;
   const wasGuest = collab.role === "guest";
-  if (collab.role === "host") broadcast({ t: "ended" });
+  if (collab.role === "host") {
+    for (const p of [...collab.participants]) if (p.role === "guest") peerGone(p.peer);
+    broadcast({ t: "ended" });
+  }
   // Mark as idle first so the connection-closed events of our own leave don't show an error.
   collab.status = "idle";
   // Whatever fails here, the session state below is still reset, or Leave would stop working.
@@ -318,6 +335,7 @@ listen<{ peer: string; reason: string }>("collab-closed", (e) => {
     collab.participants = collab.participants.filter((x) => x.peer !== peer);
     collab.requests = collab.requests.filter((x) => x.peer !== peer);
     if (p) {
+      peerGone(peer);
       void import("./share.svelte").then((m) => m.forgetPeer(peer));
       ui.toast(t("ai.collab.left", { name: p.name }));
       broadcast({ t: "participants", participants: collab.participants.map(publicInfo) });

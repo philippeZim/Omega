@@ -5,8 +5,7 @@
  *  - A guest that joins puts its own workspace aside (folder, tabs, mode – remembered, also across a
  *    crash) and shows exactly what the host has open. Leaving restores it.
  *  - Run/Build/Test on a guest run on the host's machine; the host's Run terminal is mirrored to the
- *    guests read-only. (Forwarding guest keystrokes would land in the host's shell whenever no
- *    program runs – that would hand out a remote shell, so it isn't done.)
+ *    guests. Typing reaches only the running program, see runInput.svelte.ts.
  */
 import { untrack } from "svelte";
 import { listen } from "@tauri-apps/api/event";
@@ -20,6 +19,7 @@ import type { Action, Project } from "../code/projects";
 import { packageAction, PACKAGE_LIMITS, quotePackageArg, splitPackages, validPackages } from "../code/packageInput";
 import { pythonRemoveFlags, type Suggestion } from "../code/packages";
 import { remoteTerminal, writeTerminal, closeTerminal, terms, isTaskPty, setRunEcho, interruptTask, runningPackageTask, taskState, type TaskState } from "../terminal.svelte";
+import { typeIntoHostRun } from "./runInput.svelte";
 import { showView } from "../layout.svelte";
 import * as ed from "../editor";
 import { fsApi, basename } from "../api";
@@ -316,11 +316,7 @@ function guestProject(): Project | null {
 
 function ensureRemoteTerminal() {
   if (remoteTermId && terms.tabs.some((x) => x.id === remoteTermId)) return remoteTermId;
-  let hinted = false;
-  remoteTermId = remoteTerminal(t("ai.collab.hostRun", { name: share.hostRoot || t("app.project") }), () => {
-    if (!hinted) ui.toast(t("ai.collab.termReadOnly"));
-    hinted = true;
-  });
+  remoteTermId = remoteTerminal(t("ai.collab.hostRun", { name: share.hostRoot || t("app.project") }), (data) => typeIntoHostRun(data, stopOnHost));
   showRemoteStatus();
   return remoteTermId;
 }
