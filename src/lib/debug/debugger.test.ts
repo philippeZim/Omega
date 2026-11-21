@@ -12,6 +12,14 @@ const m = vi.hoisted(() => ({
   runCommand: null as any,
   /** Holds proc_spawn open until resolved. */
   spawnGate: null as Promise<unknown> | null,
+  /** proc_spawn fails with this message. */
+  spawnFail: null as string | null,
+  /** proc_connect makes the connecting session the fake adapter's. */
+  adoptConnect: false,
+  /** Holds a proc_connect that isn't adopted open until resolved. */
+  connectGate: null as Promise<unknown> | null,
+  /** proc_send to this id fails, as it does for a killed adapter. */
+  sendFail: null as string | null,
 }));
 
 vi.mock("../state.svelte", () => ({
@@ -94,13 +102,23 @@ beforeEach(async () => {
   m.toast = vi.fn();
   m.runCommand = vi.fn();
   m.spawnGate = null;
+  m.spawnFail = null;
+  m.adoptConnect = false;
+  m.connectGate = null;
+  m.sendFail = null;
   mockIPC(
     (cmd, args: any) => {
       ipc.push([cmd, args]);
       if (cmd === "proc_spawn") {
         fake.id = args.id;
+        if (m.spawnFail) return Promise.reject(new Error(m.spawnFail));
         if (m.spawnGate) return m.spawnGate;
       }
+      if (cmd === "proc_connect") {
+        if (m.adoptConnect) fake.id = args.id;
+        else if (m.connectGate) return m.connectGate;
+      }
+      if (cmd === "proc_send" && args.id === m.sendFail) return Promise.reject(new Error("proc:not_connected"));
       if (cmd === "proc_send" && args.id === fake.id) fake.onSend(args.msg);
       return null;
     },
@@ -539,6 +557,344 @@ describe("a stop or a second start during a start", () => {
     await Promise.all([restart, stop]);
     await settle();
     expect(spawns()).toBe(spawned);
+  });
+
+  describe("the adapter sends terminated while it is disconnected", () => {
+    const launches = () => fake.commands().filter((c) => c === "launch").length;
+    const disconnects = () => fake.commands().filter((c) => c === "disconnect").length;
+    const terminateOnDisconnect = () => {
+      fake.replies.disconnect = () => {
+        void fake.event("terminated");
+        return {};
+      };
+    };
+    /** Holds the disconnect open, with `terminated` already delivered. */
+    async function holdDisconnect() {
+      fake.noReply.add("disconnect");
+      await vi.waitFor(() => expect(fake.commands()).toContain("disconnect"));
+      await fake.event("terminated");
+    }
+    const newSessionStopped = async (first: string | null) => {
+      await vi.waitFor(() => {
+        expect(fake.id).not.toBe(first);
+        expect(S.dbg.status).toBe("stopped");
+      });
+    };
+
+    test("host restart ends the old session and starts one new session at the breakpoint", async () => {
+      await startAndStop();
+      const first = fake.id;
+      terminateOnDisconnect();
+      await D.restartDebugging();
+      await newSessionStopped(first);
+      expect(spawns()).toBe(2);
+      expect(launches()).toBe(2);
+      expect(disconnects()).toBe(1);
+      expect(ipc.some(([c, a]) => c === "proc_kill" && a.id === first)).toBe(true);
+      expect(fake.requests.filter((r) => r.command === "setBreakpoints")).toHaveLength(2);
+      expect(fake.last("launch").arguments.program).toBe("/p/main.py");
+      expect(S.dbg.stopReason).toBe("breakpoint");
+      expect(D.hostDebug.starting()).toBe(false);
+    });
+
+    test("guest restart starts one new session for the same file, under the guest's name", async () => {
+      await D.hostDebug.start("/p/main.py", "Bob");
+      await vi.waitFor(() => expect(S.dbg.status).toBe("stopped"));
+      const first = fake.id;
+      terminateOnDisconnect();
+      await D.hostDebug.restart("/p/main.py", "Bob");
+      await newSessionStopped(first);
+      expect(spawns()).toBe(2);
+      expect(disconnects()).toBe(1);
+      expect(S.dbg.actor).toBe("Bob");
+      expect(D.hostDebug.planFile()).toBe("/p/main.py");
+      expect(m.openFile).not.toHaveBeenCalled();
+    });
+
+    test("a Stop during a restart wins", async () => {
+      await startAndStop();
+      const restart = D.restartDebugging();
+      await holdDisconnect();
+      const stop = D.stopDebugging();
+      await fake.exit();
+      await Promise.all([restart, stop]);
+      await settle();
+      expect(spawns()).toBe(1);
+      expect(S.dbg.status).toBe("terminated");
+      expect(D.hostDebug.starting()).toBe(false);
+    });
+
+    test("a Start during a restart leaves exactly one new session", async () => {
+      await startAndStop();
+      const first = fake.id;
+      fake.noReply.add("disconnect");
+      const restart = D.restartDebugging();
+      await vi.waitFor(() => expect(fake.commands()).toContain("disconnect"));
+      const start = D.startDebugging();
+      await fake.event("terminated"); // must not cancel the Start that is waiting for the teardown
+      fake.noReply.delete("disconnect");
+      await fake.exit();
+      await Promise.all([restart, start]);
+      await newSessionStopped(first);
+      expect(spawns()).toBe(2);
+      expect(launches()).toBe(2);
+    });
+
+    test("Start on a running session replaces it", async () => {
+      await startAndStop();
+      const first = fake.id;
+      terminateOnDisconnect();
+      await D.startDebugging();
+      await newSessionStopped(first);
+      expect(spawns()).toBe(2);
+      expect(disconnects()).toBe(1);
+    });
+
+    test("a guest's Start on a running session replaces it", async () => {
+      await startAndStop();
+      const first = fake.id;
+      terminateOnDisconnect();
+      await D.hostDebug.start("/p/main.py", "Bob");
+      await newSessionStopped(first);
+      expect(spawns()).toBe(2);
+      expect(S.dbg.actor).toBe("Bob");
+    });
+
+    test("a session that ends on its own is cleaned up and not started again", async () => {
+      await startAndStop();
+      await fake.event("terminated");
+      await vi.waitFor(() => expect(S.dbg.status).toBe("terminated"));
+      await settle();
+      expect(disconnects()).toBe(1);
+      expect(ipc.some(([c, a]) => c === "proc_kill" && a.id === fake.id)).toBe(true);
+      expect(spawns()).toBe(1);
+      expect(S.dbg.frames).toEqual([]);
+    });
+
+    test("a late terminated from the old session leaves the new one alone", async () => {
+      await startAndStop();
+      const first = fake.id;
+      await D.restartDebugging();
+      await newSessionStopped(first);
+      const n = disconnects();
+      await emit("proc-msg", { id: first, msg: JSON.stringify({ seq: 5000, type: "event", event: "terminated", body: {} }) });
+      await settle();
+      expect(S.dbg.status).toBe("stopped");
+      expect(disconnects()).toBe(n);
+    });
+
+    test("a guest's restart can still be cancelled while the old session closes", async () => {
+      await D.hostDebug.start("/p/main.py", "Bob");
+      await vi.waitFor(() => expect(S.dbg.status).toBe("stopped"));
+      const restart = D.hostDebug.restart("/p/main.py", "Bob");
+      await holdDisconnect();
+      expect(D.hostDebug.starting()).toBe(true);
+      const cancel = D.hostDebug.cancelStart();
+      await fake.exit();
+      await Promise.all([restart, cancel]);
+      await settle();
+      expect(spawns()).toBe(1);
+      expect(D.hostDebug.starting()).toBe(false);
+    });
+
+    test("a guest's restart doesn't launch a plan forgotten while the old session closes", async () => {
+      await D.hostDebug.start("/p/main.py", "Bob");
+      await vi.waitFor(() => expect(S.dbg.status).toBe("stopped"));
+      const restart = D.hostDebug.restart("/p/main.py", "Bob");
+      await holdDisconnect();
+      D.hostDebug.forgetGuestPlan();
+      await fake.exit();
+      await restart;
+      await settle();
+      expect(spawns()).toBe(1);
+      expect(D.hostDebug.starting()).toBe(false);
+    });
+  });
+
+  describe("a restart whose new start fails", () => {
+    const failing = (message: string) => ({ then: (_ok: unknown, fail: (e: Error) => void) => fail(new Error(message)) });
+    const settled = () => {
+      expect(S.dbg.status).toBe("terminated");
+      expect(D.hostDebug.starting()).toBe(false);
+      expect(D.hostDebug.closing()).toBe(false);
+      expect(S.dbg.actor).toBe("");
+    };
+    /** After the failure, the next Start works normally. */
+    async function startsAgain(plan: unknown) {
+      m.plan = plan;
+      m.spawnFail = null;
+      const before = fake.id;
+      await D.startDebugging();
+      await vi.waitFor(() => {
+        expect(fake.id).not.toBe(before);
+        expect(S.dbg.status).toBe("stopped");
+      });
+    }
+    const endOnDisconnect = () => {
+      fake.replies.disconnect = () => {
+        void fake.event("terminated");
+        return {};
+      };
+    };
+
+    test.each([["host"], ["guest"]])("%s: a declined install prompt ends in terminated", async (who) => {
+      await startAndStop();
+      endOnDisconnect();
+      const plan = m.plan;
+      m.plan = failing("debugpy is required");
+      if (who === "host") await D.restartDebugging();
+      else await D.hostDebug.restart("/p/main.py", "Bob");
+      settled();
+      expect(spawns()).toBe(1);
+      expect(S.dbg.console.at(-1)).toEqual({ text: "debugpy is required", kind: "error" });
+      await startsAgain(plan);
+    });
+
+    test.each([["host"], ["guest"]])("%s: a failed spawn ends in terminated", async (who) => {
+      await startAndStop();
+      endOnDisconnect();
+      const plan = m.plan;
+      m.spawnFail = "cannot spawn adapter";
+      if (who === "host") await D.restartDebugging();
+      else await D.hostDebug.restart("/p/main.py", "Bob");
+      await vi.waitFor(settled);
+      expect(S.dbg.console.some((l) => l.kind === "error" && l.text.includes("cannot spawn adapter"))).toBe(true);
+      await startsAgain(plan);
+    });
+
+    test("a failing file open doesn't leave the restart in progress", async () => {
+      await startAndStop();
+      endOnDisconnect();
+      m.tab = { id: "t2", path: "/p/other.py", dirty: false };
+      m.openFile = vi.fn(async () => {
+        throw new Error("cannot open");
+      });
+      await expect(D.restartDebugging()).rejects.toThrow("cannot open");
+      settled();
+    });
+  });
+
+  describe("reverse requests and closed sessions", () => {
+    const portPlan = () => ({ ...m.plan, adapter: { kind: "port", port: 4711 } });
+    const connects = () => ipc.filter(([c]) => c === "proc_connect").length;
+    let nextSeq = 700;
+    /** Sends a reverse request and returns the response the session answers with. */
+    async function reverse(id: string, command: string, args: unknown) {
+      const seq = nextSeq++;
+      await emit("proc-msg", { id, msg: JSON.stringify({ seq, type: "request", command, arguments: args }) });
+      return vi.waitFor(() => {
+        const res = ipc
+          .filter(([c, a]) => c === "proc_send" && a.id === id)
+          .map(([, a]) => JSON.parse(a.msg))
+          .find((x) => x.type === "response" && x.request_seq === seq);
+        expect(res).toBeTruthy();
+        return res;
+      });
+    }
+    const terminal = { cwd: "/p", args: ["python", "main.py"], env: {} };
+    const child = { request: "launch", configuration: { name: "child", type: "pwa-node" } };
+
+    test("runInTerminal from a session being closed starts nothing and gets an error", async () => {
+      await startAndStop();
+      fake.noReply.add("disconnect");
+      const stop = D.stopLocal();
+      await vi.waitFor(() => expect(fake.commands()).toContain("disconnect"));
+      expect(D.hostDebug.closing()).toBe(true);
+      expect(await reverse(fake.id!, "runInTerminal", terminal)).toMatchObject({ success: false, command: "runInTerminal" });
+      expect(m.runCommand).not.toHaveBeenCalled();
+      await fake.exit();
+      await stop;
+      expect(D.hostDebug.closing()).toBe(false);
+    });
+
+    test("runInTerminal from a closed session starts nothing and gets an error", async () => {
+      await startAndStop();
+      await D.stopLocal();
+      expect(await reverse(fake.id!, "runInTerminal", terminal)).toMatchObject({ success: false });
+      expect(m.runCommand).not.toHaveBeenCalled();
+    });
+
+    test("startDebugging from a session being closed creates no child", async () => {
+      m.adoptConnect = true;
+      m.plan = portPlan();
+      await startAndStop();
+      m.adoptConnect = false;
+      const before = connects();
+      fake.noReply.add("disconnect");
+      const stop = D.stopLocal();
+      await vi.waitFor(() => expect(fake.commands()).toContain("disconnect"));
+      expect(await reverse(fake.id!, "startDebugging", child)).toMatchObject({ success: false, command: "startDebugging" });
+      expect(connects()).toBe(before);
+      await fake.exit();
+      await stop;
+    });
+
+    test("startDebugging from the old session doesn't attach to the new one's adapter", async () => {
+      m.adoptConnect = true;
+      m.plan = portPlan();
+      await startAndStop();
+      const first = fake.id!;
+      await D.restartDebugging();
+      await vi.waitFor(() => {
+        expect(fake.id).not.toBe(first);
+        expect(S.dbg.status).toBe("stopped");
+      });
+      m.adoptConnect = false;
+      const before = connects();
+      expect(await reverse(first, "startDebugging", child)).toMatchObject({ success: false });
+      expect(connects()).toBe(before);
+    });
+
+    test("a child still connecting when the session closes is killed and not launched", async () => {
+      m.adoptConnect = true;
+      m.plan = portPlan();
+      await startAndStop();
+      m.adoptConnect = false;
+      const gate = deferred<unknown>();
+      m.connectGate = gate.promise;
+      const before = connects();
+      const answer = reverse(fake.id!, "startDebugging", child);
+      await vi.waitFor(() => expect(connects()).toBe(before + 1));
+      const childId = ipc.filter(([c]) => c === "proc_connect").at(-1)![1].id;
+      m.sendFail = childId; // not connected yet, so its disconnect fails right away
+      await D.stopLocal();
+      gate.resolve(null);
+      expect(await answer).toMatchObject({ success: false });
+      expect(ipc.some(([c, a]) => c === "proc_kill" && a.id === childId)).toBe(true);
+      expect(ipc.some(([c, a]) => c === "proc_send" && a.id === childId && JSON.parse(a.msg).command === "initialize")).toBe(false);
+    });
+
+    test("a live session's reverse requests work as before", async () => {
+      m.adoptConnect = true;
+      m.plan = portPlan();
+      await startAndStop();
+      m.adoptConnect = false;
+      expect(await reverse(fake.id!, "runInTerminal", terminal)).toMatchObject({ success: true });
+      expect(m.runCommand).toHaveBeenCalledTimes(1);
+      const before = connects();
+      expect(await reverse(fake.id!, "startDebugging", child)).toMatchObject({ success: true });
+      expect(connects()).toBe(before + 1);
+      const childId = ipc.filter(([c]) => c === "proc_connect").at(-1)![1].id;
+      await vi.waitFor(() => expect(ipc.some(([c, a]) => c === "proc_send" && a.id === childId && JSON.parse(a.msg).command === "initialize")).toBe(true));
+      await emit("proc-exit", childId); // ends its pending requests
+    });
+
+    test("an answer to an adapter that is already gone raises nothing", async () => {
+      const unhandled = vi.fn();
+      const node = (globalThis as any).process; // no Node types in this project
+      node.on("unhandledRejection", unhandled);
+      try {
+        await startAndStop();
+        const id = fake.id!;
+        await D.stopLocal();
+        m.sendFail = id;
+        await emit("proc-msg", { id, msg: JSON.stringify({ seq: 900, type: "request", command: "runInTerminal", arguments: terminal }) });
+        await new Promise((r) => setTimeout(r, 10));
+        expect(unhandled).not.toHaveBeenCalled();
+      } finally {
+        node.off("unhandledRejection", unhandled);
+      }
+    });
   });
 
   test("a start that throws doesn't count as in progress afterwards", async () => {

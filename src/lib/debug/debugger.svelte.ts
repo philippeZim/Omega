@@ -26,6 +26,8 @@ let lastPlan: { file: string; byGuest: boolean } | null = null;
 let startGen = 0;
 /** A start is between its first step and a connected adapter. */
 let starting = false;
+/** The teardown in progress: everyone who needs the sessions gone waits for this same one. */
+let closing: Promise<void> | null = null;
 const initialized = new Map<DapSession, () => void>();
 const configured = new Set<DapSession>();
 /** Code Together: guests are driving, so the host's editor and layout stay where the host is. */
@@ -155,7 +157,7 @@ async function startFile(file: string, actor: string, byGuest: boolean) {
 
 async function runStart(gen: number, file: string, actor: string, byGuest: boolean) {
   const stale = () => gen !== startGen;
-  if (dbg.status !== "idle" && dbg.status !== "terminated") await teardown();
+  if (closing || (dbg.status !== "idle" && dbg.status !== "terminated")) await teardown();
   if (stale()) return;
   await dbgHooks.beforeStart();
   if (stale()) return;
@@ -245,7 +247,13 @@ export async function stopLocal() {
   await teardown();
 }
 
-async function teardown() {
+function teardown() {
+  return (closing ??= closeSessions().finally(() => {
+    closing = null;
+  }));
+}
+
+async function closeSessions() {
   const all = [...sessions].reverse();
   for (const s of all) {
     if (!s.alive) continue;
@@ -285,13 +293,24 @@ export async function restartDebugging() {
   const r = remote();
   if (r) return r.restart();
   const file = lastPlan?.file;
+  const { gen, stopped } = beginRestart();
+  try {
+    await stopped;
+    if (gen !== startGen) return; // stopped or started again meanwhile
+    if (file && activeTab()?.path !== file) await openFile(file);
+    if (gen !== startGen) return;
+    await startDebugging();
+  } finally {
+    if (gen === startGen) starting = false; // ended without a start taking over
+  }
+}
+
+/** Stops the session for a restart, which counts as a start until the new one takes over: a Stop
+ *  or a guest losing the right can still cancel it. */
+function beginRestart() {
   const stopped = stopLocal();
-  const gen = startGen;
-  await stopped;
-  if (gen !== startGen) return; // stopped or started again meanwhile
-  if (file && activeTab()?.path !== file) await openFile(file);
-  if (gen !== startGen) return;
-  await startDebugging();
+  starting = true;
+  return { gen: startGen, stopped };
 }
 
 // ------------------------------------------------------------------ stepping
@@ -355,6 +374,8 @@ async function pauseLocal() {
 // ------------------------------------------------------------------ events
 
 function onEvent(s: DapSession, ev: Json) {
+  // A session already closed may still have messages underway: they must not touch its successor.
+  if (!sessions.includes(s)) return;
   const b = ev.body ?? {};
   switch (ev.event) {
     case "initialized":
@@ -383,7 +404,8 @@ function onEvent(s: DapSession, ev: Json) {
     case "terminated":
       if (s === root || !s.parent) {
         log(t("code.dbg.sessionEnded"));
-        stopLocal();
+        // During a teardown this is the adapter answering our disconnect, not a Stop.
+        if (!closing) stopLocal();
       }
       break;
     case "breakpoint":
@@ -399,7 +421,11 @@ function onEvent(s: DapSession, ev: Json) {
   }
 }
 
+/** Not closed and not being closed: only such a session may still cause new work. */
+const isOpen = (s: DapSession) => !closing && s.alive && sessions.includes(s);
+
 async function onReverse(s: DapSession, req: Json): Promise<Json> {
+  if (!isOpen(s)) throw new Error(t("code.dap.sessionEnded"));
   const a = req.arguments ?? {};
   if (req.command === "runInTerminal") {
     const entries = Object.entries(a.env ?? {});
@@ -421,6 +447,10 @@ async function onReverse(s: DapSession, req: Json): Promise<Json> {
     const child = newSession(a.configuration?.name ?? "child");
     child.parent = s;
     await child.connect(tcpPort);
+    if (!isOpen(s) || !isOpen(child)) {
+      child.kill();
+      throw new Error(t("code.dap.sessionEnded"));
+    }
     launchSession(child, a.request ?? "launch", a.configuration).catch((e) => log(String(e), "error"));
     return {};
   }
@@ -734,6 +764,8 @@ export const hostDebug = {
   canRestart: () => !!lastPlan?.file,
   /** A start is on its way (not yet connected to its adapter). */
   starting: () => starting,
+  /** The sessions are being closed: a start now would undo the Stop that is under way. */
+  closing: () => !!closing,
   /** The file a restart would launch. */
   planFile: () => lastPlan?.file ?? null,
   /** The session or folder a guest's start belonged to is gone: restart can't launch it any more. */
@@ -752,11 +784,16 @@ export const hostDebug = {
   /** `file` is what the caller checked against the guest's scope. */
   async restart(file: string, actor: string) {
     quiet = true;
-    const stopped = stopLocal();
-    const gen = startGen;
-    await stopped;
-    if (gen !== startGen) return; // stopped or started again meanwhile
-    await startFile(file, actor, true);
+    const { gen, stopped } = beginRestart();
+    try {
+      await stopped;
+      if (gen !== startGen) return; // stopped or started again meanwhile
+      // The teardown can take seconds: the plan or folder the caller checked may be gone.
+      if (lastPlan?.file !== file || !app.root || !inRoot(file, app.root)) return;
+      await startFile(file, actor, true);
+    } finally {
+      if (gen === startGen) starting = false; // ended without a start taking over
+    }
   },
   step(cmd: "continue" | "next" | "stepIn" | "stepOut", actor: string) {
     quiet = true;

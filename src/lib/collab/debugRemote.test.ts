@@ -12,6 +12,8 @@ const h = vi.hoisted(() => ({
   active: null as { path: string } | null,
   gen: 1,
   starting: false,
+  closing: false,
+  onCheck: null as (() => void) | null,
   planFile: null as string | null,
   debug: {} as Record<string, ReturnType<typeof vi.fn>>,
   openRemote: null as any,
@@ -39,7 +41,10 @@ vi.mock("./share.svelte", () => {
         ? {
             root: root(),
             live: () => true,
-            check: async (rel: string) => !rel.split("/").includes("..") && !rel.startsWith("link/"),
+            check: async (rel: string) => {
+              h.onCheck?.();
+              return !rel.split("/").includes("..") && !rel.startsWith("link/");
+            },
             abs: (rel: string) => `${root()}/${rel}`,
             rel: (abs: string) => (abs.startsWith(`${root()}/`) ? abs.slice(root().length + 1) : null),
           }
@@ -56,6 +61,7 @@ vi.mock("../debug/debugger.svelte", () => ({
         if (k === "localLive") return () => false;
         if (k === "canRestart") return () => true;
         if (k === "starting") return () => h.starting;
+        if (k === "closing") return () => h.closing;
         if (k === "planFile") return () => h.planFile;
         return (h.debug[k] ??= vi.fn(async () => undefined));
       },
@@ -107,6 +113,8 @@ beforeEach(async () => {
   h.collab.role = "host";
   for (const hook of h.endHooks) await hook(false);
   h.starting = false;
+  h.closing = false;
+  h.onCheck = null;
   h.planFile = null;
   h.sent.length = 0;
   h.debug = {};
@@ -492,6 +500,35 @@ test("restart is refused from idle, during a start and for a file outside the sc
 
 test("a start is refused while one is in progress", async () => {
   h.starting = true;
+  expect(code(await request("debug.start", { path: "src/main.py" }))).toBe("busy");
+  expect(h.debug.start).toBeUndefined();
+});
+
+test("a guest's Start and Restart are refused while the session is being closed", async () => {
+  stoppedHost();
+  h.planFile = "/home/alice/proj/main.py";
+  h.closing = true;
+  expect(code(await request("debug.start", { path: "src/main.py" }))).toBe("busy");
+  expect(code(await request("debug.control", { op: "restart" }))).toBe("busy");
+  expect(h.debug.start).toBeUndefined();
+  expect(h.debug.restart).toBeUndefined();
+  // A Stop still goes through, and afterwards both work again.
+  expect(code(await request("debug.control", { op: "stop" }))).toBe("ok");
+  h.closing = false;
+  expect(code(await request("debug.control", { op: "restart" }))).toBe("ok");
+});
+
+test("a guest's Restart is refused when a Stop begins while its file is checked", async () => {
+  stoppedHost();
+  h.planFile = "/home/alice/proj/main.py";
+  h.onCheck = () => void (h.closing = true);
+  expect(code(await request("debug.control", { op: "restart" }))).toBe("busy");
+  expect(h.debug.restart).toBeUndefined();
+});
+
+test("a guest's Start is refused when a Stop begins while its file is checked", async () => {
+  stoppedHost();
+  h.onCheck = () => void (h.closing = true);
   expect(code(await request("debug.start", { path: "src/main.py" }))).toBe("busy");
   expect(h.debug.start).toBeUndefined();
 });
