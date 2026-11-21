@@ -378,10 +378,18 @@ export async function planFor(ctx: Ctx): Promise<Plan> {
       // Metals' debugger attaches through the JDK's debug interface (JDI), which a JRE lacks.
       if (!(await which("javac"))) throw new Error(t("code.ad.scalaNeedsJdk"));
       const paused = () => metalsPausedFor(ctx.file, ctx.workspace);
-      const lsp = await clientFor(info!, ctx.file, ctx.workspace, async () => ctx.askInstall("Metals"));
+      let scalaFile = ctx.file;
+      if (alone) {
+        // Before anything is written or started: Metals compiles this text, and macros run then.
+        if (await paused()) throw new Error(t("code.lsp.metalsPaused"));
+        await need(["scala"]);
+        scalaFile = await ownServerCopy();
+        await buildUnlessPaused("scala-cli", ["setup-ide", "."], dirname(scalaFile), ctx, () => toolPausedBy("metals", dirname(ctx.file)) !== null, "code.lsp.metalsPaused");
+      }
+      const lsp = await clientFor(info!, scalaFile, ctx.workspace, async () => ctx.askInstall("Metals"));
       if (!lsp) throw new Error(t((await paused()) ? "code.lsp.metalsPaused" : "code.ad.noScalaLsp"));
       const session = await startScalaSession(
-        () => lsp.request<{ name: string; uri: string }>("workspace/executeCommand", { command: "debug-adapter-start", arguments: [{ path: fileUri(ctx.file), runType: "run" }] }, 60000),
+        () => lsp.request<{ name: string; uri: string }>("workspace/executeCommand", { command: "debug-adapter-start", arguments: [{ path: fileUri(scalaFile), runType: "run" }] }, 60000),
         ctx,
       ).catch(async (e) => {
         throw (await paused()) ? new Error(t("code.lsp.metalsPaused")) : e;
@@ -396,6 +404,7 @@ export async function planFor(ctx: Ctx): Promise<Plan> {
         cwd: lsp.root,
         adapter: { kind: "port", port },
         launch: { type: "scala", request: "launch", name: "Scala", noDebug: false },
+        shadow: alone ? { file: ctx.file, copy: scalaFile } : undefined,
       };
     }
 
