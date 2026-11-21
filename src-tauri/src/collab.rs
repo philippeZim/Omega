@@ -895,22 +895,37 @@ pub struct HooksCheck {
     structural: Vec<bool>,
 }
 
-/// A path for comparing, in the one spelling Windows resolves its variants to: any case, trailing
-/// dots and spaces, and an NTFS stream (`hooks::$INDEX_ALLOCATION`). Matters for parts that don't
-/// exist yet, which `canonicalize` can't settle. Unchanged on other platforms.
+/// A path for comparing, in the one spelling the file system resolves its variants to. Matters for
+/// parts that don't exist yet, which `canonicalize` can't settle. Exact on Linux.
 fn spelling_key(path: &Path) -> std::path::PathBuf {
-    if !cfg!(windows) {
+    if !cfg!(any(windows, target_os = "macos")) {
         return path.to_path_buf();
     }
     path.components()
         .map(|c| match c {
-            std::path::Component::Normal(n) => {
-                let name = n.to_string_lossy();
-                std::ffi::OsString::from(name.split(':').next().unwrap_or("").trim_end_matches(['.', ' ']).to_lowercase())
-            }
+            std::path::Component::Normal(n) => std::ffi::OsString::from(name_key(&n.to_string_lossy())),
             other => other.as_os_str().to_os_string(),
         })
         .collect()
+}
+
+/// Windows: any case, trailing dots and spaces, and an NTFS stream (`hooks::$INDEX_ALLOCATION`).
+#[cfg(windows)]
+fn name_key(name: &str) -> String {
+    name.split(':').next().unwrap_or("").trim_end_matches(['.', ' ']).to_lowercase()
+}
+
+/// macOS: APFS ignores case and Unicode normalization by default. On a case-sensitive volume this
+/// locks a few paths too many, which is the safe side. Upper then lower also folds `ß` and `ſ`.
+#[cfg(target_os = "macos")]
+fn name_key(name: &str) -> String {
+    let nfd = icu_normalizer::DecomposingNormalizerBorrowed::new_nfd();
+    nfd.normalize(&nfd.normalize(name).to_uppercase().to_lowercase()).into_owned()
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn name_key(name: &str) -> String {
+    name.to_string()
 }
 
 fn hooks_check(root: &str, paths: &[String]) -> HooksCheck {

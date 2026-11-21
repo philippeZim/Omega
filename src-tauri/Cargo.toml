@@ -66,6 +66,10 @@ strip = true
 debug = false
 incremental = false
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# Already in the build through `url`; compares file names the way APFS does.
+icu_normalizer = { version = "2", default-features = false, features = ["compiled_data"] }
+
 [dev-dependencies]
 tempfile = "3.27.0"
 tokio = { version = "1.54.1", features = ["full"] }
