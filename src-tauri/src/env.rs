@@ -96,6 +96,7 @@ fn user_path() -> OsString {
     let child = Command::new(&shell)
         .args(["-l", "-c", "printf '__OMEGA_PATH__%s__END__' \"$PATH\""])
         .envs(git_guard_env())
+        .env_remove(GIT_PARAMETERS)
         .stdin(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -217,6 +218,7 @@ pub fn command(program: impl AsRef<OsStr>) -> Command {
     let mut c = Command::new(program);
     c.env("PATH", path());
     c.envs(git_guard_env());
+    c.env_remove(GIT_PARAMETERS);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -226,11 +228,16 @@ pub fn command(program: impl AsRef<OsStr>) -> Command {
     c
 }
 
+pub const GIT_PARAMETERS: &str = "GIT_CONFIG_PARAMETERS";
+
 /// Environment that makes every git started by Omega (or by a tool, shell prompt or language server
 /// it starts) refuse a bare repository it merely discovered. Otherwise a folder holding `HEAD`,
 /// `config`, `objects/` and `refs/` is a repository whose `core.fsmonitor` runs on the next
 /// `git status`, and a Code Together guest can create those files. Normal repositories, worktrees
 /// and submodules aren't affected. Added after the user's own GIT_CONFIG_* entries.
+///
+/// Spawns must also remove `GIT_PARAMETERS`: git reads it after GIT_CONFIG_*, so an inherited
+/// `safe.bareRepository=all` would win. Git sets it again itself for the children of a `git -c`.
 pub fn git_guard_env() -> Vec<(String, String)> {
     git_guard_after(std::env::var("GIT_CONFIG_COUNT").ok().as_deref())
 }
@@ -321,6 +328,12 @@ mod tests {
         let keys: Vec<_> = c.get_envs().filter_map(|(k, v)| Some(format!("{}={}", k.to_str()?, v?.to_str()?))).collect();
         assert!(keys.iter().any(|k| k.ends_with("=safe.bareRepository")), "{keys:?}");
         assert!(keys.iter().any(|k| k.ends_with("=explicit")), "{keys:?}");
+    }
+
+    #[test]
+    fn commands_drop_inherited_git_parameters() {
+        let c = command("anything");
+        assert!(c.get_envs().any(|(k, v)| k == GIT_PARAMETERS && v.is_none()), "must be removed, an inherited value beats the guard");
     }
 
     #[test]
