@@ -21,7 +21,11 @@ let active: DapSession | null = null;
 let sessions: DapSession[] = [];
 let tcpPort: number | null = null;
 let serverProcId: string | null = null;
-let lastPlan: { file: string } | null = null;
+let lastPlan: { file: string; byGuest: boolean } | null = null;
+/** Bumped by every start and stop: a start that is no longer the newest ends itself. */
+let startGen = 0;
+/** A start is between its first step and a connected adapter. */
+let starting = false;
 const initialized = new Map<DapSession, () => void>();
 const configured = new Set<DapSession>();
 /** Code Together: guests are driving, so the host's editor and layout stay where the host is. */
@@ -135,24 +139,42 @@ export async function startDebugging() {
   const tab = activeTab();
   if (!tab?.path) return ui.toast(t("code.dbg.saveFirst"), "error");
   quiet = false;
-  dbg.actor = "";
-  await startFile(tab.path);
+  await startFile(tab.path, "", false);
 }
 
-async function startFile(file: string) {
-  if (dbg.status !== "idle" && dbg.status !== "terminated") await stopLocal();
+async function startFile(file: string, actor: string, byGuest: boolean) {
+  const gen = ++startGen;
+  starting = true;
+  try {
+    await runStart(gen, file, actor, byGuest);
+  } catch (e) {
+    if (gen === startGen) starting = false; // a failed save must not block later starts
+    throw e;
+  }
+}
+
+async function runStart(gen: number, file: string, actor: string, byGuest: boolean) {
+  const stale = () => gen !== startGen;
+  if (dbg.status !== "idle" && dbg.status !== "terminated") await teardown();
+  if (stale()) return;
   await dbgHooks.beforeStart();
-  for (const t of app.tabs) if (t.dirty && t.path) await save(t.id);
+  if (stale()) return;
+  for (const t of app.tabs)
+    if (t.dirty && t.path) {
+      await save(t.id);
+      if (stale()) return;
+    }
   if (!quiet) {
     setMode("code");
     showView("debug");
   }
+  dbg.actor = actor;
   dbg.console = [];
   dbgHooks.logged(null);
   dbg.status = "starting";
   dbg.label = t("code.dbg.preparing");
   resetPause();
-  lastPlan = { file };
+  lastPlan = { file, byGuest };
 
   let plan: Plan;
   try {
@@ -163,30 +185,47 @@ async function startFile(file: string) {
       askInstall: (name) => ui.confirm(t("code.dbg.installTitle"), t("code.dbg.installMsg", { name }), t("code.install")),
     });
   } catch (e) {
+    if (stale()) return;
+    starting = false;
     log(backendErrorText(e), "error");
     dbg.status = "terminated";
+    dbg.actor = "";
     dbg.label = t("code.dbg.startFailed");
     return;
   }
+  if (stale()) return;
 
   dbg.label = plan.label;
   log(t("code.dbg.starting", { label: plan.label }));
   const s = newSession(plan.label);
   root = active = s;
+  let serverId: string | null = null;
+  // Stopped or replaced while this was on its way: nothing it spawned may stay behind. `kill` isn't
+  // enough on its own: the stop may have run before the process existed.
+  const abandon = () => {
+    s.alive = false;
+    invoke("proc_kill", { id: s.id }).catch(() => {});
+    if (serverId) invoke("proc_kill", { id: serverId }).catch(() => {});
+  };
   try {
     if (plan.adapter.kind === "stdio") {
       await s.spawnStdio(plan.adapter.cmd, plan.adapter.args, plan.cwd, plan.adapter.env);
     } else if (plan.adapter.kind === "tcp") {
-      serverProcId = `${s.id}-server`;
-      tcpPort = await invoke<number>("proc_spawn_tcp", { id: serverProcId, cmd: plan.adapter.cmd, args: plan.adapter.args, cwd: plan.cwd, env: plan.adapter.env ?? null });
-      await s.connect(tcpPort);
+      serverId = serverProcId = `${s.id}-server`;
+      const port = await invoke<number>("proc_spawn_tcp", { id: serverId, cmd: plan.adapter.cmd, args: plan.adapter.args, cwd: plan.cwd, env: plan.adapter.env ?? null });
+      if (stale()) return abandon();
+      tcpPort = port;
+      await s.connect(port);
     } else {
       tcpPort = plan.adapter.port;
-      await s.connect(tcpPort);
+      await s.connect(plan.adapter.port);
     }
+    if (stale()) return abandon();
+    starting = false;
     dbg.status = "running";
     await launchSession(s, "launch", plan.launch);
   } catch (e) {
+    if (stale()) return abandon();
     log(t("code.dbg.debugStartFailed", { err: backendErrorText(e) }), "error");
     await stopLocal();
   }
@@ -195,12 +234,17 @@ async function startFile(file: string) {
 export async function stopDebugging() {
   const r = remote();
   if (r) return r.stop();
-  dbg.actor = "";
   return stopLocal();
 }
 
-/** Ends the session on this machine, also while connected to a host. */
+/** Ends the session on this machine (also a start on its way), also while connected to a host. */
 export async function stopLocal() {
+  startGen++;
+  starting = false;
+  await teardown();
+}
+
+async function teardown() {
   const all = [...sessions].reverse();
   for (const s of all) {
     if (!s.alive) continue;
@@ -220,6 +264,7 @@ function cleanup() {
   configured.clear();
   initialized.clear();
   dbg.status = dbg.status === "idle" ? "idle" : "terminated";
+  dbg.actor = "";
   dbg.threads = [];
   dbg.frames = [];
   dbg.scopes = [];
@@ -239,8 +284,12 @@ export async function restartDebugging() {
   const r = remote();
   if (r) return r.restart();
   const file = lastPlan?.file;
-  await stopLocal();
+  const stopped = stopLocal();
+  const gen = startGen;
+  await stopped;
+  if (gen !== startGen) return; // stopped or started again meanwhile
   if (file && activeTab()?.path !== file) await openFile(file);
+  if (gen !== startGen) return;
   await startDebugging();
 }
 
@@ -682,22 +731,31 @@ export const hostDebug = {
   live: () => !!active,
   localLive: () => !!root,
   canRestart: () => !!lastPlan?.file,
+  /** A start is on its way (not yet connected to its adapter). */
+  starting: () => starting,
+  /** The file a restart would launch. */
+  planFile: () => lastPlan?.file ?? null,
+  /** The session or folder a guest's start belonged to is gone: restart can't launch it any more. */
+  forgetGuestPlan() {
+    if (lastPlan?.byGuest) lastPlan = null;
+  },
+  /** Ends a start still on its way; a session already connected stays. */
+  async cancelStart() {
+    if (starting) await stopLocal();
+  },
   async start(file: string, actor: string) {
     quiet = true;
-    dbg.actor = actor;
-    await startFile(file);
+    await startFile(file, actor, true);
   },
-  async stop(actor: string) {
-    dbg.actor = actor;
-    await stopLocal();
-  },
-  async restart(actor: string) {
-    const file = lastPlan?.file;
-    if (!file) return;
+  stop: () => stopLocal(),
+  /** `file` is what the caller checked against the guest's scope. */
+  async restart(file: string, actor: string) {
     quiet = true;
-    dbg.actor = actor;
-    await stopLocal();
-    await startFile(file);
+    const stopped = stopLocal();
+    const gen = startGen;
+    await stopped;
+    if (gen !== startGen) return; // stopped or started again meanwhile
+    await startFile(file, actor, true);
   },
   step(cmd: "continue" | "next" | "stepIn" | "stepOut", actor: string) {
     quiet = true;

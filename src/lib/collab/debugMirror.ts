@@ -5,12 +5,12 @@
 
 export const DEBUG_LIMITS = {
   /** Text of one console line or display name that goes to guests. */
-  lineChars: 8000,
+  lineChars: 4000,
   nameChars: 300,
   /** A variable's value or evaluation result. */
   valueChars: 64_000,
   expressionChars: 4000,
-  conditionChars: 2000,
+  conditionChars: 1000,
   /** Children of one variable, and their total text. */
   children: 500,
   childrenChars: 1_000_000,
@@ -18,14 +18,19 @@ export const DEBUG_LIMITS = {
   refs: 50_000,
   threads: 200,
   frames: 60,
-  bpFiles: 2000,
-  bpPerFile: 500,
+  scopes: 50,
+  bpFiles: 200,
+  bpPerFile: 200,
+  /** All shared breakpoints as JSON text: well inside the RPC limit, also with multi-byte text. */
+  bpChars: 2_000_000,
   maxLine: 10_000_000,
   /** Console lines in a snapshot and in one batch. */
-  consoleSnapshot: 500,
-  consoleBatch: 200,
+  consoleSnapshot: 300,
+  consoleBatch: 100,
   /** Watches a guest evaluates per stop. */
   watches: 40,
+  /** A watch value in a batch. */
+  watchChars: 8000,
   /** Nodes a guest re-expands after a refresh. */
   reopen: 40,
 };
@@ -117,26 +122,23 @@ export function cleanRel(raw: unknown): string | null {
 
 export const isId = (v: unknown): v is number => Number.isSafeInteger(v) && (v as number) >= 0;
 
-/** A guest's breakpoint list in checked form: sorted, one per line, bounded. Null if invalid. */
+/** A guest's breakpoint list in checked form, bounded. Markers that collapsed onto a line are merged later. Null if invalid. */
 export function cleanBreakpoints(raw: unknown): { line: number; condition?: string }[] | null {
   if (!Array.isArray(raw) || raw.length > DEBUG_LIMITS.bpPerFile) return null;
-  const seen = new Set<number>();
   const out: { line: number; condition?: string }[] = [];
   for (const b of raw) {
     if (typeof b !== "object" || b === null) return null;
     const { line, condition } = b as Record<string, unknown>;
-    if (!Number.isSafeInteger(line) || (line as number) < 1 || (line as number) > DEBUG_LIMITS.maxLine || seen.has(line as number)) return null;
+    if (!Number.isSafeInteger(line) || (line as number) < 1 || (line as number) > DEBUG_LIMITS.maxLine) return null;
     if (condition !== undefined && (typeof condition !== "string" || condition.length > DEBUG_LIMITS.conditionChars)) return null;
-    seen.add(line as number);
     out.push(condition ? { line: line as number, condition } : { line: line as number });
   }
   return out.sort((a, b) => a.line - b.line);
 }
 
-/** Whether `next` only moves the breakpoints of `old` (same count, conditions and order). */
-export function onlyMoved(old: { condition?: string }[], next: { condition?: string }[]) {
-  return old.length === next.length && old.every((b, i) => (b.condition || "") === (next[i].condition || ""));
-}
+/** Whether a file's list can go to guests whole: never in a cut form they would send back. */
+export const shareableBreakpoints = (list: { condition?: string }[]) =>
+  list.length <= DEBUG_LIMITS.bpPerFile && list.every((b) => (b.condition?.length ?? 0) <= DEBUG_LIMITS.conditionChars);
 
 /**
  * The references the host handed out for the current stop. A guest can only use one of these, and

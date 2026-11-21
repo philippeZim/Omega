@@ -16,8 +16,8 @@ import { collab, onCollabMessage, sessionEndHooks } from "./collab.svelte";
 import { blockedByCapability } from "./guard";
 import { call, hasCapability, isObj, publish, registerMethod, registerTopic, rpcErrorText, RpcFail, subscribe, type RpcResult } from "./rpc.svelte";
 import { flushBackgroundDocs, guestScope, isRemote, openRemote, REMOTE, type GuestScope } from "./share.svelte";
-import { cleanBreakpoints, cleanRel, clip, DEBUG_LIMITS, isId, onlyMoved, RefTable, scrubPaths, StreamScrubber, termOut, type SharedBreakpoint } from "./debugMirror";
-import { dbg, dbgHooks, dbgRemote, setBreakpointLines, SHARED_BP, type DebugRemote, type DebugStatus, type Frame, type VarNode } from "../debug/store.svelte";
+import { cleanBreakpoints, cleanRel, clip, DEBUG_LIMITS, isId, RefTable, scrubPaths, shareableBreakpoints, StreamScrubber, termOut, type SharedBreakpoint } from "./debugMirror";
+import { applyGuestBreakpoints, dbg, dbgHooks, dbgRemote, endGuestBreakpoints, revertGuestBreakpoints, SHARED_BP, type DebugRemote, type DebugStatus, type Frame, type VarNode } from "../debug/store.svelte";
 import { hostDebug, stopLocal } from "../debug/debugger.svelte";
 import { app, activeTab, setMode } from "../state.svelte";
 import { showView } from "../layout.svelte";
@@ -70,6 +70,7 @@ interface ConsoleBatch {
   skipped: number;
 }
 type EvalResult = { value: string; ref: number } | { error: string };
+type BreakpointFiles = { files: Record<string, SharedBreakpoint[]> };
 
 declare module "./rpc.svelte" {
   interface RpcMethods {
@@ -79,12 +80,16 @@ declare module "./rpc.svelte" {
     "debug.frame": { params: { id: number }; result: null };
     "debug.variables": { params: { ref: number }; result: { vars: MirrorVar[]; truncated: boolean } };
     "debug.evaluate": { params: { expression: string; context: EvalContext; frameId: number }; result: EvalResult };
+    "debug.watches": { params: { frameId: number; expressions: string[] }; result: { results: EvalResult[] } };
     "debug.setVariable": { params: { ref: number; name: string; value: string }; result: { value: string } };
     "debug.breakpoints": { params: { path: string; lines: { line: number; condition?: string }[] }; result: null };
   }
   interface RpcTopics {
     "debug.state": MirrorState;
-    "debug.bps": { files: Record<string, SharedBreakpoint[]> };
+    /** Every guest: where the breakpoints are, without their conditions. */
+    "debug.bps": BreakpointFiles;
+    /** Guests with `debug`: the same list with conditions. */
+    "debug.bpsFull": BreakpointFiles;
     "debug.console": ConsoleBatch;
   }
 }
@@ -106,10 +111,8 @@ const refs = new RefTable();
 /** Absolute path -> relative path if guests may see it; emptied when the folder or run changes. */
 const relCache = new Map<string, string | null>();
 let relCacheKey = "";
-/** Until when a guest's start counts as in progress. Bounded: some adapters answer `launch` only at the end. */
-let launchingUntil = 0;
-const launching = () => performance.now() < launchingUntil;
-const LAUNCH_MS = 30_000;
+/** The guest whose start is still on its way: it ends if that guest loses the right. */
+let startingPeer: string | null = null;
 let guestStarted = false;
 
 async function sharedRel(abs: string, scope: GuestScope | null): Promise<string | null> {
@@ -131,7 +134,8 @@ function freshRelCache() {
 let scopesSeen: unknown = null;
 let scopesVersion = 0;
 let lastState: MirrorState | null = null;
-let lastBps: { files: Record<string, SharedBreakpoint[]> } | null = null;
+let lastBps: BreakpointFiles | null = null;
+let lastBpsFull: BreakpointFiles | null = null;
 let stateSeq = 0;
 let bpSeq = 0;
 
@@ -143,7 +147,7 @@ export async function buildState(): Promise<MirrorState> {
     scopesVersion++;
   }
   const gen = hostDebug.gen();
-  const scopes = dbg.scopes.map((s) => ({ name: shown(s.name), ref: s.ref, open: s.expanded }));
+  const scopes = dbg.scopes.slice(0, DEBUG_LIMITS.scopes).map((s) => ({ name: shown(s.name), ref: s.ref, open: s.expanded }));
   for (const s of scopes) refs.add(gen, s.ref);
   const source = dbg.frames.slice(0, DEBUG_LIMITS.frames).map((f) => ({ id: f.id, name: f.name, path: f.path, line: f.line, column: f.column, subtle: f.subtle }));
   const frames: MirrorFrame[] = [];
@@ -174,35 +178,47 @@ async function publishState() {
   const seq = ++stateSeq;
   const state = await buildState();
   if (seq !== stateSeq || collab.role !== "host") return; // a newer one is on its way
-  lastState = state;
-  publish("debug.state", state);
+  // Too large: guests keep the last value that did go out, also as the snapshot for late joiners.
+  if (publish("debug.state", state)) lastState = state;
 }
 
-export async function buildBreakpoints() {
+export async function buildBreakpoints(): Promise<BreakpointFiles> {
   freshRelCache();
   const scope = guestScope();
   const files: Record<string, SharedBreakpoint[]> = {};
   let count = 0;
+  let chars = 0;
   for (const [abs, list] of Object.entries(dbg.breakpoints)) {
-    if (!list.length || count >= DEBUG_LIMITS.bpFiles) continue;
-    const entries = list.slice(0, DEBUG_LIMITS.bpPerFile).map((b) => ({ line: b.line, condition: b.condition, verified: b.verified }));
+    if (!list.length || count >= DEBUG_LIMITS.bpFiles || !shareableBreakpoints(list)) continue;
+    const entries = list.map((b) => ({ line: b.line, ...(b.condition ? { condition: b.condition } : {}), ...(b.verified === undefined ? {} : { verified: b.verified }) }));
     const rel = await sharedRel(abs, scope);
     if (!rel) continue;
-    files[rel] = entries.map((b) => ({ line: b.line, ...(b.condition ? { condition: b.condition } : {}), ...(b.verified === undefined ? {} : { verified: b.verified }) }));
+    const size = JSON.stringify(entries).length + JSON.stringify(rel).length + 1;
+    if (chars + size > DEBUG_LIMITS.bpChars) continue;
+    chars += size;
+    files[rel] = entries;
     count++;
   }
   return { files };
 }
 
+const withoutConditions = ({ files }: BreakpointFiles): BreakpointFiles => ({
+  files: Object.fromEntries(Object.entries(files).map(([rel, list]) => [rel, list.map(({ line, verified }) => ({ line, ...(verified === undefined ? {} : { verified }) }))])),
+});
+
 async function publishBreakpoints() {
   if (collab.role !== "host") return;
   const seq = ++bpSeq;
-  const value = await buildBreakpoints();
+  const full = await buildBreakpoints();
   if (seq !== bpSeq || collab.role !== "host") return;
-  const changed = JSON.stringify(value) !== JSON.stringify(lastBps);
-  lastBps = value;
-  if (changed) publish("debug.bps", value);
+  if (JSON.stringify(full) === JSON.stringify(lastBpsFull)) return;
+  const open = withoutConditions(full);
+  if (publish("debug.bpsFull", full)) lastBpsFull = full;
+  if (publish("debug.bps", open)) lastBps = open;
 }
+
+/** Host: publishes the current state without waiting for the next batch. */
+export const publishDebugNow = () => Promise.all([publishState(), publishBreakpoints()]);
 
 let publishTimer = 0;
 function schedulePublish() {
@@ -317,12 +333,41 @@ $effect.root(() => {
       guestStarted = false;
       hostDebug.release();
       if (isLive()) ui.toast(t("ai.collab.dbg.stillRunning"));
+      else hostDebug.forgetGuestPlan();
     });
+  });
+  // Rights changed or someone left: what they did with them ends here.
+  $effect(() => {
+    if (collab.role !== "host") return;
+    void collab.participants.map((p) => [p.peer, p.removing, p.caps?.includes("debug")]);
+    untrack(syncGuestRights);
+  });
+  // A restart must not launch a file of the folder the host has left.
+  let seenRoot: string | null = null;
+  $effect(() => {
+    const now = app.root;
+    if (collab.role === "host" && seenRoot !== null && now !== seenRoot) untrack(() => hostDebug.forgetGuestPlan());
+    seenRoot = now;
   });
 });
 
+/** Host: guests who can no longer debug lose their breakpoints and their start still on its way. */
+export function syncGuestRights() {
+  if (collab.role !== "host") return;
+  const holds = (peer: string) => hasCapability(peer, "debug");
+  revertGuestBreakpoints(holds);
+  if (startingPeer && !holds(startingPeer)) {
+    const wasStarting = hostDebug.starting();
+    startingPeer = null;
+    if (wasStarting) void hostDebug.cancelStart();
+  }
+}
+
+dbgHooks.hosting = () => collab.role === "host";
+
 registerTopic({ name: "debug.state", capability: "debug", snapshot: () => lastState });
 registerTopic({ name: "debug.bps", capability: null, snapshot: () => lastBps });
+registerTopic({ name: "debug.bpsFull", capability: "debug", snapshot: () => lastBpsFull });
 registerTopic({
   name: "debug.console",
   capability: "debug",
@@ -333,6 +378,16 @@ registerTopic({
 function stillAllowed(peer: string, signal: AbortSignal, cap: "debug" | null = "debug") {
   if (signal.aborted) throw new RpcFail("cancelled");
   if (cap && !hasCapability(peer, cap)) throw new RpcFail("forbidden");
+}
+
+function trackStart(peer: string, started: Promise<unknown>) {
+  guestStarted = true;
+  startingPeer = peer;
+  void started
+    .catch((e) => console.error("guest debug", e))
+    .finally(() => {
+      if (startingPeer === peer) startingPeer = null;
+    });
 }
 
 registerMethod({
@@ -348,16 +403,11 @@ registerMethod({
     const abs = scope.abs(path);
     if (!(await fsApi.exists(abs).catch(() => false)) || !scope.live()) throw new RpcFail("unavailable");
     stillAllowed(peer, signal);
-    if (launching() || dbg.status === "starting") throw new RpcFail("busy");
+    if (hostDebug.starting() || dbg.status === "starting") throw new RpcFail("busy");
     const name = guestName(peer);
     ui.toast(t("ai.collab.dbg.started", { name, file: path }));
-    guestStarted = true;
-    launchingUntil = performance.now() + LAUNCH_MS;
     // Not awaited: it can wait for the host (a missing adapter), and the guest sees the state anyway.
-    void hostDebug
-      .start(abs, name)
-      .catch((e) => console.error("guest debug", e))
-      .finally(() => (launchingUntil = 0));
+    trackStart(peer, hostDebug.start(abs, name));
     return null;
   },
 });
@@ -370,20 +420,21 @@ registerMethod({
     stillAllowed(peer, signal);
     const name = guestName(peer);
     if (op === "stop") {
-      if (!isLive() && !hostDebug.localLive()) throw new RpcFail("no_session");
+      if (!isLive() && !hostDebug.localLive() && !hostDebug.starting()) throw new RpcFail("no_session");
       ui.toast(t("ai.collab.dbg.stopped", { name }));
-      launchingUntil = 0;
-      await hostDebug.stop(name);
+      await hostDebug.stop();
     } else if (op === "restart") {
-      if (!hostDebug.canRestart()) throw new RpcFail("no_session");
-      if (launching()) throw new RpcFail("busy");
+      // Only a running session, and only a file this guest could have named itself.
+      if (!isLive()) throw new RpcFail("no_session");
+      if (hostDebug.starting() || dbg.status === "starting") throw new RpcFail("busy");
+      const file = hostDebug.planFile();
+      const scope = guestScope();
+      const rel = file && scope ? scope.rel(file) : null;
+      if (!file || !scope || !rel || !(await scope.check(rel)) || !scope.live()) throw new RpcFail("unavailable");
+      stillAllowed(peer, signal);
+      if (hostDebug.starting() || hostDebug.planFile() !== file || !isLive()) throw new RpcFail("busy");
       ui.toast(t("ai.collab.dbg.restarted", { name }));
-      guestStarted = true;
-      launchingUntil = performance.now() + LAUNCH_MS;
-      void hostDebug
-        .restart(name)
-        .catch((e) => console.error("guest debug", e))
-        .finally(() => (launchingUntil = 0));
+      trackStart(peer, hostDebug.restart(file, name));
     } else if (op === "pause") {
       if (dbg.status !== "running") throw new RpcFail("not_running");
       await hostDebug.pause(name);
@@ -445,15 +496,17 @@ registerMethod({
       if (vars.length >= DEBUG_LIMITS.children || chars >= DEBUG_LIMITS.childrenChars) break;
       const value = clip(String(v.value ?? ""), DEBUG_LIMITS.valueChars);
       const name = clip(String(v.name ?? ""), DEBUG_LIMITS.nameChars);
-      chars += value.length + name.length;
+      const type = typeof v.type === "string" ? clip(v.type, DEBUG_LIMITS.nameChars) : undefined;
+      const evaluateName = typeof v.evaluateName === "string" ? clip(v.evaluateName, DEBUG_LIMITS.expressionChars) : undefined;
+      chars += value.length + name.length + (type?.length ?? 0) + (evaluateName?.length ?? 0);
       const child = isId(v.variablesReference) ? v.variablesReference : 0;
       refs.add(gen, child);
       vars.push({
         name,
         value,
         ref: child,
-        ...(typeof v.type === "string" ? { type: clip(v.type, DEBUG_LIMITS.nameChars) } : {}),
-        ...(typeof v.evaluateName === "string" ? { evaluateName: clip(v.evaluateName, DEBUG_LIMITS.expressionChars) } : {}),
+        ...(type === undefined ? {} : { type }),
+        ...(evaluateName === undefined ? {} : { evaluateName }),
       });
     }
     return { vars, truncated: vars.length < raw.length };
@@ -499,6 +552,40 @@ registerMethod({
 });
 
 registerMethod({
+  name: "debug.watches",
+  capability: "debug",
+  validate: (raw) => {
+    if (!isObj(raw) || !isId(raw.frameId) || !Array.isArray(raw.expressions) || raw.expressions.length > DEBUG_LIMITS.watches) return null;
+    if (!raw.expressions.every((x) => typeof x === "string" && x.trim() && x.length <= DEBUG_LIMITS.expressionChars)) return null;
+    return { frameId: raw.frameId, expressions: raw.expressions as string[] };
+  },
+  handle: async ({ frameId, expressions }, { peer, signal }) => {
+    stillAllowed(peer, signal);
+    if (dbg.status !== "stopped") throw new RpcFail("not_stopped");
+    if (!dbg.frames.some((f) => f.id === frameId)) throw new RpcFail("stale");
+    const gen = hostDebug.gen();
+    const results: EvalResult[] = [];
+    for (const expression of expressions) {
+      stillAllowed(peer, signal);
+      if (hostDebug.gen() !== gen) throw new RpcFail("stale");
+      try {
+        const r = await hostDebug.evaluate(expression, "watch", frameId);
+        if (hostDebug.gen() !== gen) throw new RpcFail("stale");
+        const ref = isId(r.variablesReference) ? r.variablesReference : 0;
+        refs.add(gen, ref);
+        results.push({ value: clip(String(r.result ?? ""), DEBUG_LIMITS.watchChars), ref });
+      } catch (e) {
+        if (e instanceof RpcFail) throw e;
+        if (hostDebug.gen() !== gen) throw new RpcFail("stale");
+        results.push({ error: shown(e instanceof Error ? e.message : e, DEBUG_LIMITS.nameChars) });
+      }
+    }
+    stillAllowed(peer, signal);
+    return { results };
+  },
+});
+
+registerMethod({
   name: "debug.setVariable",
   capability: "debug",
   validate: (raw) => {
@@ -540,10 +627,14 @@ registerMethod({
     const abs = scope.abs(path);
     if (!(await fsApi.exists(abs).catch(() => false)) || !scope.live()) throw new RpcFail("unavailable");
     stillAllowed(peer, signal, null);
-    // Decided on the current list, after the awaits above.
-    if (!hasCapability(peer, "debug") && !(hasCapability(peer, "edit") && onlyMoved(dbg.breakpoints[abs] ?? [], lines))) throw new RpcFail("forbidden");
-    if (!dbg.breakpoints[abs]?.length && lines.length && Object.keys(dbg.breakpoints).length >= DEBUG_LIMITS.bpFiles) throw new RpcFail("too_many");
-    setBreakpointLines(abs, lines);
+    // Decided on the current list and rights, after the awaits above.
+    const mayEdit = hasCapability(peer, "debug");
+    if (!mayEdit && !hasCapability(peer, "edit")) throw new RpcFail("forbidden");
+    const current = dbg.breakpoints[abs] ?? [];
+    // Guests never saw this list whole, so what they send can't replace it.
+    if (!shareableBreakpoints(current)) throw new RpcFail("too_many");
+    if (!current.length && lines.length && Object.values(dbg.breakpoints).filter((l) => l.length).length >= DEBUG_LIMITS.bpFiles) throw new RpcFail("too_many");
+    if (!applyGuestBreakpoints(abs, lines, peer, mayEdit)) throw new RpcFail("forbidden");
     return null;
   },
 });
@@ -595,6 +686,7 @@ function clearWatchValues() {
 }
 
 function clearMirror() {
+  cancelWatches();
   cur = null;
   Object.assign(dbg, { status: "idle", label: "", stopReason: "", actor: "", threads: [], threadId: null, frames: [], frameId: null, scopes: [], exec: null, console: [] });
   clearWatchValues();
@@ -651,28 +743,48 @@ async function reloadScopes(m: MirrorState, keepOpen: boolean) {
   }
 }
 
-async function guestEvaluateWatches() {
+const WATCH_DELAY_MS = 100;
+let watchTimer = 0;
+let watchCall: AbortController | null = null;
+
+function cancelWatches() {
+  clearTimeout(watchTimer);
+  watchCall?.abort();
+  watchCall = null;
+}
+
+/** One batched request for the newest stop, so fast stepping can't run into the rate limit. */
+function scheduleWatches() {
+  cancelWatches();
+  if (cur?.status !== "stopped" || cur.frameId === null) return clearWatchValues();
+  if (!dbg.watches.length) return;
+  watchTimer = window.setTimeout(() => void runWatches(), WATCH_DELAY_MS);
+}
+
+async function runWatches() {
   const m = cur;
-  if (!m || m.status !== "stopped" || m.frameId === null) return clearWatchValues();
-  for (const w of dbg.watches.slice(0, DEBUG_LIMITS.watches)) {
-    const r = await call("debug.evaluate", { expression: w.expr, context: "watch", frameId: m.frameId });
-    if (cur !== m) return;
+  if (!m || m.status !== "stopped" || m.frameId === null) return;
+  const watches = dbg.watches.slice(0, DEBUG_LIMITS.watches);
+  if (!watches.length) return;
+  const controller = (watchCall = new AbortController());
+  const r = await call("debug.watches", { frameId: m.frameId, expressions: watches.map((w) => w.expr.slice(0, DEBUG_LIMITS.expressionChars)) }, { signal: controller.signal });
+  if (watchCall === controller) watchCall = null;
+  if (controller.signal.aborted || cur !== m) return;
+  if (!r.ok && r.error.code === "stale") return; // the state that replaces this one is on its way
+  watches.forEach((w, i) => {
     w.children = null;
     w.expanded = false;
-    if (!r.ok) {
-      w.value = debugErrorText(r.error.code);
-      w.error = true;
-      w.ref = 0;
-    } else if ("error" in r.value) {
-      w.value = r.value.error;
+    const one = r.ok ? r.value.results[i] : { error: debugErrorText(r.error.code) };
+    if (!one || "error" in one) {
+      w.value = one?.error ?? "";
       w.error = true;
       w.ref = 0;
     } else {
-      w.value = r.value.value;
-      w.ref = r.value.ref;
+      w.value = one.value;
+      w.ref = one.ref;
       w.error = false;
     }
-  }
+  });
 }
 
 async function applyState(m: MirrorState) {
@@ -683,6 +795,7 @@ async function applyState(m: MirrorState) {
   dbg.exec = m.exec ? { path: REMOTE + m.exec.rel, line: m.exec.line } : null;
   hostDebug.refreshEditor();
   if (m.status !== "stopped") {
+    cancelWatches();
     dbg.scopes = [];
     clearWatchValues();
     return;
@@ -695,7 +808,7 @@ async function applyState(m: MirrorState) {
   }
   if (refreshed) await reloadScopes(m, !moved);
   else for (let i = 0; i < m.scopes.length; i++) if (m.scopes[i].open && dbg.scopes[i] && !dbg.scopes[i].expanded && !dbg.scopes[i].children) await expand(dbg.scopes[i]);
-  if (refreshed && cur === m) await guestEvaluateWatches();
+  if (refreshed && cur === m) scheduleWatches();
 }
 
 function applyBreakpoints(files: Record<string, SharedBreakpoint[]>) {
@@ -793,7 +906,7 @@ const guestDebug: DebugRemote = {
     n.value = r.value.value;
     n.changed = true;
   },
-  evaluateWatches: guestEvaluateWatches,
+  evaluateWatches: async () => scheduleWatches(),
   async replEval(expr) {
     if (blockedByCapability("debug")) return;
     if (!cur || cur.frameId === null) return ui.toast(t("ai.collab.dbg.notStopped"), "error");
@@ -823,8 +936,19 @@ subscribe("debug.state", (v) => {
   else clearMirror();
 });
 
+const bpFiles = (v: unknown) => (isObj(v) && isObj(v.files) ? (v.files as Record<string, SharedBreakpoint[]>) : null);
+/** With `debug` the list with conditions counts; without, the one every guest gets. */
+let filesOpen: Record<string, SharedBreakpoint[]> = {};
+let filesFull: Record<string, SharedBreakpoint[]> | null = null;
+
 subscribe("debug.bps", (v) => {
-  applyBreakpoints(isObj(v) && isObj(v.files) ? (v.files as Record<string, SharedBreakpoint[]>) : {});
+  filesOpen = bpFiles(v) ?? {};
+  if (!filesFull) applyBreakpoints(filesOpen);
+});
+
+subscribe("debug.bpsFull", (v) => {
+  filesFull = bpFiles(v);
+  applyBreakpoints(filesFull ?? filesOpen);
 });
 
 subscribe("debug.console", (v) => {
@@ -850,6 +974,8 @@ sessionEndHooks.push((wasGuest) => {
   if (wasGuest) {
     for (const key of Object.keys(dbg.breakpoints)) if (key.startsWith(SHARED_BP)) delete dbg.breakpoints[key];
     published = {};
+    filesOpen = {};
+    filesFull = null;
     sending.clear();
     skippedPublish.clear();
     // A join that was refused never replaced this machine's own running session.
@@ -858,8 +984,12 @@ sessionEndHooks.push((wasGuest) => {
     return;
   }
   const hadGuests = guestStarted;
+  // A start still on its way ends with the session, and restart can't launch what a guest chose.
+  if (startingPeer && hostDebug.starting()) void hostDebug.cancelStart();
+  startingPeer = null;
+  hostDebug.forgetGuestPlan();
+  endGuestBreakpoints();
   guestStarted = false;
-  launchingUntil = 0;
   termUntil = 0;
   clearTimeout(termTimer);
   termScrubber = null;
@@ -868,6 +998,7 @@ sessionEndHooks.push((wasGuest) => {
   relCacheKey = "";
   lastState = null;
   lastBps = null;
+  lastBpsFull = null;
   hostDebug.release();
   if (hadGuests && isLive()) ui.toast(t("ai.collab.dbg.stillRunning"));
 });
