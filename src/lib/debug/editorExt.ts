@@ -1,5 +1,5 @@
 /** Breakpoint gutter + execution-line highlight for code mode. */
-import { RangeSet, StateEffect, StateField, type Extension, type EditorState } from "@codemirror/state";
+import { MapMode, RangeSet, StateEffect, StateField, type Extension, type EditorState, type Transaction } from "@codemirror/state";
 import { Decoration, EditorView, GutterMarker, ViewPlugin, gutter, gutterLineClass, hoverTooltip, type DecorationSet } from "@codemirror/view";
 import { viewActions } from "../editorActions";
 import { ySyncAnnotation } from "y-codemirror.next";
@@ -115,11 +115,42 @@ function fromStore(state: EditorState, path: string) {
   return RangeSet.of(ranges, true);
 }
 
+/**
+ * Where a breakpoint at a line start goes, or null if it's gone. It stays with the line's code: blank
+ * lines inserted right before the code push it down, and removing them again brings it back.
+ */
+function mapBreakpoint(tr: Transaction, from: number): number | null {
+  const before = tr.startState.doc;
+  const after = tr.newDoc;
+  let moved: number | undefined;
+  tr.changes.iterChanges((fromA, toA, fromB, toB) => {
+    if (fromA === from && toA === from && before.lineAt(from).to > from) {
+      const inserted = after.sliceString(fromB, toB);
+      const lastBreak = inserted.lastIndexOf("\n");
+      if (lastBreak >= 0 && !inserted.trim()) moved = fromB + lastBreak + 1;
+    } else if (fromA < from && from <= toA && fromB === toB && after.lineAt(fromB).from === fromB) {
+      const removed = before.sliceString(fromA, toA);
+      if (removed.includes("\n") && !removed.trim()) moved = fromB;
+    }
+  });
+  return moved ?? tr.changes.mapPos(from, -1, MapMode.TrackBefore);
+}
+
+function mapBreakpoints(set: RangeSet<BpMarker>, tr: Transaction) {
+  const mapped = new Map<number, BpMarker>();
+  for (const it = set.iter(); it.value; it.next()) {
+    const at = mapBreakpoint(tr, it.from);
+    // Markers that meet on one line become one; a condition is worth more than a plain marker.
+    if (at !== null && (!mapped.has(at) || (!mapped.get(at)!.condition && it.value.condition))) mapped.set(at, it.value);
+  }
+  return RangeSet.of([...mapped].map(([at, marker]) => marker.range(at)), true);
+}
+
 export function debugExtension(path: string): Extension {
   const bpField = StateField.define<RangeSet<BpMarker>>({
     create: (s) => fromStore(s, path),
     update(set, tr) {
-      set = set.map(tr.changes);
+      if (tr.docChanged) set = mapBreakpoints(set, tr);
       for (const e of tr.effects) {
         if (e.is(debugRefresh)) {
           // Keep positions from the editor (they follow edits), take verified flags from the store.
