@@ -10,8 +10,8 @@ vi.mock("@tauri-apps/api/core", async (orig) => ({
     if (cmd === "tools_dir") return "/tools";
     if (cmd === "lang_workdir") return `/private/x/${args.part}`;
     if (cmd === "lang_copy") return `/private/x/${args.part}/${args.name}`;
-    if (cmd === "which_cmd") return ipc.which.has(args.cmd) ? `/bin/${args.cmd}` : null;
-    if (cmd === "run_capture") return { code: 0, stdout: "", stderr: "" };
+    if (cmd === "which_cmd") return ipc.which.has(args.cmd) ? (args.cmd.startsWith("/") ? args.cmd : `/bin/${args.cmd}`) : null;
+    if (cmd === "run_capture" || cmd === "run_killable") return { code: 0, stdout: "", stderr: "" };
     return null;
   },
 }));
@@ -237,8 +237,10 @@ describe("the one decision whether a file is alone", () => {
 describe("language server of a file set to another language", () => {
   test("Java's copy is named after its public class", () => {
     const java = LANGUAGES.find((l) => l.id === "java")!;
-    expect(lspCopyName(java, "package a;\npublic final class Hello {}\n")).toBe("Hello.java");
+    expect(lspCopyName(java, "public final class Hello {}\n")).toBe("Hello.java");
     expect(lspCopyName(java, "class hidden {}")).toBe("OmegaMain.java");
+    expect(lspCopyName(java, "package demo.app;\n\npublic class Hello {}\n")).toBe("demo/app/Hello.java");
+    expect(lspCopyName(java, "package ../evil;\npublic class X {}")).toBe("X.java");
   });
 
   test("clangd looks for includes next to the real file; a line break can't add a flag", () => {
@@ -308,17 +310,73 @@ describe("Debug for a file set to another language", () => {
     expect(plan.shadow).toBeUndefined();
   });
 
+  test("TypeScript without a local tsx runs one node process with tsx's loader", async () => {
+    choose(`${PY}/prog`, "typescript");
+    files.set("/tools/js-debug/src/dapDebugServer.js", "");
+    files.set("/tools/tsx/node_modules/tsx/dist/loader.mjs", "");
+    ipc.which.add("node");
+    const plan = await planFor(ctx(`${PY}/prog`));
+    expect(plan.launch.runtimeExecutable).toBe("/bin/node");
+    expect(plan.launch.runtimeArgs).toEqual(["--import", "file:///tools/tsx/node_modules/tsx/dist/loader.mjs"]);
+    expect(plan.launch.program).toBe("/private/x/run/omega_main.ts");
+  });
+
+  const OCAML = "/tools/ocaml/root/omega/bin";
+  const ocamlTools = () => ["ocamlc", "ocamlearlybird"].forEach((t) => ipc.which.add(`${OCAML}/${t}`));
+
+  test("OCaml builds bytecode of a private copy with Omega's compiler, killable", async () => {
+    choose(`${PY}/prog`, "ocaml");
+    ocamlTools();
+    const plan = await planFor(ctx(`${PY}/prog`));
+    expect(ipc.calls.find((c) => c.cmd === "lang_copy")!.args).toEqual({ file: `${PY}/prog`, part: "bin", name: "omega_main.ml", link: false });
+    const build = ipc.calls.find((c) => c.cmd === "run_killable")!.args;
+    expect(build).toMatchObject({ cmd: `${OCAML}/ocamlc`, args: ["-g", "-o", "omega_dbg.bc", "omega_main.ml"], cwd: "/private/x/bin" });
+    expect(plan.launch.program).toBe("/private/x/bin/omega_dbg.bc");
+    expect(plan.shadow).toEqual({ file: `${PY}/prog`, copy: "/private/x/bin/omega_main.ml" });
+  });
+
+  test("OCaml builds nothing while a guest's change holds the project", async () => {
+    const root = "/w/held-ml";
+    files.set(`${root}/prog`, "let () = ()");
+    choose(`${root}/prog`, "ocaml");
+    ocamlTools();
+    noteGuestChange("peer", root);
+    try {
+      await expect(planFor({ ...ctx(`${root}/prog`), workspace: root })).rejects.toThrow();
+      expect(ipc.calls.some((c) => c.cmd === "run_killable" || c.cmd === "lang_copy")).toBe(false);
+    } finally {
+      resumeTool("metals", root, toolChangeCount("metals"));
+      resumeTool("ocaml", root, toolChangeCount("ocaml"));
+    }
+  });
+
+  test("Scala writes and starts nothing while a guest's change holds the project", async () => {
+    const root = "/w/held-scala";
+    files.set(`${root}/prog`, "@main def a() = ()");
+    choose(`${root}/prog`, "scala");
+    ipc.which.add("javac");
+    ipc.which.add("/tools/metals/metals");
+    noteGuestChange("peer", root);
+    try {
+      await expect(planFor({ ...ctx(`${root}/prog`), workspace: root })).rejects.toThrow();
+      expect(ipc.calls.some((c) => ["lang_copy", "run_killable", "proc_spawn"].includes(c.cmd))).toBe(false);
+    } finally {
+      resumeTool("metals", root, toolChangeCount("metals"));
+      resumeTool("ocaml", root, toolChangeCount("ocaml"));
+    }
+  });
+
+  test("Java without a JDK says so before starting anything", async () => {
+    choose(`${PY}/prog`, "java");
+    await expect(planFor(ctx(`${PY}/prog`))).rejects.toThrow(/JDK/);
+    expect(ipc.calls.some((c) => c.cmd === "proc_spawn" || c.cmd === "lang_copy")).toBe(false);
+  });
+
   test("JavaScript runs a copy and says which real file it stands for", async () => {
     choose(`${PY}/prog`, "javascript");
     files.set("/tools/js-debug/src/dapDebugServer.js", "");
     const plan = await planFor(ctx(`${PY}/prog`));
     expect(plan.launch.program).toBe("/private/x/run/omega_main.js");
     expect(plan.shadow).toEqual({ file: `${PY}/prog`, copy: "/private/x/run/omega_main.js" });
-  });
-
-  test.each(["java", "scala", "ocaml"] as const)("%s without its project says so instead of failing", async (id) => {
-    choose(`${PY}/prog`, id);
-    await expect(planFor(ctx(`${PY}/prog`))).rejects.toThrow(/project|Projekt|projet/);
-    expect(ipc.calls.some((c) => c.cmd === "proc_spawn")).toBe(false);
   });
 });
