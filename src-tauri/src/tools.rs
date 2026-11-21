@@ -1169,11 +1169,9 @@ mod tests {
         let prefix = dir.path().join("it's a prefix");
         std::fs::create_dir_all(prefix.join("bin")).unwrap();
         let tool = prefix.join("bin").join("tool");
-        std::fs::write(&tool, "#!/bin/sh\nprintf '%s|%s|%s|%s|%s' \"$MODULAR_HOME\" \"$MODULAR_TELEMETRY_ENABLED\" \"$MODULAR_CRASH_REPORTING_ENABLED\" \"${MODULAR_MOJO_MAX_IMPORT_PATH-unset}\" \"$1\"\n").unwrap();
-        make_executable(&tool);
+        crate::env::write_test_script(&tool, "#!/bin/sh\nprintf '%s|%s|%s|%s|%s' \"$MODULAR_HOME\" \"$MODULAR_TELEMETRY_ENABLED\" \"$MODULAR_CRASH_REPORTING_ENABLED\" \"${MODULAR_MOJO_MAX_IMPORT_PATH-unset}\" \"$1\"\n");
         let launcher = dir.path().join("launcher");
-        std::fs::write(&launcher, mojo_launcher(&prefix, "\"$P/bin/tool\"")).unwrap();
-        make_executable(&launcher);
+        crate::env::write_test_script(&launcher, &mojo_launcher(&prefix, "\"$P/bin/tool\""));
         let out = Command::new(&launcher).arg("a b").env("MODULAR_MOJO_MAX_IMPORT_PATH", "/other").env("MODULAR_TELEMETRY_ENABLED", "1").output().unwrap();
         let expected = format!("{}/share/max|0|0|unset|a b", prefix.display());
         assert_eq!(String::from_utf8_lossy(&out.stdout), expected);
@@ -1294,10 +1292,8 @@ mod tests {
     fn a_cs_that_is_something_else_is_refused() {
         let t = tempfile::tempdir().unwrap();
         let (real, other) = (t.path().join("real"), t.path().join("other"));
-        std::fs::write(&real, "#!/bin/sh\necho 'Coursier is the Scala application and artifact manager.'\n").unwrap();
-        std::fs::write(&other, "#!/bin/sh\necho 'not it'\n").unwrap();
-        make_executable(&real);
-        make_executable(&other);
+        crate::env::write_test_script(&real, "#!/bin/sh\necho 'Coursier is the Scala application and artifact manager.'\n");
+        crate::env::write_test_script(&other, "#!/bin/sh\necho 'not it'\n");
         assert!(is_coursier(&real));
         assert!(!is_coursier(&other));
     }

@@ -459,8 +459,7 @@ mod tests {
         std::fs::create_dir(&hooks).unwrap();
         let marker = dir.join("hook-ran");
         let hook = hooks.join("post-index-change");
-        std::fs::write(&hook, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).unwrap();
-        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        crate::env::write_test_script(&hook, &format!("#!/bin/sh\ntouch '{}'\n", marker.display()));
         run_git(&dir, &["config", "core.hooksPath", hooks.to_str().unwrap()]);
         // A newer mtime makes `git status` refresh and rewrite the index, which fires this hook.
         std::thread::sleep(std::time::Duration::from_millis(1100));
@@ -509,12 +508,11 @@ mod tests {
         run_git(&dir, &["init", "-q"]);
         let marker = dir.join("helper-ran");
         let helper = dir.join("conv.sh");
-        std::fs::write(&helper, format!("#!/bin/sh\ntouch '{}'\ncat \"$1\"\n", marker.display())).unwrap();
+        let script = format!("#!/bin/sh\ntouch '{}'\ncat \"$1\"\n", marker.display());
         #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
+        crate::env::write_test_script(&helper, &script);
+        #[cfg(not(unix))]
+        std::fs::write(&helper, script).unwrap();
         run_git(&dir, &["config", "diff.x.textconv", helper.to_str().unwrap()]);
         std::fs::write(dir.join(".gitattributes"), "*.txt diff=x\n").unwrap();
         std::fs::write(dir.join("a.txt"), "one\n").unwrap();
