@@ -24,6 +24,28 @@ fn git_cmd(root: &str) -> Command {
     c
 }
 
+/// For what Omega runs on its own (status poll, gutter, blame): never a hook or fsmonitor program.
+/// A Code Together guest can edit tracked files, and `core.hooksPath` may point at them.
+fn quiet_git_cmd(root: &str) -> Command {
+    let mut c = git_cmd(root);
+    c.args(["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"]);
+    c
+}
+
+/// The repository's effective hooks folder (honours `core.hooksPath`). `Ok(None)`: not a repository.
+/// `Err`: it can't be determined, e.g. a broken config, which callers must treat as unsafe.
+pub(crate) fn hooks_dir(root: &str) -> Result<Option<PathBuf>, ()> {
+    let out = git_cmd(root).args(["-c", "core.fsmonitor=false", "rev-parse", "--git-path", "hooks"]).output().map_err(|_| ())?;
+    if out.status.success() {
+        let dir = String::from_utf8_lossy(&out.stdout).trim_end_matches(['\r', '\n']).to_string();
+        return if dir.is_empty() { Err(()) } else { Ok(Some(Path::new(root).join(dir))) };
+    }
+    if String::from_utf8_lossy(&out.stderr).contains("not a git repository") {
+        return Ok(None);
+    }
+    Err(())
+}
+
 /// `stderr` of a refused `git init`; the frontend shows its own translated text for it.
 const INIT_IN_BARE: &str = "omega:init_in_bare_repository";
 
@@ -164,15 +186,15 @@ pub struct Status {
 #[tauri::command]
 pub async fn git_status(root: String) -> Result<Status, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let top = git_cmd(&root).args(["rev-parse", "--show-toplevel"]).output().map_err(|e| e.to_string())?;
+        let top = quiet_git_cmd(&root).args(["rev-parse", "--show-toplevel"]).output().map_err(|e| e.to_string())?;
         if !top.status.success() {
             return Ok(Status { repo: false, top: String::new(), branch: String::new(), upstream: None, ahead: 0, behind: 0, changes: vec![], operation: None });
         }
         let top = String::from_utf8_lossy(&top.stdout).trim().to_string();
-        let out = git_cmd(&top).args(["status", "--porcelain=v1", "-b", "-z", "--untracked-files=all"]).output().map_err(|e| e.to_string())?;
+        let out = quiet_git_cmd(&top).args(["status", "--porcelain=v1", "-b", "-z", "--untracked-files=all"]).output().map_err(|e| e.to_string())?;
         let text = String::from_utf8_lossy(&out.stdout).to_string();
         let mut s = Status { top: top.clone(), ..parse_status(&text) };
-        let git_dir = git_cmd(&top).args(["rev-parse", "--absolute-git-dir"]).output().map_err(|e| e.to_string())?;
+        let git_dir = quiet_git_cmd(&top).args(["rev-parse", "--absolute-git-dir"]).output().map_err(|e| e.to_string())?;
         if git_dir.status.success() {
             let (operation, branch) = operation_in(std::path::Path::new(String::from_utf8_lossy(&git_dir.stdout).trim()));
             s.operation = operation;
@@ -244,13 +266,13 @@ fn parse_status(text: &str) -> Status {
 #[tauri::command]
 pub async fn git_head_file(root: String, path: String) -> Result<Option<String>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let top = git_cmd(&root).args(["rev-parse", "--show-toplevel"]).output().map_err(|e| e.to_string())?;
+        let top = quiet_git_cmd(&root).args(["rev-parse", "--show-toplevel"]).output().map_err(|e| e.to_string())?;
         if !top.status.success() {
             return Ok(None);
         }
         let top = String::from_utf8_lossy(&top.stdout).trim().to_string();
         let rel = std::path::Path::new(&path).strip_prefix(&top).map(|p| p.to_string_lossy().to_string()).unwrap_or(path);
-        let out = git_cmd(&top).args(["show", &format!("HEAD:{rel}")]).output().map_err(|e| e.to_string())?;
+        let out = quiet_git_cmd(&top).args(["show", &format!("HEAD:{rel}")]).output().map_err(|e| e.to_string())?;
         Ok(out.status.success().then(|| String::from_utf8_lossy(&out.stdout).to_string()))
     })
     .await
@@ -285,13 +307,13 @@ pub async fn git_blame(root: String, path: String, contents: Option<String>, no_
     tauri::async_runtime::spawn_blocking(move || {
         // Resolve the repository from the file's own folder (it may live outside the project).
         let dir = std::path::Path::new(&path).parent().filter(|d| d.is_dir()).map(|d| d.to_string_lossy().to_string()).unwrap_or(root);
-        let top = git_cmd(&dir).args(["rev-parse", "--show-toplevel"]).output().map_err(|e| e.to_string())?;
+        let top = quiet_git_cmd(&dir).args(["rev-parse", "--show-toplevel"]).output().map_err(|e| e.to_string())?;
         if !top.status.success() {
             return Ok(None);
         }
         let top = String::from_utf8_lossy(&top.stdout).trim().to_string();
         let rel = std::path::Path::new(&path).strip_prefix(&top).map(|p| p.to_string_lossy().replace('\\', "/")).unwrap_or(path);
-        let mut cmd = git_cmd(&top);
+        let mut cmd = quiet_git_cmd(&top);
         cmd.args(["blame", "--porcelain"]);
         if no_textconv.unwrap_or(false) {
             cmd.arg("--no-textconv");
@@ -387,6 +409,52 @@ mod tests {
         // `git am` uses rebase-apply/ too: not a rebase, nothing to continue from the branch menu.
         std::fs::write(dir.join("rebase-apply/applying"), "").unwrap();
         assert_eq!(operation_in(&dir), (None, None));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_status_poll_runs_no_hook() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("status-hook");
+        run_git(&dir, &["init", "-q"]);
+        std::fs::write(dir.join("a.txt"), "one\n").unwrap();
+        run_git(&dir, &["add", "a.txt"]);
+        run_git(&dir, &["commit", "-q", "-m", "one"]);
+        let hooks = dir.join("hooks");
+        std::fs::create_dir(&hooks).unwrap();
+        let marker = dir.join("hook-ran");
+        let hook = hooks.join("post-index-change");
+        std::fs::write(&hook, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        run_git(&dir, &["config", "core.hooksPath", hooks.to_str().unwrap()]);
+        // A newer mtime makes `git status` refresh and rewrite the index, which fires this hook.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        std::fs::write(dir.join("a.txt"), "one\n").unwrap();
+        tauri::async_runtime::block_on(git_status(dir.to_string_lossy().into())).unwrap();
+        assert!(!marker.exists(), "the status poll ran a hook");
+        // The same status without the guard does fire it, so this test can tell the difference.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        std::fs::write(dir.join("a.txt"), "one\n").unwrap();
+        git_cmd(dir.to_str().unwrap()).args(["status", "--porcelain"]).output().unwrap();
+        assert!(marker.exists(), "plain status should have fired the hook");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn hooks_dir_follows_config_and_fails_closed() {
+        let dir = scratch("hooks-dir");
+        let root = dir.to_str().unwrap();
+        assert_eq!(hooks_dir(root), Ok(None));
+        run_git(&dir, &["init", "-q"]);
+        assert!(hooks_dir(root).unwrap().unwrap().ends_with(".git/hooks"));
+        run_git(&dir, &["config", "core.hooksPath", ".husky"]);
+        assert!(hooks_dir(root).unwrap().unwrap().ends_with(".husky"));
+        let config = dir.join(".git/config");
+        let good = std::fs::read(&config).unwrap();
+        std::fs::write(&config, "[broken").unwrap();
+        assert_eq!(hooks_dir(root), Err(()));
+        std::fs::write(&config, good).unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -726,6 +726,81 @@ pub async fn collab_read_bounded(root: String, path: String, max: u64) -> Result
     .map_err(|e| e.to_string())
 }
 
+/// A path with symlinks resolved as far as it exists; the missing rest is appended as written.
+fn resolve_lenient(path: &Path) -> std::path::PathBuf {
+    let mut rest = Vec::new();
+    let mut cur = path;
+    loop {
+        if let Ok(mut real) = cur.canonicalize() {
+            for part in rest.iter().rev() {
+                match part {
+                    std::path::Component::ParentDir => {
+                        real.pop();
+                    }
+                    std::path::Component::CurDir => {}
+                    other => real.push(other.as_os_str()),
+                }
+            }
+            return real;
+        }
+        let (Some(last), Some(parent)) = (cur.components().next_back(), cur.parent()) else { return path.to_path_buf() };
+        rest.push(last);
+        cur = parent;
+    }
+}
+
+/// Hook entries looked at for symlinks to scripts elsewhere.
+const HOOK_SCAN_LIMIT: usize = 256;
+
+/// What running a hook executes: the folder, husky's real scripts one level above its `_` folder,
+/// and the targets of symlinked hooks (`.git/hooks/pre-commit -> ../../scripts/check`).
+fn hook_roots(dir: &Path) -> Vec<std::path::PathBuf> {
+    let real = resolve_lenient(dir);
+    let mut roots = vec![real.clone()];
+    if real.file_name().is_some_and(|n| n == "_") {
+        if let Some(parent) = real.parent().filter(|p| p.file_name().is_some_and(|n| n == ".husky")) {
+            roots.push(parent.to_path_buf());
+        }
+    }
+    for folder in roots.clone() {
+        let Ok(entries) = std::fs::read_dir(&folder) else { continue };
+        for entry in entries.flatten().take(HOOK_SCAN_LIMIT) {
+            if let Ok(target) = std::fs::read_link(entry.path()) {
+                roots.push(resolve_lenient(&folder.join(target)));
+            }
+        }
+    }
+    roots
+}
+
+#[derive(Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct HooksCheck {
+    /// False if the hooks can't be determined: treat everything as protected.
+    ok: bool,
+    in_project: bool,
+    locked: Vec<bool>,
+    structural: Vec<bool>,
+}
+
+fn hooks_check(root: &str, paths: &[String]) -> HooksCheck {
+    let closed = || HooksCheck { ok: false, in_project: true, locked: vec![true; paths.len()], structural: vec![true; paths.len()] };
+    let Ok(dir) = crate::git::hooks_dir(root) else { return closed() };
+    let Ok(real_root) = Path::new(root).canonicalize() else { return closed() };
+    let roots = dir.map(|d| hook_roots(&d)).unwrap_or_default();
+    let in_project = roots.iter().any(|r| r.strip_prefix(&real_root).is_ok_and(|rel| !has_git_part(rel)));
+    let real: Vec<_> = paths.iter().map(|p| resolve_lenient(Path::new(p))).collect();
+    let locked: Vec<bool> = real.iter().map(|p| roots.iter().any(|r| p.starts_with(r))).collect();
+    let structural = real.iter().zip(&locked).map(|(p, l)| *l || roots.iter().any(|r| r.starts_with(p))).collect();
+    HooksCheck { ok: true, in_project, locked, structural }
+}
+
+/// Host: which of these paths are the repository's effective hooks, by resolved path.
+#[tauri::command]
+pub async fn collab_hooks_check(root: String, paths: Vec<String>) -> Result<HooksCheck, String> {
+    tauri::async_runtime::spawn_blocking(move || hooks_check(&root, &paths)).await.map_err(|e| e.to_string())
+}
+
 /// Entries `tree_has_git` looks at before it gives up and answers "yes".
 const GIT_SCAN_LIMIT: usize = 200_000;
 
@@ -785,6 +860,40 @@ pub async fn collab_conn_info(app: AppHandle, peer: String) -> Option<ConnInfo> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn hook_paths_are_found_by_resolved_path() {
+        let dir = std::env::temp_dir().join(format!("omega-hooks-check-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("tools/hooks")).unwrap();
+        std::fs::create_dir_all(dir.join("scripts")).unwrap();
+        let dir = dir.canonicalize().unwrap();
+        let root = dir.to_str().unwrap();
+        let git = |args: &[&str]| assert!(std::process::Command::new("git").current_dir(&dir).args(args).status().unwrap().success());
+        git(&["init", "-q"]);
+        let p = |r: &str| format!("{root}/{r}");
+        assert!(!hooks_check(root, &[]).in_project, "the default hooks are in .git");
+        git(&["config", "core.hooksPath", "tools/hooks"]);
+        std::os::unix::fs::symlink("tools/hooks", dir.join("alias")).unwrap();
+        std::fs::write(dir.join("scripts/check"), "x").unwrap();
+        std::os::unix::fs::symlink("../../scripts/check", dir.join("tools/hooks/pre-commit")).unwrap();
+        let c = hooks_check(root, &[p("tools/hooks/new"), p("alias/new"), p("scripts/check"), p("tools"), p("scripts/other")]);
+        assert!(c.ok && c.in_project);
+        assert_eq!(c.locked, [true, true, true, false, false]);
+        assert_eq!(c.structural, [true, true, true, true, false]);
+        // husky: git runs `.husky/_/x`, which runs the script one level up.
+        git(&["config", "core.hooksPath", ".husky/_"]);
+        assert_eq!(hooks_check(root, &[p(".husky/pre-commit")]).locked, [true]);
+        // A folder that doesn't exist yet is protected too, and a broken config fails closed.
+        git(&["config", "core.hooksPath", "later/hooks"]);
+        assert_eq!(hooks_check(root, &[p("later/hooks/pre-commit")]).locked, [true]);
+        std::fs::write(dir.join(".git/config"), "[broken").unwrap();
+        let c = hooks_check(root, &[p("a.txt")]);
+        assert!(!c.ok && c.in_project);
+        assert_eq!(c.locked, [true]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn bounded_read_stops_at_the_limit() {

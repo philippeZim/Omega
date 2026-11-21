@@ -95,6 +95,7 @@ pub fn run() {
             collab::collab_path_inside,
             collab::collab_tree_has_git,
             collab::collab_read_bounded,
+            collab::collab_hooks_check,
             instance::instance_info,
             mcp_control::mcp_control_start,
             mcp_control::mcp_control_stop,
