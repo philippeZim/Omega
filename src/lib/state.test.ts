@@ -700,3 +700,39 @@ describe("LaTeX: background tab changing on disk (#50)", () => {
     expect(latexCtl.schedule).toHaveBeenCalledWith(main.id, "/p/main.tex");
   });
 });
+
+describe("guest text in an unsaved tab and Metals", () => {
+  const saveAs = async (id: string, path: string) => {
+    const { save: dialog } = await import("@tauri-apps/plugin-dialog");
+    vi.mocked(dialog).mockResolvedValueOnce(path);
+    return st.save(id);
+  };
+
+  test("the project is paused before the host's Save As writes build.sbt", async () => {
+    await setup({});
+    const g = await import("./collab/guestChanges");
+    st.newFile();
+    const id = st.app.activeId!;
+    ed.type(id, "evil := 1");
+    g.noteGuestChange("g", null, `tab:${id}`);
+    let pausedAtWrite: string | null = null;
+    fs.beforeWrite = () => void (pausedAtWrite = g.metalsPausedBy("/w"));
+    expect(await saveAs(id, "/w/build.sbt")).toBe(true);
+    expect(fs.files.get("/w/build.sbt")).toBe("evil := 1");
+    expect(pausedAtWrite).not.toBeNull();
+  });
+
+  test("a failed write keeps the pause pending for the next target", async () => {
+    await setup({});
+    const g = await import("./collab/guestChanges");
+    st.newFile();
+    const id = st.app.activeId!;
+    ed.type(id, "evil := 1");
+    g.noteGuestChange("g", null, `tab:${id}`);
+    fs.failWrite = "disk full";
+    expect(await saveAs(id, "/bad/build.sbt")).toBe(false);
+    fs.failWrite = null;
+    expect(await saveAs(id, "/w/build.sbt")).toBe(true);
+    expect(g.metalsPausedBy("/w")).not.toBeNull();
+  });
+});

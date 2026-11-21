@@ -1,5 +1,5 @@
 import { StateField, type Extension, type Text } from "@codemirror/state";
-import { StreamLanguage, indentUnit } from "@codemirror/language";
+import { StreamLanguage, indentService, indentUnit } from "@codemirror/language";
 import { python } from "@codemirror/lang-python";
 import { cpp } from "@codemirror/lang-cpp";
 import { java } from "@codemirror/lang-java";
@@ -7,9 +7,10 @@ import { javascript } from "@codemirror/lang-javascript";
 import { rust } from "@codemirror/lang-rust";
 import { json } from "@codemirror/lang-json";
 import { toml } from "@codemirror/legacy-modes/mode/toml";
+import { scala } from "@codemirror/legacy-modes/mode/clike";
 import { extname } from "../api";
 
-export type LangId = "python" | "c" | "cpp" | "java" | "javascript" | "typescript" | "rust" | "json" | "toml";
+export type LangId = "python" | "c" | "cpp" | "java" | "javascript" | "typescript" | "rust" | "json" | "toml" | "scala";
 
 export interface LangInfo {
   id: LangId;
@@ -17,7 +18,7 @@ export interface LangInfo {
   /** LSP languageId */
   lspId: string;
   /** Which language server handles it (null = none). */
-  server: "python" | "clangd" | "java" | "typescript" | "rust" | null;
+  server: "python" | "clangd" | "java" | "typescript" | "rust" | "scala" | null;
   ext: () => Extension;
 }
 
@@ -37,6 +38,20 @@ reg(["tsx"], L("typescript", "TypeScript", "typescriptreact", "typescript", () =
 reg(["rs"], L("rust", "Rust", "rust", "rust", () => rust()));
 reg(["json"], L("json", "JSON", "json", null, () => json()));
 reg(["toml"], L("toml", "TOML", "toml", null, () => StreamLanguage.define(toml)));
+reg(["scala", "sc"], L("scala", "Scala", "scala", "scala", () => [StreamLanguage.define(scala), scalaIndent]));
+
+/** Whether a Scala line opens an indented block without braces (Scala 3 syntax, `def f =`, `case x =>`). */
+export function scalaOpensBlock(line: string): boolean {
+  const code = line.replace(/"(?:[^"\\]|\\.)*"/g, '""').replace(/\/\/.*$/, "").trimEnd();
+  return /(?:[^=!<>]=|=>|<-|:|\b(?:then|else|do|try|catch|finally|yield|match|with))$/.test(code);
+}
+
+/** Indents after a line that opens a block; everything else is left to the clike mode (braces). */
+const scalaIndent = indentService.of((cx, pos) => {
+  let line = cx.lineAt(pos, -1);
+  if (line.from === pos && pos > 0) line = cx.lineAt(pos - 1, -1);
+  return scalaOpensBlock(line.text) ? cx.lineIndent(line.from, -1) + cx.unit : undefined;
+});
 
 /**
  * The indentation a file already uses: "\t", or the most common step between the indents of
@@ -66,9 +81,9 @@ export function detectIndent(doc: Text | string): string | null {
   return best ? " ".repeat(best) : null;
 }
 
-/** The file's own indentation (detected when it is loaded), else the language's convention (PEP 8, rustfmt, Google Java, Prettier). */
+/** The file's own indentation (detected when it is loaded), else the language's convention (PEP 8, rustfmt, Google Java, Prettier, scalafmt). */
 export function indentFor(lang: LangInfo | null): Extension {
-  const two = lang && ["javascript", "typescript", "json"].includes(lang.id);
+  const two = lang && ["javascript", "typescript", "json", "scala"].includes(lang.id);
   const fallback = two ? "  " : "    ";
   const unit = StateField.define<string>({ create: (state) => detectIndent(state.doc) ?? fallback, update: (v) => v });
   return [unit, indentUnit.from(unit)];

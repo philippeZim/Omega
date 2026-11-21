@@ -5,11 +5,18 @@
  * across sessions and restarts: the text stays in the project after the guest has left.
  */
 const KEY = "latex.guestChanged";
+/**
+ * The same for Metals, which executes a project's build files. Set by the same changes, released
+ * on its own: Compile doesn't start Metals, and starting Metals doesn't resume LaTeX.
+ */
+const METALS_KEY = "metals.guestChanged";
+
+const parseRoots = (text: string) =>
+  new Map<string, string>(Object.entries(JSON.parse(text)).filter((e): e is [string, string] => typeof e[1] === "string"));
 
 function loadRoots() {
   try {
-    const raw = JSON.parse(localStorage.getItem(KEY) ?? "{}");
-    return new Map<string, string>(Object.entries(raw).filter((e): e is [string, string] => typeof e[1] === "string"));
+    return parseRoots(localStorage.getItem(KEY) ?? "{}");
   } catch {
     return new Map<string, string>();
   }
@@ -21,12 +28,39 @@ const roots = loadRoots();
 const tabs = new Map<string, string>();
 const listeners = new Set<() => void>();
 
-function saveRoots() {
+function store(key: string, map: Map<string, string>) {
   try {
-    localStorage.setItem(KEY, JSON.stringify(Object.fromEntries(roots)));
+    localStorage.setItem(key, JSON.stringify(Object.fromEntries(map)));
   } catch {
     // Storage is off: the pause still holds until the app closes.
   }
+}
+const saveRoots = () => store(KEY, roots);
+
+/** Without a readable store of its own, every project LaTeX has paused counts for Metals too. */
+function loadMetalsRoots() {
+  try {
+    const raw = localStorage.getItem(METALS_KEY);
+    if (raw !== null) return parseRoots(raw);
+  } catch {
+    // Unreadable: fall through.
+  }
+  const copy = new Map(roots);
+  store(METALS_KEY, copy); // now, so a later Compile can't take a project out of this copy
+  return copy;
+}
+
+/** Project folder -> who changed it last, until the host allows Metals again. */
+const metalsRoots = loadMetalsRoots();
+/** Counts guest changes, so a confirmation only covers what the host was asked about. */
+let metalsChanges = 0;
+/** Unsaved tab -> who wrote text in it that no folder's Metals pause covers yet (see `metalsBeforeSave`). */
+const metalsTabs = new Map<string, string>();
+
+function pauseMetals(root: string, name: string) {
+  metalsRoots.set(root, name);
+  store(METALS_KEY, metalsRoots);
+  metalsChanges++;
 }
 
 /** Set by the session. Until then nobody counts as trusted. */
@@ -44,10 +78,16 @@ export function onGuestChange(fn: () => void) {
 export function noteGuestChange(peer: string, root: string | null, rel?: string) {
   if (guestChangeHooks.mayRun(peer)) return;
   const name = guestChangeHooks.name(peer);
-  if (rel?.startsWith("tab:")) tabs.set(rel.slice(4), name);
-  else if (root) {
+  if (rel?.startsWith("tab:")) {
+    tabs.set(rel.slice(4), name);
+    // The host can save this tab as build.sbt. Without a folder yet, the pause waits for that save.
+    metalsTabs.set(rel.slice(4), name);
+    metalsChanges++;
+    if (root) pauseMetals(root, name);
+  } else if (root) {
     roots.set(root, name);
     saveRoots();
+    pauseMetals(root, name);
   } else return;
   for (const fn of listeners) fn();
 }
@@ -88,20 +128,63 @@ export function pausedBy(tabId: string, path: string | null, text?: string): str
 /** A file or folder moved: its pause goes with it, also when it leaves the paused project. */
 export function moveGuestChange(from: string, to: string | null) {
   if (to === null) return;
+  const latexMoved = moveIn(roots, from, to);
+  const metalsMoved = moveIn(metalsRoots, from, to);
+  if (latexMoved) saveRoots();
+  if (metalsMoved) store(METALS_KEY, metalsRoots);
+  if (!latexMoved && !metalsMoved) return;
+  for (const fn of listeners) fn();
+}
+
+function moveIn(map: Map<string, string>, from: string, to: string) {
   let changed = false;
-  for (const [root, name] of [...roots]) {
+  for (const [root, name] of [...map]) {
     if (within(root, from)) {
-      roots.delete(root);
-      roots.set(to + root.slice(from.length), name);
+      map.delete(root);
+      map.set(to + root.slice(from.length), name);
       changed = true;
     } else if (within(from, root) && !within(to, root)) {
-      roots.set(to, name);
+      map.set(to, name);
       changed = true;
     }
   }
-  if (!changed) return;
-  saveRoots();
+  return changed;
+}
+
+const related = (a: string, b: string) => within(a, b) || within(b, a);
+
+/** Who changed this project, a folder inside it or a folder around it; null if Metals may run. */
+export function metalsPausedBy(root: string): string | null {
+  for (const [r, name] of metalsRoots) if (related(root, r)) return name;
+  return null;
+}
+
+/**
+ * The host is about to write a tab to `path`. Guest text in it, or a copy of a paused project's
+ * file saved elsewhere, pauses Metals for the target folder first (a running Metals is killed by
+ * the listeners before the file exists). Returns what to call if the write fails.
+ */
+export function metalsBeforeSave(tabId: string, oldPath: string | null, path: string): () => void {
+  const pending = metalsTabs.get(tabId);
+  const name = pending ?? (oldPath && oldPath !== path ? metalsPausedBy(oldPath) : null);
+  if (name === null || name === undefined) return () => {};
+  metalsTabs.delete(tabId);
+  pauseMetals(path.replace(/\/[^/]*$/, "") || "/", name);
   for (const fn of listeners) fn();
+  return () => {
+    if (pending !== undefined && !metalsTabs.has(tabId)) metalsTabs.set(tabId, pending);
+  };
+}
+
+/** Read before asking the host, and handed to `resumeMetals`. */
+export const metalsChangeCount = () => metalsChanges;
+
+/** The host allowed Metals. False if a guest changed something since `seen`: the pause stays. */
+export function resumeMetals(root: string, seen: number): boolean {
+  if (seen !== metalsChanges) return false;
+  for (const r of [...metalsRoots.keys()]) if (related(root, r)) metalsRoots.delete(r);
+  store(METALS_KEY, metalsRoots);
+  return true;
 }
 
 /** The same for a guest's compile, which names a project or an unsaved tab. */

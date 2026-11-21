@@ -19,7 +19,7 @@ export interface Owner { manager: string; package: string }
 export interface Status { id: string; source: "omega" | "system" | "missing"; path: string | null; version: string | null; owner: Owner | null }
 export interface SysUpdate { available: string | null; command: string | null; full_system: boolean }
 
-const TOOL_IDS: ToolId[] = ["uv", "tectonic", "node", "pnpm", "cmake", "ninja", "jdk", "gradle", "rust", "git", "cc"];
+const TOOL_IDS: ToolId[] = ["uv", "tectonic", "node", "pnpm", "cmake", "ninja", "jdk", "gradle", "rust", "git", "cc", "scala", "sbt"];
 
 export function catalog(): Item[] {
   return [
@@ -29,6 +29,7 @@ export function catalog(): Item[] {
     { id: "lsp:java", group: "lsp", label: "Eclipse JDT LS (Java)" },
     { id: "lsp:rust", group: "lsp", label: "rust-analyzer (Rust)" },
     { id: "lsp:clangd", group: "lsp", label: "clangd (C/C++)" },
+    { id: "lsp:scala", group: "lsp", label: "Metals (Scala)" },
     { id: "debug:codelldb", group: "debug", label: "CodeLLDB (C/C++/Rust)" },
     { id: "debug:debugpy", group: "debug", label: "debugpy (Python)" },
     { id: "debug:jsdebug", group: "debug", label: "js-debug (JS/TS)" },
@@ -121,7 +122,7 @@ export function manualHint(id: string): string {
   return "";
 }
 
-const LSP_PREREQ: Partial<Record<string, ToolId[]>> = { python: ["node"], typescript: ["node"], java: ["jdk"], rust: ["rust"] };
+const LSP_PREREQ: Partial<Record<string, ToolId[]>> = { python: ["node"], typescript: ["node"], java: ["jdk"], rust: ["rust"], scala: ["jdk", "scala"] };
 
 async function doInstall(id: string) {
   const [group, name] = id.split(":");

@@ -5,8 +5,9 @@ import { onRpc } from "../rpc";
 import { t } from "../i18n/index.svelte";
 import { ui } from "../ui.svelte";
 import { fsApi, dirname, joinPath, isRoot } from "../api";
-import { OS, platform } from "../platform";
+import { IS_WIN, OS, platform } from "../platform";
 import { ensureTools, withInstallProgress, serverProgressId, type ToolId } from "../tools.svelte";
+import { metalsChangeCount, metalsPausedBy, onGuestChange, resumeMetals } from "../collab/guestChanges";
 import type { LangInfo } from "./languages";
 
 type Json = any;
@@ -39,6 +40,19 @@ export function exitReason(tail: string[]): string {
   const line = [...tail].reverse().find((l) => /\b(error|panic|panicked|fatal|exception|failed|cannot|could not|abort(ed)?)\b/i.test(l))?.trim();
   if (!line) return "";
   return ": " + (line.length > 200 ? line.slice(0, 199) + "…" : line);
+}
+
+/** Metals starts a JVM and may fetch its presentation compiler before it answers `initialize`. */
+const METALS_INIT_MS = 120_000;
+
+/**
+ * Answers Metals' prompts: import the build (without it an sbt project has no build target, so
+ * no completion and no debugging), and prefer sbt when a folder also looks like a scala-cli
+ * project, as Run does. Anything else (Doctor, HTTP server hints) stays unanswered.
+ */
+export function metalsAnswer(params: Json): Json {
+  const actions: { title: string }[] = params?.actions ?? [];
+  return actions.find((a) => /^(import build|import changes)$/i.test(a.title)) ?? actions.find((a) => a.title.toLowerCase() === "sbt") ?? null;
 }
 
 export class LspClient {
@@ -146,7 +160,7 @@ export class LspClient {
         window: { workDoneProgress: true },
       },
       initializationOptions: this.initOptions ?? (this.kind === "rust" ? { checkOnSave: true } : undefined),
-    });
+    }, this.kind === "scala" ? METALS_INIT_MS : undefined);
     this.capabilities = res?.capabilities ?? {};
     this.notify("initialized", {});
     if (this.current) lspState.status[this.key] = "ready";
@@ -192,6 +206,7 @@ export class LspClient {
       if (msg.method === "workspace/configuration") result = (msg.params?.items ?? []).map((it: Json) => serverSetting(this.kind, it.section));
       else if (msg.method === "workspace/workspaceFolders") result = [{ uri: fileUri(this.root), name: this.root }];
       else if (msg.method === "workspace/applyEdit") result = { applied: false };
+      else if (msg.method === "window/showMessageRequest" && this.kind === "scala") result = this.stopping || metalsPausedBy(this.root) !== null ? null : metalsAnswer(msg.params);
       this.send({ id: msg.id, result });
       return;
     }
@@ -321,6 +336,7 @@ const ROOT_MARKERS: Record<ServerKind, string[]> = {
   java: ["settings.gradle", "settings.gradle.kts", "build.gradle", "build.gradle.kts", "pom.xml", ".git"],
   typescript: ["tsconfig.json", "jsconfig.json", "package.json", ".git"],
   rust: ["Cargo.toml"],
+  scala: ["build.sbt", "project.scala", ".bsp", ".scala-build", ".git"],
 };
 
 const within = (path: string, dir: string) => path === dir || path.startsWith(dir.endsWith("/") ? dir : dir + "/");
@@ -365,6 +381,7 @@ export const lspSettings = $state({ strictPython: localStorage.getItem("strictPy
 function serverSetting(kind: ServerKind, section?: string): Json {
   if (kind === "python" && (section === "basedpyright" || section === "python"))
     return { analysis: { typeCheckingMode: lspSettings.strictPython ? "recommended" : "standard" } };
+  if (kind === "scala") return {}; // Metals reads its section as an object
   return null;
 }
 
@@ -441,6 +458,10 @@ async function resolveCommand(kind: ServerKind, root: string): Promise<{ cmd: st
       const cmd = await first("jdtls");
       return cmd ? { cmd, args: ["-data", data], init } : null;
     }
+    case "scala": {
+      const cmd = await first(`${tools}/metals/${IS_WIN ? "metals.bat" : "metals"}`, "metals");
+      return cmd ? { cmd, args: [] } : null;
+    }
   }
 }
 
@@ -449,13 +470,14 @@ export const INSTALLABLE: Partial<Record<ServerKind, string>> = {
   clangd: "clangd (C/C++)",
   typescript: "typescript-language-server (JS/TS)",
   java: "Eclipse JDT Language Server (Java)",
+  scala: "Metals (Scala)",
   get rust() {
     return t("code.lsp.rustAnalyzer");
   },
 };
 
 /** Tools a language server installation builds on. */
-const PREREQ: Partial<Record<ServerKind, ToolId[]>> = { python: ["node"], typescript: ["node"], java: ["jdk"], rust: ["rust"] };
+const PREREQ: Partial<Record<ServerKind, ToolId[]>> = { python: ["node"], typescript: ["node"], java: ["jdk"], rust: ["rust"], scala: ["jdk", "scala"] };
 
 /** `askInstall` for work the host didn't start itself: never prompts, and doesn't count as declining. */
 export const neverInstall = async (_kind: ServerKind, _name: string) => false;
@@ -468,6 +490,7 @@ const guestReserving = new Set<string>();
 
 /** Whether a guest may start this server: it's installed and within the limit. */
 async function guestMayStart(kind: ServerKind, root: string, key: string) {
+  if (kind === "scala") return false; // Metals runs the project's build code (build.sbt, .bsp)
   for (const k of guestServers) if (!clients.has(k) && !starting.has(k) && !guestReserving.has(k)) guestServers.delete(k);
   if (declined.has(kind) || failed.has(key)) return false;
   if (!guestServers.has(key) && guestServers.size >= MAX_GUEST_SERVERS) return false;
@@ -478,6 +501,27 @@ async function guestMayStart(kind: ServerKind, root: string, key: string) {
   if (!cmd) guestServers.delete(key);
   return !!cmd;
 }
+
+/** A guest without `run` changed this project: Metals would execute that text, so it stays off. */
+function metalsHeld(key: string, root: string) {
+  if (metalsPausedBy(root) === null) return false;
+  lspState.status[key] = "stopped";
+  lspState.message[key] = t("code.lsp.metalsPaused");
+  return true;
+}
+
+/** Whether Metals is paused for this file's project. */
+export const metalsPausedFor = async (file: string, workspace: string | null) => metalsPausedBy(await findRoot(file, ROOT_MARKERS.scala, workspace)) !== null;
+
+onGuestChange(() => {
+  for (const [key, c] of clients) {
+    if (c.kind !== "scala" || !metalsHeld(key, c.root)) continue;
+    // Killed, not shut down: it must not get to import the change during a graceful stop.
+    c.failed = c.stopping = true;
+    clients.delete(key);
+    invoke("proc_kill", { id: c.id }).catch(() => {});
+  }
+});
 
 /** The session ended: servers that only guests needed and that have no documents left stop. */
 export function stopGuestServers() {
@@ -517,6 +561,7 @@ export async function clientFor(
   }
   const root = await findRoot(file, ROOT_MARKERS[kind], workspace);
   const key = `${kind}|${root}`;
+  if (kind === "scala" && metalsHeld(key, root)) return null;
   if (askInstall !== neverInstall) guestServers.delete(key); // the host wants this one itself
   else if (!clients.has(key) && !starting.has(key) && !(await guestMayStart(kind, root, key))) return null;
   const existing = clients.get(key);
@@ -556,6 +601,8 @@ export async function clientFor(
       if (!cmd) return null;
     }
     const waitInstall = kind === "typescript" && (await tsInstallMissing(root));
+    // Last check, with no await before the process starts: the steps above can take minutes.
+    if (kind === "scala" && metalsHeld(key, root)) return null;
     const c = new LspClient(kind, root, cmd.cmd, cmd.args, cmd.init);
     c.quiet = waitInstall;
     clients.set(key, c);
@@ -564,6 +611,7 @@ export async function clientFor(
       c.quiet = false;
       return c;
     } catch (e) {
+      if (c.failed) return null; // killed by the guest pause, which has set the status
       if (c.quiet) {
         // node_modules/typescript is missing (e.g. a new project's `pnpm add` still runs): wait for it.
         if (c.alive) invoke("proc_kill", { id: c.id }).catch(() => {});
@@ -653,8 +701,19 @@ export async function restartServer(
 ): Promise<LspClient | null> {
   const kind = lang.server;
   if (!kind) return null;
-  const key = `${kind}|${await findRoot(file, ROOT_MARKERS[kind], workspace)}`;
+  const root = await findRoot(file, ROOT_MARKERS[kind], workspace);
+  const key = `${kind}|${root}`;
   if (starting.has(key)) return starting.get(key)!;
+  const by = kind === "scala" ? metalsPausedBy(root) : null;
+  if (by !== null) {
+    // The host's explicit decision. It covers what it was asked about, not a change during the dialog.
+    const seen = metalsChangeCount();
+    if (!(await ui.confirm(t("code.lsp.metalsResumeTitle"), t("code.lsp.metalsResumeMsg", { name: by }), t("code.lsp.metalsResumeOk")))) return null;
+    if (!resumeMetals(root, seen)) {
+      metalsHeld(key, root);
+      return null;
+    }
+  }
   declined.delete(kind);
   failed.delete(key);
   const old = clients.get(key);
