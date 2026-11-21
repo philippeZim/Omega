@@ -608,8 +608,8 @@ fn uninstall(id: &str) -> Result<(), String> {
             crate::tools::forget("ocaml")
         }
         ("tool", "mojo") => {
-            // Waits for a running install, then decides on what that install has left.
-            let _work = crate::tools::mojo_install_lock();
+            // Ends a running install, then decides on what that install has left.
+            let _work = crate::tools::mojo_removal_lock();
             if !crate::tools::manifest().contains_key("mojo") {
                 return Err("installs:not_ours:mojo".into());
             }
@@ -711,7 +711,7 @@ mod tests {
     }
 
     #[test]
-    fn removing_mojo_waits_for_a_running_install() {
+    fn removing_mojo_never_deletes_during_a_running_install() {
         let install = crate::tools::mojo_install_lock();
         let (tx, rx) = mpsc::channel();
         let removal = std::thread::spawn(move || tx.send(uninstall("tool:mojo")).unwrap());
