@@ -7,6 +7,8 @@ const ipc = vi.hoisted(() => ({
   installable: ["uv", "cc", "mojo"],
   onInstall: () => {},
   failWrite: false,
+  partialWrite: false,
+  writes: [] as string[],
 }));
 vi.mock("@tauri-apps/api/core", async (orig) => ({
   ...(await orig<typeof import("@tauri-apps/api/core")>()),
@@ -32,8 +34,20 @@ vi.mock("../api", async (orig) => ({
     readFile: async (p: string) => disk.get(p) ?? "",
     writeFile: async (p: string, text: string) => {
       if (ipc.failWrite) throw new Error("read-only");
+      ipc.writes.push(p);
+      if (ipc.partialWrite) {
+        disk.set(p, text.slice(0, 10));
+        await Promise.resolve();
+      }
       disk.set(p, text);
     },
+    // Like the backend's rename_path: never replaces an existing target.
+    rename: async (from: string, to: string) => {
+      if (disk.has(to)) throw new Error("fs:exists");
+      disk.set(to, disk.get(from)!);
+      disk.delete(from);
+    },
+    remove: async (p: string) => void disk.delete(p),
     listDir: async () => [],
   },
 }));
@@ -44,7 +58,7 @@ import { extname } from "../api";
 import { modeForExtension } from "../modes";
 import { fileUri, uriPath } from "./lsp.svelte";
 import { indentFor, langFor } from "./languages";
-import { isMojoFile, mojoCompiles, mojoEntry, mojoStem, pixiUsesMojo } from "./mojo";
+import { isMojoFile, mojoCompiles, mojoEntry, mojoStem, pixiLauncherPath, pixiMojoLauncher, pixiUsesMojo } from "./mojo";
 import { mojoIndentStep, mojoParser } from "./mojoMode";
 import { detectProject, TEMPLATES } from "./projects";
 import { planFor } from "../debug/adapters";
@@ -65,6 +79,7 @@ function styles(line: string) {
 }
 
 const ctx = (file: string, askInstall = async () => true) => ({ file, workspace: "/p", log: () => {}, askInstall });
+const LAUNCHER = pixiLauncherPath("/tools");
 const PIXI_MOJO = '[workspace]\nname = "x"\n\n[dependencies]\nmojo = ">=1.2,<25"\n';
 
 beforeEach(() => {
@@ -74,6 +89,8 @@ beforeEach(() => {
   ipc.installable = ["uv", "cc", "mojo"];
   ipc.onInstall = () => {};
   ipc.failWrite = false;
+  ipc.partialWrite = false;
+  ipc.writes.length = 0;
 });
 
 describe("file names", () => {
@@ -183,10 +200,10 @@ describe("project detection", () => {
     disk.set("/p/main.mojo", "");
     const project = await detectProject("/p/main.mojo", "/p");
     expect(project).toMatchObject({ kind: "mojo", label: "pixi", needs: ["cc"] });
-    expect(project!.run!.cmd).toBe("sh /tools/pixi-mojo.sh run main.mojo");
-    expect(project!.build!.cmd).toBe("mkdir -p build && sh /tools/pixi-mojo.sh build main.mojo -o build/main");
-    expect(project!.more.find((a) => a.id === "fmt")!.cmd).toBe("sh /tools/pixi-mojo.sh format .");
-    expect(disk.get("/tools/pixi-mojo.sh")).toContain("--as-is");
+    expect(project!.run!.cmd).toBe(`sh ${LAUNCHER} run main.mojo`);
+    expect(project!.build!.cmd).toBe(`mkdir -p build && sh ${LAUNCHER} build main.mojo -o build/main`);
+    expect(project!.more.find((a) => a.id === "fmt")!.cmd).toBe(`sh ${LAUNCHER} format .`);
+    expect(disk.get(LAUNCHER)).toContain("--as-is");
   });
 
   test("no action of a pixi project calls a bare pixi run", async () => {
@@ -202,7 +219,7 @@ describe("project detection", () => {
     disk.set("/p/pixi.toml", PIXI_MOJO);
     disk.set("/p/-it's a.mojo", "");
     const project = (await detectProject("/p/-it's a.mojo", "/p"))!;
-    expect(project.run!.cmd).toBe(`sh /tools/pixi-mojo.sh run './-it'\\''s a.mojo'`);
+    expect(project.run!.cmd).toBe(`sh ${LAUNCHER} run './-it'\\''s a.mojo'`);
   });
 
   test("without a launcher a pixi project doesn't fall back to a bare pixi run", async () => {
@@ -260,6 +277,41 @@ describe("project detection", () => {
 
   test("a lone .🔥 file offers no Run that can only fail", async () => {
     expect(await detectProject("/x/a.🔥", "/x")).toBeNull();
+  });
+});
+
+describe("pixi launcher file", () => {
+  const temps = () => [...disk.keys()].filter((k) => k.endsWith(".tmp"));
+
+  test("is never visible half-written: the final path only appears by rename", async () => {
+    ipc.partialWrite = true;
+    expect(await pixiMojoLauncher()).toBe(LAUNCHER);
+    expect(ipc.writes).toHaveLength(1);
+    expect(ipc.writes[0]).not.toBe(LAUNCHER);
+    expect(ipc.writes[0].startsWith(`${LAUNCHER}.`)).toBe(true);
+    expect(temps()).toEqual([]);
+  });
+
+  test("concurrent calls use their own temp files and all get the complete launcher", async () => {
+    const paths = await Promise.all(Array.from({ length: 8 }, () => pixiMojoLauncher()));
+    expect(new Set(paths)).toEqual(new Set([LAUNCHER]));
+    expect(new Set(ipc.writes).size).toBe(ipc.writes.length);
+    expect(disk.get(LAUNCHER)).toContain("--as-is");
+    expect(temps()).toEqual([]);
+  });
+
+  test("an existing correct copy is left alone", async () => {
+    await pixiMojoLauncher();
+    ipc.writes.length = 0;
+    expect(await pixiMojoLauncher()).toBe(LAUNCHER);
+    expect(ipc.writes).toEqual([]);
+  });
+
+  test("a wrong file at that path is not used", async () => {
+    disk.set(LAUNCHER, "#!/bin/sh\nexit 0\n");
+    expect(await pixiMojoLauncher()).toBeNull();
+    expect(disk.get(LAUNCHER)).toBe("#!/bin/sh\nexit 0\n");
+    expect(temps()).toEqual([]);
   });
 });
 

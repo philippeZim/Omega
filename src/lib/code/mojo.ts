@@ -28,15 +28,30 @@ export function pixiUsesMojo(toml: string, pyproject = false): boolean {
   return false;
 }
 
+/** The launcher's file: named after its content, so a version is never overwritten while it runs. */
+export function pixiLauncherPath(tools: string) {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < pixiLauncher.length; i++) hash = Math.imul(hash ^ pixiLauncher.charCodeAt(i), 0x01000193);
+  return `${tools}/pixi-mojo-${(hash >>> 0).toString(16)}.sh`;
+}
+
+let launcherWrites = 0;
+
 /**
- * The launcher for `mojo` in a pixi project (see pixi-mojo.sh), kept up to date in Omega's tools
- * folder. Null if it can't be written: a project must not fall back to a plain `pixi run`.
+ * The launcher for `mojo` in a pixi project (see pixi-mojo.sh), in Omega's tools folder. It appears
+ * complete or not at all: written to a temp file of its own, then renamed. When several calls race,
+ * the first rename wins and the others find the same content. Null if there is no correct copy:
+ * a project must not fall back to a plain `pixi run`.
  */
 export async function pixiMojoLauncher(): Promise<string | null> {
   try {
-    const path = `${await invoke<string>("tools_dir")}/pixi-mojo.sh`;
-    if ((await fsApi.readFile(path).catch(() => "")) !== pixiLauncher) await fsApi.writeFile(path, pixiLauncher);
-    return path;
+    const path = pixiLauncherPath(await invoke<string>("tools_dir"));
+    const current = () => fsApi.readFile(path).catch(() => null);
+    if ((await current()) === pixiLauncher) return path;
+    const tmp = `${path}.${Date.now().toString(36)}-${++launcherWrites}-${Math.random().toString(36).slice(2)}.tmp`;
+    await fsApi.writeFile(tmp, pixiLauncher);
+    await fsApi.rename(tmp, path).catch(() => fsApi.remove(tmp).catch(() => {}));
+    return (await current()) === pixiLauncher ? path : null;
   } catch {
     return null;
   }
