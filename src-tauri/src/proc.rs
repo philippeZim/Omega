@@ -1,7 +1,7 @@
 //! Child processes speaking JSON-RPC over stdio with `Content-Length` framing.
 //! Used for both Language Servers (LSP) and Debug Adapters (DAP).
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -14,6 +14,8 @@ pub struct ProcState {
     conns: Mutex<HashMap<String, Box<dyn Write + Send>>>,
     /// Child processes by id (stdio servers and TCP debug adapters).
     children: Mutex<HashMap<String, Child>>,
+    /// Children started by `run_killable`: `proc_kill` also ends what they started.
+    trees: Mutex<HashSet<String>>,
 }
 
 #[derive(Serialize, Clone)]
@@ -191,11 +193,72 @@ pub fn proc_kill(app: AppHandle, id: String) {
     if let Some(w) = state.conns.lock().unwrap().remove(&id) {
         drop(w);
     }
-    if let Some(mut child) = state.children.lock().unwrap().remove(&id) {
+    kill_registered(&state.children, &state.trees, &id);
+}
+
+fn kill_registered(children: &Mutex<HashMap<String, Child>>, trees: &Mutex<HashSet<String>>, id: &str) {
+    let child = children.lock().unwrap().remove(id);
+    let tree = trees.lock().unwrap().remove(id);
+    if let Some(mut child) = child {
+        // Not reaped yet, so its pid and process group can't have been reused.
+        if tree {
+            kill_tree(&child);
+        }
         let _ = child.kill();
         let _ = child.wait();
     }
 }
+
+/// The process groups of everything below `root` in `ps -o pid=,ppid=,pgid=` output, without
+/// `own` (Omega's group) and the system's.
+#[cfg(unix)]
+fn descendant_groups(ps: &str, root: i32, own: i32) -> Vec<i32> {
+    let rows: Vec<(i32, i32, i32)> = ps
+        .lines()
+        .filter_map(|l| {
+            let mut f = l.split_whitespace().map(str::parse::<i32>);
+            Some((f.next()?.ok()?, f.next()?.ok()?, f.next()?.ok()?))
+        })
+        .collect();
+    let mut found = HashSet::from([root]);
+    loop {
+        let before = found.len();
+        for (pid, ppid, _) in &rows {
+            if found.contains(ppid) {
+                found.insert(*pid);
+            }
+        }
+        if found.len() == before {
+            break;
+        }
+    }
+    let mut groups: Vec<i32> = rows.iter().filter(|(pid, _, _)| found.contains(pid)).map(|r| r.2).filter(|g| *g > 1 && *g != own).collect();
+    groups.sort_unstable();
+    groups.dedup();
+    groups
+}
+
+/// Ends a build and the actions it started. Dune gives every action a process group of its own,
+/// so killing dune's group isn't enough. It is stopped first, so it can't start another one.
+#[cfg(unix)]
+fn kill_tree(child: &Child) {
+    let pid = child.id() as i32;
+    // SAFETY: plain signal calls; `pid` is an unreaped child of this process.
+    let own = unsafe {
+        libc::kill(pid, libc::SIGSTOP);
+        libc::getpgrp()
+    };
+    let ps = Command::new("/bin/ps").args(["-A", "-o", "pid=,ppid=,pgid="]).stdin(Stdio::null()).stderr(Stdio::null()).output();
+    let text = ps.map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
+    for group in descendant_groups(&text, pid, own).into_iter().chain([pid]) {
+        // SAFETY: as above; the groups were just read and never include Omega's own.
+        unsafe { libc::killpg(group, libc::SIGKILL) };
+    }
+}
+
+/// Windows keeps killing only the process itself.
+#[cfg(not(unix))]
+fn kill_tree(_child: &Child) {}
 
 #[derive(Serialize)]
 pub struct Captured {
@@ -232,10 +295,13 @@ fn drain(pipe: impl Read + Send + 'static) -> std::sync::mpsc::Receiver<String> 
 
 /// Runs `c` as child `id` until it exits or something removes it from `children` (`proc_kill`).
 /// A killed run returns at once with code -1, also if a process it left behind holds the pipes.
-fn run_registered(children: &Mutex<HashMap<String, Child>>, id: &str, c: &mut Command) -> Result<Captured, String> {
+fn run_registered(children: &Mutex<HashMap<String, Child>>, trees: &Mutex<HashSet<String>>, id: &str, c: &mut Command) -> Result<Captured, String> {
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(c, 0);
     let mut child = c.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| e.to_string())?;
     let stdout = drain(child.stdout.take().unwrap());
     let stderr = drain(child.stderr.take().unwrap());
+    trees.lock().unwrap().insert(id.to_string());
     children.lock().unwrap().insert(id.to_string(), child);
     let code = loop {
         {
@@ -243,6 +309,7 @@ fn run_registered(children: &Mutex<HashMap<String, Child>>, id: &str, c: &mut Co
             let Some(child) = map.get_mut(id) else { break None };
             if let Ok(Some(status)) = child.try_wait() {
                 map.remove(id);
+                trees.lock().unwrap().remove(id);
                 break Some(status.code().unwrap_or(-1));
             }
         }
@@ -252,12 +319,14 @@ fn run_registered(children: &Mutex<HashMap<String, Child>>, id: &str, c: &mut Co
     Ok(Captured { code: code.unwrap_or(-1), stdout: stdout.recv_timeout(wait).unwrap_or_default(), stderr: stderr.recv_timeout(wait).unwrap_or_default() })
 }
 
-/// `run_capture` for a build that may have to stop early: `proc_kill` with this `id` ends it.
+/// `run_capture` for a build that may have to stop early: `proc_kill` with this `id` ends it and,
+/// on Unix, the actions it started (not one that detached itself with `setsid`).
 #[tauri::command]
 pub async fn run_killable(app: AppHandle, id: String, cmd: String, args: Vec<String>, cwd: Option<String>) -> Result<Captured, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let mut c = command(&cmd, &args, cwd, None)?;
-        run_registered(&app.state::<ProcState>().children, &id, &mut c)
+        let state = app.state::<ProcState>();
+        run_registered(&state.children, &state.trees, &id, &mut c)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -417,43 +486,85 @@ pub async fn install_debugger(app: AppHandle, kind: String) -> Result<String, St
 #[cfg(test)]
 mod tests {
     use super::{npm_packages, read_message, run_registered};
-    use std::collections::HashMap;
+    #[cfg(unix)]
+    use super::{descendant_groups, kill_registered};
+    use std::collections::{HashMap, HashSet};
     use std::process::Command;
     use std::sync::Mutex;
 
     #[cfg(unix)]
     #[test]
     fn a_registered_run_reports_its_exit_and_output() {
-        let children = Mutex::new(HashMap::new());
+        let (children, trees) = (Mutex::new(HashMap::new()), Mutex::new(HashSet::new()));
         let mut c = Command::new("sh");
         c.args(["-c", "echo out; echo err >&2; exit 3"]);
-        let r = run_registered(&children, "b", &mut c).unwrap();
+        let r = run_registered(&children, &trees, "b", &mut c).unwrap();
         assert_eq!((r.code, r.stdout.trim(), r.stderr.trim()), (3, "out", "err"));
         assert!(children.lock().unwrap().is_empty());
+        assert!(trees.lock().unwrap().is_empty());
+    }
+
+    #[cfg(unix)]
+    fn running(pid: i32) -> bool {
+        // SAFETY: signal 0 only checks that the process exists.
+        let exists = unsafe { libc::kill(pid, 0) } == 0;
+        exists && !std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|s| s.rsplit(')').next().is_some_and(|r| r.trim_start().starts_with('Z')))
+    }
+
+    /// Runs `script` (which writes the pids to end up dead into $1) and kills it through the registry.
+    #[cfg(unix)]
+    fn pids_after_kill(script: &str, wanted: usize) -> Vec<i32> {
+        let t = tempfile::tempdir().unwrap();
+        let file = t.path().join("pids");
+        let children = std::sync::Arc::new(Mutex::new(HashMap::new()));
+        let trees = std::sync::Arc::new(Mutex::new(HashSet::new()));
+        let (c2, t2) = (children.clone(), trees.clone());
+        let (script, arg) = (script.to_string(), file.clone());
+        let run = std::thread::spawn(move || {
+            let mut c = Command::new("sh");
+            c.arg("-c").arg(script).arg("sh").arg(arg);
+            run_registered(&c2, &t2, "b", &mut c).unwrap().code
+        });
+        let start = std::time::Instant::now();
+        let pids = loop {
+            let p: Vec<i32> = std::fs::read_to_string(&file).unwrap_or_default().split_whitespace().filter_map(|x| x.parse().ok()).collect();
+            if p.len() >= wanted {
+                break p;
+            }
+            assert!(start.elapsed().as_secs() < 5, "script didn't start");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        assert!(pids.iter().all(|p| running(*p)));
+        kill_registered(&children, &trees, "b");
+        assert_eq!(run.join().unwrap(), -1);
+        assert!(start.elapsed().as_secs() < 5);
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while pids.iter().any(|p| running(*p)) && std::time::Instant::now() < until {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        pids.into_iter().filter(|p| running(*p)).collect()
     }
 
     #[cfg(unix)]
     #[test]
-    fn a_registered_run_ends_at_once_when_it_is_killed() {
-        let children = std::sync::Arc::new(Mutex::new(HashMap::new()));
-        let map = children.clone();
-        let run = std::thread::spawn(move || {
-            let mut c = Command::new("sleep");
-            c.arg("30");
-            run_registered(&map, "b", &mut c).unwrap().code
-        });
-        let start = std::time::Instant::now();
-        loop {
-            if let Some(mut child) = children.lock().unwrap().remove("b") {
-                child.kill().unwrap();
-                child.wait().unwrap();
-                break;
-            }
-            assert!(start.elapsed().as_secs() < 5);
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        assert_eq!(run.join().unwrap(), -1);
-        assert!(start.elapsed().as_secs() < 5);
+    fn a_kill_ends_a_process_in_the_runs_own_group() {
+        assert_eq!(pids_after_kill(r#"sleep 30 & echo $! >> "$1"; wait"#, 1), Vec::<i32>::new());
+    }
+
+    /// What dune does: every action is a process group of its own, with children of its own.
+    #[cfg(unix)]
+    #[test]
+    fn a_kill_ends_an_action_in_its_own_process_group() {
+        let script = r#"set -m; sh -c 'sleep 30 & echo $! >> "$0"; echo $$ >> "$0"; wait' "$1" & wait"#;
+        assert_eq!(pids_after_kill(script, 2), Vec::<i32>::new());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn descendant_groups_follow_the_tree_only() {
+        let ps = "1 0 1\n50 1 50\n100 50 50\n200 100 200\n201 200 200\n300 201 300\n400 50 50\n500 1 500\n";
+        assert_eq!(descendant_groups(ps, 100, 50), [200, 300]);
+        assert_eq!(descendant_groups("garbage\n", 100, 50), Vec::<i32>::new());
     }
 
     #[test]
