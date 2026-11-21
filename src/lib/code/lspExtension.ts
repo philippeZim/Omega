@@ -79,29 +79,50 @@ const KIND: Record<number, string> = {
 /** LSP snippet syntax ($1, ${1:x}) → CodeMirror snippet syntax (${1}, ${1:x}). */
 const toCmSnippet = (s: string) => s.replace(/\$(\d+)/g, "${$1}").replace(/\$\{0\}/g, "${}");
 
-export function applyItem(view: EditorView, item: any, from: number, to: number) {
+/** Whether the quote at `at` opens a string, going by the unescaped quotes before it on its line. */
+function opensString(doc: Text, at: number, quote: string) {
+  const line = doc.lineAt(at);
+  const before = doc.sliceString(line.from, at).replace(/\\./g, "");
+  return before.split(quote).length % 2 === 1;
+}
+
+/** Widens a range so a quoted completion takes the place of the quotes already typed or auto-closed. */
+function coverQuotes(doc: Text, text: string, start: number, end: number, cursor: number): [number, number] {
+  const quote = text[0];
+  if (quote !== '"' && quote !== "'" && quote !== "`") return [start, end];
+  if (start > 0 && doc.sliceString(start - 1, start) === quote && opensString(doc, start - 1, quote)) start--;
+  const closes = text.length > 1 && text.endsWith(quote) && end === cursor && start < end && doc.sliceString(start, start + 1) === quote;
+  if (closes && doc.sliceString(end, end + 1) === quote) end++;
+  return [start, end];
+}
+
+/** `requestPos`: the cursor when the server was asked; its range ends move with what was typed since. */
+export function applyItem(view: EditorView, item: any, from: number, to: number, requestPos = to) {
   const doc = view.state.doc;
   let start = from;
+  let end = to;
   const edit = item.textEdit;
   if (edit) {
     const range = edit.range ?? edit.insert;
     start = toOffset(doc, range.start);
+    end = Math.min(doc.length, Math.max(to, toOffset(doc, range.end) + to - requestPos));
   }
   const text: string = edit?.newText ?? item.insertText ?? item.label;
+  [start, end] = coverQuotes(doc, text, start, end, to);
   const extra = (item.additionalTextEdits ?? []).map((e: any) => ({ from: toOffset(doc, e.range.start), to: toOffset(doc, e.range.end), insert: e.newText }));
   if (extra.length) {
     view.dispatch({ changes: extra });
     // Recompute positions after the additional edits (they are usually above the cursor).
     const delta = extra.reduce((d: number, e: any) => (e.from <= start ? d + e.insert.length - (e.to - e.from) : d), 0);
     start += delta;
-    to += delta;
+    end += delta;
   }
-  if (item.insertTextFormat === 2) snippet(toCmSnippet(text))(view, { label: item.label }, start, to);
-  else view.dispatch(insertCompletionText(view.state, text, start, to));
+  if (item.insertTextFormat === 2) snippet(toCmSnippet(text))(view, { label: item.label }, start, end);
+  else view.dispatch(insertCompletionText(view.state, text, start, end));
 }
 
 /** Completion entries for LSP items in their final order; `resolve` fills in the details on demand. */
-export function completionOptions(items: any[], total: number, resolve: (item: any) => Promise<any>): Completion[] {
+export function completionOptions(items: any[], total: number, resolve: (item: any) => Promise<any>, requestPos?: number): Completion[] {
   return items.map((item, i) => {
     const label = String(item.filterText ?? item.label).trim();
     return {
@@ -124,7 +145,7 @@ export function completionOptions(items: any[], total: number, resolve: (item: a
         if (el) wrap.appendChild(el);
         return wrap;
       },
-      apply: (view, _c, from, to) => applyItem(view, item, from, to),
+      apply: (view, _c, from, to) => applyItem(view, item, from, to, requestPos),
     };
   });
 }
@@ -157,7 +178,7 @@ function completionSource(getClient: () => LspClient | null, uri: string, flush:
       const full = await client.request("completionItem/resolve", item).catch(() => item);
       if (full.additionalTextEdits) item.additionalTextEdits = full.additionalTextEdits;
       return full;
-    });
+    }, ctx.pos);
     return {
       from: word ? word.from : ctx.pos,
       options,

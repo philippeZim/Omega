@@ -162,7 +162,7 @@ function completionSource(rel: string) {
       if (base && additionalTextEdits?.every(isEdit)) Object.assign(item, { additionalTextEdits, editsBase: base });
       return { ...item, ...info };
     });
-    options.forEach((o, i) => (o.apply = (view, _c, from, to) => void applyGuestItem(rel, list, view, items[i], from, to)));
+    options.forEach((o, i) => (o.apply = (view, _c, from, to) => void applyGuestItem(rel, list, view, items[i], from, to, ctx.pos)));
     return { from: word ? word.from : ctx.pos, options, validFor: incomplete ? undefined : /^[\w$]*$/, filter: true };
   };
 }
@@ -171,7 +171,7 @@ function completionSource(rel: string) {
  * Inserts a completion. Its extra edits (an import, usually) are only valid for the text they were
  * computed on: if that moved on they're asked for again, and left out if that doesn't work.
  */
-async function applyGuestItem(rel: string, list: number, view: EditorView, item: WireItem, from: number, to: number) {
+async function applyGuestItem(rel: string, list: number, view: EditorView, item: WireItem, from: number, to: number, requestPos: number) {
   if (item.additionalTextEdits?.length && item.editsBase && !matches(rel, view, item.editsBase)) {
     const doc = view.state.doc;
     const r = await call("lsp.resolve", { path: rel, list, id: item.id, at: stamp(rel, view) }, { timeoutMs: 3000 });
@@ -184,7 +184,7 @@ async function applyGuestItem(rel: string, list: number, view: EditorView, item:
       ui.toast(t("code.lsp.guestStale"), "error");
     }
   }
-  applyItem(view, item, from, to);
+  applyItem(view, item, from, to, requestPos);
 }
 
 /** Opens a shared file at a position; a tab that's already open also gets the cursor there. */
