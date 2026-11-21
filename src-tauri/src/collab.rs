@@ -895,6 +895,24 @@ pub struct HooksCheck {
     structural: Vec<bool>,
 }
 
+/// A path for comparing, in the one spelling Windows resolves its variants to: any case, trailing
+/// dots and spaces, and an NTFS stream (`hooks::$INDEX_ALLOCATION`). Matters for parts that don't
+/// exist yet, which `canonicalize` can't settle. Unchanged on other platforms.
+fn spelling_key(path: &Path) -> std::path::PathBuf {
+    if !cfg!(windows) {
+        return path.to_path_buf();
+    }
+    path.components()
+        .map(|c| match c {
+            std::path::Component::Normal(n) => {
+                let name = n.to_string_lossy();
+                std::ffi::OsString::from(name.split(':').next().unwrap_or("").trim_end_matches(['.', ' ']).to_lowercase())
+            }
+            other => other.as_os_str().to_os_string(),
+        })
+        .collect()
+}
+
 fn hooks_check(root: &str, paths: &[String]) -> HooksCheck {
     let closed = || HooksCheck { ok: false, in_project: true, locked: vec![true; paths.len()], structural: vec![true; paths.len()] };
     let Ok(dir) = crate::git::hooks_dir(root) else { return closed() };
@@ -906,8 +924,10 @@ fn hooks_check(root: &str, paths: &[String]) -> HooksCheck {
         let Ok(includes) = crate::git::config_include_files(root) else { return closed() };
         roots.extend(includes.iter().map(|f| resolve_lenient(f)));
     }
+    let roots: Vec<_> = roots.iter().map(|r| spelling_key(r)).collect();
+    let real_root = spelling_key(&real_root);
     let in_project = roots.iter().any(|r| r.strip_prefix(&real_root).is_ok_and(|rel| !has_git_part(rel)));
-    let real: Vec<_> = paths.iter().map(|p| resolve_lenient(Path::new(p))).collect();
+    let real: Vec<_> = paths.iter().map(|p| spelling_key(&resolve_lenient(Path::new(p)))).collect();
     let locked: Vec<bool> = real.iter().map(|p| roots.iter().any(|r| p.starts_with(r))).collect();
     let structural = real.iter().zip(&locked).map(|(p, l)| *l || roots.iter().any(|r| r.starts_with(p))).collect();
     HooksCheck { ok: true, in_project, locked, structural }
