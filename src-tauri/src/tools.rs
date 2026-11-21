@@ -608,6 +608,35 @@ fn opam() -> Command {
     c
 }
 
+/// One opam job at a time in Omega's root. Installs wait for each other; a look at the newest
+/// versions (Settings) is skipped while an install runs or waits, so it can't get in its way.
+static OPAM_WORK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static OPAM_INSTALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+struct OpamInstall(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+
+impl Drop for OpamInstall {
+    fn drop(&mut self) {
+        OPAM_INSTALLS.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+fn opam_install_lock() -> OpamInstall {
+    OPAM_INSTALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    OpamInstall(OPAM_WORK.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
+/// The lock for a read-only look at opam; None while an install runs or waits.
+fn opam_query_lock() -> Option<std::sync::MutexGuard<'static, ()>> {
+    let installing = || OPAM_INSTALLS.load(std::sync::atomic::Ordering::SeqCst) > 0;
+    if installing() {
+        return None;
+    }
+    let guard = OPAM_WORK.lock().unwrap_or_else(|e| e.into_inner());
+    // An install may have started while this waited.
+    (!installing()).then_some(guard)
+}
+
 /// Updates (done, total) from a line of opam's output; true if a package finished.
 fn opam_progress(line: &str, done: &mut u64, total: &mut u64) -> bool {
     let line = line.trim();
@@ -666,6 +695,7 @@ fn install_ocaml(app: &AppHandle) -> Result<String, String> {
     if !missing.is_empty() {
         return Err(format!("tools:ocaml_missing:{}", missing.join(", ")));
     }
+    let _work = opam_install_lock();
     let dir = ocaml_dir();
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     if !opam_exe().is_file() {
@@ -710,6 +740,7 @@ pub fn install_ocaml_package(app: &AppHandle, id: &str, package: &str, exe: &str
         return Err(format!("tools:ocaml_not_managed:{package}"));
     }
     let _ = app.emit("tool-progress", Progress { id, done: 0, total: 0, stage: "install" });
+    let _work = opam_install_lock();
     let path = ocaml_bin().join(exe);
     if path.is_file() {
         run_opam(app, id, &["update"])?;
@@ -729,6 +760,7 @@ pub fn remove_ocaml_package(package: &str) -> Result<(), String> {
     if !ocaml_bin().join("ocamlc").is_file() {
         return Err(format!("installs:not_ours:{package}"));
     }
+    let _work = opam_install_lock();
     let out = opam().args(["remove", "--switch", OCAML_SWITCH, package]).output().map_err(|e| e.to_string())?;
     if out.status.success() {
         Ok(())
@@ -761,6 +793,7 @@ pub fn ocaml_latest(package: &str) -> Result<String, String> {
     if !ocaml_bin().join("ocamlc").is_file() {
         return Err(format!("installs:not_ours:{package}"));
     }
+    let Some(_work) = opam_query_lock() else { return Err(format!("tools:no_version:{package}")) };
     opam_refresh();
     let out = opam().args(["upgrade", "--switch", OCAML_SWITCH, "--dry-run", "--show-actions", package]).output().map_err(|e| e.to_string())?;
     if let Some(v) = opam_upgrade_target(&String::from_utf8_lossy(&out.stdout), package) {
@@ -773,6 +806,31 @@ pub fn ocaml_latest(package: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_version_check_is_skipped_while_an_install_runs_and_never_blocks_it() {
+        // The only test using these locks: other tests never start opam.
+        assert!(opam_query_lock().is_some());
+        let install = opam_install_lock();
+        assert!(opam_query_lock().is_none());
+        drop(install);
+        let query = opam_query_lock().expect("free again");
+        // An install that arrives during a check waits for it, and the next check steps aside.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let waiting = std::thread::spawn(move || {
+            let lock = opam_install_lock();
+            tx.send(()).unwrap();
+            drop(lock);
+        });
+        while OPAM_INSTALLS.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+            std::thread::yield_now();
+        }
+        assert!(rx.recv_timeout(std::time::Duration::from_millis(50)).is_err());
+        drop(query);
+        rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        waiting.join().unwrap();
+        assert!(opam_query_lock().is_some());
+    }
 
     #[test]
     fn switch_variables_are_recognised() {
