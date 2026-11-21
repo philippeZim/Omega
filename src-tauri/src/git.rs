@@ -284,6 +284,102 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("omega-git-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.canonicalize().unwrap()
+    }
+
+    fn run_git(dir: &std::path::Path, args: &[&str]) {
+        let id = ["-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", "-c", "protocol.file.allow=always"];
+        let out = git_cmd(dir.to_str().unwrap()).args(id).args(args).output().unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    fn status_of(dir: &std::path::Path) -> Status {
+        tauri::async_runtime::block_on(git_status(dir.to_string_lossy().into())).unwrap()
+    }
+
+    fn new_repo(dir: &std::path::Path) {
+        std::fs::create_dir_all(dir).unwrap();
+        run_git(dir, &["init", "-q"]);
+        std::fs::write(dir.join("a.txt"), "a\n").unwrap();
+        run_git(dir, &["add", "a.txt"]);
+        run_git(dir, &["commit", "-qm", "a"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_planted_bare_repository_never_runs_its_config() {
+        use tauri::async_runtime::block_on;
+        let tmp = scratch("planted");
+        let (dir, marker) = (tmp.join("proj"), tmp.join("EXECUTED"));
+        std::fs::create_dir_all(dir.join("objects")).unwrap();
+        std::fs::create_dir_all(dir.join("refs")).unwrap();
+        std::fs::write(dir.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::write(dir.join("a.txt"), "a\n").unwrap();
+        let hook = format!("touch {}; false", marker.display());
+        std::fs::write(dir.join("config"), format!("[core]\n\trepositoryformatversion = 0\n\tbare = false\n\tworktree = .\n\tfsmonitor = \"{hook}\"\n")).unwrap();
+        let root = dir.to_string_lossy().to_string();
+        let file = dir.join("a.txt").to_string_lossy().to_string();
+
+        // Every way Omega reaches git: status poll, generic command, gutter, blame, run_capture.
+        assert!(!status_of(&dir).repo);
+        let direct = block_on(git(root.clone(), vec!["status".into()])).unwrap();
+        assert_eq!(direct.code, 128);
+        assert!(direct.stderr.contains("safe.bareRepository"), "{}", direct.stderr);
+        assert_eq!(block_on(git_head_file(root.clone(), file.clone())).unwrap(), None);
+        assert!(block_on(git_blame(root.clone(), file, Some("a\n".into()))).unwrap().is_none());
+        let captured = block_on(crate::proc::run_capture("git".into(), vec!["status".into()], Some(root))).unwrap();
+        assert_eq!(serde_json::to_value(&captured).unwrap()["code"], 128);
+        assert!(!marker.exists(), "the planted core.fsmonitor ran");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn normal_repositories_worktrees_and_submodules_keep_working() {
+        let tmp = scratch("layouts");
+        let main = tmp.join("main");
+        new_repo(&main);
+        assert!(status_of(&main).repo);
+
+        run_git(&main, &["worktree", "add", "-q", "../wt", "-b", "wt"]);
+        assert!(tmp.join("wt/.git").is_file());
+        let wt = status_of(&tmp.join("wt"));
+        assert!(wt.repo);
+        assert_eq!(wt.branch, "wt");
+
+        new_repo(&tmp.join("lib"));
+        run_git(&main, &["submodule", "add", "-q", "../lib", "mod"]);
+        assert!(main.join("mod/.git").is_file());
+        assert!(status_of(&main.join("mod")).repo);
+
+        // A worktree of a bare repository is opened through its `.git` file, not discovered.
+        run_git(&tmp, &["clone", "-q", "--bare", "main", "bare.git"]);
+        let barewt = tmp.join("barewt");
+        run_git(&tmp, &["--git-dir=bare.git", "worktree", "add", "-q", barewt.to_str().unwrap(), "-b", "bw"]);
+        assert!(status_of(&barewt).repo);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn a_deliberately_opened_bare_repository_fails_cleanly() {
+        use tauri::async_runtime::block_on;
+        let tmp = scratch("bare");
+        new_repo(&tmp.join("src"));
+        run_git(&tmp, &["clone", "-q", "--bare", "src", "bare.git"]);
+        let bare = tmp.join("bare.git");
+        let s = status_of(&bare);
+        assert!(!s.repo && s.changes.is_empty());
+        let log = block_on(git(bare.to_string_lossy().into(), vec!["log".into()])).unwrap();
+        assert_eq!(log.code, 128);
+        assert!(log.stderr.starts_with("fatal:"), "{}", log.stderr);
+        // Explicitly addressing it still works.
+        run_git(&tmp, &["--git-dir=bare.git", "log", "-1"]);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
     #[test]
     fn git_runs_with_untranslated_messages() {
         let c = git_cmd(".");

@@ -178,6 +178,10 @@ pub fn pty_spawn(app: AppHandle, id: String, cwd: Option<String>, cols: u16, row
     };
     cmd.cwd(&dir);
     cmd.env("PATH", crate::env::path());
+    // Shell prompts run git by themselves in whatever folder the terminal is in.
+    for (k, v) in crate::env::git_guard_env() {
+        cmd.env(k, v);
+    }
     // Don't leak a parent Claude Code session's markers (e.g. Omega started from `claude`) into
     // the user's shells; the login shell re-reads the user's own profile anyway.
     for (k, _) in std::env::vars() {
@@ -204,8 +208,8 @@ pub fn pty_spawn(app: AppHandle, id: String, cwd: Option<String>, cols: u16, row
     }
     if cfg!(windows) {
         // Forward Omega's variables into WSL shells (Windows → Linux env bridging).
-        let fwd = "TERM_PROGRAM:COLORTERM:CLAUDE_CODE_SSE_PORT:ENABLE_IDE_INTEGRATION:FORCE_CODE_TERMINAL:OMEGA_MCP_TOKEN";
-        let wslenv = std::env::var("WSLENV").map(|v| format!("{v}:{fwd}")).unwrap_or(fwd.into());
+        let fwd = format!("TERM_PROGRAM:COLORTERM:CLAUDE_CODE_SSE_PORT:ENABLE_IDE_INTEGRATION:FORCE_CODE_TERMINAL:OMEGA_MCP_TOKEN:{}", crate::env::git_guard_wslenv());
+        let wslenv = std::env::var("WSLENV").map(|v| format!("{v}:{fwd}")).unwrap_or(fwd);
         cmd.env("WSLENV", wslenv);
     }
     let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
