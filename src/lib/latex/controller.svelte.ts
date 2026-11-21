@@ -159,7 +159,9 @@ export function schedule(id: string, path: string | null, delay = 900, compile =
     sync = [];
   }
   clearTimeout(outlineTimer);
-  outlineTimer = window.setTimeout(() => (latex.outline = outline(ed.getText(id))), switched ? 0 : 300);
+  outlineTimer = window.setTimeout(() => {
+    latex.outline = outline(ed.getText(id));
+  }, switched ? 0 : 300);
   if (!compile) return;
   clearTimeout(timer);
   timer = window.setTimeout(run, switched ? 0 : delay);
