@@ -660,6 +660,9 @@ test("a folder switch during a guest's folder listing doesn't list the new folde
   expect(sent.at(-1)!.msg).toEqual({ t: "fs.list.res", req: 12, entries: [] });
   expect(fs.calls.filter((c) => c.cmd === "list_dir")).toEqual([]);
 });
+
+test("a presence message still being checked when its guest leaves is dropped", async () => {
+  const fs = hostFs({ "/p/a.txt": "a\n" });
   const other = fs.other;
   fs.other = (c, args) => {
     if (c === "collab_path_inside") share.forgetPeer("g1");

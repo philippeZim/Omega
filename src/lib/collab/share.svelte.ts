@@ -614,6 +614,11 @@ async function applyFollow() {
 
 const presenceOrder = new Map<string, number>();
 
+/** Host: a guest left. A presence message of theirs still being checked is dropped too. */
+export function forgetPeer(peer: string) {
+  presenceOrder.delete(peer);
+}
+
 /**
  * Host: a guest's presence with only values that are safe to store, pass on and follow, or null if
  * a newer message overtook it during the path check. Name and color are the ones the host assigned.
