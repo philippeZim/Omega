@@ -16,7 +16,7 @@ import { collab, onCollabMessage, sessionEndHooks } from "./collab.svelte";
 import { blockedByCapability } from "./guard";
 import { call, hasCapability, isObj, publish, registerMethod, registerTopic, rpcErrorText, RpcFail, subscribe, type RpcResult } from "./rpc.svelte";
 import { flushBackgroundDocs, guestScope, isRemote, openRemote, REMOTE, type GuestScope } from "./share.svelte";
-import { cleanBreakpoints, cleanRel, clip, DEBUG_LIMITS, isId, RefTable, scrubPaths, shareableBreakpoints, StreamScrubber, termOut, type SharedBreakpoint } from "./debugMirror";
+import { cleanBreakpoints, cleanRel, clip, DEBUG_LIMITS, isId, RefTable, scrubPaths, shareableBreakpoints, StreamScrubber, termOut, b64ToBytes, textToB64, type SharedBreakpoint } from "./debugMirror";
 import { applyGuestBreakpoints, dbg, dbgHooks, dbgRemote, endGuestBreakpoints, revertGuestBreakpoints, SHARED_BP, type DebugRemote, type DebugStatus, type Frame, type VarNode } from "../debug/store.svelte";
 import { hostDebug, stopLocal } from "../debug/debugger.svelte";
 import { app, activeTab, setMode } from "../state.svelte";
@@ -282,32 +282,28 @@ let termTimer = 0;
 let termWaiting: string[] = [];
 let termWaitingChars = 0;
 let homeLoading = false;
-
-const toB64 = (text: string) => {
-  let bin = "";
-  for (const b of new TextEncoder().encode(text)) bin += String.fromCharCode(b);
-  return btoa(bin);
-};
+/** The lookup failed: asked once per session, and until it ends nothing is mirrored. */
+let homeFailed = false;
 
 function endTermScrub(later: (b64: string) => void) {
   clearTimeout(termTimer);
   const rest = termScrubber?.flush();
   termScrubber = null;
-  if (rest) later(toB64(rest));
+  if (rest) later(textToB64(rest));
 }
 
 function scrubChunk(b64: string, later: (b64: string) => void): string {
   if (termScrubber && termScrubRoot !== app.root) endTermScrub(later);
   termScrubRoot = app.root;
   termScrubber ??= new StreamScrubber(app.root, home);
-  const text = termScrubber.push(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)));
+  const text = termScrubber.push(b64ToBytes(b64));
   // A path that never completes must still show up.
   clearTimeout(termTimer);
   termTimer = window.setTimeout(() => {
     const rest = termScrubber?.drain();
-    if (rest) later(toB64(rest));
+    if (rest) later(textToB64(rest));
   }, TERM_HOLD_MS);
-  return text ? toB64(text) : "";
+  return text ? textToB64(text) : "";
 }
 
 /** Output from before the home folder is known goes out once it is; without it, none does. */
@@ -317,7 +313,10 @@ function loadHomeForTerminal(later: (b64: string) => void) {
   void fsApi
     .homeDir()
     .then((h) => (home = h))
-    .catch((e) => console.error("collab home folder", e))
+    .catch((e) => {
+      homeFailed = true;
+      console.error("collab home folder", e);
+    })
     .finally(() => {
       homeLoading = false;
       const waiting = termWaiting;
@@ -334,6 +333,7 @@ function loadHomeForTerminal(later: (b64: string) => void) {
 export function filterTerminal(b64: string, later: (b64: string) => void): string {
   if (collab.role !== "host") return "";
   if (home === null) {
+    if (homeFailed) return "";
     if (termWaitingChars + b64.length <= TERM_WAIT_CHARS) {
       termWaiting.push(b64);
       termWaitingChars += b64.length;
@@ -1032,6 +1032,7 @@ sessionEndHooks.push((wasGuest) => {
   termScrubber = null;
   termWaiting = [];
   termWaitingChars = 0;
+  homeFailed = false;
   refs.clear();
   relCache.clear();
   relCacheKey = "";

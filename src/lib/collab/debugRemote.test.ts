@@ -299,6 +299,57 @@ test("a complete path right before a held one is not cut apart (#155)", () => {
   expect(out).toBe("~/x ~/y -I~/z");
 });
 
+const WIN_HOME = "C:/Users/eron";
+
+test("Windows: doubled backslashes, the extended prefix, any case and both slashes are scrubbed (#155)", () => {
+  const s = (text: string) => mirror.scrubPaths(text, null, WIN_HOME);
+  expect(s("'C:\\\\Users\\\\eron\\\\a.txt'")).toBe("'~\\\\a.txt'");
+  expect(s("\\\\?\\C:\\Users\\eron\\target")).toBe("~\\target");
+  expect(s('"\\\\\\\\?\\\\C:\\\\Users\\\\eron\\\\x"')).toBe('"~\\\\x"');
+  expect(s("c:\\users\\ERON\\a")).toBe("~\\a");
+  expect(s("C:/Users/eron/a")).toBe("~/a");
+  expect(s("C:\\Users/eron\\a")).toBe("~\\a");
+  expect(s("file:///C:/Users/eron/a")).toBe("~/a");
+  for (const other of ["C:\\Users\\eron2\\a", "C:\\Users\\eron.bak\\a", "D:\\Users\\eron\\a", "x\\C:\\Users\\eron"]) expect(s(other)).toBe(other);
+});
+
+test("Linux paths stay case-sensitive (#155)", () => {
+  const s = (text: string) => mirror.scrubPaths(text, null, "/home/eron");
+  expect(s("/home/eron/a")).toBe("~/a");
+  for (const other of ["/HOME/eron/a", "/home/Eron/a"]) expect(s(other)).toBe(other);
+});
+
+test("a home path before sentence punctuation is scrubbed, another name is not (#155)", () => {
+  const s = (text: string) => mirror.scrubPaths(text, null, "/home/eron");
+  expect(s("cannot cd to /home/eron.")).toBe("cannot cd to ~.");
+  expect(s("in /home/eron, then /home/eron... (/home/eron)")).toBe("in ~, then ~... (~)");
+  for (const other of ["/home/eron.backup", "/home/eronx", "/home/eron-old", "/home/eron../x"]) expect(s(other)).toBe(other);
+});
+
+test("punctuation and Windows forms are decided the same wherever the output is split (#155)", () => {
+  const cases: [string, string][] = [
+    ["/home/eron", "cd /home/eron. then /home/eron.backup and /home/eron... ok\n"],
+    [WIN_HOME, "'C:\\\\Users\\\\eron\\\\a.txt' \\\\?\\C:\\Users\\eron\\b c:\\users\\eron\\c C:/Users/eron. C:\\Users\\eron.bak\\d \x1b[35mC:\\Users\\eron\\e\x1b[0m\n"],
+  ];
+  for (const [home, text] of cases) {
+    const whole = mirror.scrubTerminal(text, null, home);
+    const bytes = new TextEncoder().encode(text);
+    for (let i = 1; i < bytes.length; i++) {
+      const scrubber = new mirror.StreamScrubber(null, home);
+      expect(scrubber.push(bytes.slice(0, i)) + scrubber.push(bytes.slice(i)) + scrubber.flush()).toBe(whole);
+    }
+    const scrubber = new mirror.StreamScrubber(null, home);
+    let byByte = "";
+    for (let i = 0; i < bytes.length; i++) byByte += scrubber.push(bytes.slice(i, i + 1));
+    expect(byByte + scrubber.flush()).toBe(whole);
+  }
+});
+
+test("the base64 helpers round-trip large multi-byte output (#155)", () => {
+  const text = "ä🙂\x1b[31mx\n".repeat(20_000);
+  expect(new TextDecoder().decode(mirror.b64ToBytes(mirror.textToB64(text)))).toBe(text);
+});
+
 test("host: plain Run output is scrubbed for guests with no debug session (#155)", async () => {
   h.collab.role = "host";
   await vi.waitFor(async () => {

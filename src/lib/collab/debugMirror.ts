@@ -43,18 +43,56 @@ export interface SharedBreakpoint {
 
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
 
-/** A path's spellings in text: as stored (forward slashes) and as Windows prints it. */
+/** Base64 to bytes, for output on its way through the mirror: no callback per byte. */
+export function b64ToBytes(b64: string): Uint8Array {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
+
+export function textToB64(text: string): string {
+  const bytes = new TextEncoder().encode(text);
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+
+/** A Windows path: drive letter or UNC. These compare without case and print with either slash. */
+const isWindowsPath = (path: string) => /^(?:[A-Za-z]:[\\/]|\\\\)/.test(path);
+
+/** A path's spellings to look for: as stored and as Windows prints it. */
 function spellings(path: string) {
   const clean = path.replace(/[\\/]+$/, "");
+  if (isWindowsPath(clean)) return [clean];
   return [...new Set([clean, clean.replace(/\//g, "\\")])].filter((p) => p.length > 1);
 }
 
 /**
  * Matches `path` only as a whole path, so `/p/app` doesn't match inside `/p/app2` or `/x/p/app`. Also
- * after a one-letter compiler flag (`-I/p/app`) and as a file URL, with or without a host name.
+ * after a one-letter compiler flag (`-I/p/app`), as a file URL with or without a host name, and
+ * before sentence punctuation (`/p/app.`), but not as part of another name (`/p/app.bak`). Windows
+ * paths also match in any case, with doubled or forward slashes and with the `\\?\` prefix.
  */
 const PATH_START = `(?:(?<![\\w.\\-/\\\\])|(?<=(?:^|[\\s"'=,])-[A-Za-z]))`;
-const pathRe = (path: string) => new RegExp(`${PATH_START}(?:file://[^/\\s]*)?${escapeRe(path)}(?![\\w.\\-])([/\\\\]?)`, "g");
+const PATH_END = `(?![\\w\\-]|\\.+[\\w\\-/\\\\])`;
+
+function buildPathRe(path: string) {
+  if (!isWindowsPath(path)) return new RegExp(`${PATH_START}(?:file://[^/\\s]*)?${escapeRe(path)}${PATH_END}([/\\\\]?)`, "g");
+  const body = path.split(/[\\/]+/).map(escapeRe).join("[\\\\/]{1,2}");
+  return new RegExp(`${PATH_START}(?:file://[^/\\s]*/?)?(?:\\\\{2,4}\\?\\\\{1,2})?${body}${PATH_END}([/\\\\]{0,2})`, "gi");
+}
+
+/** Compiled patterns: the mirror asks for the same few paths on every chunk of output. */
+const pathRes = new Map<string, RegExp>();
+function pathRe(path: string) {
+  let re = pathRes.get(path);
+  if (!re) {
+    if (pathRes.size >= 16) pathRes.clear();
+    pathRes.set(path, (re = buildPathRe(path)));
+  }
+  return re;
+}
 const pathStartRe = new RegExp(PATH_START, "y");
 /** Characters before a path that decide whether it counts as one (see `PATH_START`). */
 const PATH_CONTEXT = 3;
@@ -179,6 +217,9 @@ function openEscape(text: string): number {
   return -1;
 }
 
+/** A Windows path in one form for comparing: no `\\?\` prefix, one kind of slash, lower case. */
+const normalizeWindows = (path: string) => path.replace(/^\\{1,4}(?:\?\\{0,2})?/, "").replace(/[\\/]+/g, "/").toLowerCase();
+
 /**
  * `scrubTerminal` for a byte stream: a path or an escape sequence can arrive split over two chunks,
  * so the end of a chunk that could still become one is held back until the next chunk or `flush`.
@@ -188,26 +229,39 @@ export class StreamScrubber {
   private tail = "";
   /** The last characters already sent, for the look-behind of what comes next. */
   private before = "";
-  private needles: string[];
+  private needles: { text: string; windows: boolean }[];
   private firstChars: Set<string>;
   private longest: number;
 
   constructor(private root: string | null, private home: string | null) {
-    this.needles = [root, home].flatMap((p) => (p ? spellings(p) : []));
-    this.firstChars = new Set(["f", ...this.needles.map((n) => n[0])]);
-    this.longest = Math.max(0, ...this.needles.map((n) => n.length)) + "file://".length + MAX_URL_HOST;
+    const paths = [root, home].flatMap((p) => (p ? spellings(p) : []));
+    this.needles = paths.map((p) => (isWindowsPath(p) ? { text: normalizeWindows(p), windows: true } : { text: p, windows: false }));
+    const windows = this.needles.some((n) => n.windows);
+    this.firstChars = new Set(["f", ...(windows ? ["F", "\\"] : []), ...paths.flatMap((p) => (isWindowsPath(p) ? [p[0].toLowerCase(), p[0].toUpperCase()] : [p[0]]))]);
+    // Doubled separators can make a Windows path up to twice as long, plus the `\\?\` prefix.
+    this.longest = 2 * Math.max(0, ...paths.map((p) => p.length)) + "file://".length + MAX_URL_HOST + 6;
   }
 
   /** Whether `rest`, the end of the text so far, could still turn into a path to scrub. */
   private couldGrow(rest: string) {
-    if ("file://".startsWith(rest)) return true;
+    const lower = this.needles.some((n) => n.windows) ? rest.toLowerCase() : rest;
+    if ("file://".startsWith(lower)) return true;
     let path = rest;
-    if (rest.startsWith("file://")) {
-      const prefix = /^file:\/\/[^/\s]*/.exec(rest)![0];
+    if (lower.startsWith("file://")) {
+      const prefix = /^file:\/\/[^/\s]*/i.exec(rest)![0];
       if (prefix.length === rest.length) return prefix.length <= "file://".length + MAX_URL_HOST;
       path = rest.slice(prefix.length);
     }
-    return this.needles.some((n) => n.startsWith(path));
+    const windowsPath = normalizeWindows(path);
+    const windowsNoSlash = windowsPath.replace(/^\//, "");
+    return this.needles.some(({ text, windows }) => {
+      for (const p of windows ? [windowsPath, windowsNoSlash] : [path]) {
+        if (text.startsWith(p)) return true;
+        // Dots may be punctuation or the start of another name; a separator may be doubled.
+        if (p.startsWith(text) && (/^\.+$/.test(p.slice(text.length)) || (windows && p.length === text.length + 1 && p.endsWith("/")))) return true;
+      }
+      return false;
+    });
   }
 
   /** Where the part that may still grow into a path begins. */

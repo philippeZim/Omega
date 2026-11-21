@@ -50,3 +50,21 @@ test("host: without the home folder nothing is mirrored (#155)", async () => {
   await new Promise((r) => setTimeout(r));
   expect(later).toEqual([]);
 });
+
+test("host: a failing home folder lookup runs once and logs once, and stays closed (#155)", async () => {
+  const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+  const lookup = vi.fn(async (): Promise<string> => {
+    throw new Error("no home");
+  });
+  const remote = await fresh(lookup);
+  const later: string[] = [];
+  remote.filterTerminal(toB64("first /home/alice/a\n"), (b) => later.push(b));
+  await vi.waitFor(() => expect(logged).toHaveBeenCalledTimes(1));
+  await new Promise((r) => setTimeout(r));
+  const calls = lookup.mock.calls.length;
+  for (let i = 0; i < 200; i++) expect(remote.filterTerminal(toB64("more /home/alice/b\n"), (b) => later.push(b))).toBe("");
+  await new Promise((r) => setTimeout(r));
+  expect(lookup.mock.calls.length).toBe(calls);
+  expect(logged).toHaveBeenCalledTimes(1);
+  expect(later).toEqual([]);
+});
