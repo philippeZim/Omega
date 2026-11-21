@@ -6,6 +6,7 @@ const ipc = vi.hoisted(() => ({
   which: {} as Record<string, string>,
   installable: ["uv", "cc", "mojo"],
   onInstall: () => {},
+  failWrite: false,
 }));
 vi.mock("@tauri-apps/api/core", async (orig) => ({
   ...(await orig<typeof import("@tauri-apps/api/core")>()),
@@ -29,6 +30,10 @@ vi.mock("../api", async (orig) => ({
   fsApi: {
     exists: async (p: string) => disk.has(p) || [...disk.keys()].some((k) => k.startsWith(`${p}/`)),
     readFile: async (p: string) => disk.get(p) ?? "",
+    writeFile: async (p: string, text: string) => {
+      if (ipc.failWrite) throw new Error("read-only");
+      disk.set(p, text);
+    },
     listDir: async () => [],
   },
 }));
@@ -68,6 +73,7 @@ beforeEach(() => {
   ipc.which = { cc: "/usr/bin/cc", gcc: "/usr/bin/gcc", mojo: "/tools/mojo/bin/mojo" };
   ipc.installable = ["uv", "cc", "mojo"];
   ipc.onInstall = () => {};
+  ipc.failWrite = false;
 });
 
 describe("file names", () => {
@@ -177,7 +183,36 @@ describe("project detection", () => {
     disk.set("/p/main.mojo", "");
     const project = await detectProject("/p/main.mojo", "/p");
     expect(project).toMatchObject({ kind: "mojo", label: "pixi", needs: ["cc"] });
-    expect(project!.run!.cmd).toBe("pixi run mojo run main.mojo");
+    expect(project!.run!.cmd).toBe("sh /tools/pixi-mojo.sh run main.mojo");
+    expect(project!.build!.cmd).toBe("mkdir -p build && sh /tools/pixi-mojo.sh build main.mojo -o build/main");
+    expect(project!.more.find((a) => a.id === "fmt")!.cmd).toBe("sh /tools/pixi-mojo.sh format .");
+    expect(disk.get("/tools/pixi-mojo.sh")).toContain("--as-is");
+  });
+
+  test("no action of a pixi project calls a bare pixi run", async () => {
+    ipc.which.pixi = "/usr/bin/pixi";
+    disk.set("/p/pixi.toml", PIXI_MOJO);
+    disk.set("/p/main.mojo", "");
+    const project = (await detectProject("/p/main.mojo", "/p"))!;
+    for (const a of [project.run!, project.build!, ...project.more]) expect(a.cmd).not.toContain("pixi run");
+  });
+
+  test("names with spaces, apostrophes and a leading dash stay quoted", async () => {
+    ipc.which.pixi = "/usr/bin/pixi";
+    disk.set("/p/pixi.toml", PIXI_MOJO);
+    disk.set("/p/-it's a.mojo", "");
+    const project = (await detectProject("/p/-it's a.mojo", "/p"))!;
+    expect(project.run!.cmd).toBe(`sh /tools/pixi-mojo.sh run './-it'\\''s a.mojo'`);
+  });
+
+  test("without a launcher a pixi project doesn't fall back to a bare pixi run", async () => {
+    ipc.which.pixi = "/usr/bin/pixi";
+    ipc.failWrite = true;
+    disk.set("/p/pixi.toml", PIXI_MOJO);
+    disk.set("/p/main.mojo", "");
+    const project = (await detectProject("/p/main.mojo", "/p"))!;
+    expect(project.run!.cmd).toBe("mojo run main.mojo");
+    expect(project.needs).toEqual(["mojo", "cc"]);
   });
 
   test("with pixi on an unsupported system, Run leads to the hint instead of pixi", async () => {
