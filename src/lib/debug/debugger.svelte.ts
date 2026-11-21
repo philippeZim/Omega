@@ -183,6 +183,7 @@ async function runStart(gen: number, file: string, actor: string, byGuest: boole
       workspace: app.root,
       log,
       askInstall: (name) => ui.confirm(t("code.dbg.installTitle"), t("code.dbg.installMsg", { name }), t("code.install")),
+      cancelled: stale,
     });
   } catch (e) {
     if (stale()) return;
