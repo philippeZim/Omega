@@ -193,7 +193,9 @@ export function setOpen(z: Zone, open: boolean) {
     peek[z] = open;
     if (open) for (const o of ZONES) if (o !== z) peek[o] = false;
   }
-  (layout.open[app.mode] ??= {})[z] = open;
+  // Assign first and read back: the value of the assignment would be the plain object, not the proxy.
+  layout.open[app.mode] ??= {};
+  layout.open[app.mode]![z] = open;
   save();
 }
 

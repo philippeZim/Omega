@@ -49,7 +49,9 @@ export const ui = $state({
   toast(text: string, kind: "info" | "error" = "info") {
     const id = Date.now() + Math.random();
     ui.toasts.push({ id, text, kind });
-    setTimeout(() => (ui.toasts = ui.toasts.filter((t) => t.id !== id)), 4000);
+    setTimeout(() => {
+      ui.toasts = ui.toasts.filter((t) => t.id !== id);
+    }, 4000);
   },
 
   choose(title: string, message: string, options: ChoiceOption[]): Promise<string | null> {
