@@ -426,6 +426,49 @@ describe("ocamllsp in Code Together", () => {
     return running()[0];
   };
 
+  test("a multi-package repo gets one server, at the outermost dune root", async () => {
+    disk.set(`${root}/a/dune-project`, GOOD_PROJECT);
+    disk.set(`${root}/b/dune-project`, GOOD_PROJECT);
+    const langA = langFor(`${root}/a/x.ml`)!;
+    void clientFor(langA, `${root}/a/x.ml`, root, async () => true);
+    await vi.waitFor(() => expect(running()).toHaveLength(1));
+    void clientFor(langA, `${root}/b/y.ml`, root, async () => true);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(running()).toHaveLength(1);
+    expect(running()[0].root).toBe(root);
+  });
+
+  test("a dune-workspace above the packages is the root too", async () => {
+    disk.delete(`${root}/dune-project`);
+    disk.set(`${root}/dune-workspace`, "(lang dune 3.7)\n");
+    disk.set(`${root}/a/dune-project`, GOOD_PROJECT);
+    void clientFor(lang, `${root}/a/x.ml`, root, async () => true);
+    await vi.waitFor(() => expect(running()).toHaveLength(1));
+    expect(running()[0].root).toBe(root);
+  });
+
+  test("a git repository around a dune project doesn't become its root", async () => {
+    disk.delete(`${root}/dune-project`);
+    disk.set(`${root}/.git/HEAD`, "");
+    disk.set(`${root}/sub/dune-project`, GOOD_PROJECT);
+    void clientFor(lang, `${root}/sub/x.ml`, root, async () => true);
+    await vi.waitFor(() => expect(running()).toHaveLength(1));
+    expect(running()[0].root).toBe(`${root}/sub`);
+  });
+
+  test.each(["a", "b/deep"])("a guest change in package %s stops the shared server and holds it", async (pkg) => {
+    disk.set(`${root}/a/dune-project`, GOOD_PROJECT);
+    disk.set(`${root}/b/dune-project`, GOOD_PROJECT);
+    void clientFor(lang, `${root}/a/x.ml`, root, async () => true);
+    await vi.waitFor(() => expect(running()).toHaveLength(1));
+    noteGuestChange("peer", `${root}/${pkg}`);
+    expect(running()).toHaveLength(0);
+    expect(await clientFor(lang, `${root}/a/x.ml`, root, async () => true)).toBeNull();
+    resumeTool("ocaml", `${root}/${pkg}`, toolChangeCount("ocaml"));
+    resumeMetals(`${root}/${pkg}`, metalsChangeCount());
+    resumeCompiling("", `${root}/${pkg}`);
+  });
+
   test("the host's own project starts it without asking", async () => {
     const confirm = vi.spyOn(ui, "confirm");
     await started();

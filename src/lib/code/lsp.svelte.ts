@@ -337,10 +337,13 @@ const ROOT_MARKERS: Record<ServerKind, string[]> = {
   typescript: ["tsconfig.json", "jsconfig.json", "package.json", ".git"],
   rust: ["Cargo.toml"],
   scala: ["build.sbt", "project.scala", ".bsp", ".scala-build", ".git"],
-  ocaml: ["dune-project", "dune-workspace", ".git"],
+  ocaml: ["dune-project", "dune-workspace"],
 };
 
 const within = (path: string, dir: string) => path === dir || path.startsWith(dir.endsWith("/") ? dir : dir + "/");
+
+/** Build systems whose root is the outermost marker, so a multi-package repo gets one server. */
+const OUTERMOST_ROOT = new Set(["Cargo.toml", "dune-project"]);
 
 /** Walks up from the file to find the project root (stops at the workspace root's parent). */
 export async function findRoot(file: string, markers: string[], workspace: string | null): Promise<string> {
@@ -349,10 +352,10 @@ export async function findRoot(file: string, markers: string[], workspace: strin
   const candidates: string[] = [];
   while (dir && dir !== stop && !isRoot(dir)) {
     for (const m of markers) if (await fsApi.exists(joinPath(dir, m))) candidates.push(dir);
-    if (candidates.length && markers[0] !== "Cargo.toml") break;
+    if (candidates.length && !OUTERMOST_ROOT.has(markers[0])) break;
     dir = dirname(dir);
   }
-  // For Cargo workspaces the outermost Cargo.toml is the root.
+  // For Cargo and dune workspaces the outermost marker is the root.
   return candidates.length ? candidates[candidates.length - 1] : (workspace ?? dirname(file));
 }
 
