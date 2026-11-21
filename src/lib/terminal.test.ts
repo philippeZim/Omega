@@ -224,6 +224,53 @@ describe("Build/Run tasks", () => {
   });
 });
 
+describe("a task started for a Code Together guest", () => {
+  const shown = async () => vi.mocked((await import("./layout.svelte")).showView);
+
+  test("keeps the host's terminal tab and panel, and still runs and reports its output", async () => {
+    const shell = T.newTerminal("/p", "shell");
+    const showView = await shown();
+    showView.mockClear();
+    const echoed: string[] = [];
+    T.setRunEcho((text) => echoed.push(text));
+    T.runTask("build", "make", "/p", "Build", { focus: false, background: true });
+    T.runCommand("./app", "/p", "Run", false, { background: true });
+    await settle();
+    expect(T.terms.active).toBe(shell);
+    expect(showView).not.toHaveBeenCalled();
+    expect(calls.filter(([c]) => c === "pty_spawn").map(([, a]) => a.command)).toEqual(expect.arrayContaining(["make", "./app"]));
+    expect(echoed.join("")).toContain("./app");
+    const run = T.terms.tabs.find((x) => x.kind === "run")!;
+    expect(run.status).toBe("running");
+    expect(T.isTaskPty(`${run.id}.${run.taskId}`)).toBe(true);
+
+    // An existing Run tab isn't brought forward either.
+    T.runCommand("./again", "/p", "Run", false, { background: true });
+    await settle();
+    expect(T.terms.active).toBe(shell);
+    expect(showView).not.toHaveBeenCalled();
+    T.setRunEcho(() => {});
+  });
+
+  test("with no terminal at all it becomes the tab the panel shows, without opening the panel", async () => {
+    const showView = await shown();
+    showView.mockClear();
+    T.runCommand("./app", "/p", "Run", false, { background: true });
+    await settle();
+    expect(T.terms.active).toBe(T.terms.tabs.find((x) => x.kind === "run")!.id);
+    expect(showView).not.toHaveBeenCalled();
+  });
+
+  test("the host's own Run still brings its tab and panel forward", async () => {
+    const shell = T.newTerminal("/p", "shell");
+    const showView = await shown();
+    showView.mockClear();
+    T.runTask("run", "./app", "/p", "Run", { focus: false });
+    expect(T.terms.active).not.toBe(shell);
+    expect(showView).toHaveBeenCalledWith("terminal");
+  });
+});
+
 describe("shell terminals", () => {
   test("input queued before the shell exists is written after pty_spawn", async () => {
     const id = T.newTerminalWith("claude", "/p", "Claude");
