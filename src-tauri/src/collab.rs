@@ -521,6 +521,22 @@ async fn pump(app: AppHandle, peer_id: String, peer: Arc<Peer>, mut recv: RecvSt
     let _ = app.emit("collab-closed", ClosedEvent { peer: peer_id, reason });
 }
 
+/// Marks `ep` as hosting and returns the limits for a new accept loop (None: it already runs). A
+/// session stopped while `ep` was coming online must not be revived on its closed endpoint.
+async fn claim_hosting(state: &CollabState, ep: &Endpoint) -> Result<Option<Arc<JoinLimits>>, String> {
+    let mut hosting = state.hosting.lock().await;
+    if !state.endpoint.lock().await.as_ref().is_some_and(|current| current.id() == ep.id()) {
+        return Err("collab:not_connected".into());
+    }
+    if *hosting {
+        return Ok(None);
+    }
+    *hosting = true;
+    let limits = Arc::new(JoinLimits::new());
+    *state.limits.lock().await = Some(limits.clone());
+    Ok(Some(limits))
+}
+
 /// Starts hosting; returns the invite code (base64 of the endpoint address incl. relay URL).
 #[tauri::command]
 pub async fn collab_host(app: AppHandle) -> Result<String, String> {
@@ -532,13 +548,9 @@ pub async fn collab_host(app: AppHandle) -> Result<String, String> {
     let ticket = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json);
 
     let state = app.state::<CollabState>();
-    let mut hosting = state.hosting.lock().await;
-    if !*hosting {
-        *hosting = true;
+    if let Some(limits) = claim_hosting(&state, &ep).await? {
         let (app2, app3) = (app.clone(), app.clone());
         let peers = state.peers.clone();
-        let limits = Arc::new(JoinLimits::new());
-        *state.limits.lock().await = Some(limits.clone());
         tauri::async_runtime::spawn(accept_joins(
             ep,
             limits,
@@ -607,13 +619,30 @@ pub async fn collab_kick(app: AppHandle, peer: String) {
 /// Ends the session: closes all connections and the endpoint.
 #[tauri::command]
 pub async fn collab_stop(app: AppHandle) {
-    let state = app.state::<CollabState>();
+    stop_session(&app.state::<CollabState>()).await;
+}
+
+/// Closes every connection and the endpoint. The hosting lock is held until the session is gone,
+/// so a `collab_host` in flight sees either the whole session or none of it.
+async fn stop_session(state: &CollabState) {
+    let mut hosting = state.hosting.lock().await;
+    let ep = state.endpoint.lock().await.take();
     let limits = state.limits.lock().await.take();
     end_session(limits, &state.peers).await;
-    *state.hosting.lock().await = false;
-    if let Some(ep) = state.endpoint.lock().await.take() {
+    *hosting = false;
+    drop(hosting);
+    if let Some(ep) = ep {
         ep.close().await;
     }
+}
+
+/// The webview is (re)loading, so the UI that controlled this session is gone and the new one starts
+/// without it. Ends the session instead of leaving guests attached to a host nobody can control.
+pub fn frontend_loading(app: &AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        stop_session(&app.state::<CollabState>()).await;
+    });
 }
 
 /// Whether `path` stays inside `root` once symlinks are resolved (#138: a guest's request for
@@ -1167,6 +1196,49 @@ mod tests {
     }
 
     const HELLO: &[u8] = br#"{"t":"hello","name":"Gast","version":2}"#;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stopping_on_a_reload_disconnects_guests_and_the_same_guest_can_join_again() {
+        let state = CollabState::default();
+        let (host, limits, _peers, mut joins) = test_host_on(state.peers.clone()).await;
+        *state.endpoint.lock().await = Some(host.clone());
+        *state.limits.lock().await = Some(limits);
+        *state.hosting.lock().await = true;
+        let (guest, conn, _send, _recv) = join_as_guest(&host).await;
+        timeout(Duration::from_secs(10), joins.recv()).await.unwrap().unwrap();
+
+        stop_session(&state).await;
+        timeout(Duration::from_secs(5), conn.closed()).await.unwrap();
+        assert!(state.endpoint.lock().await.is_none());
+        assert!(!*state.hosting.lock().await);
+        assert!(state.limits.lock().await.is_none());
+
+        // The key that was connected is not "already connected" to the next session.
+        let (next, next_limits, _peers, mut next_joins) = test_host_on(state.peers.clone()).await;
+        *state.endpoint.lock().await = Some(next.clone());
+        assert!(claim_hosting(&state, &next).await.unwrap().is_some());
+        drop(next_limits);
+        let again = guest.connect(next.addr(), ALPN).await.unwrap();
+        let (mut send, _recv) = again.open_bi().await.unwrap();
+        send.write_all(&frame(HELLO)).await.unwrap();
+        timeout(Duration::from_secs(10), next_joins.recv()).await.unwrap().expect("the guest joins again");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_session_stopped_while_coming_online_does_not_start_hosting() {
+        let state = CollabState::default();
+        let ep = test_endpoint().await;
+        *state.endpoint.lock().await = Some(ep.clone());
+        stop_session(&state).await; // the reload, during collab_host's wait for the relay
+        assert_eq!(claim_hosting(&state, &ep).await.err().as_deref(), Some("collab:not_connected"));
+        assert!(!*state.hosting.lock().await, "a later session must still start its accept loop");
+        assert!(state.limits.lock().await.is_none());
+
+        let fresh = test_endpoint().await;
+        *state.endpoint.lock().await = Some(fresh.clone());
+        assert!(claim_hosting(&state, &fresh).await.unwrap().is_some());
+        assert!(claim_hosting(&state, &fresh).await.unwrap().is_none(), "already hosting");
+    }
 
     async fn join_as_guest(host: &Endpoint) -> (Endpoint, Connection, SendStream, RecvStream) {
         let guest = test_endpoint().await;

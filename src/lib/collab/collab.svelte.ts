@@ -123,6 +123,8 @@ export async function startHosting() {
     writeText(collab.ticket).then(() => ui.toast(t("ai.collab.ticketCopied"))).catch(() => {});
     collab.participants = [{ peer: "self", name: collab.me.name, color: collab.me.color, role: "host" }];
   } catch (e) {
+    // Ended while it was starting: that is not a failed start.
+    if (collab.role !== "host" || collab.status !== "starting") return;
     collab.status = "error";
     collab.error = String(e);
   }

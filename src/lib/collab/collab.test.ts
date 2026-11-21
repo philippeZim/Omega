@@ -79,6 +79,19 @@ test("starting to host twice at once starts one session", async () => {
   await s.leave();
 });
 
+test("ending a session while it starts is not reported as a failed start (#152)", async () => {
+  let fail: (e: Error) => void = () => {};
+  const s = await freshSession((cmd) => (cmd === "collab_host" ? new Promise((_, reject) => (fail = reject)) : null));
+  const starting = s.startHosting();
+  await vi.waitFor(() => expect(count(s.calls, "collab_host")).toBe(1));
+  await s.leave();
+  fail(new Error("collab:not_connected"));
+  await starting;
+  expect(s.collab.status).toBe("idle");
+  expect(s.collab.role).toBeNull();
+  expect(s.collab.error).toBe("");
+});
+
 test("joining while hosting keeps the host role, and joining twice at once connects once", async () => {
   const s = await freshSession((cmd) => (cmd === "collab_host" ? "omega-t" : cmd === "collab_join" ? "hostpeer" : null));
   await s.startHosting();
