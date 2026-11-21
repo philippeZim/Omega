@@ -84,6 +84,7 @@
           <button class="btn small primary" onclick={() => approve(r)}>{t("ai.collab.allow")}</button>
         </div>
       {/each}
+      {#if collab.refused}<p class="hint">{t("ai.collab.refusedCount", { count: collab.refused })}</p>{/if}
     {/if}
 
     <label class="lbl" for="plist">{t("ai.collab.participants")}</label>

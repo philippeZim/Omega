@@ -38,6 +38,9 @@ export const PROTOCOL_VERSION = 2;
 /** Longest name the host accepts (it cuts longer ones). */
 export const MAX_NAME = 40;
 
+/** Join requests shown at once; collab.rs holds at most as many (MAX_PENDING). */
+export const MAX_VISIBLE_REQUESTS = 16;
+
 export const collab = $state({
   role: null as null | "host" | "guest",
   status: "idle" as "idle" | "starting" | "hosting" | "joining" | "waiting" | "connected" | "error",
@@ -46,6 +49,8 @@ export const collab = $state({
   me: { name: (localStorage.getItem("collab.name") || "").slice(0, MAX_NAME), color: localStorage.getItem("collab.color") || PEER_COLORS[0] },
   participants: [] as Participant[],
   requests: [] as JoinRequest[],
+  /** Host: join attempts turned away by the limits in this session. */
+  refused: 0,
   hostPeer: null as string | null,
   /** Guest: my peer id as the host knows it (from "welcome"), to find myself in the list. */
   myPeer: null as string | null,
@@ -133,7 +138,8 @@ export function approve(req: JoinRequest) {
   const p: Participant = { peer: req.peer, name: req.name, color: nextColor(), role: "guest", caps: [...collab.startCaps] };
   collab.participants.push(p);
   send(req.peer, { t: "welcome", you: { peer: p.peer, name: p.name, color: p.color }, version: PROTOCOL_VERSION, caps: p.caps, participants: collab.participants.map(publicInfo) });
-  broadcast({ t: "participants", participants: collab.participants.map(publicInfo) });
+  // The new guest has the list from its welcome.
+  broadcast({ t: "participants", participants: collab.participants.map(publicInfo) }, req.peer);
   ui.toast(t("ai.collab.joined", { name: req.name }));
 }
 
@@ -230,7 +236,7 @@ export async function leave() {
   } catch (e) {
     console.error("collab teardown", e);
   }
-  Object.assign(collab, { role: null, status: "idle", ticket: "", participants: [], requests: [], hostPeer: null, myPeer: null, myCaps: [], startCaps: [...DEFAULT_CAPABILITIES], error: "" });
+  Object.assign(collab, { role: null, status: "idle", ticket: "", participants: [], requests: [], refused: 0, hostPeer: null, myPeer: null, myCaps: [], startCaps: [...DEFAULT_CAPABILITIES], error: "" });
   for (const h of sessionEndHooks) {
     try {
       await h(wasGuest);
@@ -259,8 +265,14 @@ listen<{ peer: string; msg: string }>("collab-msg", (e) => {
         return;
       }
       // Unknown peers must be approved first (the code alone is not enough).
-      if (!collab.requests.some((r) => r.peer === peer) && !collab.participants.some((p) => p.peer === peer))
+      if (!collab.requests.some((r) => r.peer === peer) && !collab.participants.some((p) => p.peer === peer)) {
+        if (collab.requests.length >= MAX_VISIBLE_REQUESTS) {
+          noteRefused(1);
+          void send(peer, { t: "busy" }).then(() => setTimeout(() => invoke("collab_kick", { peer }).catch(() => {}), 300));
+          return;
+        }
         collab.requests.push({ peer, name: String(msg.name || t("ai.collab.guest")).slice(0, MAX_NAME) });
+      }
       collab.open = true;
       return;
     }
@@ -286,6 +298,10 @@ listen<{ peer: string; msg: string }>("collab-msg", (e) => {
       ui.toast(t("ai.collab.denied"), "error");
       leave();
       return;
+    } else if (msg.t === "busy") {
+      ui.toast(collabErrorText("collab:busy"), "error");
+      leave();
+      return;
     } else if (msg.t === "kicked" || msg.t === "ended") {
       ui.toast(t(msg.t === "kicked" ? "ai.collab.kicked" : "ai.collab.ended"));
       leave();
@@ -307,10 +323,21 @@ listen<{ peer: string; reason: string }>("collab-closed", (e) => {
       broadcast({ t: "participants", participants: collab.participants.map(publicInfo) });
     }
   } else if (collab.role === "guest" && peer === collab.hostPeer && collab.status !== "idle") {
-    ui.toast(t("ai.collab.disconnected"), "error");
+    // The host's limits say why; anything else is a lost connection.
+    const refused = e.payload.reason === "collab:busy" || e.payload.reason === "collab:expired";
+    ui.toast(refused ? collabErrorText(e.payload.reason) : t("ai.collab.disconnected"), "error");
     leave();
   }
 });
+
+/** Host: counts refused join attempts; only the first of a session raises a toast. */
+function noteRefused(count: number) {
+  if (collab.role !== "host" || count <= 0) return;
+  if (!collab.refused) ui.toast(t("ai.collab.joinsRefused"), "error");
+  collab.refused += count;
+}
+
+listen<{ count: number }>("collab-refused", (e) => noteRefused(e.payload.count));
 
 // Connection quality (direct vs. relay) for the participant list.
 setInterval(async () => {

@@ -192,3 +192,48 @@ test("start rights: approve applies them, a rejoin can't get more, later changes
   await s.leave();
   expect(s.collab.startCaps).toEqual(DEFAULT_CAPABILITIES);
 });
+
+test("host: join requests are bounded, the excess is told it's busy, and the host hears once", async () => {
+  const s = await freshSession((cmd) => (cmd === "collab_host" ? "omega-t" : null));
+  await s.startHosting();
+  s.toast.mockClear();
+  const hello = (peer: string) => emit("collab-msg", { peer, msg: JSON.stringify({ t: "hello", name: peer, version: s.PROTOCOL_VERSION }) });
+  for (let i = 0; i < s.MAX_VISIBLE_REQUESTS + 5; i++) await hello(`p${i}`);
+  expect(s.collab.requests.length).toBe(s.MAX_VISIBLE_REQUESTS);
+  expect(s.collab.refused).toBe(5);
+  await vi.waitFor(() => expect(s.sent().filter((m) => m.msg.t === "busy").map((m) => m.peer)).toEqual(["p16", "p17", "p18", "p19", "p20"]));
+  await emit("collab-refused", { count: 40 });
+  expect(s.collab.refused).toBe(45);
+  expect(s.toast.mock.calls.filter(([m]) => m === "ai.collab.joinsRefused" || String(m).startsWith("Too many join")).length).toBe(1);
+  await s.leave();
+  expect(s.collab.refused).toBe(0);
+});
+
+test("host: an approved guest keeps its place while a flood of requests is turned away", async () => {
+  const s = await freshSession((cmd) => (cmd === "collab_host" ? "omega-t" : null));
+  await s.startHosting();
+  await emit("collab-msg", { peer: "good", msg: JSON.stringify({ t: "hello", name: "Good", version: s.PROTOCOL_VERSION }) });
+  s.approve(s.collab.requests[0]);
+  for (let i = 0; i < s.MAX_VISIBLE_REQUESTS * 2; i++) await emit("collab-msg", { peer: `x${i}`, msg: JSON.stringify({ t: "hello", name: "x", version: s.PROTOCOL_VERSION }) });
+  expect(s.collab.participants.some((p) => p.peer === "good")).toBe(true);
+  expect(s.sent().some((m) => m.peer === "good" && m.msg.t === "busy")).toBe(false);
+  await s.leave();
+});
+
+test.each(["busy", "expired"])("guest: a refusal by the host's limits (%s) says so", async (code) => {
+  const s = await freshSession((cmd) => (cmd === "collab_join" ? "hostpeer" : null));
+  await s.join("omega-t");
+  s.toast.mockClear();
+  await emit("collab-closed", { peer: "hostpeer", reason: `collab:${code}` });
+  const text = code === "busy" ? "too many join requests" : "timed out";
+  await vi.waitFor(() => expect(s.toast.mock.calls.some(([m]) => String(m).includes(text))).toBe(true));
+  expect(s.toast.mock.calls.some(([m]) => m === "Disconnected from host")).toBe(false);
+});
+
+test("guest: a busy answer from the host ends the attempt with a clear message", async () => {
+  const s = await freshSession((cmd) => (cmd === "collab_join" ? "hostpeer" : null));
+  await s.join("omega-t");
+  await emit("collab-msg", { peer: "hostpeer", msg: JSON.stringify({ t: "busy" }) });
+  await vi.waitFor(() => expect(s.collab.role).toBe(null));
+  expect(s.toast.mock.calls.some(([m]) => String(m).includes("too many join requests"))).toBe(true);
+});
