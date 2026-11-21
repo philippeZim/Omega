@@ -167,6 +167,10 @@ struct Entry {
 pub struct Boot {
     pub root: Option<String>,
     pub files: Vec<String>,
+    /// Offered because the window looked empty: it keeps a workspace the backend can't see (one
+    /// just migrated from an old profile) and hands the folder on.
+    #[serde(rename = "ifEmpty")]
+    pub if_empty: bool,
 }
 
 #[derive(Default)]
@@ -312,6 +316,7 @@ struct Act {
     root: Option<String>,
     files: Vec<String>,
     focus: bool,
+    if_empty: bool,
 }
 
 /// How a request at app start may use the windows that were just restored.
@@ -321,7 +326,7 @@ enum Start {
     Running,
     /// Takes a window without a folder before opening another.
     Cold,
-    /// A test instance: the first folder replaces the first window's, as `instance_launch` expects.
+    /// `instance_launch` (`OMEGA_REPLACE_ROOT`): the first folder replaces the first window's.
     ColdInstance,
 }
 
@@ -341,7 +346,7 @@ fn plan(dirs: &[String], files: &[String], open: &[(String, Option<String>)], ac
         } else if let (Start::ColdInstance, 0, Some(l)) = (start, i, active.map(str::to_string).or_else(|| open.first().map(|o| o.0.clone()))) {
             Act { label: Some(l), root: Some(dir.clone()), ..Act::default() }
         } else if let (true, Some((l, _))) = (start != Start::Running, open.iter().find(|(l, r)| r.is_none() && free(l))) {
-            Act { label: Some(l.clone()), root: Some(dir.clone()), ..Act::default() }
+            Act { label: Some(l.clone()), root: Some(dir.clone()), if_empty: true, ..Act::default() }
         } else {
             Act { root: Some(dir.clone()), ..Act::default() }
         };
@@ -373,13 +378,13 @@ pub fn route(app: &AppHandle, req: crate::cli::Request, cold: bool) {
         .map(|e| (e.label.clone(), e.root.as_ref().map(|r| Path::new(r).canonicalize().map_or(r.clone(), crate::env::norm))))
         .collect();
     let active = target(app);
-    let start = match (cold, crate::instance::name().is_some()) {
+    let start = match (cold, crate::instance::name().is_some() && std::env::var_os("OMEGA_REPLACE_ROOT").is_some()) {
         (false, _) => Start::Running,
         (true, true) => Start::ColdInstance,
         (true, false) => Start::Cold,
     };
     for act in plan(&req.dirs, &req.files, &open, active.as_deref(), start) {
-        let boot = Boot { root: act.root, files: act.files };
+        let boot = Boot { root: act.root, files: act.files, if_empty: act.if_empty };
         let label = match act.label {
             Some(l) => {
                 if boot.root.is_some() || !boot.files.is_empty() {
@@ -411,6 +416,7 @@ fn deliver(app: &AppHandle, label: &str, boot: Boot) {
     } else {
         let slot = pending.entry(label.to_string()).or_default();
         slot.root = boot.root.or(slot.root.take());
+        slot.if_empty = boot.if_empty;
         slot.files.extend(boot.files);
     }
 }
@@ -448,6 +454,12 @@ pub fn windows_cancel_exit(app: AppHandle) {
     crate::cli::clear_relaunch();
 }
 
+/// A window that kept its workspace passes on the folder it was offered.
+#[tauri::command]
+pub async fn window_open_paths(app: AppHandle, root: Option<String>, files: Vec<String>) {
+    route(&app, crate::cli::validated(crate::cli::Request { dirs: root.into_iter().collect(), files }), false);
+}
+
 #[tauri::command]
 pub async fn window_new(app: AppHandle) -> Result<String, String> {
     open(&app, Boot::default())
@@ -462,7 +474,7 @@ pub fn window_boot(app: AppHandle, window: tauri::WebviewWindow) -> Value {
     reg.booted.lock().unwrap().insert(window.label().to_string());
     let boot = pending.remove(window.label()).unwrap_or_default();
     drop(pending);
-    json!({ "root": boot.root, "files": boot.files, "windows": labels(&app) })
+    json!({ "root": boot.root, "files": boot.files, "ifEmpty": boot.if_empty, "windows": labels(&app) })
 }
 
 fn labels(app: &AppHandle) -> Vec<String> {
@@ -556,13 +568,15 @@ mod tests {
     fn a_cold_start_uses_an_empty_window_first() {
         let w = open(&[("main", None)]);
         assert_eq!(plan(&v(&["/a", "/b"]), &[], &w, Some("main"), Start::Cold), [
-            Act { label: Some("main".into()), root: Some("/a".into()), ..Act::default() },
+            Act { label: Some("main".into()), root: Some("/a".into()), if_empty: true, ..Act::default() },
             Act { root: Some("/b".into()), focus: true, ..Act::default() },
         ]);
         // A restored folder isn't replaced by a normal start, but is by a test instance.
         let w = open(&[("main", Some("/old"))]);
         assert_eq!(plan(&v(&["/a"]), &[], &w, Some("main"), Start::Cold)[0].label, None);
-        assert_eq!(plan(&v(&["/a"]), &[], &w, Some("main"), Start::ColdInstance)[0].label.as_deref(), Some("main"));
+        let replaced = &plan(&v(&["/a"]), &[], &w, Some("main"), Start::ColdInstance)[0];
+        assert_eq!(replaced.label.as_deref(), Some("main"));
+        assert!(!replaced.if_empty, "instance_launch means to replace it");
     }
 
     #[test]

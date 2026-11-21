@@ -129,6 +129,7 @@ pub fn run() {
             launcher::cli_status,
             launcher::cli_install,
             windows::window_new,
+            windows::window_open_paths,
             windows::window_boot,
             windows::window_labels,
             windows::windows_unsaved,

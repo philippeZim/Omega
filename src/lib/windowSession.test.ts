@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { keepsSession, parseSession, sessionOf } from "./windowSessionData";
+import { handsOverFolder, keepsSession, parseSession, sessionOf } from "./windowSessionData";
 
 describe("window session", () => {
   it("keeps tabs with a file, not unsaved or shared ones", () => {
@@ -19,6 +19,19 @@ describe("window session", () => {
     expect(keepsSession("/a", "/a", false)).toBe(true);
     expect(keepsSession("/b", "/a", false)).toBe(false);
     expect(keepsSession(null, "/a", true)).toBe(false);
+  });
+
+  it("a window without a folder keeps its loose tabs when it gets one", () => {
+    expect(keepsSession("/new", null, false)).toBe(true);
+    expect(keepsSession("/new", null, true)).toBe(false);
+  });
+
+  it("a workspace taken over from an old profile isn't replaced by a cold omega <folder>", () => {
+    expect(handsOverFolder(true, "/cli", "/old")).toBe(true);
+    expect(handsOverFolder(true, "/old", "/old")).toBe(false);
+    expect(handsOverFolder(true, "/cli", null)).toBe(false);
+    expect(handsOverFolder(false, "/cli", "/old")).toBe(false);
+    expect(handsOverFolder(true, null, "/old")).toBe(false);
   });
 
   it("reads a damaged session as none", () => {

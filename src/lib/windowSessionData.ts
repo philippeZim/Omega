@@ -11,8 +11,17 @@ export function sessionOf(tabs: { id: string; path?: string | null }[], activeId
   return { files, active: active && files.includes(active) ? active : null };
 }
 
-/** A window told to open another folder doesn't bring back the tabs of the one it had. */
-export const keepsSession = (bootRoot: string | null | undefined, savedRoot: string | null, guestSnapshot: boolean) => !guestSnapshot && (!bootRoot || bootRoot === savedRoot);
+/**
+ * A window told to open another folder doesn't bring back the tabs of the one it had. Loose files
+ * of a window without a folder stay: there was no other project they belonged to.
+ */
+export const keepsSession = (bootRoot: string | null | undefined, savedRoot: string | null, guestSnapshot: boolean) => !guestSnapshot && (!bootRoot || !savedRoot || bootRoot === savedRoot);
+
+/**
+ * The backend only offers a window it believes is empty (`ifEmpty`), but it can't see a workspace
+ * just taken over from an old profile. Such a window keeps it, and the folder gets its own window.
+ */
+export const handsOverFolder = (ifEmpty: boolean | undefined, bootRoot: string | null | undefined, savedRoot: string | null) => !!ifEmpty && !!bootRoot && !!savedRoot && bootRoot !== savedRoot;
 
 export function parseSession(text: string | null): Session | null {
   try {

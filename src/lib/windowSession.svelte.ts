@@ -3,7 +3,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { fsApi } from "./api";
 import { activate, app, flushAutosave, openFile, setMode, setRoot, unsavedTabs } from "./state.svelte";
-import { keepsSession, parseSession, sessionOf, type Session } from "./windowSessionData";
+import { handsOverFolder, keepsSession, parseSession, sessionOf, type Session } from "./windowSessionData";
 import type { Mode } from "./modes";
 import { listen } from "./windowEvents";
 import { pruneWindows, unscopedStorage } from "./windowStorage";
@@ -37,14 +37,17 @@ export async function bootWindow() {
     for (const f of payload.files) await openFile(f);
   });
 
-  const boot = await invoke<{ root: string | null; files: string[]; windows: string[] }>("window_boot").catch(() => null);
+  const boot = await invoke<{ root: string | null; files: string[]; ifEmpty?: boolean; windows: string[] }>("window_boot").catch(() => null);
   if (boot?.windows?.length) prune(boot.windows);
   const savedRoot = app.root;
-  if (boot?.root) setRoot(boot.root);
+  const handOver = handsOverFolder(boot?.ifEmpty, boot?.root, savedRoot);
+  const root = handOver ? null : boot?.root;
+  if (root) setRoot(root);
   // A workspace put aside for a Code Together session is brought back by the session code.
-  const saved = keepsSession(boot?.root, savedRoot, !!localStorage.getItem("collab.guestSnapshot")) ? parseSession(localStorage.getItem(KEY)) : null;
+  const saved = keepsSession(root, savedRoot, !!localStorage.getItem("collab.guestSnapshot")) ? parseSession(localStorage.getItem(KEY)) : null;
   if (saved) await restoreTabs(saved);
-  for (const f of boot?.files ?? []) await openFile(f);
+  if (handOver) void invoke("window_open_paths", { root: boot!.root, files: boot!.files }).catch(() => {});
+  else for (const f of boot?.files ?? []) await openFile(f);
 
   // Saved from here on, so the empty start can't overwrite the session.
   $effect.root(() => {
