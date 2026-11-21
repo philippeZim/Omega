@@ -3,26 +3,32 @@
   import { fsApi } from "../lib/api";
   import { t } from "../lib/i18n/index.svelte";
   import { aheadLabel } from "../lib/git/labels";
-  import { git, isGuestGit, branches, switchBranch, newBranch, pull, push, fetchNow, continueOperation, abortOperation, cloneRepo, publishGitHub, initRepo, connectRemote } from "../lib/git/git.svelte";
+  import { git, isGuestGit, guestRefusal, type GuestGitAction, branches, switchBranch, newBranch, pull, push, fetchNow, continueOperation, abortOperation, cloneRepo, publishGitHub, initRepo, connectRemote } from "../lib/git/git.svelte";
+
+  /** Entries a guest would be refused stay visible, disabled, and say why. */
+  const allowed = (a: GuestGitAction) => {
+    const why = guestRefusal(a);
+    return why ? { disabled: true, title: why } : {};
+  };
 
   async function branchMenu(e: MouseEvent) {
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
     const b = await branches();
     ui.openMenu(new MouseEvent("contextmenu", { clientX: r.left, clientY: r.bottom + 8 }), [
       ...(git.operation === "rebase"
-        ? [{ label: t("git.continueRebase"), action: () => continueOperation() }, { label: t("git.abortRebase"), action: abortOperation }, { separator: true, label: "" }]
+        ? [{ label: t("git.continueRebase"), action: () => continueOperation(), ...allowed("continue") }, { label: t("git.abortRebase"), action: abortOperation, ...allowed("abort") }, { separator: true, label: "" }]
         : git.operation === "merge"
-          ? [{ label: t("git.continueMerge"), action: () => continueOperation() }, { label: t("git.abortMerge"), action: abortOperation }, { separator: true, label: "" }]
+          ? [{ label: t("git.continueMerge"), action: () => continueOperation(), ...allowed("continue") }, { label: t("git.abortMerge"), action: abortOperation, ...allowed("abort") }, { separator: true, label: "" }]
           : []),
-      { label: t("app.newBranch"), action: newBranch },
-      { label: t("app.pull") + (git.behind ? t("app.behind", { n: git.behind }) : ""), shortcut: shortcutLabel("git.pull"), action: pull },
-      { label: t("app.fetch"), action: fetchNow },
-      { label: t("app.push") + (git.ahead ? aheadLabel(git.ahead) : ""), shortcut: shortcutLabel("git.push"), action: push },
+      { label: t("app.newBranch"), action: newBranch, ...allowed("newBranch") },
+      { label: t("app.pull") + (git.behind ? t("app.behind", { n: git.behind }) : ""), shortcut: shortcutLabel("git.pull"), action: pull, ...allowed("pull") },
+      { label: t("app.fetch"), action: fetchNow, ...allowed("fetch") },
+      { label: t("app.push") + (git.ahead ? aheadLabel(git.ahead) : ""), shortcut: shortcutLabel("git.push"), action: push, ...allowed("push") },
       { label: t("app.showChanges"), shortcut: shortcutLabel("git.commit"), action: () => showView("changes") },
       ...(isGuestGit() ? [] : [{ label: git.remoteUrl ? t("app.remoteChange", { url: git.remoteUrl.replace(/^https?:\/\/|^git@/, "").replace(/\.git$/, "") }) : t("app.connectRemote"), action: connectRemote }]),
       { separator: true, label: "" },
-      ...b.local.map((n) => ({ label: (n === git.branch ? "✓  " : "     ") + n, action: () => n !== git.branch && switchBranch(n) })),
-      ...(b.remote.length ? [{ separator: true, label: "" }, ...b.remote.map((n) => ({ label: "     " + n, action: () => switchBranch(n, true) }))] : []),
+      ...b.local.map((n) => ({ label: (n === git.branch ? "✓  " : "     ") + n, action: () => n !== git.branch && switchBranch(n), ...(n === git.branch ? {} : allowed("switch")) })),
+      ...(b.remote.length ? [{ separator: true, label: "" }, ...b.remote.map((n) => ({ label: "     " + n, action: () => switchBranch(n, true), ...allowed("switch") }))] : []),
     ]);
   }
 
