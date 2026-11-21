@@ -8,9 +8,21 @@ use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 
-static CURRENT: AtomicU64 = AtomicU64::new(0);
+/// The running search of each window (a new one cancels only that window's previous one).
+static CURRENT: std::sync::LazyLock<Mutex<HashMap<String, Arc<AtomicU64>>>> = std::sync::LazyLock::new(Default::default);
+
+fn current(owner: &str) -> Arc<AtomicU64> {
+    CURRENT.lock().unwrap_or_else(|e| e.into_inner()).entry(owner.to_string()).or_default().clone()
+}
+
+/// Stops the window's search and forgets its slot.
+pub fn cancel_window(owner: &str) {
+    if let Some(c) = CURRENT.lock().unwrap_or_else(|e| e.into_inner()).remove(owner) {
+        c.store(0, Ordering::SeqCst);
+    }
+}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -111,24 +123,26 @@ fn match_text(re: &regex::Regex, file: &str, text: &str, total: &mut usize, max_
 }
 
 #[tauri::command]
-pub fn search_text(app: AppHandle, id: u64, root: String, opts: SearchOptions) -> Result<u64, String> {
+pub fn search_text(app: AppHandle, window: tauri::WebviewWindow, id: u64, root: String, opts: SearchOptions) -> Result<u64, String> {
+    let owner = window.label().to_string();
+    let slot = current(&owner);
     // The caller picks the id so it can match events that arrive before this call returns.
-    CURRENT.store(id, Ordering::SeqCst);
+    slot.store(id, Ordering::SeqCst);
     if opts.query.is_empty() {
-        let _ = app.emit("search-done", Done { id, files: 0, hits: 0, truncated: false, error: None });
+        crate::windows::emit(&app, &owner, "search-done", Done { id, files: 0, hits: 0, truncated: false, error: None });
         return Ok(id);
     }
     let re = match build_regex(&opts.query, opts.case_sensitive, opts.whole_word, opts.regex) {
         Ok(r) => Arc::new(r),
         Err(e) => {
-            let _ = app.emit("search-done", Done { id, files: 0, hits: 0, truncated: false, error: Some(e.to_string()) });
+            crate::windows::emit(&app, &owner, "search-done", Done { id, files: 0, hits: 0, truncated: false, error: Some(e.to_string()) });
             return Ok(id);
         }
     };
     let (inc, exc) = build_mask(&opts.mask)?;
 
     std::thread::spawn(move || {
-        let cancelled = || CURRENT.load(Ordering::SeqCst) != id;
+        let cancelled = || slot.load(Ordering::SeqCst) != id;
         let Some(paths) = candidates(&root, &opts, &inc, &exc, &cancelled, None) else { return };
 
         let (mut total, mut files_with_hits, mut truncated) = (0usize, 0usize, false);
@@ -146,7 +160,7 @@ pub fn search_text(app: AppHandle, id: u64, root: String, opts: SearchOptions) -
             batch.extend(hits);
             truncated = t;
             if batch.len() >= 200 || (last_emit.elapsed().as_millis() > 60 && !batch.is_empty()) {
-                let _ = app.emit("search-hits", Batch { id, hits: std::mem::take(&mut batch) });
+                crate::windows::emit(&app, &owner, "search-hits", Batch { id, hits: std::mem::take(&mut batch) });
                 last_emit = std::time::Instant::now();
             }
             if truncated {
@@ -154,9 +168,9 @@ pub fn search_text(app: AppHandle, id: u64, root: String, opts: SearchOptions) -
             }
         }
         if !batch.is_empty() {
-            let _ = app.emit("search-hits", Batch { id, hits: batch });
+            crate::windows::emit(&app, &owner, "search-hits", Batch { id, hits: batch });
         }
-        let _ = app.emit("search-done", Done { id, files: files_with_hits, hits: total, truncated, error: None });
+        crate::windows::emit(&app, &owner, "search-done", Done { id, files: files_with_hits, hits: total, truncated, error: None });
     });
     Ok(id)
 }
@@ -272,8 +286,8 @@ pub async fn search_files(root: String, opts: SearchOptions) -> Result<Vec<Strin
 }
 
 #[tauri::command]
-pub fn search_cancel() {
-    CURRENT.store(0, Ordering::SeqCst);
+pub fn search_cancel(window: tauri::WebviewWindow) {
+    current(window.label()).store(0, Ordering::SeqCst);
 }
 
 // ------------------------------------------------------------------ Code Together guests
@@ -329,7 +343,10 @@ fn guest_flag(token: u64) -> Arc<AtomicBool> {
 }
 
 #[tauri::command]
-pub fn guest_search_cancel(token: u64) {
+pub fn guest_search_cancel(app: AppHandle, window: tauri::WebviewWindow, token: u64) {
+    if !crate::collab::can_cancel(&app, &window) {
+        return;
+    }
     guest_flag(token).store(true, Ordering::SeqCst);
 }
 
@@ -388,7 +405,7 @@ fn guest_regex(q: &GuestQuery) -> Result<regex::Regex, String> {
 }
 
 fn guest_ok(root: &str, path: &Path) -> bool {
-    crate::collab::collab_path_inside(root.to_string(), crate::env::norm(path))
+    crate::collab::guest_path_ok(Path::new(root), Path::new(&crate::env::norm(path)))
 }
 
 /// The files of a guest's search, each with its relative path. Only what the guest may read.
@@ -486,12 +503,14 @@ async fn guest_blocking<T: Send + 'static>(token: u64, f: impl FnOnce(&GuestRun)
 }
 
 #[tauri::command]
-pub async fn guest_search_text(token: u64, root: String, query: GuestQuery) -> Result<GuestHits, String> {
+pub async fn guest_search_text(app: AppHandle, window: tauri::WebviewWindow, token: u64, root: String, query: GuestQuery) -> Result<GuestHits, String> {
+    crate::collab::guard(&app, &window, Some(&root))?;
     guest_blocking(token, move |run| run_guest_search(&root, &query, run)).await
 }
 
 #[tauri::command]
-pub async fn guest_search_matching(token: u64, root: String, query: GuestQuery) -> Result<GuestFiles, String> {
+pub async fn guest_search_matching(app: AppHandle, window: tauri::WebviewWindow, token: u64, root: String, query: GuestQuery) -> Result<GuestFiles, String> {
+    crate::collab::guard(&app, &window, Some(&root))?;
     guest_blocking(token, move |run| run_guest_matching(&root, &query, run)).await
 }
 
@@ -504,7 +523,8 @@ fn run_guest_list(root: &str, run: &GuestRun) -> Result<GuestFiles, String> {
 }
 
 #[tauri::command]
-pub async fn guest_list_files(token: u64, root: String) -> Result<GuestFiles, String> {
+pub async fn guest_list_files(app: AppHandle, window: tauri::WebviewWindow, token: u64, root: String) -> Result<GuestFiles, String> {
+    crate::collab::guard(&app, &window, Some(&root))?;
     guest_blocking(token, move |run| run_guest_list(&root, run)).await
 }
 
@@ -517,7 +537,8 @@ fn read_guest_file(root: &str, rel: &str) -> Option<String> {
 }
 
 #[tauri::command]
-pub async fn guest_read_text(root: String, rel: String) -> Result<Option<String>, String> {
+pub async fn guest_read_text(app: AppHandle, window: tauri::WebviewWindow, root: String, rel: String) -> Result<Option<String>, String> {
+    crate::collab::guard(&app, &window, Some(&root))?;
     tauri::async_runtime::spawn_blocking(move || Ok(read_guest_file(&root, &rel))).await.map_err(|e| e.to_string())?
 }
 
@@ -547,7 +568,8 @@ fn check_links(_meta: &std::fs::Metadata) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn guest_write_check(root: String, rel: String) -> Result<(), String> {
+pub async fn guest_write_check(app: AppHandle, window: tauri::WebviewWindow, root: String, rel: String) -> Result<(), String> {
+    crate::collab::guard(&app, &window, Some(&root))?;
     tauri::async_runtime::spawn_blocking(move || check_guest_write(&root, &rel)).await.map_err(|e| e.to_string())?
 }
 
@@ -594,7 +616,8 @@ fn write_guest_file(root: &str, rel: &str, expected: &str, content: &str) -> Res
 }
 
 #[tauri::command]
-pub async fn guest_write_text(root: String, rel: String, expected: String, content: String) -> Result<(), String> {
+pub async fn guest_write_text(app: AppHandle, window: tauri::WebviewWindow, root: String, rel: String, expected: String, content: String) -> Result<(), String> {
+    crate::collab::guard(&app, &window, Some(&root))?;
     tauri::async_runtime::spawn_blocking(move || write_guest_file(&root, &rel, &expected, &content)).await.map_err(|e| e.to_string())?
 }
 
@@ -840,7 +863,7 @@ mod tests {
     fn guest_search_stops_when_cancelled() {
         let (_d, _o, root) = guest_project();
         let run = GuestRun::new(9006);
-        guest_search_cancel(9006);
+        guest_flag(9006).store(true, Ordering::SeqCst);
         assert_eq!(run_guest_search(&root, &guest_query("needle"), &run).err().as_deref(), Some("cancelled"));
     }
 

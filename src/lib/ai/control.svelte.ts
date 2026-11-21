@@ -3,7 +3,8 @@
  * clicking, typing, screenshots, console, terminal). Executed here, transported by mcp_control.rs.
  */
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { onGlobalChange } from "../windowStorage";
+import { listen } from "../windowEvents";
 import { snapshotPng } from "./snapshot";
 import { app, activeTab, openFile, save, setMode, setRoot } from "../state.svelte";
 import { guestGuard } from "../collab/guard";
@@ -672,6 +673,34 @@ export async function setControlPort(p: number) {
   localStorage.setItem("mcp.port", String(p));
   if (control.enabled) await startControl();
 }
+
+/** Shows what the shared server is doing now, after another window changed it. */
+export async function syncControl() {
+  const info = await invoke<{ running: boolean; port: number | null }>("mcp_control_info").catch(() => null);
+  if (!info) return;
+  control.running = control.enabled && info.running;
+  if (info.port) control.boundPort = info.port;
+  if (control.running || !control.enabled) control.error = "";
+}
+
+// The other window starts or moves the server right after storing: look again shortly after.
+function followControl() {
+  clearTimeout(retryTimer);
+  void syncControl();
+  for (const ms of [400, 1500]) setTimeout(() => void syncControl(), ms);
+}
+onGlobalChange("mcp.control", (v) => {
+  control.enabled = v === "true";
+  followControl();
+});
+onGlobalChange("mcp.port", (v) => {
+  control.port = Number(v) || control.port;
+  followControl();
+});
+onGlobalChange("mcp.token", (v) => {
+  if (v) control.token = v;
+  followControl();
+});
 
 const url = () => `http://127.0.0.1:${control.boundPort || control.port}/mcp`;
 /** Command that registers the control MCP in each agent (run once in a terminal). */

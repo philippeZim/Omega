@@ -63,21 +63,9 @@
   setConditionHook((current) => ui.prompt(t("app.breakpointCondition"), current, t("app.breakpointConditionPlaceholder")));
 
   import { onMount } from "svelte";
-  import { invoke } from "@tauri-apps/api/core";
-  import { openFile, setRoot } from "./lib/state.svelte";
-  import { fsApi } from "./lib/api";
+  import { bootWindow } from "./lib/windowSession.svelte";
 
-  // `omega <folder|file>…` opens folders as workspace and files as tabs.
-  onMount(async () => {
-    for (const p of await invoke<string[]>("cli_paths")) {
-      try {
-        await fsApi.listDir(p);
-        setRoot(p);
-      } catch {
-        if (await fsApi.exists(p)) await openFile(p);
-      }
-    }
-  });
+  onMount(() => void bootWindow());
 
 
   // Floating side zones close when a file gets opened or the user clicks into the editor column.

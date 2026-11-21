@@ -8,7 +8,7 @@
  *    guests. Typing reaches only the running program, see runInput.svelte.ts.
  */
 import { untrack } from "svelte";
-import { listen } from "@tauri-apps/api/event";
+import { listen } from "../windowEvents";
 import { collab, broadcast, onCollabMessage, sessionEndHooks } from "./collab.svelte";
 import { REMOTE, share, type GuestScope, flushSharedDocs, guestDocClock, guestScope, hostDocHasClock, hostDocKeyFor, hostKeyChecked, sharedDocUnsaved, syncSharedTabs, openRemote, isRemote } from "./share.svelte";
 import { blockedByCapability, guestCanStop, type Capability } from "./guard";

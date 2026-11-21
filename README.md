@@ -52,6 +52,8 @@ curl -fsSL https://raw.githubusercontent.com/philippeZim/Omega/main/install.sh |
 
 Omega updates itself.
 
+**From a terminal:** `omega .` opens the current folder, `omega <path>` a folder or file. If the folder is already open, its window comes to the front. The installers set the command up without admin rights; for `.deb`/`.rpm` or older installs, use *Settings → Installations → Install omega command*.
+
 ## Feedback
 
 Use the speech-bubble button in the top bar to report a bug with a screenshot.

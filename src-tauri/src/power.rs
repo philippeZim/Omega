@@ -101,6 +101,11 @@ fn monitor(app: AppHandle) {
     }
 }
 
+/// Every process with its parent.
+pub fn process_parents() -> std::collections::HashMap<u32, u32> {
+    platform::processes().into_iter().map(|p| (p.pid, p.ppid)).collect()
+}
+
 /// First AI agent found below one of the given shell processes.
 fn find_agent(roots: &[u32]) -> Option<String> {
     if roots.is_empty() {

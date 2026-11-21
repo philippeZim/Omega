@@ -7,17 +7,17 @@ use serde_json::{json, Value};
 use std::io::{Read, Write};
 #[cfg(unix)]
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 #[cfg(unix)]
 use std::time::Duration;
-#[cfg(unix)]
-use tauri::Emitter;
 use tauri::{AppHandle, Manager};
 
 #[derive(Default)]
 pub struct CodexState {
-    context: Mutex<Value>,
+    /// Latest context of each window; Codex gets the one of the focused window.
+    contexts: Mutex<HashMap<String, Value>>,
     /// Socket we own (removed on exit); None if another IDE already serves it.
     socket: Mutex<Option<PathBuf>>,
     status: Mutex<String>,
@@ -53,17 +53,46 @@ fn write_frame<W: Write>(s: &mut W, v: &Value) -> std::io::Result<()> {
     s.flush()
 }
 
+/// Process id of the program on the other end.
+#[cfg(target_os = "linux")]
+fn peer_pid(s: &UnixStream) -> Option<u32> {
+    use std::os::fd::AsRawFd;
+    let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
+    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    let r = unsafe { libc::getsockopt(s.as_raw_fd(), libc::SOL_SOCKET, libc::SO_PEERCRED, &mut cred as *mut _ as *mut libc::c_void, &mut len) };
+    (r == 0 && cred.pid > 0).then_some(cred.pid as u32)
+}
+
+#[cfg(target_os = "macos")]
+fn peer_pid(s: &UnixStream) -> Option<u32> {
+    use std::os::fd::AsRawFd;
+    let mut pid: libc::pid_t = 0;
+    let mut len = std::mem::size_of::<libc::pid_t>() as libc::socklen_t;
+    let r = unsafe { libc::getsockopt(s.as_raw_fd(), libc::SOL_LOCAL, libc::LOCAL_PEERPID, &mut pid as *mut _ as *mut libc::c_void, &mut len) };
+    (r == 0 && pid > 0).then_some(pid as u32)
+}
+
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+fn peer_pid(_: &UnixStream) -> Option<u32> {
+    None
+}
+
 #[cfg(unix)]
 fn serve(app: AppHandle, mut s: UnixStream) {
     let _ = s.set_read_timeout(Some(Duration::from_secs(30)));
+    // Codex in a window's terminal gets that window's context; else the focused window's.
+    let own = peer_pid(&s).and_then(|p| crate::windows::window_of_processes(&app, &[p]));
     while let Some(msg) = read_frame(&mut s) {
         if msg["type"] != "request" {
             continue;
         }
         let id = msg["requestId"].clone();
         let reply = if msg["method"] == "ide-context" {
-            let ctx = app.state::<CodexState>().context.lock().unwrap().clone();
-            let _ = app.emit("codex-ide-request", ());
+            let owner = own.clone().filter(|w| app.get_webview_window(w).is_some()).or_else(|| crate::windows::target(&app));
+            let ctx = owner.as_ref().and_then(|o| app.state::<CodexState>().contexts.lock().unwrap().get(o).cloned()).unwrap_or(Value::Null);
+            if let Some(o) = &owner {
+                crate::windows::emit(&app, o, "codex-ide-request", ());
+            }
             json!({
                 "type": "response", "requestId": id, "resultType": "success", "method": "ide-context",
                 "handledByClientId": "omega",
@@ -126,8 +155,12 @@ pub fn cleanup(app: &AppHandle) {
 }
 
 #[tauri::command]
-pub fn codex_set_context(app: AppHandle, context: Value) {
-    *app.state::<CodexState>().context.lock().unwrap() = context;
+pub fn codex_set_context(app: AppHandle, window: tauri::WebviewWindow, context: Value) {
+    app.state::<CodexState>().contexts.lock().unwrap().insert(window.label().to_string(), context);
+}
+
+pub fn forget_window(app: &AppHandle, owner: &str) {
+    app.state::<CodexState>().contexts.lock().unwrap().remove(owner);
 }
 
 #[tauri::command]

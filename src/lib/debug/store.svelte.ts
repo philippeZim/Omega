@@ -1,4 +1,5 @@
-/** Debugger state shared by the controller, the panels and the editor extension (no imports on purpose). */
+/** Debugger state shared by the controller, the panels and the editor extension (imports nothing of the app on purpose). */
+import { onGlobalChange } from "../windowStorage";
 
 export interface Breakpoint {
   line: number;
@@ -115,8 +116,36 @@ function hostOwned(b: Breakpoint) {
   return b.guest.base ? [plain(b.line, b.guest.base.condition)] : [];
 }
 
+type SavedBps = Record<string, { line: number; condition?: string }[]>;
+
+/**
+ * Three-way merge: only the files this window changed since `base` replace what's stored, so a
+ * save never undoes breakpoints another window set meanwhile.
+ */
+export function mergeBreakpoints(stored: SavedBps, base: SavedBps, mine: SavedBps): SavedBps {
+  const out = { ...stored };
+  for (const p of new Set([...Object.keys(base), ...Object.keys(mine)])) {
+    if (JSON.stringify(base[p]) === JSON.stringify(mine[p])) continue;
+    if (mine[p]) out[p] = mine[p];
+    else delete out[p];
+  }
+  return out;
+}
+
+/** What this window last read from or wrote to storage. */
+let savedBps: SavedBps = loadBps();
+
+// Another window changed breakpoints. A running debug session keeps its own until it ends.
+onGlobalChange("breakpoints", () => {
+  if (dbg.status !== "idle") return;
+  const stored = loadBps();
+  for (const p of Object.keys(dbg.breakpoints)) if (!p.startsWith(SHARED_BP) && !stored[p]) delete dbg.breakpoints[p];
+  for (const [p, list] of Object.entries(stored)) if (JSON.stringify(savedBps[p]) !== JSON.stringify(list)) dbg.breakpoints[p] = list.map((b) => ({ ...b, verified: false }));
+  savedBps = stored;
+});
+
 export function saveBreakpoints() {
-  const clean: Record<string, { line: number; condition?: string }[]> = {};
+  const clean: SavedBps = {};
   for (const p of new Set([...Object.keys(dbg.breakpoints), ...Object.keys(guestRemoved)])) {
     if (p.startsWith(SHARED_BP)) continue;
     const own = (dbg.breakpoints[p] ?? []).flatMap(hostOwned);
@@ -125,7 +154,9 @@ export function saveBreakpoints() {
     if (list.length) clean[p] = list;
   }
   try {
-    localStorage.setItem("breakpoints", JSON.stringify(clean));
+    const merged = mergeBreakpoints(loadBps(), savedBps, clean);
+    localStorage.setItem("breakpoints", JSON.stringify(merged));
+    savedBps = merged;
   } catch (e) {
     // Storage full or unavailable: the breakpoints still work for this run.
     console.warn("breakpoints not saved", e);

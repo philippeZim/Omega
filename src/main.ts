@@ -1,3 +1,4 @@
+import "./lib/windowBoot";
 import "@fontsource-variable/inter";
 import "@fontsource-variable/jetbrains-mono";
 import "./app.css";

@@ -11,7 +11,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 
 use crate::collab::{guest_path_ok, is_git_name};
 use crate::latex::{canonical, find_root, magic_root, prepare_build, run_and_collect, run_with_progress, Diagnostic, Progress, RunGuard, SyncBox, OVERLAYS};
@@ -126,7 +126,8 @@ fn read_image(root: &Path, rel: &str) -> Result<GuestImage, &'static str> {
 
 /// Host: a project image for a guest's Markdown preview. Errors are stable codes without paths.
 #[tauri::command]
-pub async fn collab_read_image(root: String, rel: String) -> Result<GuestImage, String> {
+pub async fn collab_read_image(app: AppHandle, window: tauri::WebviewWindow, root: String, rel: String) -> Result<GuestImage, String> {
+    crate::collab::guard(&app, &window, Some(&root)).map_err(|_| "asset_missing".to_string())?;
     tauri::async_runtime::spawn_blocking(move || read_image(Path::new(&root), &rel).map_err(str::to_string))
         .await
         .map_err(|_| "asset_missing".to_string())?
@@ -526,7 +527,8 @@ struct JobProgress {
 
 /// Host: compiles a shared file for a guest. Errors are stable codes without paths.
 #[tauri::command]
-pub async fn latex_guest_compile(app: AppHandle, job: String, root: Option<String>, file: Option<String>, content: String, overlays: Vec<Overlay>) -> Result<GuestCompile, String> {
+pub async fn latex_guest_compile(app: AppHandle, window: tauri::WebviewWindow, job: String, root: Option<String>, file: Option<String>, content: String, overlays: Vec<Overlay>) -> Result<GuestCompile, String> {
+    crate::collab::guard(&app, &window, root.as_deref()).map_err(|_| "compile_failed".to_string())?;
     let cancel = jobs().claim(&job)?;
     let slot = Slot;
     let tectonic = crate::env::which("tectonic").ok_or("tectonic_missing")?;
@@ -534,7 +536,7 @@ pub async fn latex_guest_compile(app: AppHandle, job: String, root: Option<Strin
     tauri::async_runtime::spawn_blocking(move || {
         let _slot = slot;
         let emit = |progress: Progress| {
-            let _ = app.emit("latex-guest-progress", JobProgress { job: job.clone(), progress });
+            crate::windows::emit(&app, window.label(), "latex-guest-progress", JobProgress { job: job.clone(), progress });
         };
         let req = Request { root: root.as_deref().map(Path::new), file: file.as_deref(), content: &content, overlays: &overlays };
         compile_job(&tectonic, &cache, &req, &cancel, &emit).map_err(str::to_string)
@@ -544,7 +546,10 @@ pub async fn latex_guest_compile(app: AppHandle, job: String, root: Option<Strin
 }
 
 #[tauri::command]
-pub fn latex_guest_cancel(job: String) {
+pub fn latex_guest_cancel(app: AppHandle, window: tauri::WebviewWindow, job: String) {
+    if !crate::collab::can_cancel(&app, &window) {
+        return;
+    }
     jobs().cancel(&job);
 }
 

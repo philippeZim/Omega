@@ -1,6 +1,6 @@
 import { t, type Key } from "../i18n/index.svelte";
 
-const CODES = ["invalid_ticket", "timeout", "connect_failed", "not_connected", "already_connected", "busy", "expired"] as const;
+const CODES = ["invalid_ticket", "timeout", "connect_failed", "not_connected", "already_connected", "busy", "expired", "other_window"] as const;
 
 /**
  * Turns an error from a collab command into the text shown to the user. The backend (collab.rs)

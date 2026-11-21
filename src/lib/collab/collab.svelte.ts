@@ -3,7 +3,8 @@
  * Host = the person whose project is shared; guests join with an invite code and need approval.
  */
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { onGlobalChange } from "../windowStorage";
+import { listen } from "../windowEvents";
 import { ui } from "../ui.svelte";
 import { t } from "../i18n/index.svelte";
 import { collabErrorText } from "./collabError";
@@ -102,6 +103,12 @@ export function setMyName(name: string) {
   collab.me.name = name.trim().slice(0, MAX_NAME).trim() || collab.me.name;
   localStorage.setItem("collab.name", collab.me.name);
 }
+onGlobalChange("collab.name", (v) => {
+  if (v) collab.me.name = v.slice(0, MAX_NAME);
+});
+onGlobalChange("collab.color", (v) => {
+  if (v) collab.me.color = v;
+});
 
 // ------------------------------------------------------------------ host
 
@@ -126,7 +133,9 @@ export async function startHosting() {
     // Ended while it was starting: that is not a failed start.
     if (collab.role !== "host" || collab.status !== "starting") return;
     collab.status = "error";
-    collab.error = String(e);
+    collab.error = collabErrorText(e);
+    // The session is another window's: this one isn't a host, it only shows why.
+    if (String(e) === "collab:other_window") collab.role = null;
   }
 }
 

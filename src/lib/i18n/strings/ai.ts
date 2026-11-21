@@ -167,6 +167,7 @@ export const en = {
   "ai.collab.run.notSaved": "The host couldn't save this file, so it wasn't run",
   "ai.collab.run.noAction": "This action isn't available for the file you have open",
   "ai.collab.run.notStarted": "“{action}” from {name} didn't start: the guest, its rights or the file changed",
+  "ai.collab.err.other_window": "Code Together is already running in another Omega window. End it there first.",
 };
 export const de: Record<keyof typeof en, string> = {
   "ai.noActiveFile": "Keine Datei aktiv",
@@ -335,6 +336,7 @@ export const de: Record<keyof typeof en, string> = {
   "ai.collab.run.notSaved": "Der Host konnte diese Datei nicht speichern, daher wurde sie nicht ausgeführt",
   "ai.collab.run.noAction": "Diese Aktion gibt es für die geöffnete Datei nicht",
   "ai.collab.run.notStarted": "„{action}“ von {name} wurde nicht gestartet: Gast, Rechte oder Datei haben sich geändert",
+  "ai.collab.err.other_window": "Code Together läuft bereits in einem anderen Omega-Fenster. Beende es zuerst dort.",
 };
 export const fr: Record<keyof typeof en, string> = {
   "ai.noActiveFile": "Aucun fichier actif",
@@ -503,4 +505,5 @@ export const fr: Record<keyof typeof en, string> = {
   "ai.collab.run.notSaved": "L’hôte n’a pas pu enregistrer ce fichier, il n’a donc pas été exécuté",
   "ai.collab.run.noAction": "Cette action n’est pas disponible pour le fichier ouvert",
   "ai.collab.run.notStarted": "« {action} » de {name} n’a pas démarré : l’invité, ses droits ou le fichier ont changé",
+  "ai.collab.err.other_window": "Code Together est déjà actif dans une autre fenêtre d'Omega. Terminez-le d'abord là-bas.",
 };

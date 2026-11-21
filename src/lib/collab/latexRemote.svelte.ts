@@ -4,7 +4,7 @@
  * the host pressed Compile (guestChanges.ts), also when another guest asks.
  */
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { listen } from "../windowEvents";
 import { call, hasCapability, isObj, onCapabilitiesChanged, publish, registerMethod, registerTopic, rpcErrorText, RpcFail, subscribe } from "./rpc.svelte";
 import { collab } from "./collab.svelte";
 import { applyingRemoteEdit, docEditListeners, guestScope, hostCompileTexts, openRemote } from "./share.svelte";

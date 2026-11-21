@@ -3,6 +3,7 @@ import { themeById, themeVars } from "./syntaxThemes";
 import { setTerminalPalette, setTerminalFontSize } from "./terminal.svelte";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import * as ed from "./editor";
+import { onGlobalChange } from "./windowStorage";
 
 const num = (k: string, d: number) => Number(localStorage.getItem(k)) || d;
 
@@ -40,7 +41,6 @@ export function applySizes() {
     // Fallback if the zoom permission is unavailable.
     document.body.style.zoom = String(settings.uiScale);
   });
-  for (const k of ["codeFontSize", "proseFontSize", "proseWidth", "terminalFontSize", "uiScale"] as const) localStorage.setItem(k, String(settings[k]));
   // CodeMirror caches line heights/char widths; a CSS-variable font change needs a re-measure,
   // otherwise the cursor keeps its old size until the next click or resize.
   requestAnimationFrame(() => {
@@ -54,6 +54,7 @@ export function applySizes() {
 
 export function setSize(key: "codeFontSize" | "proseFontSize" | "proseWidth" | "terminalFontSize" | "uiScale", value: number) {
   settings[key] = value;
+  localStorage.setItem(key, String(value));
   applySizes();
 }
 
@@ -61,31 +62,63 @@ let styleEl: HTMLStyleElement | null = null;
 
 /** Applies a syntax theme and remembers it for the appearance it belongs to. */
 export function applySyntaxTheme(id: string) {
+  const t = showSyntaxTheme(id);
+  localStorage.setItem(t.light ? "syntaxThemeLight" : "syntaxThemeDark", t.id);
+}
+
+/** Shows a theme without storing it (at startup, or when another window chose it). */
+function showSyntaxTheme(id: string) {
   const t = themeById(id);
   settings.syntaxTheme = t.id;
   if (t.light) settings.syntaxThemeLight = t.id;
   else settings.syntaxThemeDark = t.id;
-  localStorage.setItem(t.light ? "syntaxThemeLight" : "syntaxThemeDark", t.id);
   styleEl ??= document.head.appendChild(document.createElement("style"));
   styleEl.textContent = `:root { ${themeVars(t)} }`;
   setTerminalPalette(t.ansi, settings.appearance);
+  return t;
 }
 
 /** Switches the whole UI between dark and light, together with that appearance's syntax theme. */
 export function setAppearance(a: Appearance) {
-  settings.appearance = a;
   localStorage.setItem("appearance", a);
+  showAppearance(a);
+}
+
+function showAppearance(a: Appearance) {
+  settings.appearance = a;
   document.documentElement.dataset.theme = a;
-  applySyntaxTheme(a === "light" ? settings.syntaxThemeLight : settings.syntaxThemeDark);
+  showSyntaxTheme(a === "light" ? settings.syntaxThemeLight : settings.syntaxThemeDark);
 }
 
 /** Switches the panel material (independent of light/dark). */
 export function setMaterial(m: Material) {
-  settings.material = m;
   localStorage.setItem("material", m);
+  showMaterial(m);
+}
+
+function showMaterial(m: Material) {
+  settings.material = m;
   document.documentElement.dataset.material = m;
 }
 
-setAppearance(settings.appearance);
-setMaterial(settings.material);
+showAppearance(settings.appearance);
+showMaterial(settings.material);
 applySizes();
+
+// Changed in another window: only shown here, so two windows never write back and forth.
+onGlobalChange("appearance", (v) => showAppearance(v === "light" ? "light" : "dark"));
+onGlobalChange("material", (v) => showMaterial(v === "liquid" ? "liquid" : "solid"));
+onGlobalChange(["syntaxThemeDark", "syntaxThemeLight"], () => {
+  settings.syntaxThemeDark = localStorage.getItem("syntaxThemeDark") || settings.syntaxThemeDark;
+  settings.syntaxThemeLight = localStorage.getItem("syntaxThemeLight") || settings.syntaxThemeLight;
+  showSyntaxTheme(settings.appearance === "light" ? settings.syntaxThemeLight : settings.syntaxThemeDark);
+});
+for (const k of ["codeFontSize", "proseFontSize", "proseWidth", "terminalFontSize", "uiScale"] as const) {
+  onGlobalChange(k, (v) => {
+    const n = Number(v);
+    if (n > 0 && n !== settings[k]) {
+      settings[k] = n;
+      applySizes();
+    }
+  });
+}

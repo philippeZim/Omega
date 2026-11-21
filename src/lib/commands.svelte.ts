@@ -4,6 +4,8 @@
  * the command palette and the Shortcuts cheat sheet.
  */
 import type { EditorView } from "@codemirror/view";
+import { onGlobalChange } from "./windowStorage";
+import { newWindow } from "./windowActions";
 import { candidates, formatKey, normalize } from "./keys";
 import { EDITOR_COMMANDS, type CommandGroup } from "./editorCommands";
 import { KEYMAPS, type KeymapId } from "./keymaps";
@@ -81,6 +83,7 @@ const APP_COMMANDS: CommandDef[] = [
   // A guest's new file goes into the host's project, so it's shared and saved there (#133).
   { id: "file.new", group: "files", keys: ["Mod-n"], run: () => newFileInSession() },
   { id: "file.openFolder", group: "files", keys: ["Mod-o"], run: openFolder },
+  { id: "window.new", group: "window", keys: ["Mod-Alt-n"], run: () => void newWindow(), inTerminal: true },
   { id: "file.save", group: "files", keys: ["Mod-s"], run: () => save() },
   { id: "file.saveAs", group: "files", keys: ["Mod-Shift-s"], run: () => save(app.activeId, true) },
   { id: "project.new", group: "files", keys: [], run: () => openNewProject() },
@@ -221,6 +224,10 @@ export function defaultKeysFor(id: string): string[] {
 export function keysFor(id: string): string[] {
   return (keymapState.overrides[id] ?? defaultKeysFor(id)).map(normalize);
 }
+
+// Changed in another window.
+onGlobalChange("keybindings", () => (keymapState.overrides = loadOverrides()));
+onGlobalChange("keymap.preset", () => (keymapState.preset = loadPreset()));
 
 function saveOverrides() {
   if (Object.keys(keymapState.overrides).length) localStorage.setItem("keybindings", JSON.stringify(keymapState.overrides));

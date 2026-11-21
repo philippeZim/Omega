@@ -29,14 +29,14 @@ fn io_err(e: std::io::Error) -> String {
     format!("fs:{code}")
 }
 
-/// The open project folder (set by `watch_dir`), for the symlink check of new entries (#91).
-static ROOT: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+/// Each window's open project folder (set by `watch_dir`), for the symlink check of new entries (#91).
+static ROOTS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, PathBuf>>> = std::sync::LazyLock::new(Default::default);
 
 /// Refuses to create `target` when its path lies inside the open project but its folder resolves
 /// (through a symlinked folder) to somewhere outside it. Paths outside the project (Save As
 /// elsewhere) and saving existing files stay allowed.
-fn check_new_entry(target: &Path) -> Result<(), String> {
-    let root = ROOT.lock().ok().and_then(|r| r.clone());
+fn check_new_entry(owner: &str, target: &Path) -> Result<(), String> {
+    let root = ROOTS.lock().ok().and_then(|r| r.get(owner).cloned());
     match root {
         Some(root) => check_new_entry_in(&root, target),
         None => Ok(()),
@@ -98,8 +98,12 @@ pub fn write_file(path: String, content: String) -> Result<(), String> {
 
 /// Creates a new empty file. Fails instead of truncating if the file already exists.
 #[tauri::command]
-pub fn create_file(path: String) -> Result<(), String> {
-    check_new_entry(Path::new(&path))?;
+pub fn create_file(window: tauri::WebviewWindow, path: String) -> Result<(), String> {
+    create_file_for(window.label(), path)
+}
+
+fn create_file_for(owner: &str, path: String) -> Result<(), String> {
+    check_new_entry(owner, Path::new(&path))?;
     if let Some(parent) = Path::new(&path).parent() {
         fs::create_dir_all(parent).map_err(io_err)?;
     }
@@ -121,18 +125,26 @@ pub fn write_file_base64(path: String, data: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn create_dir(path: String) -> Result<(), String> {
-    check_new_entry(Path::new(&path))?;
+pub fn create_dir(window: tauri::WebviewWindow, path: String) -> Result<(), String> {
+    create_dir_for(window.label(), path)
+}
+
+fn create_dir_for(owner: &str, path: String) -> Result<(), String> {
+    check_new_entry(owner, Path::new(&path))?;
     fs::create_dir_all(&path).map_err(io_err)
 }
 
 #[tauri::command]
-pub fn rename_path(from: String, to: String) -> Result<(), String> {
+pub fn rename_path(window: tauri::WebviewWindow, from: String, to: String) -> Result<(), String> {
+    rename_path_for(window.label(), from, to)
+}
+
+fn rename_path_for(owner: &str, from: String, to: String) -> Result<(), String> {
     // symlink_metadata also sees a dangling link, which exists() would report as missing (#98).
     if fs::symlink_metadata(&to).is_ok() {
         return Err("fs:exists".into());
     }
-    check_new_entry(Path::new(&to))?;
+    check_new_entry(owner, Path::new(&to))?;
     fs::rename(&from, &to).map_err(io_err)
 }
 
@@ -150,21 +162,6 @@ pub fn path_exists(path: String) -> bool {
 #[tauri::command]
 pub fn home_dir() -> String {
     crate::env::norm(crate::env::home())
-}
-
-/// Paths passed on the command line (`omega <ordner|datei>…`), made absolute.
-#[tauri::command]
-pub fn cli_paths() -> Vec<String> {
-    let cwd = std::env::current_dir().unwrap_or_default();
-    std::env::args()
-        .skip(1)
-        .filter(|a| !a.starts_with('-'))
-        .map(|a| {
-            let p = PathBuf::from(&a);
-            let p = if p.is_absolute() { p } else { cwd.join(p) };
-            crate::env::norm(p.canonicalize().unwrap_or(p))
-        })
-        .collect()
 }
 
 /// All files below `root` (relative paths), skipping VCS/dependency/build folders. Capped for huge trees.
@@ -261,7 +258,23 @@ fn walk_files(root: &str, cap: usize, keep_link: &dyn Fn(&Path, bool) -> bool, s
 
 // ------------------------------------------------------------------ file watcher
 
-static WATCHER: std::sync::Mutex<Option<notify::RecommendedWatcher>> = std::sync::Mutex::new(None);
+/// One watcher per window, on that window's project.
+static WATCHERS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, notify::RecommendedWatcher>>> = std::sync::LazyLock::new(Default::default);
+
+/// The project folder open in a window.
+pub fn root_of(owner: &str) -> Option<PathBuf> {
+    ROOTS.lock().ok()?.get(owner).cloned()
+}
+
+/// The window is gone: stops its watcher and forgets its project.
+pub fn forget_window(owner: &str) {
+    if let Ok(mut w) = WATCHERS.lock() {
+        w.remove(owner);
+    }
+    if let Ok(mut r) = ROOTS.lock() {
+        r.remove(owner);
+    }
+}
 
 #[derive(Serialize, Clone)]
 struct FsChanged {
@@ -277,17 +290,21 @@ struct FsChanged {
 /// Changes inside HIDDEN folders (.git, node_modules, target, …) are ignored.
 /// Calling it again replaces the previous watch; `None` stops watching.
 #[tauri::command]
-pub fn watch_dir(app: tauri::AppHandle, path: Option<String>) -> Result<(), String> {
+pub fn watch_dir(app: tauri::AppHandle, window: tauri::WebviewWindow, path: Option<String>) -> Result<(), String> {
     use notify::{EventKind, RecursiveMode, Watcher};
     use std::collections::BTreeSet;
     use std::sync::mpsc;
     use std::time::Duration;
-    use tauri::Emitter;
 
-    let mut slot = WATCHER.lock().map_err(err)?;
-    *slot = None; // drops (stops) the old watcher, which also ends its debounce thread
-    if let Ok(mut root) = ROOT.lock() {
-        *root = path.as_ref().map(PathBuf::from);
+    let owner = window.label().to_string();
+    crate::windows::set_root(&app, &owner, path.as_deref());
+    let mut watchers = WATCHERS.lock().map_err(err)?;
+    watchers.remove(&owner); // drops (stops) the old watcher, which also ends its debounce thread
+    if let Ok(mut roots) = ROOTS.lock() {
+        match &path {
+            Some(p) => roots.insert(owner.clone(), PathBuf::from(p)),
+            None => roots.remove(&owner),
+        };
     }
     let Some(path) = path else { return Ok(()) };
 
@@ -308,7 +325,7 @@ pub fn watch_dir(app: tauri::AppHandle, path: Option<String>) -> Result<(), Stri
     })
     .map_err(err)?;
     watcher.watch(Path::new(&path), RecursiveMode::Recursive).map_err(err)?;
-    *slot = Some(watcher);
+    watchers.insert(owner.clone(), watcher);
 
     std::thread::spawn(move || {
         // Blocks until the first change; ends when the watcher (sender) is dropped.
@@ -331,7 +348,7 @@ pub fn watch_dir(app: tauri::AppHandle, path: Option<String>) -> Result<(), Stri
                     Err(_) => break,
                 }
             }
-            let _ = app.emit("fs-changed", FsChanged { dirs: dirs.into_iter().collect(), files: files.into_iter().collect() });
+            crate::windows::emit(&app, &owner, "fs-changed", FsChanged { dirs: dirs.into_iter().collect(), files: files.into_iter().collect() });
         }
     });
     Ok(())
@@ -346,10 +363,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("omega-create-file-{}", std::process::id()));
         let file = dir.join("sub/main.c");
         let path = file.to_string_lossy().to_string();
-        create_file(path.clone()).unwrap();
+        create_file_for("t", path.clone()).unwrap();
         assert_eq!(fs::read(&file).unwrap(), b"");
         fs::write(&file, "int main() {}").unwrap();
-        assert!(create_file(path).is_err());
+        assert!(create_file_for("t", path).is_err());
         assert_eq!(fs::read_to_string(&file).unwrap(), "int main() {}");
         fs::remove_dir_all(dir).unwrap();
     }
@@ -462,11 +479,11 @@ mod tests {
         let (a, b, c) = (t.path().join("a"), t.path().join("b"), t.path().join("c"));
         fs::write(&a, "A").unwrap();
         fs::write(&b, "B").unwrap();
-        let e = rename_path(s(&a), s(&b)).unwrap_err();
+        let e = rename_path_for("t", s(&a), s(&b)).unwrap_err();
         assert_eq!(e, "fs:exists");
         assert_eq!(fs::read_to_string(&a).unwrap(), "A");
         assert_eq!(fs::read_to_string(&b).unwrap(), "B");
-        rename_path(s(&a), s(&c)).unwrap();
+        rename_path_for("t", s(&a), s(&c)).unwrap();
         assert!(!a.exists());
         assert_eq!(fs::read_to_string(&c).unwrap(), "A");
     }
@@ -546,12 +563,12 @@ mod tests {
         assert_eq!(read_file(s(&bin)).unwrap_err(), "fs:not_utf8");
         assert_eq!(read_file(s(&t.path().join("nope"))).unwrap_err(), "fs:not_found");
         assert_eq!(read_file(s(t.path())).unwrap_err(), "fs:is_dir");
-        assert_eq!(create_file(s(&bin)).unwrap_err(), "fs:exists");
+        assert_eq!(create_file_for("t", s(&bin)).unwrap_err(), "fs:exists");
         #[cfg(unix)]
         {
             let link = t.path().join("broken-link");
             std::os::unix::fs::symlink(t.path().join("gone"), &link).unwrap();
-            assert_eq!(create_file(s(&link)).unwrap_err(), "fs:exists");
+            assert_eq!(create_file_for("t", s(&link)).unwrap_err(), "fs:exists");
         }
     }
 
@@ -562,7 +579,7 @@ mod tests {
         let (a, link) = (t.path().join("a"), t.path().join("broken-link"));
         fs::write(&a, "A").unwrap();
         std::os::unix::fs::symlink(t.path().join("gone"), &link).unwrap();
-        assert_eq!(rename_path(s(&a), s(&link)).unwrap_err(), "fs:exists");
+        assert_eq!(rename_path_for("t", s(&a), s(&link)).unwrap_err(), "fs:exists");
         assert_eq!(fs::read_to_string(&a).unwrap(), "A");
         assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
     }
@@ -585,17 +602,21 @@ mod tests {
         assert_eq!(check_new_entry_in(&root, &outside.join("x")), Ok(()));
 
         // Through the commands, with the project root set like watch_dir does.
-        *ROOT.lock().unwrap() = Some(root.clone());
-        assert_eq!(create_file(s(&root.join("ext/x"))), err);
-        assert_eq!(create_dir(s(&root.join("ext/d"))), err);
+        ROOTS.lock().unwrap().insert("test-owner".into(), root.clone());
+        ROOTS.lock().unwrap().insert("test-other".into(), outside.clone());
+        assert_eq!(create_file_for("test-owner", s(&root.join("ext/x"))), err);
+        // Only the calling window's project counts.
+        assert_eq!(check_new_entry("test-other", &root.join("ext/x")), Ok(()));
+        assert_eq!(create_dir_for("test-owner", s(&root.join("ext/d"))), err);
         fs::write(root.join("a.txt"), "A").unwrap();
-        assert_eq!(rename_path(s(&root.join("a.txt")), s(&root.join("ext/a.txt"))), err);
+        assert_eq!(rename_path_for("test-owner", s(&root.join("a.txt")), s(&root.join("ext/a.txt"))), err);
         assert!(!outside.join("x").exists() && !outside.join("d").exists() && !outside.join("a.txt").exists());
-        create_file(s(&root.join("sub/ok.txt"))).unwrap();
+        create_file_for("test-owner", s(&root.join("sub/ok.txt"))).unwrap();
         // Saving an existing file through the link stays allowed.
         fs::write(outside.join("linked.txt"), "old").unwrap();
         write_file(s(&root.join("ext/linked.txt")), "new".into()).unwrap();
         assert_eq!(fs::read_to_string(outside.join("linked.txt")).unwrap(), "new");
-        *ROOT.lock().unwrap() = None;
+        forget_window("test-owner");
+        forget_window("test-other");
     }
 }

@@ -6,7 +6,7 @@
 import { backendErrorText } from "./backendError";
 import { invoke } from "@tauri-apps/api/core";
 import { pathChanged } from "./terminal.svelte";
-import { listen } from "@tauri-apps/api/event";
+import { listen } from "./windowEvents";
 import { ui } from "./ui.svelte";
 import { t } from "./i18n/index.svelte";
 import { OS } from "./platform";

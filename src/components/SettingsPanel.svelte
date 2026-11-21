@@ -26,7 +26,10 @@
   const INSTALL_GROUPS: Group[] = ["tool", "lsp", "debug"];
   const installItems = $derived(catalog());
   $effect(() => {
-    if (tab === "installs") refreshInstalls();
+    if (tab === "installs") {
+      refreshInstalls();
+      refreshCliCommand();
+    }
   });
   const updateCount = $derived(installItems.filter((i) => updateAvailable(i.id)).length);
   import { blameSettings, setGitBlame } from "../lib/git/blame.svelte";
@@ -41,6 +44,7 @@
     if (tab === "ai") detectAgents();
   });
   import { formatKey } from "../lib/keys";
+  import { cliCommand, installCliCommand, refreshCliCommand } from "../lib/cliCommand.svelte";
   import { keysFor } from "../lib/commands.svelte";
   import { writeText } from "@tauri-apps/plugin-clipboard-manager";
   import { ui } from "../lib/ui.svelte";
@@ -157,6 +161,29 @@
           <button class="btn ghost" disabled={installs.loading} onclick={refreshInstalls}>{t("installs.refresh")}</button>
           {#if installs.checkedAt && !installs.checking}<span class="note inline">{updateCount ? t("installs.updatesFound", { n: updateCount }) : t("installs.noUpdates")}</span>{/if}
         </div>
+        {#if cliCommand.status?.available}
+          {@const cli = cliCommand.status}
+          <h3>{t("app.cli.title")}</h3>
+          <div class="box">
+            <div class="srow">
+              <div class="grow">
+                <b>omega</b>
+                <span class="sub2 ipath" title={cli.path}>{cli.state === "foreign" ? t("app.cli.foreign", { path: cli.path }) : cli.state === "missing" ? t("app.cli.sub") : cli.path}</span>
+                {#if cli.state !== "foreign" && !cli.onPath}<span class="sub2">{t("app.cli.notOnPath", { dir: cli.dir })}</span>{/if}
+              </div>
+              <div class="rowend">
+                {#if cli.state === "installed"}<span class="pill ok">{t("app.cli.ready")}</span>{:else}
+                  <button class="btn" disabled={cliCommand.busy} onclick={installCliCommand}>{cli.state === "stale" ? t("app.cli.update") : t("app.cli.install")}</button>
+                {/if}
+              </div>
+            </div>
+          </div>
+        {:else if cliCommand.error}
+          <h3>{t("app.cli.title")}</h3>
+          <div class="box">
+            <div class="srow"><div class="grow"><b>omega</b><span class="sub2">{cliCommand.error}</span></div></div>
+          </div>
+        {/if}
         {#each INSTALL_GROUPS as g (g)}
           <h3>{t(`installs.group.${g}`)}</h3>
           <div class="box">

@@ -41,9 +41,9 @@ export interface Ctx {
 const exists = (p: string) => fsApi.exists(p);
 const which = (c: string) => invoke<string | null>("which_cmd", { cmd: c });
 
-async function capture(cmd: string, args: string[], cwd: string, ctx: Ctx) {
-  ctx.log(`$ ${cmd} ${args.join(" ")}`, "build");
-  const r = await invoke<{ code: number; stdout: string; stderr: string }>("run_capture", { cmd, args, cwd });
+async function capture(cmd: string, args: string[], cwd: string, ctx: Ctx, sharedDone?: string) {
+  if (!sharedDone || !(await exists(sharedDone))) ctx.log(`$ ${cmd} ${args.join(" ")}`, "build");
+  const r = await invoke<{ code: number; stdout: string; stderr: string }>(sharedDone ? "run_shared_install" : "run_capture", sharedDone ? { cmd, args, cwd, done: sharedDone } : { cmd, args, cwd });
   if (r.code !== 0) {
     ctx.log((r.stderr || r.stdout).trim(), "error");
     throw new Error(t("code.ad.buildFailed"));
@@ -337,10 +337,10 @@ export async function planFor(ctx: Ctx): Promise<Plan> {
           // whose session ends while the program waits for it.
           const tsxDir = `${tools}/tsx`;
           const loader = `${tsxDir}/node_modules/tsx/dist/loader.mjs`;
-          if (!(await exists(loader))) {
-            await fsApi.createDir(tsxDir).catch(() => {});
-            await capture("pnpm", ["add", "--dir", tsxDir, "--allow-build=esbuild", "tsx"], tsxDir, ctx);
-          }
+          await fsApi.createDir(tsxDir).catch(() => {});
+          // The folder is shared by all windows: the backend runs one install at a time and
+          // writes this mark when it finished, so a half-installed loader doesn't count.
+          await capture("pnpm", ["add", "--dir", tsxDir, "--allow-build=esbuild", "tsx"], tsxDir, ctx, `${tsxDir}/.omega-installed`);
           launch.runtimeExecutable = node;
           launch.runtimeArgs = ["--import", fileUri(loader)];
         }

@@ -1,6 +1,6 @@
 /** Find/Replace in Files (PyCharm-style): live search, scopes, file mask, pinned results. */
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { listen } from "../windowEvents";
 import { app, openFile } from "../state.svelte";
 import * as ed from "../editor";
 import { fsApi, dirname } from "../api";

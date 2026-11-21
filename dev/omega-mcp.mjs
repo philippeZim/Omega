@@ -260,7 +260,7 @@ async function launch(name = "agent", paths = [], log = () => {}) {
   const prevAddr = testWorkspace() ? hyprJson("activewindow")?.address : undefined;
   const app = spawn(exe, paths, {
     cwd: root,
-    env: { ...env, OMEGA_INSTANCE: name, OMEGA_DEV_URL: devUrl, OMEGA_WORKTREE: root },
+    env: { ...env, OMEGA_INSTANCE: name, OMEGA_DEV_URL: devUrl, OMEGA_WORKTREE: root, OMEGA_REPLACE_ROOT: "1" },
     detached: true,
     stdio: ["ignore", fs.openSync(appLog, "w"), fs.openSync(appLog, "a")],
   });

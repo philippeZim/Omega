@@ -222,3 +222,16 @@ describe("control MCP open_folder in a guest session", () => {
     expect(setRoot).not.toHaveBeenCalled();
   });
 });
+
+describe("control MCP changed in another window", () => {
+  test("shows the shared server's real state", async () => {
+    mockIPC((cmd) => (cmd === "mcp_control_info" ? { running: true, port: 51234 } : null));
+    const { control, syncControl } = await import("./control.svelte");
+    Object.assign(control, { enabled: true, running: false, boundPort: 0, error: "Port 47821: in use" });
+    await syncControl();
+    expect(control).toMatchObject({ running: true, boundPort: 51234, error: "" });
+    Object.assign(control, { enabled: false });
+    await syncControl();
+    expect(control.running).toBe(false);
+  });
+});

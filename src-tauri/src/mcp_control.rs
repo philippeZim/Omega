@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 
 #[derive(Default)]
 pub struct McpControlState {
@@ -19,7 +19,10 @@ pub struct McpControlState {
     enabled: std::sync::atomic::AtomicBool,
     token: Mutex<String>,
     tools: Mutex<Value>,
-    pending: Mutex<HashMap<u64, Sender<Value>>>,
+    /// Open calls: the window that has to answer, and where its answer goes.
+    pending: Mutex<HashMap<u64, (String, Sender<Value>)>>,
+    /// Window chosen with `select_window`; `None` follows the focus.
+    selected: Mutex<Option<String>>,
 }
 
 static NEXT_CALL: AtomicU64 = AtomicU64::new(1);
@@ -49,14 +52,26 @@ fn handle(app: &AppHandle, msg: &Value) -> Option<Value> {
             }))
         }
         "ping" => rpc_result(&id, json!({})),
-        "tools/list" => rpc_result(&id, json!({ "tools": state.tools.lock().unwrap().clone() })),
+        "tools/list" => {
+            let mut tools = state.tools.lock().unwrap().clone();
+            if let Some(list) = tools.as_array_mut() {
+                list.extend(window_tools());
+            }
+            rpc_result(&id, json!({ "tools": tools }))
+        }
         "tools/call" => {
             let name = msg.pointer("/params/name").and_then(Value::as_str).unwrap_or("").to_string();
             let args = msg.pointer("/params/arguments").cloned().unwrap_or(json!({}));
+            if let Some(result) = window_tool(app, &name, &args) {
+                return Some(rpc_result(&id, result));
+            }
+            let Some(owner) = call_target(app) else {
+                return Some(rpc_result(&id, text_result("No window is open", true)));
+            };
             let call = NEXT_CALL.fetch_add(1, Ordering::SeqCst);
             let (tx, rx) = channel();
-            state.pending.lock().unwrap().insert(call, tx);
-            let _ = app.emit("mcp-call", json!({ "call": call, "name": name, "args": args }));
+            state.pending.lock().unwrap().insert(call, (owner.clone(), tx));
+            crate::windows::emit(app, &owner, "mcp-call", json!({ "call": call, "name": name, "args": args }));
             match rx.recv_timeout(Duration::from_secs(120)) {
                 Ok(result) => rpc_result(&id, result),
                 Err(_) => {
@@ -67,6 +82,56 @@ fn handle(app: &AppHandle, msg: &Value) -> Option<Value> {
         }
         _ => rpc_error(&id, -32601, "Method not found"),
     })
+}
+
+fn text_result(text: &str, is_error: bool) -> Value {
+    json!({ "content": [{ "type": "text", "text": text }], "isError": is_error })
+}
+
+/// Additions for several windows; every other tool acts on the selected or focused window.
+fn window_tools() -> Vec<Value> {
+    vec![
+        json!({ "name": "list_windows", "description": "Lists the open Omega windows: label, whether it is the current tool target.", "inputSchema": { "type": "object", "properties": {} } }),
+        json!({ "name": "select_window", "description": "Sends the following tool calls to this window. Without `window`, they follow the focused window again.", "inputSchema": { "type": "object", "properties": { "window": { "type": "string", "description": "Label from list_windows" } } } }),
+    ]
+}
+
+/// The selected window while it is open, else the focused one.
+fn call_target(app: &AppHandle) -> Option<String> {
+    let state = app.state::<McpControlState>();
+    let selected = state.selected.lock().unwrap().clone();
+    selected.filter(|l| app.get_webview_window(l).is_some()).or_else(|| crate::windows::target(app))
+}
+
+fn window_tool(app: &AppHandle, name: &str, args: &Value) -> Option<Value> {
+    match name {
+        "list_windows" => {
+            let current = call_target(app);
+            let mut labels: Vec<String> = app.webview_windows().into_keys().collect();
+            labels.sort();
+            let list: Vec<Value> = labels.iter().map(|l| json!({ "window": l, "target": current.as_deref() == Some(l) })).collect();
+            Some(text_result(&Value::Array(list).to_string(), false))
+        }
+        "select_window" => {
+            let wanted = args.get("window").and_then(Value::as_str);
+            if wanted.is_some_and(|l| app.get_webview_window(l).is_none()) {
+                return Some(text_result("No such window", true));
+            }
+            *app.state::<McpControlState>().selected.lock().unwrap() = wanted.map(str::to_string);
+            Some(text_result("ok", false))
+        }
+        _ => None,
+    }
+}
+
+/// The window is gone: its open calls fail now instead of at the timeout.
+pub fn forget_window(app: &AppHandle, owner: &str) {
+    let state = app.state::<McpControlState>();
+    state.pending.lock().unwrap().retain(|_, (o, _)| o != owner);
+    let mut selected = state.selected.lock().unwrap();
+    if selected.as_deref() == Some(owner) {
+        *selected = None;
+    }
 }
 
 fn respond(req: tiny_http::Request, status: u16, body: Option<Value>, extra: &[(&str, String)]) {
@@ -178,11 +243,24 @@ pub fn mcp_control_stop(app: AppHandle) {
     app.state::<McpControlState>().enabled.store(false, Ordering::SeqCst);
 }
 
+/// What the shared server is doing, for windows that didn't start it.
+#[tauri::command]
+pub fn mcp_control_info(app: AppHandle) -> Value {
+    let state = app.state::<McpControlState>();
+    let port = state.server.lock().unwrap().as_ref().map(|(p, _)| *p);
+    json!({ "running": state.enabled.load(Ordering::SeqCst) && port.is_some(), "port": port })
+}
+
 /// Frontend answer to an `mcp-call` event.
 #[tauri::command]
-pub fn mcp_reply(app: AppHandle, call: u64, result: Value) {
-    if let Some(tx) = app.state::<McpControlState>().pending.lock().unwrap().remove(&call) {
-        let _ = tx.send(result);
+pub fn mcp_reply(app: AppHandle, window: tauri::WebviewWindow, call: u64, result: Value) {
+    let state = app.state::<McpControlState>();
+    let mut pending = state.pending.lock().unwrap();
+    // Only the window the call went to can answer it.
+    if pending.get(&call).is_some_and(|(owner, _)| owner == window.label()) {
+        if let Some((_, tx)) = pending.remove(&call) {
+            let _ = tx.send(result);
+        }
     }
 }
 

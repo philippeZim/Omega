@@ -1,8 +1,9 @@
 /** Live LaTeX compilation: debounced compile of the active buffer, diagnostics, SyncTeX lookup, outline. */
 import { ensureTools } from "../tools.svelte";
+import { onGlobalChange } from "../windowStorage";
 import { t } from "../i18n/index.svelte";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { listen } from "../windowEvents";
 import { onFilesChanged } from "../fsWatch.svelte";
 import { setDiagnostics, type Diagnostic as CmDiagnostic } from "@codemirror/lint";
 import * as ed from "../editor";
@@ -249,6 +250,7 @@ export function setDark(v: boolean) {
   latex.dark = v;
   localStorage.setItem("pdfDark", String(v));
 }
+onGlobalChange("pdfDark", (v) => (latex.dark = v !== "false"));
 
 /** Editor line → PDF position. */
 export function forwardSync(path: string | null, line: number) {

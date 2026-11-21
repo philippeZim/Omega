@@ -3,16 +3,16 @@
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 
 #[derive(Default)]
 pub struct ProcState {
-    /// JSON-RPC endpoints (stdio pipes or TCP connections) by id.
-    conns: Mutex<HashMap<String, Box<dyn Write + Send>>>,
-    /// Child processes by id (stdio servers and TCP debug adapters).
+    /// JSON-RPC endpoints (stdio pipes or TCP connections) by window-scoped id.
+    conns: Mutex<HashMap<String, (u64, Box<dyn Write + Send>)>>,
+    /// Child processes by window-scoped id (stdio servers and TCP debug adapters).
     children: Mutex<HashMap<String, Child>>,
     /// Children started by `run_killable`: `proc_kill` also ends what they started.
     trees: Mutex<HashSet<String>>,
@@ -85,21 +85,23 @@ fn read_message<R: BufRead>(reader: &mut R) -> Option<Vec<u8>> {
 }
 
 /// Reads `Content-Length` framed messages and emits them as `proc-msg` events.
-fn pump_messages(app: AppHandle, id: String, stream: impl Read + Send + 'static) {
+fn pump_messages(app: AppHandle, owner: String, id: String, generation: u64, stream: impl Read + Send + 'static) {
     std::thread::spawn(move || {
         let mut reader = BufReader::new(stream);
         while let Some(body) = read_message(&mut reader) {
-            let _ = app.emit("proc-msg", Msg { id: id.clone(), msg: String::from_utf8_lossy(&body).into() });
+            crate::windows::emit(&app, &owner, "proc-msg", Msg { id: id.clone(), msg: String::from_utf8_lossy(&body).into() });
         }
-        app.state::<ProcState>().conns.lock().unwrap().remove(&id);
-        let _ = app.emit("proc-exit", id.clone());
+        let ended = crate::windows::end_own(&mut app.state::<ProcState>().conns.lock().unwrap(), &crate::windows::key(&owner, &id), |c| c.0 == generation);
+        if !matches!(ended, crate::windows::Ended::Replaced) {
+            crate::windows::emit(&app, &owner, "proc-exit", id.clone());
+        }
     });
 }
 
-fn pump_lines(app: AppHandle, id: String, stream: impl Read + Send + 'static) {
+fn pump_lines(app: AppHandle, owner: String, id: String, stream: impl Read + Send + 'static) {
     std::thread::spawn(move || {
         for line in BufReader::new(stream).lines().map_while(Result::ok) {
-            let _ = app.emit("proc-stderr", Msg { id: id.clone(), msg: line });
+            crate::windows::emit(&app, &owner, "proc-stderr", Msg { id: id.clone(), msg: line });
         }
     });
 }
@@ -108,6 +110,7 @@ fn pump_lines(app: AppHandle, id: String, stream: impl Read + Send + 'static) {
 #[tauri::command]
 pub fn proc_spawn(
     app: AppHandle,
+    window: tauri::WebviewWindow,
     id: String,
     cmd: String,
     args: Vec<String>,
@@ -121,11 +124,14 @@ pub fn proc_spawn(
         .spawn()
         .map_err(|e| format!("{cmd}: {e}"))?;
     let stdin = child.stdin.take().unwrap();
-    pump_messages(app.clone(), id.clone(), child.stdout.take().unwrap());
-    pump_lines(app.clone(), id.clone(), child.stderr.take().unwrap());
+    let owner = window.label().to_string();
+    let generation = crate::windows::next_generation();
+    pump_messages(app.clone(), owner.clone(), id.clone(), generation, child.stdout.take().unwrap());
+    pump_lines(app.clone(), owner.clone(), id.clone(), child.stderr.take().unwrap());
     let state = app.state::<ProcState>();
-    state.conns.lock().unwrap().insert(id.clone(), Box::new(stdin));
-    state.children.lock().unwrap().insert(id, child);
+    let key = crate::windows::key(&owner, &id);
+    state.conns.lock().unwrap().insert(key.clone(), (generation, Box::new(stdin)));
+    state.children.lock().unwrap().insert(key, child);
     Ok(())
 }
 
@@ -134,6 +140,7 @@ pub fn proc_spawn(
 #[tauri::command]
 pub async fn proc_spawn_tcp(
     app: AppHandle,
+    window: tauri::WebviewWindow,
     id: String,
     cmd: String,
     args: Vec<String>,
@@ -148,17 +155,18 @@ pub async fn proc_spawn_tcp(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("{cmd}: {e}"))?;
-    pump_lines(app.clone(), id.clone(), child.stdout.take().unwrap());
-    pump_lines(app.clone(), id.clone(), child.stderr.take().unwrap());
+    let owner = window.label().to_string();
+    pump_lines(app.clone(), owner.clone(), id.clone(), child.stdout.take().unwrap());
+    pump_lines(app.clone(), owner.clone(), id.clone(), child.stderr.take().unwrap());
     // No probe connection here: some adapters (CodeLLDB) accept exactly one client.
     // proc_connect retries until the port is open.
-    app.state::<ProcState>().children.lock().unwrap().insert(id, child);
+    app.state::<ProcState>().children.lock().unwrap().insert(crate::windows::key(&owner, &id), child);
     Ok(port)
 }
 
 /// Opens a JSON-RPC connection to a TCP port (debug adapters, java-debug, js-debug child sessions).
 #[tauri::command]
-pub async fn proc_connect(app: AppHandle, id: String, port: u16) -> Result<(), String> {
+pub async fn proc_connect(app: AppHandle, window: tauri::WebviewWindow, id: String, port: u16) -> Result<(), String> {
     let stream = tauri::async_runtime::spawn_blocking(move || {
         let mut last = String::new();
         for _ in 0..100 {
@@ -173,27 +181,45 @@ pub async fn proc_connect(app: AppHandle, id: String, port: u16) -> Result<(), S
     .await
     .map_err(|e| e.to_string())??;
     let reader = stream.try_clone().map_err(|e| e.to_string())?;
-    pump_messages(app.clone(), id.clone(), reader);
-    app.state::<ProcState>().conns.lock().unwrap().insert(id, Box::new(stream));
+    let owner = window.label().to_string();
+    let generation = crate::windows::next_generation();
+    pump_messages(app.clone(), owner.clone(), id.clone(), generation, reader);
+    app.state::<ProcState>().conns.lock().unwrap().insert(crate::windows::key(&owner, &id), (generation, Box::new(stream)));
     Ok(())
 }
 
 #[tauri::command]
-pub fn proc_send(app: AppHandle, id: String, msg: String) -> Result<(), String> {
+pub fn proc_send(app: AppHandle, window: tauri::WebviewWindow, id: String, msg: String) -> Result<(), String> {
     let state = app.state::<ProcState>();
     let mut conns = state.conns.lock().unwrap();
-    let w = conns.get_mut(&id).ok_or("proc:not_connected")?;
+    let (_, w) = conns.get_mut(&crate::windows::key(window.label(), &id)).ok_or("proc:not_connected")?;
     write!(w, "Content-Length: {}\r\n\r\n{}", msg.len(), msg).map_err(|e| e.to_string())?;
     w.flush().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn proc_kill(app: AppHandle, id: String) {
+pub fn proc_kill(app: AppHandle, window: tauri::WebviewWindow, id: String) {
     let state = app.state::<ProcState>();
-    if let Some(w) = state.conns.lock().unwrap().remove(&id) {
+    let key = crate::windows::key(window.label(), &id);
+    if let Some(w) = state.conns.lock().unwrap().remove(&key) {
         drop(w);
     }
-    kill_registered(&state.children, &state.trees, &id);
+    kill_registered(&state.children, &state.trees, &key);
+}
+
+/// Ends every language server, debugger and Run task of one window.
+pub fn kill_window(app: &AppHandle, owner: &str) {
+    let state = app.state::<ProcState>();
+    drop(crate::windows::take_owned(&mut state.conns.lock().unwrap(), owner));
+    kill_owned(&state.children, &state.trees, owner);
+}
+
+fn kill_owned(children: &Mutex<HashMap<String, Child>>, trees: &Mutex<HashSet<String>>, owner: &str) {
+    // Collected first: `kill_registered` takes the lock itself.
+    let keys: Vec<String> = children.lock().unwrap().keys().filter(|k| crate::windows::is_owned(k, owner)).cloned().collect();
+    for key in keys {
+        kill_registered(children, trees, &key);
+    }
 }
 
 fn kill_registered(children: &Mutex<HashMap<String, Child>>, trees: &Mutex<HashSet<String>>, id: &str) {
@@ -320,6 +346,69 @@ pub async fn run_capture(cmd: String, args: Vec<String>, cwd: Option<String>) ->
     .map_err(|e| e.to_string())?
 }
 
+/// One shared tool install at a time, across all windows.
+static SHARED_INSTALL: Mutex<()> = Mutex::new(());
+
+/// A hung install is ended after this.
+const SHARED_INSTALL_LIMIT: std::time::Duration = std::time::Duration::from_secs(300);
+/// How long a window waits for another window's install, which ends within the limit.
+const SHARED_INSTALL_WAIT: std::time::Duration = std::time::Duration::from_secs(320);
+
+/// `run_capture` for installing into a folder all windows share: one at a time, ended if it hangs.
+/// `done` is written after a successful install, so a half-finished one is never taken for done.
+#[tauri::command]
+pub async fn run_shared_install(cmd: String, args: Vec<String>, cwd: Option<String>, done: String) -> Result<Captured, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        run_once(&SHARED_INSTALL, Path::new(&done), SHARED_INSTALL_WAIT, || output_limited(&mut command(&cmd, &args, cwd, None)?, SHARED_INSTALL_LIMIT))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+fn run_once(lock: &Mutex<()>, done: &Path, wait: std::time::Duration, run: impl FnOnce() -> Result<Captured, String>) -> Result<Captured, String> {
+    let deadline = std::time::Instant::now() + wait;
+    let _one = loop {
+        match lock.try_lock() {
+            Ok(g) => break g,
+            Err(std::sync::TryLockError::Poisoned(e)) => break e.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) if std::time::Instant::now() >= deadline => return Err("install_busy".into()),
+            Err(std::sync::TryLockError::WouldBlock) => std::thread::sleep(std::time::Duration::from_millis(50)),
+        }
+    };
+    if done.exists() {
+        return Ok(Captured { code: 0, stdout: String::new(), stderr: String::new() });
+    }
+    let out = run()?;
+    if out.code == 0 {
+        std::fs::write(done, "").map_err(|e| e.to_string())?;
+    }
+    Ok(out)
+}
+
+/// Runs a command to its end, or ends it and what it started after `limit`.
+fn output_limited(c: &mut Command, limit: std::time::Duration) -> Result<Captured, String> {
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(c, 0);
+    let mut child = c.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| e.to_string())?;
+    let stdout = drain(child.stdout.take().unwrap());
+    let stderr = drain(child.stderr.take().unwrap());
+    let deadline = std::time::Instant::now() + limit;
+    let code = loop {
+        if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
+            break status.code().unwrap_or(-1);
+        }
+        if std::time::Instant::now() >= deadline {
+            kill_tree(&child);
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("install_timeout".into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    let wait = std::time::Duration::from_secs(2);
+    Ok(Captured { code, stdout: stdout.recv_timeout(wait).unwrap_or_default(), stderr: stderr.recv_timeout(wait).unwrap_or_default() })
+}
+
 /// Reads a pipe to its end on its own thread, so a full pipe can't block the child.
 fn drain(pipe: impl Read + Send + 'static) -> std::sync::mpsc::Receiver<String> {
     let (tx, rx) = std::sync::mpsc::channel();
@@ -360,11 +449,11 @@ fn run_registered(children: &Mutex<HashMap<String, Child>>, trees: &Mutex<HashSe
 /// `run_capture` for a build that may have to stop early: `proc_kill` with this `id` ends it and,
 /// on Unix, the actions it started (not one that detached itself with `setsid`).
 #[tauri::command]
-pub async fn run_killable(app: AppHandle, id: String, cmd: String, args: Vec<String>, cwd: Option<String>) -> Result<Captured, String> {
+pub async fn run_killable(app: AppHandle, window: tauri::WebviewWindow, id: String, cmd: String, args: Vec<String>, cwd: Option<String>) -> Result<Captured, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let mut c = command(&cmd, &args, cwd, None)?;
         let state = app.state::<ProcState>();
-        run_registered(&state.children, &state.trees, &id, &mut c)
+        run_registered(&state.children, &state.trees, &crate::windows::key(window.label(), &id), &mut c)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -698,5 +787,82 @@ Content-Type: x\r\nContent-Length: 7\r\n\r\n{\"a\":1}";
     #[test]
     fn lf_only_line_endings() {
         assert_eq!(read_all(b"Content-Length: 2\n\nhi"), vec![b"hi".to_vec()]);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod window_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    fn a_shared_install_runs_once_for_two_windows() {
+        let t = tempfile::tempdir().unwrap();
+        let done = Arc::new(t.path().join("done"));
+        let lock = Arc::new(Mutex::new(()));
+        let runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let threads: Vec<_> = (0..2).map(|_| {
+            let (done, lock, runs) = (done.clone(), lock.clone(), runs.clone());
+            std::thread::spawn(move || {
+                run_once(&lock, &done, std::time::Duration::from_secs(5), || {
+                    runs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    Ok(Captured { code: 0, stdout: String::new(), stderr: String::new() })
+                }).unwrap();
+            })
+        }).collect();
+        for th in threads { th.join().unwrap(); }
+        assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_failed_install_is_not_marked_done() {
+        let t = tempfile::tempdir().unwrap();
+        let done = t.path().join("done");
+        let lock = Mutex::new(());
+        let run = |code| Ok(Captured { code, stdout: String::new(), stderr: String::new() });
+        run_once(&lock, &done, std::time::Duration::from_secs(1), || run(1)).unwrap();
+        assert!(!done.exists());
+        run_once(&lock, &done, std::time::Duration::from_secs(1), || run(0)).unwrap();
+        assert!(done.exists());
+    }
+
+    #[test]
+    fn a_hung_install_ends_and_a_waiting_window_gives_up() {
+        let start = std::time::Instant::now();
+        let e = output_limited(Command::new("sleep").arg("30"), std::time::Duration::from_millis(150)).err();
+        assert_eq!(e.as_deref(), Some("install_timeout"));
+        assert!(start.elapsed() < std::time::Duration::from_secs(5));
+        let ok = output_limited(Command::new("sh").args(["-c", "echo hi"]), std::time::Duration::from_secs(5)).unwrap();
+        assert_eq!((ok.code, ok.stdout.as_str()), (0, "hi\n"));
+
+        let t = tempfile::tempdir().unwrap();
+        let lock = Mutex::new(());
+        let _held = lock.lock().unwrap();
+        let r = run_once(&lock, &t.path().join("done"), std::time::Duration::from_millis(100), || panic!("must not run"));
+        assert_eq!(r.err().as_deref(), Some("install_busy"));
+    }
+
+    #[test]
+    fn closing_a_window_ends_only_its_processes_without_deadlock() {
+        let spawn = || Command::new("sleep").arg("30").spawn().unwrap();
+        let children = Arc::new(Mutex::new(HashMap::new()));
+        let trees = Arc::new(Mutex::new(HashSet::new()));
+        children.lock().unwrap().insert(crate::windows::key("main", "lsp"), spawn());
+        children.lock().unwrap().insert(crate::windows::key("main", "dap"), spawn());
+        children.lock().unwrap().insert(crate::windows::key("w-b", "lsp"), spawn());
+        let (c2, t2) = (children.clone(), trees.clone());
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            kill_owned(&c2, &t2, "main");
+            let _ = tx.send(());
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(5)).expect("kill_owned must not deadlock");
+        let mut left = children.lock().unwrap();
+        assert_eq!(left.keys().cloned().collect::<Vec<_>>(), [crate::windows::key("w-b", "lsp")]);
+        for c in left.values_mut() {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
     }
 }

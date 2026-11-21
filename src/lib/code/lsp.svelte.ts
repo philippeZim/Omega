@@ -1,5 +1,6 @@
 /** Minimal LSP client: one server process per (server kind, project root), full-text document sync. */
 import { backendErrorText } from "../backendError";
+import { onGlobalChange } from "../windowStorage";
 import { invoke } from "@tauri-apps/api/core";
 import { onRpc } from "../rpc";
 import { t, type Key } from "../i18n/index.svelte";
@@ -481,6 +482,10 @@ export function setStrictPython(on: boolean) {
   // Running servers re-pull their configuration and re-check open files.
   for (const c of clients.values()) if (c.kind === "python") c.notify("workspace/didChangeConfiguration", { settings: null });
 }
+
+onGlobalChange("strictPython", (v) => {
+  if ((v === "true") !== lspSettings.strictPython) setStrictPython(v === "true");
+});
 
 async function resolveCommand(kind: ServerKind, root: string): Promise<{ cmd: string; args: string[]; init?: Json } | null> {
   const tools = await toolsDir();

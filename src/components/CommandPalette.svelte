@@ -2,7 +2,7 @@
   /** Search Everywhere (PyCharm): tabs All | Files | Symbols | Actions | Text. */
   import { tick, onDestroy } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
-  import { listen } from "@tauri-apps/api/event";
+  import { listen } from "../lib/windowEvents";
   import { palette, availableCommands, keysFor, runCommand, type PaletteTab } from "../lib/commands.svelte";
   import { formatKey } from "../lib/keys";
   import { fuzzy, highlight } from "../lib/fuzzy";
