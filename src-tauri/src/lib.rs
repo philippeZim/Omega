@@ -129,6 +129,7 @@ pub fn run() {
             proc::proc_spawn_tcp,
             proc::proc_connect,
             proc::run_capture,
+            proc::run_killable,
             proc::install_debugger,
             proc::proc_send,
             proc::proc_kill,

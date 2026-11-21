@@ -10,6 +10,10 @@ const ipc = vi.hoisted(() => ({
   which: {} as Record<string, string>,
   onWhich: null as null | (() => void),
   onBuild: null as null | (() => void),
+  holdBuild: null as null | Promise<void>,
+  buildId: "",
+  buildCode: 0,
+  killed: [] as string[],
 }));
 vi.mock("@tauri-apps/api/core", async (orig) => ({
   ...(await orig<typeof import("@tauri-apps/api/core")>()),
@@ -18,10 +22,13 @@ vi.mock("@tauri-apps/api/core", async (orig) => ({
     if (cmd === "proc_send") ipc.sent.push(a!.msg!);
     if (cmd === "tools_dir") return "/tools";
     if (cmd === "install_debugger" && a?.kind === "earlybird") ipc.which.ocamlearlybird = "/sw/bin/ocamlearlybird";
-    if (cmd === "run_capture") {
+    if (cmd === "proc_kill") ipc.killed.push((a as { id: string }).id);
+    if (cmd === "run_killable") {
       ipc.builds.push([a!.cmd!, ...a!.args!]);
+      ipc.buildId = (a as { id: string }).id;
       ipc.onBuild?.();
-      return { code: 0, stdout: "", stderr: "" };
+      if (ipc.holdBuild) await ipc.holdBuild;
+      return { code: ipc.killed.includes(ipc.buildId) ? -1 : ipc.buildCode, stdout: "", stderr: "build output" };
     }
     if (cmd !== "which_cmd") return null;
     const hook = ipc.onWhich;
@@ -74,7 +81,9 @@ const BYTE_EXE = "(executable\n (name main)\n (modes byte exe))\n";
 
 beforeEach(() => {
   disk.clear();
-  ipc.calls.length = ipc.sent.length = ipc.builds.length = 0;
+  ipc.calls.length = ipc.sent.length = ipc.builds.length = ipc.killed.length = 0;
+  ipc.holdBuild = null;
+  ipc.buildCode = 0;
   ipc.which = {};
   ipc.onWhich = ipc.onBuild = null;
 });
@@ -317,6 +326,56 @@ describe("Debugging OCaml", () => {
   test("a guest change during the build doesn't start the program", async () => {
     ipc.onBuild = () => noteGuestChange("peer", "/d");
     await expect(planFor(ctx())).rejects.toThrow(t("code.lsp.ocamlPaused"));
+  });
+
+  test("a guest change kills the running build at once and says why", async () => {
+    let finish = () => {};
+    ipc.holdBuild = new Promise((r) => (finish = r));
+    const outcome = expect(planFor(ctx())).rejects.toThrow(t("code.lsp.ocamlPaused"));
+    await vi.waitFor(() => expect(ipc.builds).toHaveLength(1));
+    expect(ipc.killed).toEqual([]);
+    noteGuestChange("peer", "/d");
+    expect(ipc.killed).toEqual([ipc.buildId]); // before anything else runs
+    finish();
+    await outcome;
+  });
+
+  test("the kill is repeated until the build has really ended", async () => {
+    let finish = () => {};
+    ipc.holdBuild = new Promise((r) => (finish = r));
+    const outcome = expect(planFor(ctx())).rejects.toThrow(t("code.lsp.ocamlPaused"));
+    await vi.waitFor(() => expect(ipc.builds).toHaveLength(1));
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      noteGuestChange("peer", "/d");
+      vi.advanceTimersByTime(250);
+      expect(ipc.killed.length).toBeGreaterThanOrEqual(3);
+    } finally {
+      vi.useRealTimers();
+    }
+    finish();
+    await outcome;
+  });
+
+  test("a change in another project leaves the build alone", async () => {
+    let finish = () => {};
+    ipc.holdBuild = new Promise((r) => (finish = r));
+    const plan = planFor(ctx());
+    await vi.waitFor(() => expect(ipc.builds).toHaveLength(1));
+    noteGuestChange("peer", "/elsewhere");
+    expect(ipc.killed).toEqual([]);
+    finish();
+    await expect(plan).resolves.toMatchObject({ label: "OCaml · main.bc" });
+    resumeTool("ocaml", "/elsewhere", toolChangeCount("ocaml"));
+    resumeMetals("/elsewhere", metalsChangeCount());
+    resumeCompiling("", "/elsewhere");
+  });
+
+  test("a failed build shows its output", async () => {
+    ipc.buildCode = 1;
+    const log = vi.fn();
+    await expect(planFor({ ...ctx(), log })).rejects.toThrow(t("code.ad.buildFailed"));
+    expect(log).toHaveBeenCalledWith("build output", "error");
   });
 });
 

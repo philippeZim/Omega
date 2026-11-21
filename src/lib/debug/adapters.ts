@@ -4,7 +4,8 @@ import { fsApi, basename, dirname, joinPath } from "../api";
 import { langFor } from "../code/languages";
 import { detectProject, pythonEntry, cmakeConfigure, cmakeExecutable } from "../code/projects";
 import { duneProjectIssue, duneSourcePath, duneTarget, findDuneExecutables, pickExecutable, sameToolchain } from "../code/dune";
-import { toolsDir, clientFor, fileUri, javaDebugBundles, metalsPausedFor, ocamlPausedFor } from "../code/lsp.svelte";
+import { toolsDir, clientFor, fileUri, javaDebugBundles, metalsPausedFor, ocamlPauseRoot } from "../code/lsp.svelte";
+import { onGuestChange, toolPausedBy } from "../collab/guestChanges";
 import { t } from "../i18n/index.svelte";
 import { exe, tmpPath, venvPython, IS_WIN, OS } from "../platform";
 import { ensureTools, withInstallProgress, type ToolId } from "../tools.svelte";
@@ -128,6 +129,38 @@ export async function dropScalaSession(port: number) {
     // Already gone.
   }
   await invoke("proc_kill", { id }).catch(() => {});
+}
+
+let buildRuns = 0;
+
+/**
+ * A build that a guest change stops at once. The kill is repeated until the build has ended,
+ * because a change can arrive before the backend has registered the process.
+ */
+export async function buildUnlessPaused(cmd: string, args: string[], cwd: string, ctx: Pick<Ctx, "log">, paused: () => boolean) {
+  const stopped = () => new Error(t("code.lsp.ocamlPaused"));
+  if (paused()) throw stopped();
+  const id = `ocaml-build-${++buildRuns}`;
+  const kill = () => void invoke("proc_kill", { id }).catch(() => {});
+  let again: ReturnType<typeof setInterval> | undefined;
+  const off = onGuestChange(() => {
+    if (again !== undefined || !paused()) return;
+    kill();
+    again = setInterval(kill, 100);
+  });
+  ctx.log(`$ ${cmd} ${args.join(" ")}`, "build");
+  try {
+    const r = await invoke<{ code: number; stdout: string; stderr: string }>("run_killable", { id, cmd, args, cwd });
+    if (paused()) throw stopped();
+    if (r.code !== 0) {
+      ctx.log((r.stderr || r.stdout).trim(), "error");
+      throw new Error(t("code.ad.buildFailed"));
+    }
+    return r;
+  } finally {
+    off();
+    clearInterval(again);
+  }
 }
 
 /** Earlybird from the same switch as the compiler that builds the bytecode, installed if missing. */
@@ -312,18 +345,19 @@ export async function planFor(ctx: Ctx): Promise<Plan> {
 
     case "ocaml": {
       // Debugging builds and runs the project: it waits for the host's decision like ocamllsp.
-      const held = async () => {
-        if (await ocamlPausedFor(ctx.file, ctx.workspace)) throw new Error(t("code.lsp.ocamlPaused"));
+      const pauseRoot = await ocamlPauseRoot(ctx.file, ctx.workspace);
+      const paused = () => toolPausedBy("ocaml", pauseRoot) !== null || toolPausedBy("ocaml", root) !== null;
+      const held = () => {
+        if (paused()) throw new Error(t("code.lsp.ocamlPaused"));
       };
-      await held();
+      held();
       await need(["ocaml"]);
       if (project?.kind !== "dune") throw new Error(t("code.ad.ocamlNeedsDune"));
       const target = await ocamlDebugTarget(root, ctx.file);
       const adapter = await earlybird(ctx);
       const bc = duneTarget(target, "bc");
-      await held();
-      await capture("dune", ["build", bc], root, ctx);
-      await held();
+      await buildUnlessPaused("dune", ["build", bc], root, ctx, paused);
+      held();
       return {
         label: `OCaml · ${target.name}.bc`,
         cwd: root,

@@ -526,8 +526,8 @@ function serverHeld(kind: ServerKind, key: string, root: string) {
 /** Whether Metals is paused for this file's project. */
 export const metalsPausedFor = async (file: string, workspace: string | null) => metalsPausedBy(await findRoot(file, ROOT_MARKERS.scala, workspace)) !== null;
 
-/** Whether ocamllsp is paused for this file's project. */
-export const ocamlPausedFor = async (file: string, workspace: string | null) => toolPausedBy("ocaml", await findRoot(file, ROOT_MARKERS.ocaml, workspace)) !== null;
+/** The folder ocamllsp's guest pause is checked against for this file. */
+export const ocamlPauseRoot = (file: string, workspace: string | null) => findRoot(file, ROOT_MARKERS.ocaml, workspace);
 
 onGuestChange(() => {
   for (const [key, c] of clients) {

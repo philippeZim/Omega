@@ -218,6 +218,50 @@ pub async fn run_capture(cmd: String, args: Vec<String>, cwd: Option<String>) ->
     .map_err(|e| e.to_string())?
 }
 
+/// Reads a pipe to its end on its own thread, so a full pipe can't block the child.
+fn drain(pipe: impl Read + Send + 'static) -> std::sync::mpsc::Receiver<String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = BufReader::new(pipe).read_to_end(&mut bytes);
+        let _ = tx.send(String::from_utf8_lossy(&bytes).to_string());
+    });
+    rx
+}
+
+/// Runs `c` as child `id` until it exits or something removes it from `children` (`proc_kill`).
+/// A killed run returns at once with code -1, also if a process it left behind holds the pipes.
+fn run_registered(children: &Mutex<HashMap<String, Child>>, id: &str, c: &mut Command) -> Result<Captured, String> {
+    let mut child = c.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| e.to_string())?;
+    let stdout = drain(child.stdout.take().unwrap());
+    let stderr = drain(child.stderr.take().unwrap());
+    children.lock().unwrap().insert(id.to_string(), child);
+    let code = loop {
+        {
+            let mut map = children.lock().unwrap();
+            let Some(child) = map.get_mut(id) else { break None };
+            if let Ok(Some(status)) = child.try_wait() {
+                map.remove(id);
+                break Some(status.code().unwrap_or(-1));
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    let wait = std::time::Duration::from_millis(if code.is_some() { 2000 } else { 0 });
+    Ok(Captured { code: code.unwrap_or(-1), stdout: stdout.recv_timeout(wait).unwrap_or_default(), stderr: stderr.recv_timeout(wait).unwrap_or_default() })
+}
+
+/// `run_capture` for a build that may have to stop early: `proc_kill` with this `id` ends it.
+#[tauri::command]
+pub async fn run_killable(app: AppHandle, id: String, cmd: String, args: Vec<String>, cwd: Option<String>) -> Result<Captured, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut c = command(&cmd, &args, cwd, None)?;
+        run_registered(&app.state::<ProcState>().children, &id, &mut c)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Installs a language server into the app's tools dir. Returns the executable path.
 #[tauri::command]
 pub async fn install_server(app: AppHandle, kind: String) -> Result<String, String> {
@@ -371,7 +415,45 @@ pub async fn install_debugger(app: AppHandle, kind: String) -> Result<String, St
 
 #[cfg(test)]
 mod tests {
-    use super::{npm_packages, read_message};
+    use super::{npm_packages, read_message, run_registered};
+    use std::collections::HashMap;
+    use std::process::Command;
+    use std::sync::Mutex;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_registered_run_reports_its_exit_and_output() {
+        let children = Mutex::new(HashMap::new());
+        let mut c = Command::new("sh");
+        c.args(["-c", "echo out; echo err >&2; exit 3"]);
+        let r = run_registered(&children, "b", &mut c).unwrap();
+        assert_eq!((r.code, r.stdout.trim(), r.stderr.trim()), (3, "out", "err"));
+        assert!(children.lock().unwrap().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_registered_run_ends_at_once_when_it_is_killed() {
+        let children = std::sync::Arc::new(Mutex::new(HashMap::new()));
+        let map = children.clone();
+        let run = std::thread::spawn(move || {
+            let mut c = Command::new("sleep");
+            c.arg("30");
+            run_registered(&map, "b", &mut c).unwrap().code
+        });
+        let start = std::time::Instant::now();
+        loop {
+            if let Some(mut child) = children.lock().unwrap().remove("b") {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                break;
+            }
+            assert!(start.elapsed().as_secs() < 5);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(run.join().unwrap(), -1);
+        assert!(start.elapsed().as_secs() < 5);
+    }
 
     #[test]
     fn typescript_is_pinned_to_a_version_with_tsserver() {
