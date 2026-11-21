@@ -95,6 +95,7 @@ export const en = {
   "code.rb.runCmdPlaceholder": "e.g. uv run main.py · {file} = open file",
   "code.rb.runRightClick": "Right-click to change",
   "code.rb.noFileOpen": "No file open for {file}.",
+  "code.rb.unsafeName": "Not run: a file or folder name contains %, a double quote or a control character, which isn't safe in a Windows command. Rename it and try again.",
 
   // Debug panel
   "code.dbg.status.idle": "Ready",
@@ -372,6 +373,7 @@ export const de: Record<keyof typeof en, string> = {
   "code.rb.runCmdPlaceholder": "z.B. uv run main.py · {file} = offene Datei",
   "code.rb.runRightClick": "Rechtsklick zum Ändern",
   "code.rb.noFileOpen": "Keine Datei offen für {file}.",
+  "code.rb.unsafeName": "Nicht ausgeführt: Ein Datei- oder Ordnername enthält %, ein doppeltes Anführungszeichen oder ein Steuerzeichen und ist in einem Windows-Befehl nicht sicher. Benenne ihn um und versuche es erneut.",
 
   "code.dbg.status.idle": "Bereit",
   "code.dbg.status.starting": "Startet …",
@@ -642,6 +644,7 @@ export const fr: Record<keyof typeof en, string> = {
   "code.rb.runCmdPlaceholder": "p. ex. uv run main.py · {file} = fichier ouvert",
   "code.rb.runRightClick": "Clic droit pour modifier",
   "code.rb.noFileOpen": "Aucun fichier ouvert pour {file}.",
+  "code.rb.unsafeName": "Non exécuté : un nom de fichier ou de dossier contient %, un guillemet double ou un caractère de contrôle, ce qui n’est pas sûr dans une commande Windows. Renommez-le puis réessayez.",
 
   "code.dbg.status.idle": "Prêt",
   "code.dbg.status.starting": "Démarrage…",

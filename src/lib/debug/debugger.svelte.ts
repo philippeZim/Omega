@@ -9,7 +9,7 @@ import { ui } from "../ui.svelte";
 import * as ed from "../editor";
 import { invoke } from "@tauri-apps/api/core";
 import { runCommand, shellQuote } from "../terminal.svelte";
-import { IS_WIN } from "../platform";
+import { hasUnquotable, IS_WIN } from "../platform";
 import { showView } from "../layout.svelte";
 import { normPath } from "../api";
 import { t, i18n, type Key } from "../i18n/index.svelte";
@@ -433,6 +433,7 @@ async function onReverse(s: DapSession, req: Json): Promise<Json> {
   if (req.command === "runInTerminal") {
     const entries = Object.entries(a.env ?? {});
     const argv = (a.args as string[]).map(shellQuote).join(" ");
+    if (hasUnquotable(argv)) throw new Error(t("code.rb.unsafeName"));
     let cmd: string;
     if (IS_WIN) {
       // cmd.exe: `set "K=V"` (an empty value unsets the variable).

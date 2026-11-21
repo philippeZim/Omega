@@ -10,7 +10,7 @@ import { fsApi, joinPath, basename } from "../api";
 import { onFilesChanged } from "../fsWatch.svelte";
 import { t } from "../i18n/index.svelte";
 import { ensureTools } from "../tools.svelte";
-import { cd, q } from "../platform";
+import { cd, hasUnquotable, q } from "../platform";
 import { blockedAsGuest, keptOutOfSession } from "../collab/guard";
 
 export const runner = $state({
@@ -206,6 +206,8 @@ async function launch(a: Action, p: Project, activeFile: () => string | null | u
     // A function: `$&` or `$'` in a file name must not count as a replacement pattern.
     cmd = cmd.replaceAll("{file}", () => q(file));
   }
+  // Before anything starts: otherwise a build could run and only its program be refused.
+  if ([cmd, a.pre, a.setup?.cmd].some((c) => c && hasUnquotable(c))) return ui.toast(t("code.rb.unsafeName"), "error");
   if (!(await ensureTools([...p.needs, ...(a.needs ?? [])], t("tools.purpose.run")))) return;
   await saveAll();
   // One-time setup (CMake configure) only while its marker is missing, so it's visible when it runs.

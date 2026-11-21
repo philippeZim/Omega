@@ -48,8 +48,29 @@ describe("Windows", () => {
     expect(q("C:/Users/me")).toBe("C:\\Users\\me");
     expect(q("C:/Program Files/x")).toBe('"C:\\Program Files\\x"');
     expect(q("./build/app.exe")).toBe(".\\build\\app.exe");
-    expect(q('say "hi"')).toBe('"say ""hi"""');
     expect(q("plain")).toBe("plain");
+  });
+
+  test("q keeps %, double quotes and control characters out of every command", async () => {
+    const { q, cd, runRel, rmrf, unlessExists, hasUnquotable } = await load(WIN);
+    for (const s of ["%PATH%.py", "C:/a %USERNAME% b/x.py", "./100%.py", 'say "hi"', 'a" & calc & "b', "a\nb", "a\rb", "a\x1b.py"]) {
+      for (const out of [q(s), cd(s), runRel(s), rmrf(s), unlessExists(s, "make")]) {
+        expect(hasUnquotable(out)).toBe(true);
+        expect(out).not.toMatch(/[%"\n\r\x1b]|calc/);
+      }
+    }
+  });
+
+  test("q still accepts ! in the host's own paths: Omega runs cmd.exe with delayed expansion off", async () => {
+    const { q, hasUnquotable } = await load(WIN);
+    expect(q("C:/Users/Bob!/a b.py")).toBe('"C:\\Users\\Bob!\\a b.py"');
+    expect(hasUnquotable(q("C:/Users/Bob!/a b.py"))).toBe(false);
+  });
+
+  test("a name from another machine can't contain ! either", async () => {
+    const { quotablePath } = await load(WIN);
+    for (const s of ["!PATH!.py", "100%.py", 'a".py']) expect(quotablePath(s)).toBe(false);
+    expect(quotablePath("a b.py")).toBe(true);
   });
 
   test("cd / rmrf / runRel / exe", async () => {

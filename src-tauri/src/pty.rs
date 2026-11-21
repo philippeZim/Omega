@@ -225,6 +225,10 @@ fn shell_command(run: bool, shell: Option<&str>, cwd: &str) -> CommandBuilder {
     c
 }
 
+/// cmd.exe flags for a Build/Run batch file. `/V:OFF`: a machine with delayed expansion enabled in
+/// the registry would otherwise expand `!VAR!` in file names, even inside quotes.
+const BATCH_FLAGS: [&str; 4] = ["/Q", "/D", "/V:OFF", "/C"];
+
 /// Runs one command instead of an interactive shell (Build/Run steps): the terminal ends with the
 /// command, so its exit code can be shown. POSIX: the login shell with `-c` (or `/bin/sh` when the
 /// login shell doesn't speak POSIX, e.g. fish); Windows: cmd.exe on a temporary batch file, because
@@ -234,7 +238,7 @@ fn single_command(id: &str, command: &str) -> Result<CommandBuilder, String> {
         let file = std::env::temp_dir().join(format!("omega-run-{}.cmd", id.replace(|c: char| !c.is_ascii_alphanumeric(), "_")));
         std::fs::write(&file, format!("@echo off\r\n{command}\r\n")).map_err(|e| e.to_string())?;
         let mut c = CommandBuilder::new("cmd.exe");
-        c.args(["/Q", "/D", "/C"]);
+        c.args(BATCH_FLAGS);
         c.arg(file);
         return Ok(c);
     }
@@ -574,6 +578,13 @@ mod tests {
 
     fn args(a: &[&str]) -> Vec<String> {
         a.iter().map(|x| x.to_string()).collect()
+    }
+
+    #[test]
+    fn batch_files_run_without_delayed_expansion() {
+        let off = BATCH_FLAGS.iter().position(|f| *f == "/V:OFF").expect("/V:OFF");
+        // cmd.exe treats everything after /C as the command.
+        assert!(off < BATCH_FLAGS.iter().position(|f| *f == "/C").unwrap());
     }
 
     #[test]

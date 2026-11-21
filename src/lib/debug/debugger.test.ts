@@ -822,6 +822,12 @@ describe("a stop or a second start during a start", () => {
       expect(D.hostDebug.closing()).toBe(false);
     });
 
+    test("runInTerminal with an argument q() refused starts nothing and gets an error (#149)", async () => {
+      await startAndStop();
+      expect(await reverse(fake.id!, "runInTerminal", { ...terminal, args: ["python", "﷐"] })).toMatchObject({ success: false });
+      expect(m.runCommand).not.toHaveBeenCalled();
+    });
+
     test("runInTerminal from a closed session starts nothing and gets an error", async () => {
       await startAndStop();
       await D.stopLocal();

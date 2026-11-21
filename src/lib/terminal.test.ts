@@ -196,6 +196,20 @@ describe("Build/Run tasks", () => {
     expect(written()).toContain("No such file");
   });
 
+  test("a command with a name q() refused never reaches a shell (#149)", async () => {
+    const onExit = vi.fn();
+    T.runTask("run", "python ﷐", "/p", "Run", { focus: false, onExit });
+    await settle();
+    expect(spawns()).toEqual([]);
+    expect(onExit).toHaveBeenCalledWith(127);
+    expect(T.terms.tabs[0]).toMatchObject({ status: "fail", code: 127 });
+    expect(written()).not.toContain("﷐");
+    expect(written()).toContain("Not run");
+    // Showing the tab must not start a shell in it either.
+    await T.attach(T.terms.tabs[0].id, document.createElement("div"));
+    expect(spawns()).toEqual([]);
+  });
+
   test("restarting reuses the tab, kills the old pty and ignores its exit", async () => {
     const first = vi.fn();
     T.runTask("run", "one", null, "Run", { focus: false, onExit: first });
