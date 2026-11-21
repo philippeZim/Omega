@@ -12,6 +12,14 @@ const m = vi.hoisted(() => ({
   runCommand: null as any,
   /** Holds proc_spawn open until resolved. */
   spawnGate: null as Promise<unknown> | null,
+  /** proc_spawn fails with this message. */
+  spawnFail: null as string | null,
+  /** proc_connect makes the connecting session the fake adapter's. */
+  adoptConnect: false,
+  /** Holds a proc_connect that isn't adopted open until resolved. */
+  connectGate: null as Promise<unknown> | null,
+  /** proc_send to this id fails, as it does for a killed adapter. */
+  sendFail: null as string | null,
 }));
 
 vi.mock("../state.svelte", () => ({
@@ -94,13 +102,23 @@ beforeEach(async () => {
   m.toast = vi.fn();
   m.runCommand = vi.fn();
   m.spawnGate = null;
+  m.spawnFail = null;
+  m.adoptConnect = false;
+  m.connectGate = null;
+  m.sendFail = null;
   mockIPC(
     (cmd, args: any) => {
       ipc.push([cmd, args]);
       if (cmd === "proc_spawn") {
         fake.id = args.id;
+        if (m.spawnFail) return Promise.reject(new Error(m.spawnFail));
         if (m.spawnGate) return m.spawnGate;
       }
+      if (cmd === "proc_connect") {
+        if (m.adoptConnect) fake.id = args.id;
+        else if (m.connectGate) return m.connectGate;
+      }
+      if (cmd === "proc_send" && args.id === m.sendFail) return Promise.reject(new Error("proc:not_connected"));
       if (cmd === "proc_send" && args.id === fake.id) fake.onSend(args.msg);
       return null;
     },
@@ -690,6 +708,192 @@ describe("a stop or a second start during a start", () => {
       await settle();
       expect(spawns()).toBe(1);
       expect(D.hostDebug.starting()).toBe(false);
+    });
+  });
+
+  describe("a restart whose new start fails", () => {
+    const failing = (message: string) => ({ then: (_ok: unknown, fail: (e: Error) => void) => fail(new Error(message)) });
+    const settled = () => {
+      expect(S.dbg.status).toBe("terminated");
+      expect(D.hostDebug.starting()).toBe(false);
+      expect(D.hostDebug.closing()).toBe(false);
+      expect(S.dbg.actor).toBe("");
+    };
+    /** After the failure, the next Start works normally. */
+    async function startsAgain(plan: unknown) {
+      m.plan = plan;
+      m.spawnFail = null;
+      const before = fake.id;
+      await D.startDebugging();
+      await vi.waitFor(() => {
+        expect(fake.id).not.toBe(before);
+        expect(S.dbg.status).toBe("stopped");
+      });
+    }
+    const endOnDisconnect = () => {
+      fake.replies.disconnect = () => {
+        void fake.event("terminated");
+        return {};
+      };
+    };
+
+    test.each([["host"], ["guest"]])("%s: a declined install prompt ends in terminated", async (who) => {
+      await startAndStop();
+      endOnDisconnect();
+      const plan = m.plan;
+      m.plan = failing("debugpy is required");
+      if (who === "host") await D.restartDebugging();
+      else await D.hostDebug.restart("/p/main.py", "Bob");
+      settled();
+      expect(spawns()).toBe(1);
+      expect(S.dbg.console.at(-1)).toEqual({ text: "debugpy is required", kind: "error" });
+      await startsAgain(plan);
+    });
+
+    test.each([["host"], ["guest"]])("%s: a failed spawn ends in terminated", async (who) => {
+      await startAndStop();
+      endOnDisconnect();
+      const plan = m.plan;
+      m.spawnFail = "cannot spawn adapter";
+      if (who === "host") await D.restartDebugging();
+      else await D.hostDebug.restart("/p/main.py", "Bob");
+      await vi.waitFor(settled);
+      expect(S.dbg.console.some((l) => l.kind === "error" && l.text.includes("cannot spawn adapter"))).toBe(true);
+      await startsAgain(plan);
+    });
+
+    test("a failing file open doesn't leave the restart in progress", async () => {
+      await startAndStop();
+      endOnDisconnect();
+      m.tab = { id: "t2", path: "/p/other.py", dirty: false };
+      m.openFile = vi.fn(async () => {
+        throw new Error("cannot open");
+      });
+      await expect(D.restartDebugging()).rejects.toThrow("cannot open");
+      settled();
+    });
+  });
+
+  describe("reverse requests and closed sessions", () => {
+    const portPlan = () => ({ ...m.plan, adapter: { kind: "port", port: 4711 } });
+    const connects = () => ipc.filter(([c]) => c === "proc_connect").length;
+    let nextSeq = 700;
+    /** Sends a reverse request and returns the response the session answers with. */
+    async function reverse(id: string, command: string, args: unknown) {
+      const seq = nextSeq++;
+      await emit("proc-msg", { id, msg: JSON.stringify({ seq, type: "request", command, arguments: args }) });
+      return vi.waitFor(() => {
+        const res = ipc
+          .filter(([c, a]) => c === "proc_send" && a.id === id)
+          .map(([, a]) => JSON.parse(a.msg))
+          .find((x) => x.type === "response" && x.request_seq === seq);
+        expect(res).toBeTruthy();
+        return res;
+      });
+    }
+    const terminal = { cwd: "/p", args: ["python", "main.py"], env: {} };
+    const child = { request: "launch", configuration: { name: "child", type: "pwa-node" } };
+
+    test("runInTerminal from a session being closed starts nothing and gets an error", async () => {
+      await startAndStop();
+      fake.noReply.add("disconnect");
+      const stop = D.stopLocal();
+      await vi.waitFor(() => expect(fake.commands()).toContain("disconnect"));
+      expect(D.hostDebug.closing()).toBe(true);
+      expect(await reverse(fake.id!, "runInTerminal", terminal)).toMatchObject({ success: false, command: "runInTerminal" });
+      expect(m.runCommand).not.toHaveBeenCalled();
+      await fake.exit();
+      await stop;
+      expect(D.hostDebug.closing()).toBe(false);
+    });
+
+    test("runInTerminal from a closed session starts nothing and gets an error", async () => {
+      await startAndStop();
+      await D.stopLocal();
+      expect(await reverse(fake.id!, "runInTerminal", terminal)).toMatchObject({ success: false });
+      expect(m.runCommand).not.toHaveBeenCalled();
+    });
+
+    test("startDebugging from a session being closed creates no child", async () => {
+      m.adoptConnect = true;
+      m.plan = portPlan();
+      await startAndStop();
+      m.adoptConnect = false;
+      const before = connects();
+      fake.noReply.add("disconnect");
+      const stop = D.stopLocal();
+      await vi.waitFor(() => expect(fake.commands()).toContain("disconnect"));
+      expect(await reverse(fake.id!, "startDebugging", child)).toMatchObject({ success: false, command: "startDebugging" });
+      expect(connects()).toBe(before);
+      await fake.exit();
+      await stop;
+    });
+
+    test("startDebugging from the old session doesn't attach to the new one's adapter", async () => {
+      m.adoptConnect = true;
+      m.plan = portPlan();
+      await startAndStop();
+      const first = fake.id!;
+      await D.restartDebugging();
+      await vi.waitFor(() => {
+        expect(fake.id).not.toBe(first);
+        expect(S.dbg.status).toBe("stopped");
+      });
+      m.adoptConnect = false;
+      const before = connects();
+      expect(await reverse(first, "startDebugging", child)).toMatchObject({ success: false });
+      expect(connects()).toBe(before);
+    });
+
+    test("a child still connecting when the session closes is killed and not launched", async () => {
+      m.adoptConnect = true;
+      m.plan = portPlan();
+      await startAndStop();
+      m.adoptConnect = false;
+      const gate = deferred<unknown>();
+      m.connectGate = gate.promise;
+      const before = connects();
+      const answer = reverse(fake.id!, "startDebugging", child);
+      await vi.waitFor(() => expect(connects()).toBe(before + 1));
+      const childId = ipc.filter(([c]) => c === "proc_connect").at(-1)![1].id;
+      m.sendFail = childId; // not connected yet, so its disconnect fails right away
+      await D.stopLocal();
+      gate.resolve(null);
+      expect(await answer).toMatchObject({ success: false });
+      expect(ipc.some(([c, a]) => c === "proc_kill" && a.id === childId)).toBe(true);
+      expect(ipc.some(([c, a]) => c === "proc_send" && a.id === childId && JSON.parse(a.msg).command === "initialize")).toBe(false);
+    });
+
+    test("a live session's reverse requests work as before", async () => {
+      m.adoptConnect = true;
+      m.plan = portPlan();
+      await startAndStop();
+      m.adoptConnect = false;
+      expect(await reverse(fake.id!, "runInTerminal", terminal)).toMatchObject({ success: true });
+      expect(m.runCommand).toHaveBeenCalledTimes(1);
+      const before = connects();
+      expect(await reverse(fake.id!, "startDebugging", child)).toMatchObject({ success: true });
+      expect(connects()).toBe(before + 1);
+      const childId = ipc.filter(([c]) => c === "proc_connect").at(-1)![1].id;
+      await vi.waitFor(() => expect(ipc.some(([c, a]) => c === "proc_send" && a.id === childId && JSON.parse(a.msg).command === "initialize")).toBe(true));
+      await emit("proc-exit", childId); // ends its pending requests
+    });
+
+    test("an answer to an adapter that is already gone raises nothing", async () => {
+      const unhandled = vi.fn();
+      const node = (globalThis as any).process; // no Node types in this project
+      node.on("unhandledRejection", unhandled);
+      try {
+        await startAndStop();
+        const id = fake.id!;
+        await D.stopLocal();
+        m.sendFail = id;
+        await emit("proc-msg", { id, msg: JSON.stringify({ seq: 900, type: "request", command: "runInTerminal", arguments: terminal }) });
+        await new Promise((r) => setTimeout(r, 10));
+        expect(unhandled).not.toHaveBeenCalled();
+      } finally {
+        node.off("unhandledRejection", unhandled);
+      }
     });
   });
 

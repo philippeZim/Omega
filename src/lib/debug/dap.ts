@@ -85,7 +85,8 @@ export class DapSession {
         success = false;
         message = String(e);
       }
-      this.send({ seq: this.seq++, type: "response", request_seq: msg.seq, command: msg.command, success, message, body });
+      // The adapter may be gone by now: then nobody is waiting for this answer.
+      this.send({ seq: this.seq++, type: "response", request_seq: msg.seq, command: msg.command, success, message, body }).catch(() => {});
     }
   }
 

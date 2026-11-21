@@ -421,7 +421,11 @@ function onEvent(s: DapSession, ev: Json) {
   }
 }
 
+/** Not closed and not being closed: only such a session may still cause new work. */
+const isOpen = (s: DapSession) => !closing && s.alive && sessions.includes(s);
+
 async function onReverse(s: DapSession, req: Json): Promise<Json> {
+  if (!isOpen(s)) throw new Error(t("code.dap.sessionEnded"));
   const a = req.arguments ?? {};
   if (req.command === "runInTerminal") {
     const entries = Object.entries(a.env ?? {});
@@ -443,6 +447,10 @@ async function onReverse(s: DapSession, req: Json): Promise<Json> {
     const child = newSession(a.configuration?.name ?? "child");
     child.parent = s;
     await child.connect(tcpPort);
+    if (!isOpen(s) || !isOpen(child)) {
+      child.kill();
+      throw new Error(t("code.dap.sessionEnded"));
+    }
     launchSession(child, a.request ?? "launch", a.configuration).catch((e) => log(String(e), "error"));
     return {};
   }
