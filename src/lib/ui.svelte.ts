@@ -14,6 +14,9 @@ export interface MenuItem {
   danger?: boolean;
   shortcut?: string;
   separator?: boolean;
+  disabled?: boolean;
+  /** Tooltip, e.g. why the entry is disabled. */
+  title?: string;
 }
 
 interface DialogState {

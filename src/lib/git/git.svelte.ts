@@ -8,6 +8,7 @@ import { ui } from "../ui.svelte";
 import { joinPath, fsApi } from "../api";
 import { t, type Key } from "../i18n/index.svelte";
 import { gitErrorMessage } from "./errors";
+import { GIT_GUARD } from "../collab/gitArgs";
 
 export interface Change {
   path: string;
@@ -49,6 +50,9 @@ export async function run(args: string[], root = git.top || app.root): Promise<O
   return invoke<Out>("git", { root, args });
 }
 
+/** For what Omega runs by itself, not at the host's request: hooks and helpers stay off. */
+const runQuiet = (args: string[], root?: string) => run([...GIT_GUARD, ...args], root);
+
 async function runOk(args: string[], what: Key): Promise<Out | null> {
   const r = await run(args);
   if (r.code !== 0) {
@@ -58,12 +62,46 @@ async function runOk(args: string[], what: Key): Promise<Out | null> {
   return r;
 }
 
+/** What a Code Together guest does instead: the same actions, carried out by the host (collab/gitRemote). */
+export interface GuestGit {
+  active(): boolean;
+  commit(andPush: boolean): Promise<void>;
+  push(): Promise<void>;
+  pull(): Promise<void>;
+  fetch(): Promise<void>;
+  continueOperation(andPush: boolean): Promise<void>;
+  abortOperation(): Promise<void>;
+  rollback(c: Change): Promise<void>;
+  branches(): Promise<{ local: string[]; remote: string[] }>;
+  switchBranch(name: string, remote: boolean): Promise<void>;
+  newBranch(name: string): Promise<void>;
+  /** Why the host would refuse this action for this guest, "" if it wouldn't. */
+  refusal(action: GuestGitAction, c?: Change): string;
+}
+export type GuestGitAction = "pull" | "push" | "fetch" | "commit" | "commitPush" | "discard" | "stage" | "switch" | "newBranch" | "continue" | "abort";
+let guestGit: GuestGit | null = null;
+export const setGuestGit = (g: GuestGit | null) => void (guestGit = g);
+const asGuest = () => (guestGit?.active() ? guestGit : null);
+/** Whether the Git UI currently shows the host's repository of a Code Together session. */
+export const isGuestGit = () => !!asGuest();
+
+/** For buttons and menus: why a guest can't do this ("" for the host and for allowed actions). */
+export const guestRefusal = (action: GuestGitAction, c?: Change) => asGuest()?.refusal(action, c) ?? "";
+
+/** Guests can't create repositories or change remotes: those stay with the host. */
+function hostOnly() {
+  if (!asGuest()) return false;
+  ui.toast(t("git.guestHostOnly"), "error");
+  return true;
+}
+
 let refreshing = false;
 /** The running rebase uses the apply backend: it only takes `--continue`, no commit in between. */
 let rebaseApply = false;
 /** HEAD commit seen by the last refresh ("" = none yet). */
 let headSha = "";
 export async function refresh() {
+  if (asGuest()) return; // the host pushes the status (collab/gitRemote)
   if (!app.root || refreshing) {
     // No folder (closed, or a collab guest showing the host's workspace): nothing of the previous
     // repo may linger in the top bar or the Changes view.
@@ -78,7 +116,7 @@ export async function refresh() {
     Object.assign(git, { repo: s.repo, top: s.top, branch: s.branch, upstream: s.upstream, ahead: s.ahead, behind: s.behind, changes: s.changes, operation: s.operation === "rebase-apply" ? "rebase" : (s.operation ?? "") });
     git.excluded = git.excluded.filter((p) => s.changes.some((c) => c.path === p));
     if (s.repo) {
-      const [remote, head] = await Promise.all([run(["remote", "get-url", "origin"], s.top), run(["rev-parse", "--verify", "-q", "HEAD"], s.top)]);
+      const [remote, head] = await Promise.all([runQuiet(["remote", "get-url", "origin"], s.top), runQuiet(["rev-parse", "--verify", "-q", "HEAD"], s.top)]);
       git.remoteUrl = remote.code === 0 ? remote.stdout.trim() : null;
       git.hasCommits = head.code === 0;
       // A commit, reset or amend made outside Omega moves HEAD without changing the branch name.
@@ -107,7 +145,7 @@ export function kind(c: Change): "new" | "modified" | "deleted" | "renamed" | "c
   return "modified";
 }
 
-export const absPath = (rel: string) => joinPath(git.top, rel);
+export const absPath = (rel: string) => (asGuest() ? `collab:${rel}` : joinPath(git.top, rel));
 
 async function saveAll() {
   for (const t of app.tabs) if (t.dirty && t.path && !t.deleted) await save(t.id);
@@ -116,6 +154,8 @@ async function saveAll() {
 // ------------------------------------------------------------------ commit / push / pull
 
 export async function commit(andPush: boolean) {
+  const guest = asGuest();
+  if (guest) return guest.commit(andPush);
   if (git.operation) return continueOperation(andPush);
   const files = git.changes.filter((c) => !git.excluded.includes(c.path));
   if (!files.length) return ui.toast(t("git.noFilesSelected"), "error");
@@ -143,6 +183,8 @@ export async function commit(andPush: boolean) {
 const detached = () => git.branch.startsWith("HEAD (");
 
 export async function push() {
+  const guest = asGuest();
+  if (guest) return guest.push();
   if (!git.repo) return;
   if (git.operation) return ui.toast(t(git.operation === "rebase" ? "git.pushDuringRebase" : "git.pushDuringMerge"), "error");
   if (detached()) return ui.toast(t("git.pushDetached"), "error");
@@ -159,6 +201,8 @@ export async function push() {
 }
 
 export async function pull() {
+  const guest = asGuest();
+  if (guest) return guest.pull();
   if (!git.repo) return;
   await saveAll();
   git.busy = t("git.busy.pull");
@@ -212,6 +256,8 @@ async function unresolved(files: Change[]): Promise<{ markers: string[]; unreada
  * resolved commits land on the branch (a plain commit would stay on the detached HEAD).
  */
 export async function continueOperation(andPush = false) {
+  const guest = asGuest();
+  if (guest) return guest.continueOperation(andPush);
   const op = git.operation;
   if (!op) return;
   await saveAll();
@@ -261,6 +307,8 @@ export async function continueOperation(andPush = false) {
 
 /** Abort the rebase/merge: back to the state before the pull. */
 export async function abortOperation() {
+  const guest = asGuest();
+  if (guest) return guest.abortOperation();
   const op = git.operation;
   if (!op) return;
   const ok = await ui.confirm(t(op === "merge" ? "git.abortMergeTitle" : "git.abortRebaseTitle"), t("git.abortBody"), t("git.op.abort"), true);
@@ -306,9 +354,9 @@ function startFetch(args: () => Promise<string[]>): Promise<Out | null> {
  * credential helpers. Plain `fetch` = the current branch's upstream remote.
  */
 async function backgroundFetchArgs(): Promise<string[]> {
-  const own = await run(["config", "--get", "core.sshCommand"]);
+  const own = await runQuiet(["config", "--get", "core.sshCommand"]);
   const ssh = own.code === 0 ? [] : ["-c", "core.sshCommand=ssh -o BatchMode=yes -o ConnectTimeout=15"];
-  return [...ssh, "-c", "credential.interactive=never", "fetch", "--quiet"];
+  return [...GIT_GUARD, ...ssh, "-c", "credential.interactive=never", "fetch", "--quiet"];
 }
 
 /** Background fetch so the behind count (↓) sees new remote commits. Silent: no toast on failure. */
@@ -320,17 +368,21 @@ export async function autoFetch() {
 }
 
 /** Waits for a running fetch (before pull/push touch the same refs). */
-const fetchSettled = async () => {
+export const fetchSettled = async () => {
   if (inflight) await inflight;
 };
 
 /** Branch menu "Fetch": reports the result; joins a background fetch that is already running. */
 export async function fetchNow() {
+  const guest = asGuest();
+  if (guest) return guest.fetch();
   if (!git.repo || git.busy) return;
   git.busy = t("git.busy.fetch");
   let r: Out | null;
   try {
-    r = await (inflight ?? startFetch(async () => ["fetch", "--quiet"]));
+    // After a running background fetch, not instead of it: that one runs without the host's hooks.
+    await fetchSettled();
+    r = await startFetch(async () => ["fetch", "--quiet"]);
   } finally {
     git.busy = "";
     await refresh();
@@ -347,6 +399,8 @@ const reloadOpenFiles = () => syncFromDisk();
 // ------------------------------------------------------------------ rollback
 
 export async function rollback(c: Change) {
+  const guest = asGuest();
+  if (guest) return guest.rollback(c);
   const k = kind(c);
   if (k === "new") {
     const ok = await ui.confirm(t("git.deleteNewTitle", { path: c.path }), t("git.deleteNewBody"), t("common.delete"), true);
@@ -366,8 +420,15 @@ export async function rollback(c: Change) {
 // ------------------------------------------------------------------ branches
 
 export async function branches(): Promise<{ local: string[]; remote: string[] }> {
+  const guest = asGuest();
+  if (guest) return guest.branches();
   const r = await run(["branch", "-a", "--format=%(refname:short)"]);
-  const all = r.stdout.split("\n").map((s) => s.trim()).filter(Boolean);
+  return splitBranches(r.stdout);
+}
+
+/** `git branch -a --format=%(refname:short)` as local branches and origin's not checked out yet. */
+export function splitBranches(stdout: string): { local: string[]; remote: string[] } {
+  const all = stdout.split("\n").map((s) => s.trim()).filter(Boolean);
   // "(no branch, rebasing main)" / "(HEAD detached at …)" are not branches one can switch to.
   const local = all.filter((b) => !b.startsWith("origin/") && b !== "origin" && !b.startsWith("("));
   const remote = all.filter((b) => b.startsWith("origin/") && b !== "origin/HEAD" && !local.includes(b.slice(7)));
@@ -375,6 +436,8 @@ export async function branches(): Promise<{ local: string[]; remote: string[] }>
 }
 
 export async function switchBranch(name: string, remote = false) {
+  const guest = asGuest();
+  if (guest) return guest.switchBranch(name, remote);
   await saveAll();
   git.busy = t("git.busy.switch");
   try {
@@ -394,6 +457,8 @@ export async function switchBranch(name: string, remote = false) {
 export async function newBranch() {
   const name = await ui.prompt(t("git.newBranch"), "", t("git.newBranchPlaceholder"));
   if (!name) return;
+  const guest = asGuest();
+  if (guest) return guest.newBranch(name.replace(/\s+/g, "-"));
   if (await runOk(["switch", "-c", name.replace(/\s+/g, "-")], "git.op.createBranch")) ui.toast(t("git.branchCreated", { name }));
   await refresh();
 }
@@ -402,6 +467,7 @@ export async function newBranch() {
 
 /** Creates a repository in the project folder; false if there is none afterwards. */
 export async function initRepo(): Promise<boolean> {
+  if (hostOnly()) return false;
   if (!app.root) return false;
   if (!(await ensureTools(["git"], t("tools.purpose.git")))) return false;
   const r = await run(["init", "-q"]);
@@ -445,6 +511,7 @@ export const cloneTabRequested = $state({ value: false });
 
 /** Connects (or changes) the "origin" remote, e.g. an empty repository created on GitLab/GitHub. */
 export async function connectRemote() {
+  if (hostOnly()) return;
   if (!git.repo && !(await initRepo())) return;
   const url = await ui.prompt(git.remoteUrl ? t("git.changeRemote") : t("git.connectRemote"), git.remoteUrl ?? "", t("git.remotePlaceholder"));
   if (!url || url === git.remoteUrl) return;
@@ -461,6 +528,7 @@ export async function connectRemote() {
 }
 
 export async function publishGitHub() {
+  if (hostOnly()) return;
   if (!app.root) return;
   const name = await ui.prompt(t("git.publishGitHub"), app.root.split("/").pop() ?? "", t("git.repoName"));
   if (!name) return;

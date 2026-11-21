@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { mockIPC } from "@tauri-apps/api/mocks";
+import { GIT_GUARD } from "../collab/gitArgs";
 
 const m = vi.hoisted(() => ({ toast: [] as [string, string | undefined][] }));
 
@@ -33,7 +34,7 @@ function fakeRepo() {
     if (cmd === "git") {
       const args = (payload as { args: string[] }).args;
       calls.push(args);
-      if (args[0] === "config") return { code: 1, stdout: "", stderr: "" }; // no own core.sshCommand
+      if (args.includes("config")) return { code: 1, stdout: "", stderr: "" }; // no own core.sshCommand
       if (args.includes("fetch")) {
         fetches++;
         if (fetchGate) return fetchGate.then(() => ({ code: 0, stdout: "", stderr: "" }));
@@ -111,7 +112,8 @@ describe("fetch (#75)", () => {
     await refresh();
     await settle();
     const f = calls.find((a) => a.includes("fetch"))!;
-    expect(f).toEqual(["-c", "core.sshCommand=ssh -o BatchMode=yes -o ConnectTimeout=15", "-c", "credential.interactive=never", "fetch", "--quiet"]);
+    expect(f).toEqual([...GIT_GUARD, "-c", "core.sshCommand=ssh -o BatchMode=yes -o ConnectTimeout=15", "-c", "credential.interactive=never", "fetch", "--quiet"]);
+    expect(f).toContain("core.hooksPath=/dev/null");
     vi.mocked(Date.now).mockRestore();
   });
 
@@ -122,7 +124,7 @@ describe("fetch (#75)", () => {
     expect(git.busy).toBe("git.busy.pull");
   });
 
-  test("pull and push wait for a running background fetch; manual Fetch joins it", async () => {
+  test("pull and push wait for a running background fetch; manual Fetch runs after it, with the host's hooks", async () => {
     vi.spyOn(Date, "now").mockReturnValue(Date.now() + 20 * FETCH_INTERVAL);
     let open!: () => void;
     fetchGate = new Promise((r) => (open = r));
@@ -142,7 +144,8 @@ describe("fetch (#75)", () => {
     await pulling;
     await manual;
     expect(calls.some((a) => a[0] === "pull")).toBe(true);
-    expect(fetches).toBe(1); // the manual Fetch reused the background one
+    expect(fetches).toBe(2); // the background one has its hooks off, so it can't stand in
+    expect(calls.filter((a) => a.includes("fetch")).at(-1)).toEqual(["fetch", "--quiet"]);
     const pushing = push();
     await pushing;
     expect(calls.some((a) => a[0] === "push")).toBe(true);

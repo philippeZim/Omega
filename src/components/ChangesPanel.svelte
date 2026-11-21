@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { git, kind, commit, push, pull, rollback, absPath, initRepo, cloneRepo, publishGitHub, connectRemote, type Change } from "../lib/git/git.svelte";
+  import { git, kind, commit, push, pull, rollback, absPath, initRepo, cloneRepo, publishGitHub, connectRemote, isGuestGit, guestRefusal, type Change } from "../lib/git/git.svelte";
+  import { guestChanges, guestStage, isStaged } from "../lib/collab/gitRemote.svelte";
   import { openDiff } from "../lib/git/diff.svelte";
   import { openFile, app } from "../lib/state.svelte";
   import { ui } from "../lib/ui.svelte";
@@ -27,12 +28,19 @@
     git.excluded = allOn ? git.changes.map((c) => c.path) : [];
   }
 
+  /** Menu entries a guest would be refused: disabled, with the reason as tooltip. */
+  const refused = (a: Parameters<typeof guestRefusal>[0], c?: Change) => {
+    const why = guestRefusal(a, c);
+    return why ? { disabled: true, title: why } : {};
+  };
+
   function menu(e: MouseEvent, c: Change) {
     ui.openMenu(e, [
       { label: t("git.showDiff"), action: () => openDiff(absPath(c.path)) },
       ...(kind(c) !== "deleted" ? [{ label: t("git.openFile"), action: () => openFile(absPath(c.path)) }] : []),
+      ...(isGuestGit() ? [{ label: isStaged(c) ? t("git.unstage") : t("git.stage"), action: () => guestStage(c, !isStaged(c)), ...refused("stage") }] : []),
       { separator: true, label: "" },
-      { label: kind(c) === "new" ? t("git.deleteEllipsis") : t("git.discardChangesEllipsis"), danger: true, action: () => rollback(c) },
+      { label: kind(c) === "new" ? t("git.deleteEllipsis") : t("git.discardChangesEllipsis"), danger: true, action: () => rollback(c), ...refused("discard", c) },
     ]);
   }
 
@@ -60,7 +68,9 @@
 </script>
 
 <div class="changes">
-  {#if !app.root}
+  {#if isGuestGit() && !git.repo}
+    <p class="hint">{t("git.guestNoGit")}</p>
+  {:else if !app.root && !isGuestGit()}
     <p class="hint">{t("git.openFolderHint")}</p>
   {:else if !git.repo}
     <div class="empty">
@@ -76,15 +86,15 @@
         {git.branch || "—"}
       </span>
       <span class="spacer"></span>
-      <button class="sync" title={t("git.pullTitle", { key: formatKey(keysFor("git.pull")[0] ?? "") })} onclick={pull} disabled={!!git.busy}>
+      <button class="sync" title={guestRefusal("pull") || t("git.pullTitle", { key: formatKey(keysFor("git.pull")[0] ?? "") })} onclick={pull} disabled={!!git.busy || !!guestRefusal("pull")}>
         ↓{#if git.behind}<b>{git.behind}</b>{/if}
       </button>
-      <button class="sync" title="Push ({formatKey(keysFor('git.push')[0] ?? '')})" onclick={push} disabled={!!git.busy}>
+      <button class="sync" title={guestRefusal("push") || `Push (${formatKey(keysFor("git.push")[0] ?? "")})`} onclick={push} disabled={!!git.busy || !!guestRefusal("push")}>
         ↑{#if git.ahead}<b>{git.ahead}</b>{/if}
       </button>
     </div>
 
-    {#if !git.remoteUrl}
+    {#if !git.remoteUrl && !isGuestGit()}
       <div class="noremote">
         <span>{t("git.noRemote")}</span>
         <div class="nr-buttons">
@@ -106,17 +116,21 @@
           <button class="check" class:on={!git.excluded.includes(c.path)} onclick={() => toggle(c)} aria-label={t("git.select")}></button>
           <span class="name {k}">{basename(c.path)}</span>
           <span class="dir">{c.path.includes("/") ? c.path.slice(0, c.path.lastIndexOf("/")) : ""}</span>
+          {#if isGuestGit() && isStaged(c)}<span class="staged" title={t("git.staged")}>S</span>{/if}
           <span class="badge {k}">{k === "new" ? "N" : k === "modified" ? "M" : k === "deleted" ? "D" : k === "renamed" ? "R" : "!"}</span>
-          <button class="undo" title={k === "new" ? t("common.delete") : t("git.discard")} onclick={(e) => { e.stopPropagation(); rollback(c); }} aria-label={t("git.revert")}>↺</button>
+          <button class="undo" disabled={!!guestRefusal("discard", c)} title={guestRefusal("discard", c) || (k === "new" ? t("common.delete") : t("git.discard"))} onclick={(e) => { e.stopPropagation(); rollback(c); }} aria-label={t("git.revert")}>↺</button>
         </div>
       {/each}
     </div>
 
+    {#if isGuestGit() && guestChanges.truncated}<p class="note">{t("git.changesTruncated", { n: git.changes.length })}</p>{/if}
+
     <div class="commit">
+      {#if isGuestGit()}<p class="note">{t("git.guestCommitNote")}</p>{/if}
       <textarea bind:this={textarea} bind:value={git.message} onkeydown={onKey} oninput={grow} rows="2" placeholder={t("git.commitMessage")} spellcheck="true"></textarea>
       <div class="buttons">
-        <button class="btn primary" onclick={() => commit(false)} disabled={!!git.busy || !selectedCount} title={formatKey("Mod-Enter")}>Commit</button>
-        <button class="btn" onclick={() => commit(true)} disabled={!!git.busy || !selectedCount} title={formatKey("Mod-Shift-Enter")}>Commit & Push</button>
+        <button class="btn primary" onclick={() => commit(false)} disabled={!!git.busy || !selectedCount || !!guestRefusal("commit")} title={guestRefusal("commit") || formatKey("Mod-Enter")}>Commit</button>
+        <button class="btn" onclick={() => commit(true)} disabled={!!git.busy || !selectedCount || !!guestRefusal("commitPush")} title={guestRefusal("commitPush") || formatKey("Mod-Shift-Enter")}>Commit & Push</button>
       </div>
       {#if git.busy}<p class="busy">{git.busy}</p>{/if}
     </div>
@@ -154,13 +168,16 @@
   .name.deleted { color: var(--label-3); text-decoration: line-through; }
   .name.conflict { color: var(--red); }
   .dir { flex: 1; min-width: 0; color: var(--label-3); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .note { margin: 0 2px 6px; font-size: 11.5px; color: var(--label-3); }
+  .staged { flex-shrink: 0; font-family: var(--mono); font-size: 10.5px; font-weight: 700; color: var(--green); }
   .badge { flex-shrink: 0; font-family: var(--mono); font-size: 10.5px; font-weight: 700; color: var(--label-3); }
   .badge.new { color: var(--green); }
   .badge.modified { color: var(--accent); }
   .badge.conflict { color: var(--red); }
   .undo { flex-shrink: 0; width: 20px; height: 20px; border-radius: 50%; color: var(--label-3); opacity: 0; transition: opacity 0.12s; }
   .row:hover .undo { opacity: 1; }
-  .undo:hover { background: var(--fill-2); color: var(--label); }
+  .undo:disabled { color: var(--label-3); background: none; cursor: default; }
+  .undo:hover:not(:disabled) { background: var(--fill-2); color: var(--label); }
   .commit { padding-top: 8px; border-top: 1px solid rgba(var(--fg-rgb), 0.06); }
   textarea {
     display: block;

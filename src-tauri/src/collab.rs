@@ -672,6 +672,141 @@ pub fn collab_path_inside(root: String, path: String) -> bool {
     guest_path_ok(Path::new(&root), Path::new(&path))
 }
 
+/// The most `collab_read_bounded` reads, whatever the caller asks for.
+const MAX_BOUNDED_READ: u64 = 8 * 1024 * 1024;
+
+#[derive(Serialize, Debug, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum BoundedRead {
+    Text { text: String },
+    TooLarge,
+    Binary,
+    Missing,
+}
+
+/// Reads a regular file of at most `max` bytes. The size is checked first and the read is bounded
+/// too, because the file can grow in between.
+fn read_bounded(path: &Path, max: u64) -> BoundedRead {
+    use std::io::Read;
+    let max = max.min(MAX_BOUNDED_READ);
+    let Ok(meta) = std::fs::metadata(path) else { return BoundedRead::Missing };
+    if !meta.is_file() {
+        return BoundedRead::Binary;
+    }
+    if meta.len() > max {
+        return BoundedRead::TooLarge;
+    }
+    let Ok(file) = std::fs::File::open(path) else { return BoundedRead::Missing };
+    if !file.metadata().is_ok_and(|m| m.is_file()) {
+        return BoundedRead::Binary;
+    }
+    let mut bytes = Vec::new();
+    if file.take(max + 1).read_to_end(&mut bytes).is_err() {
+        return BoundedRead::Binary;
+    }
+    if bytes.len() as u64 > max {
+        return BoundedRead::TooLarge;
+    }
+    match String::from_utf8(bytes) {
+        Ok(text) if !text.contains('\0') => BoundedRead::Text { text },
+        _ => BoundedRead::Binary,
+    }
+}
+
+/// Host: a project file for a guest, with the same path check as every guest path.
+#[tauri::command]
+pub async fn collab_read_bounded(root: String, path: String, max: u64) -> Result<BoundedRead, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if !guest_path_ok(Path::new(&root), Path::new(&path)) {
+            return BoundedRead::Missing;
+        }
+        read_bounded(Path::new(&path), max)
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// A path with symlinks resolved as far as it exists; the missing rest is appended as written.
+fn resolve_lenient(path: &Path) -> std::path::PathBuf {
+    let mut rest = Vec::new();
+    let mut cur = path;
+    loop {
+        if let Ok(mut real) = cur.canonicalize() {
+            for part in rest.iter().rev() {
+                match part {
+                    std::path::Component::ParentDir => {
+                        real.pop();
+                    }
+                    std::path::Component::CurDir => {}
+                    other => real.push(other.as_os_str()),
+                }
+            }
+            return real;
+        }
+        let (Some(last), Some(parent)) = (cur.components().next_back(), cur.parent()) else { return path.to_path_buf() };
+        rest.push(last);
+        cur = parent;
+    }
+}
+
+/// Hook entries looked at for symlinks to scripts elsewhere.
+const HOOK_SCAN_LIMIT: usize = 256;
+
+/// What running a hook executes: the folder, husky's real scripts one level above its `_` folder,
+/// and the targets of symlinked hooks (`.git/hooks/pre-commit -> ../../scripts/check`).
+fn hook_roots(dir: &Path) -> Vec<std::path::PathBuf> {
+    let real = resolve_lenient(dir);
+    let mut roots = vec![real.clone()];
+    if real.file_name().is_some_and(|n| n == "_") {
+        if let Some(parent) = real.parent().filter(|p| p.file_name().is_some_and(|n| n == ".husky")) {
+            roots.push(parent.to_path_buf());
+        }
+    }
+    for folder in roots.clone() {
+        let Ok(entries) = std::fs::read_dir(&folder) else { continue };
+        for entry in entries.flatten().take(HOOK_SCAN_LIMIT) {
+            if let Ok(target) = std::fs::read_link(entry.path()) {
+                roots.push(resolve_lenient(&folder.join(target)));
+            }
+        }
+    }
+    roots
+}
+
+#[derive(Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct HooksCheck {
+    /// False if the hooks can't be determined: treat everything as protected.
+    ok: bool,
+    in_project: bool,
+    locked: Vec<bool>,
+    structural: Vec<bool>,
+}
+
+fn hooks_check(root: &str, paths: &[String]) -> HooksCheck {
+    let closed = || HooksCheck { ok: false, in_project: true, locked: vec![true; paths.len()], structural: vec![true; paths.len()] };
+    let Ok(dir) = crate::git::hooks_dir(root) else { return closed() };
+    let Ok(real_root) = Path::new(root).canonicalize() else { return closed() };
+    let mut roots = Vec::new();
+    if let Some(d) = dir {
+        roots = hook_roots(&d);
+        // A file the repository's config includes can set the hooks folder, or any command.
+        let Ok(includes) = crate::git::config_include_files(root) else { return closed() };
+        roots.extend(includes.iter().map(|f| resolve_lenient(f)));
+    }
+    let in_project = roots.iter().any(|r| r.strip_prefix(&real_root).is_ok_and(|rel| !has_git_part(rel)));
+    let real: Vec<_> = paths.iter().map(|p| resolve_lenient(Path::new(p))).collect();
+    let locked: Vec<bool> = real.iter().map(|p| roots.iter().any(|r| p.starts_with(r))).collect();
+    let structural = real.iter().zip(&locked).map(|(p, l)| *l || roots.iter().any(|r| r.starts_with(p))).collect();
+    HooksCheck { ok: true, in_project, locked, structural }
+}
+
+/// Host: which of these paths are the repository's effective hooks, by resolved path.
+#[tauri::command]
+pub async fn collab_hooks_check(root: String, paths: Vec<String>) -> Result<HooksCheck, String> {
+    tauri::async_runtime::spawn_blocking(move || hooks_check(&root, &paths)).await.map_err(|e| e.to_string())
+}
+
 /// Entries `tree_has_git` looks at before it gives up and answers "yes".
 const GIT_SCAN_LIMIT: usize = 200_000;
 
@@ -731,6 +866,80 @@ pub async fn collab_conn_info(app: AppHandle, peer: String) -> Option<ConnInfo> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn hook_paths_are_found_by_resolved_path() {
+        let dir = std::env::temp_dir().join(format!("omega-hooks-check-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("tools/hooks")).unwrap();
+        std::fs::create_dir_all(dir.join("scripts")).unwrap();
+        let dir = dir.canonicalize().unwrap();
+        let root = dir.to_str().unwrap();
+        let git = |args: &[&str]| assert!(std::process::Command::new("git").current_dir(&dir).args(args).status().unwrap().success());
+        git(&["init", "-q"]);
+        let p = |r: &str| format!("{root}/{r}");
+        assert!(!hooks_check(root, &[]).in_project, "the default hooks are in .git");
+        git(&["config", "core.hooksPath", "tools/hooks"]);
+        std::os::unix::fs::symlink("tools/hooks", dir.join("alias")).unwrap();
+        std::fs::write(dir.join("scripts/check"), "x").unwrap();
+        std::os::unix::fs::symlink("../../scripts/check", dir.join("tools/hooks/pre-commit")).unwrap();
+        let c = hooks_check(root, &[p("tools/hooks/new"), p("alias/new"), p("scripts/check"), p("tools"), p("scripts/other")]);
+        assert!(c.ok && c.in_project);
+        assert_eq!(c.locked, [true, true, true, false, false]);
+        assert_eq!(c.structural, [true, true, true, true, false]);
+        // husky: git runs `.husky/_/x`, which runs the script one level up.
+        git(&["config", "core.hooksPath", ".husky/_"]);
+        assert_eq!(hooks_check(root, &[p(".husky/pre-commit")]).locked, [true]);
+        // A folder that doesn't exist yet is protected too, and a broken config fails closed.
+        git(&["config", "core.hooksPath", "later/hooks"]);
+        assert_eq!(hooks_check(root, &[p("later/hooks/pre-commit")]).locked, [true]);
+        std::fs::write(dir.join(".git/config"), "[broken").unwrap();
+        let c = hooks_check(root, &[p("a.txt")]);
+        assert!(!c.ok && c.in_project);
+        assert_eq!(c.locked, [true]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn files_the_repo_config_includes_are_protected() {
+        let dir = std::env::temp_dir().join(format!("omega-hooks-include-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("cfg")).unwrap();
+        let dir = dir.canonicalize().unwrap();
+        let root = dir.to_str().unwrap();
+        let git = |args: &[&str]| assert!(std::process::Command::new("git").current_dir(&dir).args(args).status().unwrap().success());
+        git(&["init", "-q"]);
+        let p = |r: &str| format!("{root}/{r}");
+        assert!(!hooks_check(root, &[p("cfg/shared")]).locked[0]);
+        std::fs::write(dir.join("cfg/shared"), "[include]\n\tpath = nested\n").unwrap();
+        std::fs::write(dir.join("cfg/nested"), "").unwrap(); // empty: git lists no setting from it
+        git(&["config", "--add", "include.path", "../cfg/shared"]);
+        git(&["config", "--add", "includeIf.gitdir:/nowhere/.path", "../cfg/conditional"]);
+        let c = hooks_check(root, &[p("cfg/shared"), p("cfg/nested"), p("cfg/conditional"), p("cfg"), p("cfg/other")]);
+        assert!(c.ok && c.in_project);
+        assert_eq!(c.locked, [true, true, true, false, false]);
+        assert_eq!(c.structural, [true, true, true, true, false]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn bounded_read_stops_at_the_limit() {
+        let dir = std::env::temp_dir().join(format!("omega-bounded-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("f");
+        std::fs::write(&file, "12345").unwrap();
+        assert_eq!(read_bounded(&file, 5), BoundedRead::Text { text: "12345".into() });
+        assert_eq!(read_bounded(&file, 4), BoundedRead::TooLarge);
+        std::fs::write(&file, b"a\0b").unwrap();
+        assert_eq!(read_bounded(&file, 10), BoundedRead::Binary);
+        std::fs::write(&file, [0xff, 0xfe]).unwrap();
+        assert_eq!(read_bounded(&file, 10), BoundedRead::Binary);
+        assert_eq!(read_bounded(&dir, 10), BoundedRead::Binary);
+        assert_eq!(read_bounded(&dir.join("gone"), 10), BoundedRead::Missing);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[cfg(unix)]
     #[test]

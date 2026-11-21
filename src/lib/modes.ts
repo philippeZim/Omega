@@ -56,8 +56,8 @@ export function modeExtensions(mode: Mode, rawPath: string | null): Extension {
     case "latex":
       return [
         EditorView.lineWrapping,
-        path ? gitBlame(path) : [],
-        path ? gitGutter(path) : [],
+        rawPath ? gitBlame(rawPath) : [],
+        rawPath ? gitGutter(rawPath) : [],
         lineNumbers(),
         highlightActiveLineGutter(),
         highlightActiveLine(),
@@ -71,8 +71,8 @@ export function modeExtensions(mode: Mode, rawPath: string | null): Extension {
       const lang = langFor(rawPath);
       return [
         rawPath && lang?.server ? debugExtension(rawPath) : [],
-        path ? gitBlame(path) : [],
-        path ? gitGutter(path) : [],
+        rawPath ? gitBlame(rawPath) : [],
+        rawPath ? gitGutter(rawPath) : [],
         lineNumbers(),
         highlightActiveLineGutter(),
         highlightActiveLine(),

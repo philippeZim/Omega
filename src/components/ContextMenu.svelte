@@ -25,7 +25,7 @@
       {#if item.separator}
         <div class="sep"></div>
       {:else}
-        <button role="menuitem" class:danger={item.danger} onclick={() => { close(); item.action?.(); }}>
+        <button role="menuitem" class:danger={item.danger} disabled={item.disabled} title={item.title} onclick={() => { close(); item.action?.(); }}>
           <span>{item.label}</span>
           {#if item.shortcut}<span class="sc">{item.shortcut}</span>{/if}
         </button>
@@ -57,7 +57,8 @@
     text-align: left;
     font-size: 13px;
   }
-  button:hover { background: rgba(var(--fg-rgb), 0.12); }
+  button:hover:not(:disabled) { background: rgba(var(--fg-rgb), 0.12); }
+  button:disabled { opacity: 0.45; cursor: default; }
   button.danger { color: var(--red); }
   button.danger:hover { background: var(--red); color: white; }
   .sc { color: var(--label-3); }

@@ -24,6 +24,62 @@ fn git_cmd(root: &str) -> Command {
     c
 }
 
+/// For what Omega runs on its own (status poll, gutter, blame): never a hook or fsmonitor program.
+/// A Code Together guest can edit tracked files, and `core.hooksPath` may point at them.
+fn quiet_git_cmd(root: &str) -> Command {
+    let mut c = git_cmd(root);
+    c.args(["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"]);
+    c
+}
+
+/// The repository's effective hooks folder (honours `core.hooksPath`). `Ok(None)`: not a repository.
+/// `Err`: it can't be determined, e.g. a broken config, which callers must treat as unsafe.
+pub(crate) fn hooks_dir(root: &str) -> Result<Option<PathBuf>, ()> {
+    let out = git_cmd(root).args(["-c", "core.fsmonitor=false", "rev-parse", "--git-path", "hooks"]).output().map_err(|_| ())?;
+    if out.status.success() {
+        let dir = String::from_utf8_lossy(&out.stdout).trim_end_matches(['\r', '\n']).to_string();
+        return if dir.is_empty() { Err(()) } else { Ok(Some(Path::new(root).join(dir))) };
+    }
+    if String::from_utf8_lossy(&out.stderr).contains("not a git repository") {
+        return Ok(None);
+    }
+    Err(())
+}
+
+/// The files the repository's local config is read from: those with settings, and everything an
+/// `include.path` / `includeIf.*.path` names (also when its condition doesn't apply right now, or
+/// the file is empty). A guest who could edit one could set `core.hooksPath` or `core.sshCommand`.
+pub(crate) fn config_include_files(root: &str) -> Result<Vec<PathBuf>, ()> {
+    let out = git_cmd(root).args(["-c", "core.fsmonitor=false", "config", "--local", "--includes", "--list", "--show-origin", "-z"]).output().map_err(|_| ())?;
+    if !out.status.success() {
+        return Err(());
+    }
+    Ok(parse_config_includes(Path::new(root), &String::from_utf8_lossy(&out.stdout), std::env::var_os("HOME").map(PathBuf::from)))
+}
+
+/// `git config --list --show-origin -z`: `file:<path>` NUL `<key>` LF `<value>` NUL, and so on.
+fn parse_config_includes(root: &Path, text: &str, home: Option<PathBuf>) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let mut parts = text.split('\0');
+    while let (Some(origin), Some(entry)) = (parts.next(), parts.next()) {
+        let Some(origin) = origin.strip_prefix("file:") else { continue };
+        let file = root.join(origin);
+        let (key, value) = entry.split_once('\n').unwrap_or((entry, ""));
+        let key = key.to_ascii_lowercase();
+        if !value.is_empty() && (key == "include.path" || (key.starts_with("includeif.") && key.ends_with(".path"))) {
+            let named = match (value.strip_prefix("~/"), &home) {
+                (Some(rest), Some(home)) => home.join(rest),
+                _ => file.parent().unwrap_or(root).join(value),
+            };
+            files.push(named);
+        }
+        files.push(file);
+    }
+    files.sort();
+    files.dedup();
+    files
+}
+
 /// `stderr` of a refused `git init`; the frontend shows its own translated text for it.
 const INIT_IN_BARE: &str = "omega:init_in_bare_repository";
 
@@ -164,15 +220,15 @@ pub struct Status {
 #[tauri::command]
 pub async fn git_status(root: String) -> Result<Status, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let top = git_cmd(&root).args(["rev-parse", "--show-toplevel"]).output().map_err(|e| e.to_string())?;
+        let top = quiet_git_cmd(&root).args(["rev-parse", "--show-toplevel"]).output().map_err(|e| e.to_string())?;
         if !top.status.success() {
             return Ok(Status { repo: false, top: String::new(), branch: String::new(), upstream: None, ahead: 0, behind: 0, changes: vec![], operation: None });
         }
         let top = String::from_utf8_lossy(&top.stdout).trim().to_string();
-        let out = git_cmd(&top).args(["status", "--porcelain=v1", "-b", "-z", "--untracked-files=all"]).output().map_err(|e| e.to_string())?;
+        let out = quiet_git_cmd(&top).args(["status", "--porcelain=v1", "-b", "-z", "--untracked-files=all"]).output().map_err(|e| e.to_string())?;
         let text = String::from_utf8_lossy(&out.stdout).to_string();
         let mut s = Status { top: top.clone(), ..parse_status(&text) };
-        let git_dir = git_cmd(&top).args(["rev-parse", "--absolute-git-dir"]).output().map_err(|e| e.to_string())?;
+        let git_dir = quiet_git_cmd(&top).args(["rev-parse", "--absolute-git-dir"]).output().map_err(|e| e.to_string())?;
         if git_dir.status.success() {
             let (operation, branch) = operation_in(std::path::Path::new(String::from_utf8_lossy(&git_dir.stdout).trim()));
             s.operation = operation;
@@ -244,13 +300,13 @@ fn parse_status(text: &str) -> Status {
 #[tauri::command]
 pub async fn git_head_file(root: String, path: String) -> Result<Option<String>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let top = git_cmd(&root).args(["rev-parse", "--show-toplevel"]).output().map_err(|e| e.to_string())?;
+        let top = quiet_git_cmd(&root).args(["rev-parse", "--show-toplevel"]).output().map_err(|e| e.to_string())?;
         if !top.status.success() {
             return Ok(None);
         }
         let top = String::from_utf8_lossy(&top.stdout).trim().to_string();
         let rel = std::path::Path::new(&path).strip_prefix(&top).map(|p| p.to_string_lossy().to_string()).unwrap_or(path);
-        let out = git_cmd(&top).args(["show", &format!("HEAD:{rel}")]).output().map_err(|e| e.to_string())?;
+        let out = quiet_git_cmd(&top).args(["show", &format!("HEAD:{rel}")]).output().map_err(|e| e.to_string())?;
         Ok(out.status.success().then(|| String::from_utf8_lossy(&out.stdout).to_string()))
     })
     .await
@@ -276,21 +332,26 @@ pub struct Blame {
 
 /// `git blame` of a file. With `contents` the (unsaved) editor buffer is blamed instead of the
 /// file on disk, so line numbers always match the editor. None outside a repository / untracked.
+/// `no_textconv` is set for Code Together guests: they can edit `.gitattributes`, which picks the
+/// helper a blame would run.
 #[tauri::command]
-pub async fn git_blame(root: String, path: String, contents: Option<String>) -> Result<Option<Blame>, String> {
+pub async fn git_blame(root: String, path: String, contents: Option<String>, no_textconv: Option<bool>) -> Result<Option<Blame>, String> {
     use std::io::Write;
     use std::process::Stdio;
     tauri::async_runtime::spawn_blocking(move || {
         // Resolve the repository from the file's own folder (it may live outside the project).
         let dir = std::path::Path::new(&path).parent().filter(|d| d.is_dir()).map(|d| d.to_string_lossy().to_string()).unwrap_or(root);
-        let top = git_cmd(&dir).args(["rev-parse", "--show-toplevel"]).output().map_err(|e| e.to_string())?;
+        let top = quiet_git_cmd(&dir).args(["rev-parse", "--show-toplevel"]).output().map_err(|e| e.to_string())?;
         if !top.status.success() {
             return Ok(None);
         }
         let top = String::from_utf8_lossy(&top.stdout).trim().to_string();
         let rel = std::path::Path::new(&path).strip_prefix(&top).map(|p| p.to_string_lossy().replace('\\', "/")).unwrap_or(path);
-        let mut cmd = git_cmd(&top);
+        let mut cmd = quiet_git_cmd(&top);
         cmd.args(["blame", "--porcelain"]);
+        if no_textconv.unwrap_or(false) {
+            cmd.arg("--no-textconv");
+        }
         if contents.is_some() {
             cmd.args(["--contents", "-"]);
         }
@@ -385,6 +446,87 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn the_status_poll_runs_no_hook() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("status-hook");
+        run_git(&dir, &["init", "-q"]);
+        std::fs::write(dir.join("a.txt"), "one\n").unwrap();
+        run_git(&dir, &["add", "a.txt"]);
+        run_git(&dir, &["commit", "-q", "-m", "one"]);
+        let hooks = dir.join("hooks");
+        std::fs::create_dir(&hooks).unwrap();
+        let marker = dir.join("hook-ran");
+        let hook = hooks.join("post-index-change");
+        std::fs::write(&hook, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        run_git(&dir, &["config", "core.hooksPath", hooks.to_str().unwrap()]);
+        // A newer mtime makes `git status` refresh and rewrite the index, which fires this hook.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        std::fs::write(dir.join("a.txt"), "one\n").unwrap();
+        tauri::async_runtime::block_on(git_status(dir.to_string_lossy().into())).unwrap();
+        assert!(!marker.exists(), "the status poll ran a hook");
+        // The same status without the guard does fire it, so this test can tell the difference.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        std::fs::write(dir.join("a.txt"), "one\n").unwrap();
+        git_cmd(dir.to_str().unwrap()).args(["status", "--porcelain"]).output().unwrap();
+        assert!(marker.exists(), "plain status should have fired the hook");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn config_includes_are_listed_with_their_origin() {
+        let text = "file:.git/config\0core.bare\nfalse\0file:.git/config\0include.path\n../shared.cfg\0file:.git/../shared.cfg\0include.path\nnested.cfg\0file:.git/config\0includeif.gitdir:/x/.path\n~/h.cfg\0command line:\0x.y\nz\0";
+        let files = parse_config_includes(Path::new("/r"), text, Some(PathBuf::from("/home/u")));
+        for want in ["/r/.git/config", "/r/.git/../shared.cfg", "/r/.git/../nested.cfg", "/home/u/h.cfg"] {
+            assert!(files.contains(&PathBuf::from(want)), "{want} in {files:?}");
+        }
+        assert_eq!(files.len(), 4);
+    }
+
+    #[test]
+    fn hooks_dir_follows_config_and_fails_closed() {
+        let dir = scratch("hooks-dir");
+        let root = dir.to_str().unwrap();
+        assert_eq!(hooks_dir(root), Ok(None));
+        run_git(&dir, &["init", "-q"]);
+        assert!(hooks_dir(root).unwrap().unwrap().ends_with(".git/hooks"));
+        run_git(&dir, &["config", "core.hooksPath", ".husky"]);
+        assert!(hooks_dir(root).unwrap().unwrap().ends_with(".husky"));
+        let config = dir.join(".git/config");
+        let good = std::fs::read(&config).unwrap();
+        std::fs::write(&config, "[broken").unwrap();
+        assert_eq!(hooks_dir(root), Err(()));
+        std::fs::write(&config, good).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn blame_for_guests_runs_no_textconv_helper() {
+        let dir = scratch("blame-textconv");
+        let root = dir.to_str().unwrap().to_string();
+        run_git(&dir, &["init", "-q"]);
+        let marker = dir.join("helper-ran");
+        let helper = dir.join("conv.sh");
+        std::fs::write(&helper, format!("#!/bin/sh\ntouch '{}'\ncat \"$1\"\n", marker.display())).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        run_git(&dir, &["config", "diff.x.textconv", helper.to_str().unwrap()]);
+        std::fs::write(dir.join(".gitattributes"), "*.txt diff=x\n").unwrap();
+        std::fs::write(dir.join("a.txt"), "one\n").unwrap();
+        run_git(&dir, &["add", "a.txt", ".gitattributes"]);
+        run_git(&dir, &["commit", "-q", "-m", "one"]);
+        let file = dir.join("a.txt").to_str().unwrap().to_string();
+        let blame = tauri::async_runtime::block_on(git_blame(root, file, Some("one\n".into()), Some(true))).unwrap();
+        assert_eq!(blame.map(|b| b.lines.len()), Some(1));
+        assert!(!marker.exists(), "the textconv helper ran");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     fn scratch(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("omega-git-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -431,7 +573,7 @@ mod tests {
         assert_eq!(direct.code, 128);
         assert!(direct.stderr.contains("safe.bareRepository"), "{}", direct.stderr);
         assert_eq!(block_on(git_head_file(root.clone(), file.clone())).unwrap(), None);
-        assert!(block_on(git_blame(root.clone(), file, Some("a\n".into()))).unwrap().is_none());
+        assert!(block_on(git_blame(root.clone(), file, Some("a\n".into()), None)).unwrap().is_none());
         let captured = block_on(crate::proc::run_capture("git".into(), vec!["status".into()], Some(root))).unwrap();
         assert_eq!(serde_json::to_value(&captured).unwrap()["code"], 128);
         assert!(!marker.exists(), "the planted core.fsmonitor ran");

