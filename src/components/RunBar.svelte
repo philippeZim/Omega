@@ -4,7 +4,7 @@
   import { runner, runnerRemote, refreshProject, runAction, stopRun, editRunCommand, resetRunCommand, chooseVersion } from "../lib/code/runner.svelte";
   import { startDebugging, stopDebugging } from "../lib/debug/debugger.svelte";
   import { dbg } from "../lib/debug/store.svelte";
-  import { langFor } from "../lib/code/languages";
+  import { effectiveLang, overrideFor } from "../lib/code/langOverride.svelte";
   import { focusTerm } from "../lib/terminal.svelte";
   import { toggleView, isShown } from "../lib/layout.svelte";
   import { t } from "../lib/i18n/index.svelte";
@@ -19,11 +19,12 @@
     if (isShown("terminal")) requestAnimationFrame(() => focusTerm());
   }
 
-  const lang = $derived(langFor(activeTab()?.path ?? null));
+  const lang = $derived(effectiveLang(activeTab()?.path ?? null));
   const canDebug = $derived(!!lang?.server);
   const debugging = $derived(dbg.status === "running" || dbg.status === "stopped" || dbg.status === "starting");
 
   $effect(() => {
+    void overrideFor(activeTab()?.path);
     void activeTab()?.path;
     void app.root;
     void app.treeVersion;

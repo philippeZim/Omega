@@ -344,6 +344,7 @@ export const en = {
   "commands.cm.to": "to",
   "commands.cm.controlChar": "Control character",
   "commands.cm.selectionDeleted": "Selection deleted",
+  "commands.cmd.code.language": "Choose Language of This File…",
 };
 export const de: Record<keyof typeof en, string> = {
   "commands.group.window": "Fenster & Layout",
@@ -690,6 +691,7 @@ export const de: Record<keyof typeof en, string> = {
   "commands.cm.to": "bis",
   "commands.cm.controlChar": "Steuerzeichen",
   "commands.cm.selectionDeleted": "Auswahl gelöscht",
+  "commands.cmd.code.language": "Sprache dieser Datei wählen …",
 };
 export const fr: Record<keyof typeof en, string> = {
   "commands.group.window": "Fenêtres et disposition",
@@ -1036,4 +1038,5 @@ export const fr: Record<keyof typeof en, string> = {
   "commands.cm.to": "à",
   "commands.cm.controlChar": "Caractère de contrôle",
   "commands.cm.selectionDeleted": "Sélection supprimée",
+  "commands.cmd.code.language": "Choisir le langage de ce fichier…",
 };

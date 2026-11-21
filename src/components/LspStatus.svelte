@@ -1,6 +1,6 @@
 <script lang="ts">
   import { activeTab } from "../lib/state.svelte";
-  import { langFor } from "../lib/code/languages";
+  import { effectiveLang } from "../lib/code/langOverride.svelte";
   import { statusFor } from "../lib/code/lsp.svelte";
   import { restartLanguageServer } from "../lib/code/lspExtension";
   import { t, type Key } from "../lib/i18n/index.svelte";
@@ -9,7 +9,7 @@
   let { compact = false }: { compact?: boolean } = $props();
 
   const path = $derived(activeTab()?.path ?? null);
-  const lang = $derived(langFor(path));
+  const lang = $derived(effectiveLang(path));
   const st = $derived(statusFor(lang, path));
   const busy = $derived(st.status === "starting" || st.status === "installing");
   const label = $derived(st.status ? t(`code.lsp.st.${st.status}` as Key) : "");
