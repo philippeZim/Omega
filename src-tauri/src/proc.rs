@@ -207,13 +207,15 @@ pub fn proc_kill(app: AppHandle, window: tauri::WebviewWindow, id: String) {
 pub fn kill_window(app: &AppHandle, owner: &str) {
     let state = app.state::<ProcState>();
     drop(crate::windows::take_owned(&mut state.conns.lock().unwrap(), owner));
-    for key in owned_children(&state.children.lock().unwrap(), owner) {
-        kill_registered(&state.children, &state.trees, &key);
-    }
+    kill_owned(&state.children, &state.trees, owner);
 }
 
-fn owned_children(children: &HashMap<String, Child>, owner: &str) -> Vec<String> {
-    children.keys().filter(|k| crate::windows::is_owned(k, owner)).cloned().collect()
+fn kill_owned(children: &Mutex<HashMap<String, Child>>, trees: &Mutex<HashSet<String>>, owner: &str) {
+    // Collected first: `kill_registered` takes the lock itself.
+    let keys: Vec<String> = children.lock().unwrap().keys().filter(|k| crate::windows::is_owned(k, owner)).cloned().collect();
+    for key in keys {
+        kill_registered(children, trees, &key);
+    }
 }
 
 fn kill_registered(children: &Mutex<HashMap<String, Child>>, trees: &Mutex<HashSet<String>>, id: &str) {
@@ -718,5 +720,34 @@ Content-Type: x\r\nContent-Length: 7\r\n\r\n{\"a\":1}";
     #[test]
     fn lf_only_line_endings() {
         assert_eq!(read_all(b"Content-Length: 2\n\nhi"), vec![b"hi".to_vec()]);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod window_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    fn closing_a_window_ends_only_its_processes_without_deadlock() {
+        let spawn = || Command::new("sleep").arg("30").spawn().unwrap();
+        let children = Arc::new(Mutex::new(HashMap::new()));
+        let trees = Arc::new(Mutex::new(HashSet::new()));
+        children.lock().unwrap().insert(crate::windows::key("main", "lsp"), spawn());
+        children.lock().unwrap().insert(crate::windows::key("main", "dap"), spawn());
+        children.lock().unwrap().insert(crate::windows::key("w-b", "lsp"), spawn());
+        let (c2, t2) = (children.clone(), trees.clone());
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            kill_owned(&c2, &t2, "main");
+            let _ = tx.send(());
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(5)).expect("kill_owned must not deadlock");
+        let mut left = children.lock().unwrap();
+        assert_eq!(left.keys().cloned().collect::<Vec<_>>(), [crate::windows::key("w-b", "lsp")]);
+        for c in left.values_mut() {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
     }
 }
