@@ -3,6 +3,7 @@
  * a language server document fed from its Y.Text, whichever tab the host is looking at.
  */
 import type * as Y from "yjs";
+import { tempDir } from "@tauri-apps/api/path";
 import { collab, sessionEndHooks } from "./collab.svelte";
 import { isApproved, isObj, publish, registerMethod, registerTopic, RpcFail } from "./rpc.svelte";
 import {
@@ -93,7 +94,7 @@ let knownDirs: Promise<string[]> | null = null;
 /** This machine's folders whose paths must not reach guests. */
 function hostDirs() {
   return (knownDirs ??= (async () => {
-    const temp = await import("@tauri-apps/api/path").then((m) => m.tempDir()).catch(() => null);
+    const temp = await Promise.resolve().then(() => tempDir()).catch(() => null);
     const [home, tools] = await Promise.all([Promise.resolve().then(() => fsApi.homeDir()).catch(() => null), toolsDir().catch(() => null)]);
     return [...SYSTEM_DIRS, ...[home, tools, temp].filter((d): d is string => !!d)];
   })());
