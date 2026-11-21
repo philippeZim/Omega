@@ -80,6 +80,7 @@ pub fn page_loading(app: &AppHandle, label: &str) {
 pub fn destroyed(app: &AppHandle, label: &str) {
     let reg = app.state::<Registry>();
     reg.boot.lock().unwrap().remove(label);
+    reg.booted.lock().unwrap().remove(label);
     if !reg.exiting.load(Ordering::SeqCst) && remove_closed(&mut reg.entries.lock().unwrap(), label) {
         save(app);
         let _ = app.emit("windows-changed", ());
@@ -114,6 +115,8 @@ pub struct Registry {
     entries: Mutex<Vec<Entry>>,
     exiting: AtomicBool,
     boot: Mutex<HashMap<String, Boot>>,
+    /// Windows whose page has asked for its `Boot`: they get new paths as an event.
+    booted: Mutex<HashSet<String>>,
     /// Open "how many unsaved tabs?" rounds: who still has to answer, and where answers go.
     queries: Mutex<HashMap<u64, (HashSet<String>, Sender<(String, usize)>)>>,
 }
@@ -241,6 +244,137 @@ pub fn exiting(app: &AppHandle) {
     app.state::<Registry>().exiting.store(true, Ordering::SeqCst);
 }
 
+// ------------------------------------------------------------------ `omega <paths>`
+
+/// One thing to do for a request. `label: None` is a new window.
+#[derive(Debug, Default, PartialEq, Clone)]
+struct Act {
+    label: Option<String>,
+    root: Option<String>,
+    files: Vec<String>,
+    focus: bool,
+}
+
+/// How a request at app start may use the windows that were just restored.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Start {
+    /// The app was already running.
+    Running,
+    /// Takes a window without a folder before opening another.
+    Cold,
+    /// A test instance: the first folder replaces the first window's, as `instance_launch` expects.
+    ColdInstance,
+}
+
+/// Folder open → its window; else a new window. Files go to the window of the last folder named,
+/// else the active one. `open`: (label, resolved root), `active`: the focused window.
+fn plan(dirs: &[String], files: &[String], open: &[(String, Option<String>)], active: Option<&str>, start: Start) -> Vec<Act> {
+    let mut acts: Vec<Act> = Vec::new();
+    let mut last = None;
+    for (i, dir) in dirs.iter().enumerate() {
+        if let Some(n) = acts.iter().position(|a| a.root.as_ref() == Some(dir)) {
+            last = Some(n);
+            continue;
+        }
+        let free = |l: &String| !acts.iter().any(|a| a.label.as_ref() == Some(l));
+        let act = if let Some((l, _)) = open.iter().find(|(_, r)| r.as_ref() == Some(dir)) {
+            Act { label: Some(l.clone()), ..Act::default() }
+        } else if let (Start::ColdInstance, 0, Some(l)) = (start, i, active.map(str::to_string).or_else(|| open.first().map(|o| o.0.clone()))) {
+            Act { label: Some(l), root: Some(dir.clone()), ..Act::default() }
+        } else if let (true, Some((l, _))) = (start != Start::Running, open.iter().find(|(l, r)| r.is_none() && free(l))) {
+            Act { label: Some(l.clone()), root: Some(dir.clone()), ..Act::default() }
+        } else {
+            Act { root: Some(dir.clone()), ..Act::default() }
+        };
+        acts.push(act);
+        last = Some(acts.len() - 1);
+    }
+    if !files.is_empty() {
+        let n = last.unwrap_or_else(|| {
+            acts.push(Act { label: active.map(str::to_string).or_else(|| open.first().map(|o| o.0.clone())), ..Act::default() });
+            acts.len() - 1
+        });
+        acts[n].files = files.to_vec();
+        last = Some(n);
+    }
+    if dirs.is_empty() && files.is_empty() && start == Start::Running {
+        acts.push(Act { label: active.map(str::to_string).or_else(|| open.first().map(|o| o.0.clone())), ..Act::default() });
+        last = Some(0);
+    }
+    if let Some(n) = last {
+        acts[n].focus = true;
+    }
+    acts
+}
+
+/// Opens what `omega` was asked for.
+pub fn route(app: &AppHandle, req: crate::cli::Request, cold: bool) {
+    let reg = app.state::<Registry>();
+    let open: Vec<(String, Option<String>)> = reg.entries.lock().unwrap().iter()
+        .map(|e| (e.label.clone(), e.root.as_ref().map(|r| Path::new(r).canonicalize().map_or(r.clone(), crate::env::norm))))
+        .collect();
+    let active = target(app);
+    let start = match (cold, crate::instance::name().is_some()) {
+        (false, _) => Start::Running,
+        (true, true) => Start::ColdInstance,
+        (true, false) => Start::Cold,
+    };
+    for act in plan(&req.dirs, &req.files, &open, active.as_deref(), start) {
+        let boot = Boot { root: act.root, files: act.files };
+        let label = match act.label {
+            Some(l) => {
+                if boot.root.is_some() || !boot.files.is_empty() {
+                    deliver(app, &l, boot);
+                }
+                l
+            }
+            None => match self::open(app, boot) {
+                Ok(l) => l,
+                Err(e) => {
+                    eprintln!("omega: {e}");
+                    continue;
+                }
+            },
+        };
+        if act.focus {
+            focus(app, &label);
+        }
+    }
+}
+
+/// Hands paths to a window: as an event once its page runs, else with its boot.
+fn deliver(app: &AppHandle, label: &str, boot: Boot) {
+    let reg = app.state::<Registry>();
+    let mut pending = reg.boot.lock().unwrap();
+    if reg.booted.lock().unwrap().contains(label) {
+        drop(pending);
+        emit(app, label, "window-open", boot);
+    } else {
+        let slot = pending.entry(label.to_string()).or_default();
+        slot.root = boot.root.or(slot.root.take());
+        slot.files.extend(boot.files);
+    }
+}
+
+/// Brings a window to the front. A test instance only makes it the target: it stays on its
+/// hidden desktop and never takes the user's focus.
+fn focus(app: &AppHandle, label: &str) {
+    focused(app, label);
+    if crate::instance::name().is_some() {
+        return;
+    }
+    let Some(w) = app.get_webview_window(label) else { return };
+    let _ = w.unminimize();
+    let _ = w.show();
+    let _ = w.set_focus();
+    // Wayland compositors ignore a window's own request for focus.
+    if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some() {
+        if let Ok(title) = w.title() {
+            crate::instance::hypr_focus(&title);
+        }
+    }
+}
+
 #[tauri::command]
 pub fn windows_prepare_exit(app: AppHandle) {
     exiting(&app);
@@ -255,7 +389,11 @@ pub async fn window_new(app: AppHandle) -> Result<String, String> {
 #[tauri::command]
 pub fn window_boot(app: AppHandle, window: tauri::WebviewWindow) -> Value {
     let reg = app.state::<Registry>();
-    let boot = reg.boot.lock().unwrap().remove(window.label()).unwrap_or_default();
+    // One lock over both, so `deliver` either adds to this boot or sends an event.
+    let mut pending = reg.boot.lock().unwrap();
+    reg.booted.lock().unwrap().insert(window.label().to_string());
+    let boot = pending.remove(window.label()).unwrap_or_default();
+    drop(pending);
     json!({ "root": boot.root, "files": boot.files, "windows": labels(&app) })
 }
 
@@ -312,6 +450,57 @@ pub fn window_unsaved_reply(app: AppHandle, window: tauri::WebviewWindow, call: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn open(list: &[(&str, Option<&str>)]) -> Vec<(String, Option<String>)> {
+        list.iter().map(|(l, r)| (l.to_string(), r.map(str::to_string))).collect()
+    }
+    fn v(a: &[&str]) -> Vec<String> {
+        a.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn an_open_folder_gets_focus_and_another_a_new_window() {
+        let w = open(&[("main", Some("/a")), ("w-b", Some("/b"))]);
+        assert_eq!(plan(&v(&["/b"]), &[], &w, Some("main"), Start::Running), [Act { label: Some("w-b".into()), focus: true, ..Act::default() }]);
+        assert_eq!(plan(&v(&["/c"]), &[], &w, Some("main"), Start::Running), [Act { root: Some("/c".into()), focus: true, ..Act::default() }]);
+    }
+
+    #[test]
+    fn a_file_goes_to_the_active_window() {
+        let w = open(&[("main", Some("/a")), ("w-b", Some("/b"))]);
+        assert_eq!(plan(&[], &v(&["/x/f"]), &w, Some("w-b"), Start::Running), [Act { label: Some("w-b".into()), files: v(&["/x/f"]), focus: true, ..Act::default() }]);
+    }
+
+    #[test]
+    fn a_file_named_with_a_folder_goes_to_that_folders_window() {
+        let w = open(&[("main", Some("/a"))]);
+        assert_eq!(plan(&v(&["/c"]), &v(&["/c/f"]), &w, Some("main"), Start::Running), [Act { root: Some("/c".into()), files: v(&["/c/f"]), focus: true, ..Act::default() }]);
+    }
+
+    #[test]
+    fn nothing_named_focuses_the_active_window() {
+        let w = open(&[("main", Some("/a"))]);
+        assert_eq!(plan(&[], &[], &w, Some("main"), Start::Running), [Act { label: Some("main".into()), focus: true, ..Act::default() }]);
+        assert!(plan(&[], &[], &w, Some("main"), Start::Cold).is_empty());
+    }
+
+    #[test]
+    fn a_cold_start_uses_an_empty_window_first() {
+        let w = open(&[("main", None)]);
+        assert_eq!(plan(&v(&["/a", "/b"]), &[], &w, Some("main"), Start::Cold), [
+            Act { label: Some("main".into()), root: Some("/a".into()), ..Act::default() },
+            Act { root: Some("/b".into()), focus: true, ..Act::default() },
+        ]);
+        // A restored folder isn't replaced by a normal start, but is by a test instance.
+        let w = open(&[("main", Some("/old"))]);
+        assert_eq!(plan(&v(&["/a"]), &[], &w, Some("main"), Start::Cold)[0].label, None);
+        assert_eq!(plan(&v(&["/a"]), &[], &w, Some("main"), Start::ColdInstance)[0].label.as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn the_same_folder_twice_is_one_window() {
+        assert_eq!(plan(&v(&["/c", "/c"]), &[], &open(&[("main", Some("/a"))]), Some("main"), Start::Running).len(), 1);
+    }
 
     #[test]
     fn labels_are_generated_and_checked() {

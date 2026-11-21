@@ -61,6 +61,22 @@ fn hypr_dispatch(arg: String) {
     let _ = std::process::Command::new("hyprctl").args(["dispatch", &arg]).output();
 }
 
+/// The address of this process's window with `title`.
+fn window_address(clients: &Value, pid: u64, title: &str) -> Option<String> {
+    let c = clients.as_array()?.iter().find(|c| c["pid"].as_u64() == Some(pid) && c["title"].as_str() == Some(title))?;
+    let addr = c["address"].as_str()?;
+    (addr.starts_with("0x") && addr[2..].bytes().all(|b| b.is_ascii_hexdigit())).then(|| addr.to_string())
+}
+
+/// Focuses this process's window on Hyprland, through its Lua dispatcher or the classic one.
+pub fn hypr_focus(title: &str) {
+    let Some(addr) = hypr_json("clients").and_then(|c| window_address(&c, std::process::id() as u64, title)) else { return };
+    let dispatch = |arg: String| std::process::Command::new("hyprctl").args(["dispatch", &arg]).output().is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "ok");
+    if !dispatch(format!(r#"hl.dsp.focus({{ window = "address:{addr}" }})"#)) {
+        dispatch(format!("focuswindow address:{addr}"));
+    }
+}
+
 /// This process's windows that aren't on the test desktop yet.
 fn stray_windows(clients: &Value, pid: u64, ws: &str) -> Vec<String> {
     clients.as_array().into_iter().flatten()
@@ -229,6 +245,18 @@ fn remove_stale_in(dir: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn focus_only_targets_this_process_window() {
+        let clients = json!([
+            { "pid": 8, "title": "a – Omega", "address": "0xa" },
+            { "pid": 7, "title": "a – Omega", "address": "0xb" },
+            { "pid": 7, "title": "bad", "address": "0xb; rm" },
+        ]);
+        assert_eq!(window_address(&clients, 7, "a – Omega").as_deref(), Some("0xb"));
+        assert_eq!(window_address(&clients, 7, "missing"), None);
+        assert_eq!(window_address(&clients, 7, "bad"), None);
+    }
 
     #[test]
     fn finds_only_this_process_windows_off_the_test_desktop() {

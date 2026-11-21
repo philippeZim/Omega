@@ -164,21 +164,6 @@ pub fn home_dir() -> String {
     crate::env::norm(crate::env::home())
 }
 
-/// Paths passed on the command line (`omega <ordner|datei>…`), made absolute.
-#[tauri::command]
-pub fn cli_paths() -> Vec<String> {
-    let cwd = std::env::current_dir().unwrap_or_default();
-    std::env::args()
-        .skip(1)
-        .filter(|a| !a.starts_with('-'))
-        .map(|a| {
-            let p = PathBuf::from(&a);
-            let p = if p.is_absolute() { p } else { cwd.join(p) };
-            crate::env::norm(p.canonicalize().unwrap_or(p))
-        })
-        .collect()
-}
-
 /// All files below `root` (relative paths), skipping VCS/dependency/build folders. Capped for huge trees.
 #[tauri::command]
 pub async fn list_files(root: String) -> Result<Vec<String>, String> {

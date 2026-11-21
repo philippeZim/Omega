@@ -17,9 +17,12 @@ mod power;
 mod instance;
 mod lang_shadow;
 mod windows;
+mod cli;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Hands over to a running Omega and exits, or detaches from the terminal.
+    let startup = std::sync::Mutex::new(Some(cli::startup()));
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -50,7 +53,7 @@ pub fn run() {
                 _ => {}
             }
         })
-        .setup(|app| {
+        .setup(move |app| {
             use tauri::Manager;
             let tools = app.path().app_data_dir().map(|d| d.join("tools")).unwrap_or_else(|_| env::home().join(".omega-tools"));
             env::init(tools);
@@ -62,6 +65,9 @@ pub fn run() {
             }
             codex_ipc::start(app.handle());
             windows::restore(app.handle()).map_err(|e| Box::<dyn std::error::Error>::from(e))?;
+            if let Some(s) = startup.lock().unwrap().take() {
+                cli::begin(app.handle(), s);
+            }
             instance::exit_on_signal(app.handle());
             Ok(())
         })
@@ -91,7 +97,6 @@ pub fn run() {
             fs::delete_path,
             fs::path_exists,
             fs::home_dir,
-            fs::cli_paths,
             fs::list_files,
             search::search_text,
             search::search_cancel,
@@ -179,6 +184,16 @@ pub fn run() {
                     power::cleanup();
                     instance::withdraw();
                     lang_shadow::cleanup();
+                    cli::cleanup();
+                }
+                // Finder or `open`: files and folders dropped on the app.
+                #[cfg(target_os = "macos")]
+                tauri::RunEvent::Opened { urls } => {
+                    let mut req = cli::Request::default();
+                    for p in urls.iter().filter_map(|u| u.to_file_path().ok()).filter_map(|p| p.to_str().map(str::to_string)) {
+                        if std::path::Path::new(&p).is_dir() { req.dirs.push(p) } else { req.files.push(p) }
+                    }
+                    windows::route(app, cli::validated(req), false);
                 }
                 _ => {}
             }

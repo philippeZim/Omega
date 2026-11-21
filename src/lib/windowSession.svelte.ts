@@ -32,6 +32,11 @@ export async function bootWindow() {
   });
   listen("windows-changed", () => void invoke<string[]>("window_labels").then(prune).catch(() => {}));
 
+  listen<{ root: string | null; files: string[] }>("window-open", async ({ payload }) => {
+    if (payload.root) setRoot(payload.root);
+    for (const f of payload.files) await openFile(f);
+  });
+
   const boot = await invoke<{ root: string | null; files: string[]; windows: string[] }>("window_boot").catch(() => null);
   if (boot?.windows?.length) prune(boot.windows);
   if (boot?.root) setRoot(boot.root);
