@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseSession, sessionOf } from "./windowSessionData";
+import { keepsSession, parseSession, sessionOf } from "./windowSessionData";
 
 describe("window session", () => {
   it("keeps tabs with a file, not unsaved or shared ones", () => {
@@ -12,6 +12,13 @@ describe("window session", () => {
     expect(sessionOf(tabs, "4")).toEqual({ files: ["/p/a.py", "/p/b.py"], active: "/p/b.py" });
     expect(sessionOf(tabs, "3").active).toBeNull();
     expect(sessionOf(tabs, "2").active).toBeNull();
+  });
+
+  it("a window sent to another folder doesn't bring back the old tabs", () => {
+    expect(keepsSession(null, "/a", false)).toBe(true);
+    expect(keepsSession("/a", "/a", false)).toBe(true);
+    expect(keepsSession("/b", "/a", false)).toBe(false);
+    expect(keepsSession(null, "/a", true)).toBe(false);
   });
 
   it("reads a damaged session as none", () => {

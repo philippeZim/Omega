@@ -3,7 +3,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { fsApi } from "./api";
 import { activate, app, flushAutosave, openFile, setMode, setRoot, unsavedTabs } from "./state.svelte";
-import { parseSession, sessionOf, type Session } from "./windowSessionData";
+import { keepsSession, parseSession, sessionOf, type Session } from "./windowSessionData";
 import type { Mode } from "./modes";
 import { listen } from "./windowEvents";
 import { pruneWindows, unscopedStorage } from "./windowStorage";
@@ -39,9 +39,10 @@ export async function bootWindow() {
 
   const boot = await invoke<{ root: string | null; files: string[]; windows: string[] }>("window_boot").catch(() => null);
   if (boot?.windows?.length) prune(boot.windows);
+  const savedRoot = app.root;
   if (boot?.root) setRoot(boot.root);
   // A workspace put aside for a Code Together session is brought back by the session code.
-  const saved = localStorage.getItem("collab.guestSnapshot") ? null : parseSession(localStorage.getItem(KEY));
+  const saved = keepsSession(boot?.root, savedRoot, !!localStorage.getItem("collab.guestSnapshot")) ? parseSession(localStorage.getItem(KEY)) : null;
   if (saved) await restoreTabs(saved);
   for (const f of boot?.files ?? []) await openFile(f);
 

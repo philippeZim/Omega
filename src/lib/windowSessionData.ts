@@ -11,6 +11,9 @@ export function sessionOf(tabs: { id: string; path?: string | null }[], activeId
   return { files, active: active && files.includes(active) ? active : null };
 }
 
+/** A window told to open another folder doesn't bring back the tabs of the one it had. */
+export const keepsSession = (bootRoot: string | null | undefined, savedRoot: string | null, guestSnapshot: boolean) => !guestSnapshot && (!bootRoot || bootRoot === savedRoot);
+
 export function parseSession(text: string | null): Session | null {
   try {
     const v = JSON.parse(text ?? "null");
