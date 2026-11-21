@@ -88,7 +88,8 @@
   .st.fail { color: var(--red); }
   .st.stopped { color: var(--label-3); font-size: 8px; }
   .dot.busy { animation: busy 1.1s ease-in-out infinite; }
-  @keyframes busy { 50% { opacity: 0.3; transform: scale(0.75); } }
+  /* Colour only: opacity or transform animations on glass flash in WebKitGTK. */
+  @keyframes busy { 50% { background-color: var(--label-3); } }
   .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--label-3); }
   .dot.run { background: var(--green); }
   .x { width: 18px; height: 18px; display: grid; place-items: center; border-radius: 50%; color: var(--label-2); }

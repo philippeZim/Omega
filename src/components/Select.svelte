@@ -83,7 +83,7 @@
     transition: background 0.12s;
   }
   .trigger:hover, .trigger.open { background: rgba(var(--fg-rgb), 0.13); }
-  .trigger :global(.glyph) { color: var(--label-2); transition: transform 0.15s; }
+  .trigger :global(.glyph) { color: var(--label-2); }
   .trigger.open :global(.glyph) { transform: rotate(180deg); }
   .cur { overflow: hidden; text-overflow: ellipsis; }
 

@@ -44,6 +44,7 @@
   .size { opacity: 0.6; font-variant-numeric: tabular-nums; }
   .bar { height: 4px; border-radius: 2px; background: rgba(127, 127, 127, 0.25); overflow: hidden; }
   .fill { height: 100%; background: var(--accent, #6b9be0); transition: width 0.2s; }
-  .indeterminate .fill { width: 35% !important; animation: slide 1.1s ease-in-out infinite; }
-  @keyframes slide { from { transform: translateX(-100%); } to { transform: translateX(300%); } }
+  /* Moves the background, not the element: a transform animation on glass flashes in WebKitGTK. */
+  .indeterminate .fill { width: 100% !important; background: linear-gradient(var(--accent, #6b9be0), var(--accent, #6b9be0)) no-repeat; background-size: 35% 100%; animation: slide 1.1s ease-in-out infinite; }
+  @keyframes slide { from { background-position: -53.85% 0; } to { background-position: 153.85% 0; } }
 </style>

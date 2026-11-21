@@ -152,11 +152,11 @@
   }
   .chip.rec { padding: 0 10px; color: var(--yellow); animation: pulse 1.2s ease-in-out infinite; font-family: var(--font); }
   .chip.rec small { color: var(--label-3); }
-  .x { width: 16px; height: 16px; display: grid; place-items: center; border-radius: 50%; color: var(--label-3); opacity: 0; transition: opacity 0.15s; }
+  .x { width: 16px; height: 16px; display: grid; place-items: center; border-radius: 50%; color: var(--label-3); opacity: 0; }
   .chip:hover .x { opacity: 1; }
   .x:hover { color: var(--label); background: var(--fill-2); }
   .add, .reset { width: 26px; height: 26px; display: grid; place-items: center; border-radius: 8px; color: var(--label-2); background: rgba(var(--fg-rgb), 0.05); transition: background 0.15s; }
   .add:hover, .reset:hover { background: rgba(var(--fg-rgb), 0.12); color: var(--label); }
   .add:active, .reset:active { transform: scale(0.9); }
-  @keyframes pulse { 50% { opacity: 0.55; } }
+  @keyframes pulse { 50% { color: var(--label-3); } }
 </style>

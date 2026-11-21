@@ -174,7 +174,7 @@
   .badge.new { color: var(--green); }
   .badge.modified { color: var(--accent); }
   .badge.conflict { color: var(--red); }
-  .undo { flex-shrink: 0; width: 20px; height: 20px; border-radius: 50%; color: var(--label-3); opacity: 0; transition: opacity 0.12s; }
+  .undo { flex-shrink: 0; width: 20px; height: 20px; border-radius: 50%; color: var(--label-3); opacity: 0; }
   .row:hover .undo { opacity: 1; }
   .undo:disabled { color: var(--label-3); background: none; cursor: default; }
   .undo:hover:not(:disabled) { background: var(--fill-2); color: var(--label); }

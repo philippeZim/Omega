@@ -79,7 +79,6 @@
   vertical-align: -0.15em;
   color: rgb(var(--c));
   cursor: pointer;
-  transition: transform 0.15s;
 }
 .mode-markdown .md-callout-fold svg { width: 1em; height: 1em; }
 .mode-markdown .md-callout-fold.collapsed { transform: rotate(-90deg); }
@@ -165,7 +164,6 @@
   border-radius: 6px;
   background: var(--fill);
   opacity: 0;
-  transition: opacity 0.15s;
 }
 .mode-markdown .cm-line:hover .md-code-header button { opacity: 1; }
 
@@ -218,7 +216,6 @@
   font-size: 14px;
   line-height: 20px;
   opacity: 0;
-  transition: opacity 0.15s;
 }
 .md-table-add.row { left: 6px; bottom: 0; }
 .md-table-add.col { right: 0; top: 6px; }
