@@ -3,8 +3,10 @@
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use regex::RegexBuilder;
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter};
 
 static CURRENT: AtomicU64 = AtomicU64::new(0);
@@ -73,10 +75,16 @@ fn utf16_col(line: &str, byte: usize) -> usize {
     line[..byte].encode_utf16().count()
 }
 
-fn build_regex(query: &str, case_sensitive: bool, whole_word: bool, is_regex: bool) -> Result<regex::Regex, regex::Error> {
+fn regex_builder(query: &str, case_sensitive: bool, whole_word: bool, is_regex: bool) -> RegexBuilder {
     let pattern = if is_regex { query.to_string() } else { regex::escape(query) };
     let pattern = if whole_word { format!(r"\b(?:{pattern})\b") } else { pattern };
-    RegexBuilder::new(&pattern).case_insensitive(!case_sensitive).build()
+    let mut b = RegexBuilder::new(&pattern);
+    b.case_insensitive(!case_sensitive);
+    b
+}
+
+fn build_regex(query: &str, case_sensitive: bool, whole_word: bool, is_regex: bool) -> Result<regex::Regex, regex::Error> {
+    regex_builder(query, case_sensitive, whole_word, is_regex).build()
 }
 
 /// Matches every line of one file. `total` counts matches across files; returns the hits and
@@ -213,6 +221,335 @@ pub fn search_cancel() {
     CURRENT.store(0, Ordering::SeqCst);
 }
 
+// ------------------------------------------------------------------ Code Together guests
+//
+// One-shot searches for a guest, run on the host. They don't touch `CURRENT`, so a guest never
+// cancels the host's own search, and everything they return is relative to the project.
+
+const GUEST_MAX_HITS: usize = 5000;
+const GUEST_MAX_FILES: usize = 5000;
+const GUEST_MAX_LISTED: usize = 50_000;
+/// Text of all hits together, well below the RPC limit.
+const GUEST_MAX_BYTES: usize = 8 * 1024 * 1024;
+const GUEST_MAX_FILE: usize = 8 * 1024 * 1024;
+const GUEST_MAX_RANGES: usize = 100;
+const GUEST_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+/// A guest's pattern compiles into at most this much, so it can't take the host's memory.
+const GUEST_REGEX_LIMIT: usize = 1024 * 1024;
+const GUEST_MAX_EDITS: usize = 200_000;
+/// New text per file: it travels to every guest as one update.
+const GUEST_MAX_INSERT: usize = 8 * 1024 * 1024;
+
+static GUEST_RUNS: std::sync::LazyLock<Mutex<HashMap<u64, Arc<AtomicBool>>>> = std::sync::LazyLock::new(Default::default);
+
+/// The cancel flag of a guest search; it's removed when the search ends.
+struct GuestRun(u64, Arc<AtomicBool>);
+
+impl GuestRun {
+    fn new(token: u64) -> Self {
+        Self(token, guest_flag(token))
+    }
+    fn stopped(&self) -> bool {
+        self.1.load(Ordering::SeqCst)
+    }
+}
+
+impl Drop for GuestRun {
+    fn drop(&mut self) {
+        if let Ok(mut runs) = GUEST_RUNS.lock() {
+            runs.remove(&self.0);
+        }
+    }
+}
+
+fn guest_flag(token: u64) -> Arc<AtomicBool> {
+    let mut runs = GUEST_RUNS.lock().unwrap_or_else(|e| e.into_inner());
+    // A cancel that arrives after its search ended leaves a flag nobody holds.
+    if runs.len() > 256 {
+        runs.retain(|_, f| Arc::strong_count(f) > 1);
+    }
+    runs.entry(token).or_default().clone()
+}
+
+#[tauri::command]
+pub fn guest_search_cancel(token: u64) {
+    guest_flag(token).store(true, Ordering::SeqCst);
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuestQuery {
+    query: String,
+    case_sensitive: bool,
+    whole_word: bool,
+    regex: bool,
+    mask: String,
+    /// Relative folder to search in ("" = the project).
+    #[serde(default)]
+    folder: String,
+    /// Relative files (scope "open files"); empty = walk the folder.
+    #[serde(default)]
+    files: Vec<String>,
+    #[serde(default)]
+    max_results: usize,
+    /// Relative path -> live text of files open in the session, which may be ahead of the disk.
+    #[serde(default)]
+    overlay: HashMap<String, String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuestHits {
+    hits: Vec<Hit>,
+    files: usize,
+    total: usize,
+    truncated: bool,
+}
+
+#[derive(Serialize)]
+pub struct GuestFiles {
+    files: Vec<String>,
+    truncated: bool,
+}
+
+fn guest_regex(q: &GuestQuery) -> Result<regex::Regex, String> {
+    regex_builder(&q.query, q.case_sensitive, q.whole_word, q.regex).size_limit(GUEST_REGEX_LIMIT).dfa_size_limit(GUEST_REGEX_LIMIT).build().map_err(|_| "bad_pattern".to_string())
+}
+
+fn guest_ok(root: &str, path: &Path) -> bool {
+    crate::collab::collab_path_inside(root.to_string(), crate::env::norm(path))
+}
+
+/// The files of a guest's search, each with its relative path. Only what the guest may read.
+fn guest_candidates(root: &str, q: &GuestQuery, run: &GuestRun) -> Result<Vec<(String, PathBuf)>, String> {
+    let base = Path::new(root);
+    let (inc, exc) = build_mask(&q.mask).map_err(|_| "bad_pattern".to_string())?;
+    let folder = if q.folder.is_empty() { base.to_path_buf() } else { base.join(&q.folder) };
+    if !guest_ok(root, &folder) {
+        return Err("unavailable".into());
+    }
+    let files: Vec<String> = q.files.iter().map(|f| crate::env::norm(base.join(f))).collect();
+    let opts = SearchOptions { query: String::new(), case_sensitive: false, whole_word: false, regex: false, mask: String::new(), files, max_results: 0 };
+    let paths = candidates(&crate::env::norm(&folder), &opts, &inc, &exc, &|| run.stopped()).ok_or("cancelled")?;
+    Ok(paths.into_iter().filter_map(|p| Some((crate::env::norm(p.strip_prefix(base).ok()?), p))).collect())
+}
+
+/// The text a guest's search sees: the live copy of an open file, else the disk. The check sits
+/// right before the read, so a file swapped for a symlink during the walk isn't followed.
+fn guest_text(root: &str, q: &GuestQuery, rel: &str, path: &Path) -> Option<String> {
+    if !guest_ok(root, path) {
+        return None;
+    }
+    match q.overlay.get(rel) {
+        Some(live) => (live.len() <= GUEST_MAX_FILE).then(|| live.clone()),
+        None => read_text(path),
+    }
+}
+
+fn run_guest_search(root: &str, q: &GuestQuery, run: &GuestRun) -> Result<GuestHits, String> {
+    let re = guest_regex(q)?;
+    let max = q.max_results.clamp(1, GUEST_MAX_HITS);
+    let started = std::time::Instant::now();
+    let (mut out, mut total, mut files, mut bytes, mut truncated) = (Vec::new(), 0usize, 0usize, 0usize, false);
+    for (rel, path) in guest_candidates(root, q, run)? {
+        if run.stopped() {
+            return Err("cancelled".into());
+        }
+        if started.elapsed() > GUEST_DEADLINE {
+            truncated = true;
+            break;
+        }
+        let Some(text) = guest_text(root, q, &rel, &path) else { continue };
+        let (mut hits, capped) = match_text(&re, &rel, &text, &mut total, max);
+        if !hits.is_empty() {
+            files += 1;
+        }
+        for hit in &mut hits {
+            hit.ranges.truncate(GUEST_MAX_RANGES);
+            bytes += hit.text.len() + rel.len();
+        }
+        out.append(&mut hits);
+        if capped || bytes > GUEST_MAX_BYTES {
+            truncated = true;
+            break;
+        }
+    }
+    Ok(GuestHits { hits: out, files, total, truncated })
+}
+
+/// Every file with a match (Replace All), up to `GUEST_MAX_FILES`. Lines, like the search itself.
+fn run_guest_matching(root: &str, q: &GuestQuery, run: &GuestRun) -> Result<GuestFiles, String> {
+    let re = guest_regex(q)?;
+    let started = std::time::Instant::now();
+    let (mut files, mut truncated) = (Vec::new(), false);
+    for (rel, path) in guest_candidates(root, q, run)? {
+        if run.stopped() {
+            return Err("cancelled".into());
+        }
+        if files.len() >= GUEST_MAX_FILES || started.elapsed() > GUEST_DEADLINE {
+            truncated = true;
+            break;
+        }
+        let Some(text) = guest_text(root, q, &rel, &path) else { continue };
+        if text.lines().any(|l| re.find_iter(l).any(|m| m.end() > m.start())) {
+            files.push(rel);
+        }
+    }
+    Ok(GuestFiles { files, truncated })
+}
+
+/// Blocking work of a guest's call, on its own thread with its cancel flag.
+async fn guest_blocking<T: Send + 'static>(token: u64, f: impl FnOnce(&GuestRun) -> Result<T, String> + Send + 'static) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(move || f(&GuestRun::new(token))).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn guest_search_text(token: u64, root: String, query: GuestQuery) -> Result<GuestHits, String> {
+    guest_blocking(token, move |run| run_guest_search(&root, &query, run)).await
+}
+
+#[tauri::command]
+pub async fn guest_search_matching(token: u64, root: String, query: GuestQuery) -> Result<GuestFiles, String> {
+    guest_blocking(token, move |run| run_guest_matching(&root, &query, run)).await
+}
+
+/// The project's files by the rules of the host's own list, without what a guest may not see.
+fn run_guest_list(root: &str, run: &GuestRun) -> Result<GuestFiles, String> {
+    let (files, truncated) = crate::fs::collect_guest_files(root, GUEST_MAX_LISTED, &|p| guest_ok(root, p), &|| run.stopped()).ok_or("cancelled")?;
+    let base = Path::new(root);
+    Ok(GuestFiles { files: files.into_iter().filter(|f| guest_ok(root, &base.join(f))).collect(), truncated })
+}
+
+#[tauri::command]
+pub async fn guest_list_files(token: u64, root: String) -> Result<GuestFiles, String> {
+    guest_blocking(token, move |run| run_guest_list(&root, run)).await
+}
+
+/// A project file's text for a guest; `None` for what search skips (binary, huge, not UTF-8) or may
+/// not be read.
+#[tauri::command]
+pub async fn guest_read_text(root: String, rel: String) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = Path::new(&root).join(&rel);
+        Ok(if guest_ok(&root, &path) { read_text(&path) } else { None })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuestReplace {
+    query: String,
+    case_sensitive: bool,
+    whole_word: bool,
+    regex: bool,
+    replacement: String,
+    /// Only this line (1-based), for "Replace" on one hit.
+    line: Option<usize>,
+}
+
+#[derive(Serialize, Debug, PartialEq)]
+pub struct ReplacePlan {
+    /// (from, to, text) in UTF-16 offsets of the whole text, in ascending order.
+    edits: Vec<(usize, usize, String)>,
+    count: usize,
+}
+
+/// Expands a replacement like JS `String.replace` does, the syntax the host's Replace uses:
+/// `$$`, `$&`, `` $` ``, `$'`, `$1`..`$99`, `$<name>`. Anything else stays as written.
+fn expand_replacement(rep: &str, caps: &regex::Captures, line: &str, has_names: bool, out: &mut String) {
+    let whole = caps.get(0).expect("group 0 always exists");
+    let b = rep.as_bytes();
+    let mut i = 0;
+    while let Some(off) = rep[i..].find('$') {
+        out.push_str(&rep[i..i + off]);
+        i += off;
+        let (next, after) = (b.get(i + 1).copied(), b.get(i + 2).copied());
+        match next {
+            Some(b'$') => (out.push('$'), i += 2).1,
+            Some(b'&') => (out.push_str(whole.as_str()), i += 2).1,
+            Some(b'`') => (out.push_str(&line[..whole.start()]), i += 2).1,
+            Some(b'\'') => (out.push_str(&line[whole.end()..]), i += 2).1,
+            Some(b'<') if has_names => match rep[i + 2..].find('>') {
+                Some(end) => {
+                    if let Some(m) = caps.name(&rep[i + 2..i + 2 + end]) {
+                        out.push_str(m.as_str());
+                    }
+                    i += end + 3;
+                }
+                None => (out.push('$'), i += 1).1,
+            },
+            Some(d) if d.is_ascii_digit() => {
+                let one = (d - b'0') as usize;
+                let two = after.filter(u8::is_ascii_digit).map(|e| one * 10 + (e - b'0') as usize);
+                let (group, len) = match two {
+                    Some(n) if n >= 1 && n < caps.len() => (n, 3),
+                    _ if one >= 1 && one < caps.len() => (one, 2),
+                    _ => (0, 0),
+                };
+                if len == 0 {
+                    out.push('$');
+                    i += 1;
+                } else {
+                    out.push_str(caps.get(group).map_or("", |m| m.as_str()));
+                    i += len;
+                }
+            }
+            _ => (out.push('$'), i += 1).1,
+        }
+    }
+    out.push_str(&rep[i..]);
+}
+
+/// The edits that replace every match, line by line like the search, so Replace changes exactly
+/// what the guest saw. A plan of edits (not new text) keeps other people's cursors in place.
+fn plan_replace(text: &str, re: &regex::Regex, r: &GuestReplace) -> Result<ReplacePlan, String> {
+    let has_names = re.capture_names().flatten().next().is_some();
+    let (mut edits, mut inserted, mut offset) = (Vec::new(), 0usize, 0usize);
+    for (n, raw) in text.split_inclusive('\n').enumerate() {
+        let line = match raw.strip_suffix('\n') {
+            Some(l) => l.strip_suffix('\r').unwrap_or(l),
+            None => raw,
+        };
+        if r.line.is_none_or(|only| only == n + 1) {
+            for caps in re.captures_iter(line) {
+                let m = caps.get(0).expect("group 0 always exists");
+                if m.end() == m.start() {
+                    continue;
+                }
+                let mut new = String::new();
+                if r.regex {
+                    expand_replacement(&r.replacement, &caps, line, has_names, &mut new);
+                } else {
+                    new.push_str(&r.replacement);
+                }
+                inserted += new.len();
+                if edits.len() >= GUEST_MAX_EDITS || inserted > GUEST_MAX_INSERT {
+                    return Err("too_large".into());
+                }
+                edits.push((offset + utf16_col(line, m.start()), offset + utf16_col(line, m.end()), new));
+            }
+        }
+        offset += raw.encode_utf16().count();
+    }
+    let count = edits.len();
+    Ok(ReplacePlan { edits, count })
+}
+
+#[tauri::command]
+pub async fn guest_replace_plan(text: String, replace: GuestReplace) -> Result<ReplacePlan, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if text.len() > GUEST_MAX_FILE {
+            return Err("too_large".to_string());
+        }
+        let re = regex_builder(&replace.query, replace.case_sensitive, replace.whole_word, replace.regex).size_limit(GUEST_REGEX_LIMIT).dfa_size_limit(GUEST_REGEX_LIMIT).build().map_err(|_| "bad_pattern".to_string())?;
+        plan_replace(&text, &re, &replace)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -239,6 +576,135 @@ mod tests {
         files.sort();
         let names: Vec<&str> = files.iter().map(|f| f.rsplit('/').next().unwrap()).collect();
         assert_eq!(names, ["big.log", "late.txt"]);
+    }
+
+    fn guest_query(query: &str) -> GuestQuery {
+        GuestQuery { query: query.into(), case_sensitive: false, whole_word: false, regex: false, mask: String::new(), folder: String::new(), files: vec![], max_results: 100, overlay: HashMap::new() }
+    }
+
+    fn guest_project() -> (tempfile::TempDir, tempfile::TempDir, String) {
+        let (dir, outside) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let p = dir.path();
+        std::fs::create_dir_all(p.join("src")).unwrap();
+        std::fs::create_dir_all(p.join(".git")).unwrap();
+        std::fs::create_dir_all(p.join("sub/.git")).unwrap();
+        std::fs::write(p.join("src/a.txt"), "needle here\n").unwrap();
+        std::fs::write(p.join(".git/config"), "needle in git\n").unwrap();
+        std::fs::write(p.join("sub/.git/config"), "needle in nested git\n").unwrap();
+        std::fs::write(outside.path().join("secret.txt"), "needle outside\n").unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(outside.path(), p.join("ext")).unwrap();
+            std::os::unix::fs::symlink(outside.path().join("secret.txt"), p.join("leak.txt")).unwrap();
+            std::os::unix::fs::symlink(p.join(".git/config"), p.join("cfg")).unwrap();
+            std::os::unix::fs::symlink(p.join("src/a.txt"), p.join("inner.txt")).unwrap();
+        }
+        let root = crate::env::norm(p.canonicalize().unwrap());
+        (dir, outside, root)
+    }
+
+    #[test]
+    fn guest_search_stays_in_the_project_and_out_of_git() {
+        let (_d, _o, root) = guest_project();
+        let run = GuestRun::new(9001);
+        let r = run_guest_search(&root, &guest_query("needle"), &run).unwrap();
+        let files: Vec<&str> = r.hits.iter().map(|h| h.file.as_str()).collect();
+        assert_eq!(files, ["src/a.txt"]);
+        assert!(!r.truncated);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn guest_open_files_scope_refuses_escapes() {
+        let (_d, _o, root) = guest_project();
+        let run = GuestRun::new(9002);
+        let mut q = guest_query("needle");
+        q.files = vec!["leak.txt".into(), "cfg".into(), ".git/config".into(), "ext/secret.txt".into(), "src/a.txt".into()];
+        let r = run_guest_search(&root, &q, &run).unwrap();
+        assert_eq!(r.hits.iter().map(|h| h.file.as_str()).collect::<Vec<_>>(), ["src/a.txt"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn guest_list_has_no_git_and_no_escaping_links() {
+        let (_d, _o, root) = guest_project();
+        let run = GuestRun::new(9003);
+        let l = run_guest_list(&root, &run).unwrap();
+        assert_eq!(l.files, ["inner.txt", "src/a.txt"]);
+        assert!(!l.truncated);
+    }
+
+    #[test]
+    fn guest_search_reports_truncation_at_the_cap() {
+        let (d, _o, root) = guest_project();
+        std::fs::write(d.path().join("many.txt"), "needle\n".repeat(50)).unwrap();
+        let run = GuestRun::new(9004);
+        let mut q = guest_query("needle");
+        q.max_results = 10;
+        let r = run_guest_search(&root, &q, &run).unwrap();
+        assert!(r.truncated);
+        assert!(r.hits.len() <= 10);
+    }
+
+    #[test]
+    fn guest_search_sees_live_text_of_open_files() {
+        let (_d, _o, root) = guest_project();
+        let run = GuestRun::new(9005);
+        let mut q = guest_query("unsaved");
+        q.overlay.insert("src/a.txt".into(), "first\nunsaved text\n".into());
+        let r = run_guest_search(&root, &q, &run).unwrap();
+        assert_eq!((r.hits[0].file.as_str(), r.hits[0].line), ("src/a.txt", 2));
+    }
+
+    #[test]
+    fn guest_search_stops_when_cancelled() {
+        let (_d, _o, root) = guest_project();
+        let run = GuestRun::new(9006);
+        guest_search_cancel(9006);
+        assert_eq!(run_guest_search(&root, &guest_query("needle"), &run).err().as_deref(), Some("cancelled"));
+    }
+
+    #[test]
+    fn guest_regex_is_bounded() {
+        let mut q = guest_query("(a{1000}){1000}");
+        q.regex = true;
+        assert_eq!(guest_regex(&q).err().as_deref(), Some("bad_pattern"));
+    }
+
+    fn plan(query: &str, is_regex: bool, replacement: &str, line: Option<usize>, text: &str) -> ReplacePlan {
+        let r = GuestReplace { query: query.into(), case_sensitive: true, whole_word: false, regex: is_regex, replacement: replacement.into(), line };
+        let re = build_regex(query, true, false, is_regex).unwrap();
+        plan_replace(text, &re, &r).unwrap()
+    }
+
+    #[test]
+    fn replace_plan_uses_utf16_offsets_across_crlf_lines() {
+        let p = plan("x", false, "$1", None, "😀x\r\nax\n");
+        assert_eq!(p.edits, vec![(2, 3, "$1".to_string()), (6, 7, "$1".to_string())]);
+        assert_eq!(p.count, 2);
+    }
+
+    #[test]
+    fn replace_plan_expands_like_js() {
+        let e = |q: &str, rep: &str, t: &str| plan(q, true, rep, None, t).edits[0].2.clone();
+        assert_eq!(e(r"(a)(b)", "$2$1", "ab"), "ba");
+        assert_eq!(e(r"(a)", "$$ $& $9 $x", "a"), "$ a $9 $x");
+        assert_eq!(e(r"(?P<n>a)", "[$<n>]", "a"), "[a]");
+        assert_eq!(e(r"b", "$`|$'", "abc"), "a|c");
+    }
+
+    #[test]
+    fn replace_plan_matches_per_line_and_can_take_one_line() {
+        assert_eq!(plan("^a", true, "b", None, "a\na\n").count, 2);
+        let p = plan("a", false, "b", Some(2), "a\na\n");
+        assert_eq!(p.edits, vec![(2, 3, "b".to_string())]);
+    }
+
+    #[test]
+    fn replace_plan_refuses_output_that_would_not_fit_one_update() {
+        let r = GuestReplace { query: "a".into(), case_sensitive: true, whole_word: false, regex: false, replacement: "x".repeat(1024 * 1024), line: None };
+        let re = build_regex("a", true, false, false).unwrap();
+        assert_eq!(plan_replace(&"a".repeat(9), &re, &r).err().as_deref(), Some("too_large"));
     }
 
     #[test]

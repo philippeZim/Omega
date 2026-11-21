@@ -177,6 +177,21 @@ pub async fn list_files(root: String) -> Result<Vec<String>, String> {
 
 /// The walk behind `list_files`, stopping after `cap` files. The result is always sorted.
 fn collect_files(root: &str, cap: usize) -> Vec<String> {
+    walk_files(root, cap, &|_, _| true, &|| false).unwrap_or_default().0
+}
+
+/// The same walk for a Code Together guest: symlinked folders aren't entered (what they point to
+/// inside the project is listed under its real path), a symlinked file only counts if `keep` allows
+/// it. `None` if `stop` ended the walk. The flag says whether files were left out by the cap.
+pub(crate) fn collect_guest_files(root: &str, cap: usize, keep: &dyn Fn(&Path) -> bool, stop: &dyn Fn() -> bool) -> Option<(Vec<String>, bool)> {
+    let (mut files, _) = walk_files(root, cap.saturating_add(1), &|path, is_dir| !is_dir && keep(path), stop)?;
+    let truncated = files.len() > cap;
+    files.truncate(cap);
+    Some((files, truncated))
+}
+
+/// `keep_link(path, is_dir)` decides whether a symlink is followed or listed.
+fn walk_files(root: &str, cap: usize, keep_link: &dyn Fn(&Path, bool) -> bool, stop: &dyn Fn() -> bool) -> Option<(Vec<String>, bool)> {
     const SKIP: &[&str] = &[".git", "node_modules", "target", "__pycache__", ".venv", "venv", ".idea", "build", "dist", ".gradle", ".mypy_cache", ".pytest_cache", ".cache"];
     let base = PathBuf::from(root);
     let mut out = Vec::new();
@@ -191,7 +206,11 @@ fn collect_files(root: &str, cap: usize) -> Vec<String> {
     let mut visited = std::collections::HashSet::new();
     let mut stack = vec![(base.clone(), base_canon)];
     let mut deferred = std::collections::VecDeque::new();
+    let mut capped = false;
     'walk: loop {
+        if stop() {
+            return None;
+        }
         let Some((dir, canon)) = stack.pop().or_else(|| deferred.pop_front()) else { break };
         if !visited.insert(canon.clone()) {
             continue;
@@ -208,6 +227,9 @@ fn collect_files(root: &str, cap: usize) -> Vec<String> {
                 // Broken links are skipped.
                 let Ok(m) = fs::metadata(e.path()) else { continue };
                 ft = m.file_type();
+                if !keep_link(&e.path(), ft.is_dir()) {
+                    continue;
+                }
             }
             if ft.is_dir() {
                 if !SKIP.contains(&name.as_str()) && !(name.starts_with('.') && name != ".github") {
@@ -222,6 +244,7 @@ fn collect_files(root: &str, cap: usize) -> Vec<String> {
                 }
                 if out.len() >= cap {
                     // Stop the walk, but still sort what was collected.
+                    capped = true;
                     break 'walk;
                 }
             }
@@ -230,7 +253,7 @@ fn collect_files(root: &str, cap: usize) -> Vec<String> {
         deferred.extend(links);
     }
     out.sort();
-    out
+    Some((out, capped))
 }
 
 // ------------------------------------------------------------------ file watcher
