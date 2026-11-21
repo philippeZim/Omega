@@ -300,6 +300,89 @@ describe("LspClient", () => {
 
 // ---------------------------------------------------------------- findRoot
 
+describe("documents fed for Code Together", () => {
+  const U = "file:///w/proj/a.py";
+  const count = (m: string) => srv.notifications().filter((n) => n === m).length;
+
+  test("a fed document opens once, also when an editor opens the same file", async () => {
+    const c = await readyClient();
+    c.feed(U, "python", () => "shared");
+    c.open(U, "python", "shared");
+    expect(count("textDocument/didOpen")).toBe(1);
+    expect(count("textDocument/didChange")).toBe(0);
+  });
+
+  test("closing the editor keeps a fed document, ending the feed closes it", async () => {
+    const c = await readyClient();
+    c.open(U, "python", "x");
+    c.feed(U, "python", () => "x");
+    c.close(U);
+    expect(count("textDocument/didClose")).toBe(0);
+    c.unfeed(U);
+    expect(count("textDocument/didClose")).toBe(1);
+  });
+
+  test("ending the feed keeps a document an editor still has open", async () => {
+    const c = await readyClient();
+    c.open(U, "python", "x");
+    c.feed(U, "python", () => "x");
+    c.unfeed(U);
+    expect(count("textDocument/didClose")).toBe(0);
+    c.close(U);
+    expect(count("textDocument/didClose")).toBe(1);
+  });
+
+  test("while fed, the feed's text wins over what an editor reports", async () => {
+    const c = await readyClient();
+    let text = "one";
+    c.feed(U, "python", () => text);
+    c.change(U, "stale editor text");
+    expect(c.docs.get(U)).toEqual({ version: 1, text: "one" });
+    text = "";
+    c.change(U, "stale editor text");
+    expect(c.docs.get(U)).toEqual({ version: 2, text: "" });
+  });
+
+  test("closing a document forgets its diagnostics, so a reopened one can't show old positions", async () => {
+    const c = await readyClient();
+    c.open(U, "python", "x");
+    await srv.send({ jsonrpc: "2.0", method: "textDocument/publishDiagnostics", params: { uri: U, version: 1, diagnostics: [{ message: "old" }] } });
+    await settle();
+    c.close(U);
+    expect(c.diagnostics.has(U)).toBe(false);
+    expect(c.diagnosticVersions.has(U)).toBe(false);
+  });
+
+  test("resend repeats the text under a new version without counting as an edit", async () => {
+    const c = await readyClient();
+    c.feed(U, "python", () => "x");
+    const at = c.textChangedAt.get(U);
+    c.resend(U);
+    expect(c.docs.get(U)!.version).toBe(2);
+    expect(c.textChangedAt.get(U)).toBe(at);
+    expect(srv.sent.at(-1).params).toMatchObject({ textDocument: { version: 2 }, contentChanges: [{ text: "x" }] });
+  });
+
+  test("without a feed, open/change/close behave as before", async () => {
+    const c = await readyClient();
+    c.open(U, "python", "a");
+    c.change(U, "b");
+    c.close(U);
+    expect(srv.notifications().slice(-3)).toEqual(["textDocument/didOpen", "textDocument/didChange", "textDocument/didClose"]);
+  });
+
+  test("diagnostics remember the version the server computed them for", async () => {
+    const c = await readyClient();
+    c.feed(U, "python", () => "x");
+    await srv.send({ jsonrpc: "2.0", method: "textDocument/publishDiagnostics", params: { uri: U, version: 7, diagnostics: [] } });
+    await settle();
+    expect(c.diagnosticVersions.get(U)).toBe(7);
+    await srv.send({ jsonrpc: "2.0", method: "textDocument/publishDiagnostics", params: { uri: U, diagnostics: [] } });
+    await settle();
+    expect(c.diagnosticVersions.get(U)).toBeUndefined();
+  });
+});
+
 describe("findRoot", () => {
   function withFiles(files: string[]) {
     const set = new Set(files);
@@ -408,6 +491,34 @@ describe("client registry", () => {
     expect(spawned.length).toBe(1);
     expect(a!.root).toBe("/w");
     expect(L.lspState.status["python|/w"]).toBe("ready");
+  });
+
+  test("neverInstall starts an installed server but neither prompts nor counts as declined", async () => {
+    await multiServer();
+    expect(await L.clientFor({ server: "clangd", lspId: "c" } as any, "/w/a.c", "/w", L.neverInstall)).toBeNull();
+    const ask = vi.fn(async () => false);
+    await L.clientFor({ server: "clangd", lspId: "c" } as any, "/w/a.c", "/w", ask);
+    expect(ask).toHaveBeenCalledOnce(); // the host's own editor still gets its prompt
+    expect(await L.clientFor(PY, "/w/a.py", "/w", L.neverInstall)).not.toBeNull();
+  });
+
+  test("guests can't start more than a few servers, one more is refused; a running one is free", async () => {
+    const spawned = await multiServer(["/w/a/pyproject.toml", "/w/b/pyproject.toml", "/w/c/pyproject.toml", "/w/d/pyproject.toml"]);
+    for (const d of ["a", "b", "c"]) expect(await L.clientFor(PY, `/w/${d}/x.py`, "/w", L.neverInstall)).not.toBeNull();
+    expect(await L.clientFor(PY, "/w/d/x.py", "/w", L.neverInstall)).toBeNull();
+    expect(spawned.length).toBe(L.MAX_GUEST_SERVERS);
+    expect(await L.clientFor(PY, "/w/a/y.py", "/w", L.neverInstall)).not.toBeNull();
+    expect(await L.clientFor(PY, "/w/d/x.py", "/w", no)).not.toBeNull(); // the host itself isn't limited
+  });
+
+  test("servers started only for guests stop with the session; ones in use stay", async () => {
+    await multiServer(["/w/a/pyproject.toml", "/w/b/pyproject.toml"]);
+    const idle = (await L.clientFor(PY, "/w/a/x.py", "/w", L.neverInstall))!;
+    const used = (await L.clientFor(PY, "/w/b/x.py", "/w", L.neverInstall))!;
+    used.open("file:///w/b/x.py", "python", "x");
+    L.stopGuestServers();
+    expect(idle.stopping).toBe(true);
+    expect(used.stopping).toBe(false);
   });
 
   // Regression (#22): a stopped client's exit used to delete its key from the registry and set

@@ -9,6 +9,8 @@
   import { app, openFile, recent } from "../lib/state.svelte";
   import { joinPath, basename } from "../lib/api";
   import { allClients, workspaceSymbols } from "../lib/code/lsp.svelte";
+  import { remoteLsp } from "../lib/code/remoteLsp";
+  import { collab } from "../lib/collab/collab.svelte";
   import { openFind, find, nextSearchId } from "../lib/search/search.svelte";
   import { activeRemote } from "../lib/search/remote";
   import * as ed from "../lib/editor";
@@ -114,7 +116,7 @@
     if (!q) return (symbols = []);
     symTimer = window.setTimeout(async () => {
       const out: Item[] = [];
-      for (const s of await workspaceSymbols(q)) {
+      for (const s of (await remoteLsp.symbols?.(q)) ?? (await workspaceSymbols(q))) {
         const m = fuzzy(q, s.name) ?? { score: 0, positions: [] };
         out.push({
           kind: "symbol", key: `${s.path}:${s.name}:${s.line}:${s.character}`, label: s.name,
@@ -195,6 +197,8 @@
     if (!it) return;
     palette.open = false;
     if (it.kind === "cmd") return runCommand(it.cmd!);
+    // A shared file may still have to arrive from the host: it gets the position when it does.
+    if (it.kind === "symbol" && it.path!.startsWith("collab:") && remoteLsp.openAt) return remoteLsp.openAt(it.path!, it.line ?? 1, it.col ?? 1);
     if (remote && it.path?.startsWith("collab:") && it.line) {
       const col = (it.col ?? 1) - 1;
       return remote.reveal(it.path, it.line, [col, col]);
@@ -261,7 +265,7 @@
       {:else}
         <p class="empty">
           {#if !remote && !app.root && (palette.tab === "files" || palette.tab === "text")}{t("commands.palette.openFolderFirst")}
-          {:else if palette.tab === "symbols" && !allClients().length}{t("commands.palette.symbolsNeedLsp")}
+          {:else if palette.tab === "symbols" && !allClients().length && collab.role !== "guest"}{t("commands.palette.symbolsNeedLsp")}
           {:else if query}{t("common.noResults")}{:else}{t("commands.palette.typeToSearch")}{/if}
         </p>
       {/each}
