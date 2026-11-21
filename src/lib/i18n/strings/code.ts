@@ -271,6 +271,12 @@ export const en = {
   "code.lsp.ocamlResumeTitle": "Start ocamllsp for this project?",
   "code.lsp.ocamlResumeMsg": "{name} changed this project without the Run permission. ocamllsp runs the preprocessors named by .merlin files and the build config, so check them first.",
   "code.lsp.ocamlResumeOk": "Start ocamllsp",
+  "code.ad.ocamlNeedsDune": "Debugging OCaml needs a dune project (a dune-project file).",
+  "code.ad.ocamlNeedsLang": "Debugging needs dune 3.7 or newer. Set (lang dune 3.7) and add (map_workspace_root false) to dune-project.",
+  "code.ad.ocamlNeedsMap": "Add (map_workspace_root false) to dune-project. Without it, the debugger can't match breakpoints to your source files.",
+  "code.ad.ocamlNoExe": "No executable found in this project's dune files.",
+  "code.ad.ocamlNoByte": "{name} has no bytecode target, which debugging needs. Add (modes byte exe) to its stanza in {file}.",
+  "code.ad.ocamlMismatch": "Earlybird ({adapter}) and the OCaml compiler ({compiler}) come from different installations. Install Earlybird in the same opam switch.",
 };
 export const de: Record<keyof typeof en, string> = {
   "code.key.ctrl": "Strg",
@@ -534,6 +540,12 @@ export const de: Record<keyof typeof en, string> = {
   "code.lsp.ocamlResumeTitle": "ocamllsp für dieses Projekt starten?",
   "code.lsp.ocamlResumeMsg": "{name} hat dieses Projekt ohne Ausführen-Recht geändert. ocamllsp startet die Präprozessoren aus .merlin-Dateien und der Build-Konfiguration, prüfe sie also vorher.",
   "code.lsp.ocamlResumeOk": "ocamllsp starten",
+  "code.ad.ocamlNeedsDune": "Zum Debuggen von OCaml wird ein dune-Projekt (Datei dune-project) benötigt.",
+  "code.ad.ocamlNeedsLang": "Zum Debuggen wird dune 3.7 oder neuer benötigt. Setze (lang dune 3.7) und ergänze (map_workspace_root false) in dune-project.",
+  "code.ad.ocamlNeedsMap": "Ergänze (map_workspace_root false) in dune-project. Ohne das kann der Debugger Breakpoints nicht deinen Quelldateien zuordnen.",
+  "code.ad.ocamlNoExe": "In den dune-Dateien dieses Projekts wurde keine ausführbare Datei gefunden.",
+  "code.ad.ocamlNoByte": "{name} hat kein Bytecode-Ziel, das zum Debuggen nötig ist. Ergänze (modes byte exe) in seiner Stanza in {file}.",
+  "code.ad.ocamlMismatch": "Earlybird ({adapter}) und der OCaml-Compiler ({compiler}) stammen aus verschiedenen Installationen. Installiere Earlybird im selben opam-Switch.",
 };
 export const fr: Record<keyof typeof en, string> = {
   "code.key.ctrl": "Ctrl",
@@ -797,4 +809,10 @@ export const fr: Record<keyof typeof en, string> = {
   "code.lsp.ocamlResumeTitle": "Démarrer ocamllsp pour ce projet ?",
   "code.lsp.ocamlResumeMsg": "{name} a modifié ce projet sans le droit d’exécution. ocamllsp lance les préprocesseurs indiqués par les fichiers .merlin et la configuration de build : vérifiez-les d’abord.",
   "code.lsp.ocamlResumeOk": "Démarrer ocamllsp",
+  "code.ad.ocamlNeedsDune": "Le débogage d’OCaml nécessite un projet dune (un fichier dune-project).",
+  "code.ad.ocamlNeedsLang": "Le débogage nécessite dune 3.7 ou plus récent. Indiquez (lang dune 3.7) et ajoutez (map_workspace_root false) dans dune-project.",
+  "code.ad.ocamlNeedsMap": "Ajoutez (map_workspace_root false) dans dune-project. Sans cela, le débogueur ne peut pas associer les points d’arrêt à vos fichiers source.",
+  "code.ad.ocamlNoExe": "Aucun exécutable trouvé dans les fichiers dune de ce projet.",
+  "code.ad.ocamlNoByte": "{name} n’a pas de cible bytecode, nécessaire au débogage. Ajoutez (modes byte exe) à sa stanza dans {file}.",
+  "code.ad.ocamlMismatch": "Earlybird ({adapter}) et le compilateur OCaml ({compiler}) proviennent d’installations différentes. Installez Earlybird dans le même switch opam.",
 };

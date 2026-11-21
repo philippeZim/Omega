@@ -3,7 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { fsApi, basename, dirname, joinPath } from "../api";
 import { langFor } from "../code/languages";
 import { detectProject, pythonEntry, cmakeConfigure, cmakeExecutable } from "../code/projects";
-import { toolsDir, clientFor, fileUri, javaDebugBundles, metalsPausedFor } from "../code/lsp.svelte";
+import { duneProjectIssue, duneTarget, findDuneExecutables, pickExecutable, sameToolchain } from "../code/dune";
+import { toolsDir, clientFor, fileUri, javaDebugBundles, metalsPausedFor, ocamlPausedFor } from "../code/lsp.svelte";
 import { t } from "../i18n/index.svelte";
 import { exe, tmpPath, venvPython, IS_WIN, OS } from "../platform";
 import { ensureTools, withInstallProgress, type ToolId } from "../tools.svelte";
@@ -125,6 +126,33 @@ export async function dropScalaSession(port: number) {
     // Already gone.
   }
   await invoke("proc_kill", { id }).catch(() => {});
+}
+
+/** Earlybird from the same switch as the compiler that builds the bytecode, installed if missing. */
+async function earlybird(ctx: Ctx): Promise<string> {
+  let cmd = await which("ocamlearlybird");
+  if (!cmd) {
+    const name = "Earlybird";
+    if (!(await ctx.askInstall(name))) throw new Error(t("code.ad.required", { name }));
+    ctx.log(t("code.ad.installing", { name }));
+    await withInstallProgress("earlybird", name, () => invoke("install_debugger", { kind: "earlybird" }));
+    ctx.log(t("code.ad.installed", { name }));
+    cmd = await which("ocamlearlybird");
+    if (!cmd) throw new Error(t("code.ad.required", { name }));
+  }
+  const compiler = await which("ocamlc");
+  if (!sameToolchain(cmd, compiler)) throw new Error(t("code.ad.ocamlMismatch", { adapter: dirname(cmd), compiler: compiler ? dirname(compiler) : "ocamlc" }));
+  return cmd;
+}
+
+/** The bytecode target to debug. Never changes the project's dune files: it says what to add. */
+async function ocamlDebugTarget(root: string, file: string) {
+  const issue = duneProjectIssue(await fsApi.readFile(joinPath(root, "dune-project")).catch(() => ""));
+  if (issue) throw new Error(t(issue === "lang" ? "code.ad.ocamlNeedsLang" : "code.ad.ocamlNeedsMap"));
+  const target = pickExecutable(await findDuneExecutables(root), file, root);
+  if (!target) throw new Error(t("code.ad.ocamlNoExe"));
+  if (!target.byte) throw new Error(t("code.ad.ocamlNoByte", { name: target.name, file: joinPath(target.dir || ".", "dune") }));
+  return target;
 }
 
 export async function planFor(ctx: Ctx): Promise<Plan> {
@@ -277,6 +305,28 @@ export async function planFor(ctx: Ctx): Promise<Plan> {
         cwd: lsp.root,
         adapter: { kind: "port", port },
         launch: { type: "scala", request: "launch", name: "Scala", noDebug: false },
+      };
+    }
+
+    case "ocaml": {
+      // Debugging builds and runs the project: it waits for the host's decision like ocamllsp.
+      const held = async () => {
+        if (await ocamlPausedFor(ctx.file, ctx.workspace)) throw new Error(t("code.lsp.ocamlPaused"));
+      };
+      await held();
+      await need(["ocaml"]);
+      if (project?.kind !== "dune") throw new Error(t("code.ad.ocamlNeedsDune"));
+      const target = await ocamlDebugTarget(root, ctx.file);
+      const adapter = await earlybird(ctx);
+      const bc = duneTarget(target, "bc");
+      await held();
+      await capture("dune", ["build", bc], root, ctx);
+      await held();
+      return {
+        label: `OCaml · ${target.name}.bc`,
+        cwd: root,
+        adapter: { kind: "stdio", cmd: adapter, args: ["debug"] },
+        launch: { type: "ocaml.earlybird", request: "launch", name: "OCaml", program: joinPath(root, `_build/default/${bc.slice(2)}`), cwd: root, stopOnEntry: false, console: "integratedTerminal" },
       };
     }
   }
