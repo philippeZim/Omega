@@ -56,9 +56,23 @@ describe("window storage", () => {
     expect(real.getItem(MIGRATED_KEY)).toBe("1");
 
     // A later window starts empty and doesn't take the first one's state.
+    migrateToWindow(real, "main");
     migrateToWindow(real, "w-b");
     expect(scopedStorage(real, "w-b").getItem("root")).toBeNull();
     expect(a.getItem("root")).toBe("/old");
+  });
+
+  it("only the main window takes over an old profile, whichever loads first", () => {
+    real.setItem("root", "/old");
+    real.setItem("layout", "{}");
+    migrateToWindow(real, "w-0123456789abcdef");
+    expect(real.getItem("root")).toBe("/old");
+    expect(real.getItem("layout")).toBe("{}");
+    expect(real.getItem(MIGRATED_KEY)).toBeNull();
+    expect(real.getItem("w:w-0123456789abcdef:root")).toBeNull();
+    migrateToWindow(real, "main");
+    expect(real.getItem("w:main:root")).toBe("/old");
+    expect(real.getItem("root")).toBeNull();
   });
 
   it("leaves the old profile alone when storage fails during the move", () => {

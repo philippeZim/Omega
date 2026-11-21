@@ -35,12 +35,15 @@ const scopedKey = (label: string, key: string) => `${PREFIX}${label}:${key}`;
 
 const keysOf = (s: Storage) => Array.from({ length: s.length }, (_, i) => s.key(i)).filter((k): k is string => k !== null);
 
+/** The window an old single-window profile becomes. Any other window may load before it. */
+const FIRST_WINDOW = "main";
+
 /**
- * Moves a single-window profile's state into `label`. All or nothing: if storage fails halfway,
- * the old keys stay and the next start tries again.
+ * Moves a single-window profile's state into the main window. All or nothing: if storage fails
+ * halfway, the old keys stay and the next start tries again.
  */
 export function migrateToWindow(real: Storage, label: string) {
-  if (real.getItem(MIGRATED_KEY)) return;
+  if (label !== FIRST_WINDOW || real.getItem(MIGRATED_KEY)) return;
   const keys = keysOf(real).filter(isWindowKey);
   try {
     for (const k of keys) real.setItem(scopedKey(label, k), real.getItem(k)!);
@@ -88,10 +91,14 @@ export const unscopedStorage = () => realStorage ?? localStorage;
 /** Replaces `localStorage` for this page. Does nothing outside Tauri. */
 export function installWindowStorage(label: string | null) {
   if (!label || realStorage) return;
-  const real = window.localStorage;
-  migrateToWindow(real, label);
-  realStorage = real;
-  Object.defineProperty(window, "localStorage", { value: scopedStorage(real, label), configurable: true });
+  try {
+    const real = window.localStorage;
+    migrateToWindow(real, label);
+    Object.defineProperty(window, "localStorage", { value: scopedStorage(real, label), configurable: true });
+    realStorage = real;
+  } catch {
+    // Storage is unavailable: the app runs without saved state.
+  }
 }
 
 // ------------------------------------------------------------------ live global settings
