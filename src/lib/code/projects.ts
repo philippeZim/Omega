@@ -28,6 +28,8 @@ export interface Action {
   shortcut?: string;
   /** Tools the command needs (offered for installation when missing). */
   needs?: ToolId[];
+  /** What it runs follows the file open in the editor. */
+  usesFile?: boolean;
 }
 
 export interface Project {
@@ -215,8 +217,8 @@ const RUN = "Shift+F10", BUILD = "Ctrl+F9";
 const TSX_DLX = "pnpm dlx --allow-build=esbuild tsx";
 
 /** Action whose label and argument prompt follow the UI language (getters re-read the locale). */
-function act(id: string, label: Key, cmd: string, opts: { shortcut?: string; ask?: () => string; suggest?: Suggest; arg?: Action["arg"]; pre?: string; setup?: Action["setup"] } = {}): Action {
-  return { id, cmd, pre: opts.pre, setup: opts.setup, shortcut: opts.shortcut, suggest: opts.suggest, arg: opts.arg, get label() { return t(label); }, get ask() { return opts.ask?.(); } };
+function act(id: string, label: Key, cmd: string, opts: { shortcut?: string; ask?: () => string; suggest?: Suggest; arg?: Action["arg"]; pre?: string; setup?: Action["setup"]; usesFile?: boolean } = {}): Action {
+  return { id, cmd, pre: opts.pre, setup: opts.setup, usesFile: opts.usesFile, shortcut: opts.shortcut, suggest: opts.suggest, arg: opts.arg, get label() { return t(label); }, get ask() { return opts.ask?.(); } };
 }
 const askPkg = (example: string) => () => t("code.act.askPackage", { example });
 const askPkgPlain = () => t("code.act.askPackagePlain");
@@ -251,7 +253,7 @@ export async function detectProject(file: string | null, workspace: string | nul
       ...p,
       label: "uv",
       needs: ["uv"],
-      run: target ? act("run", "common.run", `uv run ${target}`, { shortcut: RUN }) : null,
+      run: target ? act("run", "common.run", `uv run ${target}`, { shortcut: RUN, usesFile: true }) : null,
       build: act("build", "code.act.buildPackage", "uv build", { shortcut: BUILD }),
       test: act("test", "code.act.test", "uv run pytest"),
       more: [
@@ -277,7 +279,7 @@ export async function detectProject(file: string | null, workspace: string | nul
       label: "pnpm",
       needs: ["node", "pnpm"],
       run: fileRun
-        ? act("run", "common.run", fileRun, { shortcut: RUN })
+        ? act("run", "common.run", fileRun, { shortcut: RUN, usesFile: true })
         : runScript
           ? { id: "run", label: `pnpm ${runScript}`, cmd: `pnpm run ${runScript}`, shortcut: RUN }
           : null,
@@ -348,8 +350,8 @@ export async function detectProject(file: string | null, workspace: string | nul
     root: dirname(file),
     needs,
     get label() { return t("code.project.file"); },
-    run: act("run", "common.run", cmd, { shortcut: RUN, pre }),
-    build: pre ? act("build", "code.act.build", pre, { shortcut: BUILD }) : null,
+    run: act("run", "common.run", cmd, { shortcut: RUN, pre, usesFile: true }),
+    build: pre ? act("build", "code.act.build", pre, { shortcut: BUILD, usesFile: true }) : null,
     test: null,
     more: [],
   };

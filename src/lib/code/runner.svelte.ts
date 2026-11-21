@@ -75,7 +75,7 @@ function withCustomRun(p: Project): Project {
   const cmd = customRunCmd(p.root);
   if (!cmd) return p;
   // The build step stays: a custom command usually starts the same program with other arguments.
-  return { ...p, defaultRun: p.run, run: { id: "run", label: t("common.run"), cmd, pre: p.run?.pre, setup: p.run?.setup, shortcut: p.run?.shortcut ?? "Shift+F10" } };
+  return { ...p, defaultRun: p.run, run: { id: "run", label: t("common.run"), cmd, pre: p.run?.pre, setup: p.run?.setup, shortcut: p.run?.shortcut ?? "Shift+F10", usesFile: cmd.includes("{file}") || (!!p.run?.pre && p.run.usesFile) } };
 }
 
 export async function editRunCommand() {
@@ -156,7 +156,30 @@ export async function runAction(action: Action | null | undefined, checkedArg?: 
   if (runnerRemote.run) return runnerRemote.run(action);
   const [a, p] = await current(action, runner.project);
   if (!a?.cmd || !p) return;
-  let cmd = a.cmd;
+  await launch(a, p, () => activeTab()?.path, checkedArg);
+}
+
+/** Whether the action's command changes with the file it's started for. */
+export const fileDependent = (a: Action) => !!a.usesFile || !!a.cmd?.includes("{file}");
+
+/** Code Together host: the project as seen from `file`, without looking at the host's active tab. */
+export async function projectFor(file: string | null, workspace: string | null) {
+  const p = await detectProject(file, workspace);
+  return p && withCustomRun(p);
+}
+
+/** Code Together host: saves like Run does. False if the text of `file` didn't reach the disk. */
+export async function saveForGuestRun(file: string | null) {
+  await saveAll();
+  const tab = file ? app.tabs.find((x) => x.path === file) : undefined;
+  return !tab || (!tab.dirty && !tab.deleted);
+}
+
+/** Code Together host: runs an action resolved for a guest's file; the host keeps its tab and focus. */
+export const runGuestAction = (a: Action, p: Project, file: string | null) => launch(a, p, () => file, undefined, false);
+
+async function launch(a: Action, p: Project, activeFile: () => string | null | undefined, checkedArg?: string, focus = true) {
+  let cmd = a.cmd!;
   if (a.ask && checkedArg !== undefined) cmd = cmd.replace("{}", () => checkedArg);
   else if (a.ask) {
     const v = await ui.prompt(a.label.replace("…", ""), "", a.ask, undefined, a.suggest);
@@ -171,9 +194,10 @@ export async function runAction(action: Action | null | undefined, checkedArg?: 
   }
   // `{file}` in a (custom) command = the file open in the editor.
   if (cmd.includes("{file}")) {
-    const file = activeTab()?.path;
+    const file = activeFile();
     if (!file) return ui.toast(t("code.rb.noFileOpen"), "error");
-    cmd = cmd.replaceAll("{file}", q(file));
+    // A function: `$&` or `$'` in a file name must not count as a replacement pattern.
+    cmd = cmd.replaceAll("{file}", () => q(file));
   }
   if (!(await ensureTools([...p.needs, ...(a.needs ?? [])], t("tools.purpose.run")))) return;
   await saveAll();
@@ -187,10 +211,10 @@ export async function runAction(action: Action | null | undefined, checkedArg?: 
   if (pre) {
     // Build in the Build tab; the program only starts (in the Run tab) when that succeeded.
     cancelTask("run");
-    runTask("build", pre, p.root, t("code.act.build"), { onExit: (code) => code === 0 && runTask("run", cmd, p.root, title) });
-  } else if (BUILD_ACTIONS.has(a.id)) runTask("build", cmd, p.root, a.id === "build" ? t("code.act.build") : title);
-  else if (packageAction(p.kind, a.id)) runCommand(cmd, p.root, title, true, { packageTask: true });
-  else runCommand(cmd, p.root, title);
+    runTask("build", pre, p.root, t("code.act.build"), { focus, onExit: (code) => code === 0 && runTask("run", cmd, p.root, title, { focus }) });
+  } else if (BUILD_ACTIONS.has(a.id)) runTask("build", cmd, p.root, a.id === "build" ? t("code.act.build") : title, { focus });
+  else if (packageAction(p.kind, a.id)) runCommand(cmd, p.root, title, focus, { packageTask: true });
+  else runCommand(cmd, p.root, title, focus);
   // Dependency changes may alter the project (e.g. new scripts).
   if (a.ask) setTimeout(refreshProject, 3000);
 }

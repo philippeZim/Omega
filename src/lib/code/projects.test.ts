@@ -285,3 +285,13 @@ describe("`%` can't reach cmd.exe through a uv entry", () => {
     expect(uvRunTarget(entry, "100%.py", false)).toBe("100%.py");
   });
 });
+
+test("the actions that follow the open file say so", async () => {
+  files = { "/p/pyproject.toml": "[project]\nname = 'x'\n", "/p/a.py": "print(1)\n", "/q/a.c": "int main(){}\n" };
+  const uv = await detectProject("/p/a.py", "/p");
+  expect(uv?.run?.usesFile).toBe(true);
+  expect(uv?.build?.usesFile).toBeFalsy();
+  const single = await detectProject("/q/a.c", "/q");
+  expect(single?.run?.usesFile).toBe(true);
+  expect(single?.build?.usesFile).toBe(true);
+});

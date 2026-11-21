@@ -80,6 +80,63 @@ describe("runAction uses the project as saved (#79)", () => {
   });
 });
 
+describe("Code Together: an action run for a guest's file", () => {
+  const project: Project = { kind: "file", root: "/p", label: "x", run: null, build: null, test: null, more: [], needs: [] };
+
+  test("{file} is the guest's file, quoted, also with replacement patterns in its name", async () => {
+    const { runGuestAction } = await import("./runner.svelte");
+    for (const [file, quoted] of [
+      ["/p/app.py", "/p/app.py"],
+      ["/p/a b.py", "'/p/a b.py'"],
+      ["/p/it's.py", `'/p/it'\\''s.py'`],
+      ["/p/$(id).py", "'/p/$(id).py'"],
+      ["/p/$&.py", "'/p/$&.py'"],
+      ["/p/$'x.py", `'/p/$'\\''x.py'`],
+    ]) {
+      h.runCommand.mockClear();
+      await runGuestAction({ id: "run", label: "Run", cmd: "python {file} --flag" }, project, file);
+      expect(h.runCommand.mock.calls[0][0]).toBe(`python ${quoted} --flag`);
+    }
+  });
+
+  test("the host keeps its focus, through the build step too", async () => {
+    const { runGuestAction } = await import("./runner.svelte");
+    await runGuestAction({ id: "run", label: "Run", cmd: "./a" }, project, "/p/a.c");
+    expect(h.runCommand.mock.calls[0][3]).toBe(false);
+    await runGuestAction({ id: "run", label: "Run", cmd: "./a", pre: "cc a.c" }, project, "/p/a.c");
+    const [, , , , opts] = h.runTask.mock.calls[0];
+    expect(opts.focus).toBe(false);
+    opts.onExit(0);
+    expect(h.runTask.mock.calls[1][4]).toEqual({ focus: false });
+  });
+
+  test("saving reports a tab of that file that stayed unsaved or was deleted", async () => {
+    const { saveForGuestRun } = await import("./runner.svelte");
+    h.tabs = [{ id: "a", path: "/p/a.py", dirty: true }];
+    expect(await saveForGuestRun("/p/a.py")).toBe(true);
+    expect(h.saved).toEqual(["a"]);
+    h.tabs = [{ id: "b", path: "/p/b.py", dirty: false, deleted: true } as never];
+    expect(await saveForGuestRun("/p/b.py")).toBe(false);
+    expect(await saveForGuestRun(null)).toBe(true);
+  });
+});
+
+test("names that can't be quoted safely for the Run terminal", async () => {
+  const { quotablePath } = await import("../platform");
+  for (const name of ["a b.py", "it's.py", "$(id).py", "ä.py", "a;b&c.py"]) expect(quotablePath(name, false)).toBe(true);
+  for (const name of ["a\nb.py", "a\rb.py", "a\tb.py", "a\x03.py", "a\x7f.py", "a\x9b.py"]) expect(quotablePath(name, false)).toBe(false);
+  expect(quotablePath("100%.py", false)).toBe(true);
+  expect(quotablePath("100%.py", true)).toBe(false);
+  expect(quotablePath('a".py', true)).toBe(false);
+});
+
+test("only actions tied to a file count as file-dependent", async () => {
+  const { fileDependent } = await import("./runner.svelte");
+  expect(fileDependent({ id: "run", label: "r", cmd: "uv run a.py", usesFile: true })).toBe(true);
+  expect(fileDependent({ id: "run", label: "r", cmd: "python {file}" })).toBe(true);
+  expect(fileDependent({ id: "build", label: "b", cmd: "cargo build" })).toBe(false);
+});
+
 test("a guest's Edit Run command stores nothing and says where it is set", async () => {
   const { editRunCommand, runnerRemote } = await import("./runner.svelte");
   const { ui } = await import("../ui.svelte");
