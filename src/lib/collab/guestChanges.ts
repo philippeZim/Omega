@@ -10,6 +10,8 @@ const KEY = "latex.guestChanged";
  * on its own: Compile doesn't start Metals, and starting Metals doesn't resume LaTeX.
  */
 const METALS_KEY = "metals.guestChanged";
+/** The same for ocamllsp: Merlin runs the preprocessors a `.merlin` file or the build config names. */
+const OCAML_KEY = "ocaml.guestChanged";
 
 const parseRoots = (text: string) =>
   new Map<string, string>(Object.entries(JSON.parse(text)).filter((e): e is [string, string] => typeof e[1] === "string"));
@@ -37,30 +39,41 @@ function store(key: string, map: Map<string, string>) {
 }
 const saveRoots = () => store(KEY, roots);
 
-/** Without a readable store of its own, every project LaTeX has paused counts for Metals too. */
-function loadMetalsRoots() {
+/** Without a readable store of its own, every project already paused elsewhere counts here too. */
+function loadToolRoots(key: string, seeds: Map<string, string>[]) {
   try {
-    const raw = localStorage.getItem(METALS_KEY);
+    const raw = localStorage.getItem(key);
     if (raw !== null) return parseRoots(raw);
   } catch {
     // Unreadable: fall through.
   }
-  const copy = new Map(roots);
-  store(METALS_KEY, copy); // now, so a later Compile can't take a project out of this copy
+  const copy = new Map(seeds.flatMap((m) => [...m]));
+  store(key, copy); // now, so a later Compile or release can't take a project out of this copy
   return copy;
 }
 
-/** Project folder -> who changed it last, until the host allows Metals again. */
-const metalsRoots = loadMetalsRoots();
-/** Counts guest changes, so a confirmation only covers what the host was asked about. */
-let metalsChanges = 0;
-/** Unsaved tab -> who wrote text in it that no folder's Metals pause covers yet (see `metalsBeforeSave`). */
-const metalsTabs = new Map<string, string>();
+/** A language server that executes project-controlled code, paused and released on its own. */
+interface ToolPause {
+  key: string;
+  /** Project folder -> who changed it last, until the host allows this tool again. */
+  roots: Map<string, string>;
+  /** Counts guest changes, so a confirmation only covers what the host was asked about. */
+  changes: number;
+  /** Unsaved tab -> who wrote text in it that no folder's pause covers yet (see `toolsBeforeSave`). */
+  tabs: Map<string, string>;
+}
+const toolPause = (key: string, seeds: Map<string, string>[]): ToolPause => ({ key, roots: loadToolRoots(key, seeds), changes: 0, tabs: new Map() });
 
-function pauseMetals(root: string, name: string) {
-  metalsRoots.set(root, name);
-  store(METALS_KEY, metalsRoots);
-  metalsChanges++;
+const metals = toolPause(METALS_KEY, [roots]);
+const ocaml = toolPause(OCAML_KEY, [roots, metals.roots]);
+const PAUSES = { metals, ocaml };
+export type PausedTool = keyof typeof PAUSES;
+const allPauses = Object.values(PAUSES);
+
+function pauseTool(tool: ToolPause, root: string, name: string) {
+  tool.roots.set(root, name);
+  store(tool.key, tool.roots);
+  tool.changes++;
 }
 
 /** Set by the session. Until then nobody counts as trusted. */
@@ -80,14 +93,16 @@ export function noteGuestChange(peer: string, root: string | null, rel?: string)
   const name = guestChangeHooks.name(peer);
   if (rel?.startsWith("tab:")) {
     tabs.set(rel.slice(4), name);
-    // The host can save this tab as build.sbt. Without a folder yet, the pause waits for that save.
-    metalsTabs.set(rel.slice(4), name);
-    metalsChanges++;
-    if (root) pauseMetals(root, name);
+    // The host can save this tab as build.sbt or .merlin. Without a folder yet, the pause waits for that save.
+    for (const tool of allPauses) {
+      tool.tabs.set(rel.slice(4), name);
+      tool.changes++;
+      if (root) pauseTool(tool, root, name);
+    }
   } else if (root) {
     roots.set(root, name);
     saveRoots();
-    pauseMetals(root, name);
+    for (const tool of allPauses) pauseTool(tool, root, name);
   } else return;
   for (const fn of listeners) fn();
 }
@@ -129,10 +144,14 @@ export function pausedBy(tabId: string, path: string | null, text?: string): str
 export function moveGuestChange(from: string, to: string | null) {
   if (to === null) return;
   const latexMoved = moveIn(roots, from, to);
-  const metalsMoved = moveIn(metalsRoots, from, to);
   if (latexMoved) saveRoots();
-  if (metalsMoved) store(METALS_KEY, metalsRoots);
-  if (!latexMoved && !metalsMoved) return;
+  let toolMoved = false;
+  for (const tool of allPauses) {
+    if (!moveIn(tool.roots, from, to)) continue;
+    store(tool.key, tool.roots);
+    toolMoved = true;
+  }
+  if (!latexMoved && !toolMoved) return;
   for (const fn of listeners) fn();
 }
 
@@ -153,39 +172,50 @@ function moveIn(map: Map<string, string>, from: string, to: string) {
 
 const related = (a: string, b: string) => within(a, b) || within(b, a);
 
-/** Who changed this project, a folder inside it or a folder around it; null if Metals may run. */
-export function metalsPausedBy(root: string): string | null {
-  for (const [r, name] of metalsRoots) if (related(root, r)) return name;
+const pausedIn = (tool: ToolPause, root: string) => {
+  for (const [r, name] of tool.roots) if (related(root, r)) return name;
   return null;
-}
+};
+
+/** Who changed this project, a folder inside it or a folder around it; null if the tool may run. */
+export const toolPausedBy = (tool: PausedTool, root: string): string | null => pausedIn(PAUSES[tool], root);
+export const metalsPausedBy = (root: string) => toolPausedBy("metals", root);
 
 /**
  * The host is about to write a tab to `path`. Guest text in it, or a copy of a paused project's
- * file saved elsewhere, pauses Metals for the target folder first (a running Metals is killed by
- * the listeners before the file exists). Returns what to call if the write fails.
+ * file saved elsewhere, pauses each tool for the target folder first (a running server is killed
+ * by the listeners before the file exists). Returns what to call if the write fails.
  */
-export function metalsBeforeSave(tabId: string, oldPath: string | null, path: string): () => void {
-  const pending = metalsTabs.get(tabId);
-  const name = pending ?? (oldPath && oldPath !== path ? metalsPausedBy(oldPath) : null);
-  if (name === null || name === undefined) return () => {};
-  metalsTabs.delete(tabId);
-  pauseMetals(path.replace(/\/[^/]*$/, "") || "/", name);
+export function toolsBeforeSave(tabId: string, oldPath: string | null, path: string): () => void {
+  const undo: (() => void)[] = [];
+  for (const tool of allPauses) {
+    const pending = tool.tabs.get(tabId);
+    const name = pending ?? (oldPath && oldPath !== path ? pausedIn(tool, oldPath) : null);
+    if (name === null || name === undefined) continue;
+    tool.tabs.delete(tabId);
+    pauseTool(tool, path.replace(/\/[^/]*$/, "") || "/", name);
+    undo.push(() => {
+      if (pending !== undefined && !tool.tabs.has(tabId)) tool.tabs.set(tabId, pending);
+    });
+  }
+  if (!undo.length) return () => {};
   for (const fn of listeners) fn();
-  return () => {
-    if (pending !== undefined && !metalsTabs.has(tabId)) metalsTabs.set(tabId, pending);
-  };
+  return () => undo.forEach((fn) => fn());
 }
 
-/** Read before asking the host, and handed to `resumeMetals`. */
-export const metalsChangeCount = () => metalsChanges;
+/** Read before asking the host, and handed to `resumeTool`. */
+export const toolChangeCount = (tool: PausedTool) => PAUSES[tool].changes;
+export const metalsChangeCount = () => toolChangeCount("metals");
 
-/** The host allowed Metals. False if a guest changed something since `seen`: the pause stays. */
-export function resumeMetals(root: string, seen: number): boolean {
-  if (seen !== metalsChanges) return false;
-  for (const r of [...metalsRoots.keys()]) if (related(root, r)) metalsRoots.delete(r);
-  store(METALS_KEY, metalsRoots);
+/** The host allowed this tool. False if a guest changed something since `seen`: the pause stays. */
+export function resumeTool(name: PausedTool, root: string, seen: number): boolean {
+  const tool = PAUSES[name];
+  if (seen !== tool.changes) return false;
+  for (const r of [...tool.roots.keys()]) if (related(root, r)) tool.roots.delete(r);
+  store(tool.key, tool.roots);
   return true;
 }
+export const resumeMetals = (root: string, seen: number) => resumeTool("metals", root, seen);
 
 /** The same for a guest's compile, which names a project or an unsaved tab. */
 export const isPaused = (root: string | null, tabId: string | null) => (tabId ? tabs.has(tabId) : !!root && roots.has(root));
