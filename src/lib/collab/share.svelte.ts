@@ -58,6 +58,17 @@ const docs = new Map<string, SharedDoc>();
 const renamed = new Map<string, string>();
 const hostDocAt = (path: string) => docs.get(path) ?? docs.get(renamed.get(path) ?? "");
 
+/** A shared document as other host-side features see it. */
+export type SharedDocView = Pick<SharedDoc, "rel" | "root" | "ytext"> & { readonly subscribers: ReadonlySet<string> };
+/** Runs when a doc appeared, went, moved, or its set of guests changed. */
+export const sharedDocListeners = new Set<() => void>();
+const docsChanged = () => {
+  for (const l of sharedDocListeners) l();
+};
+export const sharedDocs = (): SharedDocView[] => [...docs.values()];
+/** The live text of a shared doc on this side of the session. */
+export const sharedText = (rel: string): Y.Text | null => docs.get(rel)?.ytext ?? null;
+
 export const share = $state({
   /** Host project name (guest side). */
   hostRoot: "",
@@ -147,7 +158,9 @@ function makeDoc(rel: string, isHost: boolean): SharedDoc {
  * already disposes it; a second run made yjs log "Tried to remove event handler…", #135).
  */
 function dispose(d: SharedDoc) {
+  if (!d.cleanup.length) return;
   for (const f of d.cleanup.splice(0)) f();
+  queueMicrotask(docsChanged); // callers remove it from the list right after
 }
 
 /** yCollab + undo actions for one tab. */
@@ -510,6 +523,7 @@ async function retireBackgroundDoc(d: SharedDoc) {
   for (const p of d.subscribers) send(p, { t: "doc.gone", path: d.rel, reason: "folder" });
   d.subscribers.clear();
   docs.delete(d.rel);
+  docsChanged();
   clearTimeout(d.writeTimer);
   await hostWrite(d);
   clearTimeout(d.writeTimer);
@@ -535,7 +549,10 @@ export async function syncSharedTabs() {
     if (key === null) hostUnshare(d, d.root !== app.root ? "folder" : undefined);
     else {
       if (key !== d.rel) hostRename(d, key);
-      d.root = app.root;
+      if (d.root !== app.root) {
+        d.root = app.root;
+        docsChanged();
+      }
     }
   }
   await Promise.all(flushes);
@@ -565,6 +582,7 @@ function hostRename(d: SharedDoc, dest: string) {
   docs.set(dest, d);
   renamed.set(old, dest);
   for (const p of d.subscribers) send(p, { t: "doc.moved", path: old, to: dest, name: basename(dest) });
+  docsChanged();
 }
 
 /** Host opened a file that is already shared → bind it. */
@@ -929,6 +947,7 @@ export function forgetPeer(peer: string) {
   delete share.presence[peer];
   if (share.following === peer) share.following = null;
   for (const d of docs.values()) d.subscribers.delete(peer);
+  docsChanged();
   forgetRpcPeer(peer);
 }
 
@@ -972,6 +991,7 @@ onCollabMessage(async (peer, msg) => {
       // Over the transport's limit the whole connection would drop.
       if (!fits(JSON.stringify(state))) return send(peer, { t: "doc.error", path: msg.path, error: "too_large" });
       d.subscribers.add(peer);
+      docsChanged();
       send(peer, state);
       const states = [...d.awareness.getStates().keys()];
       if (states.length) send(peer, { t: "aw", path: d.rel, update: b64(encodeAwarenessUpdate(d.awareness, states)) });
@@ -985,6 +1005,7 @@ onCollabMessage(async (peer, msg) => {
       if (d?.subscribers.has(peer)) applyAwarenessUpdate(d.awareness, unb64(msg.update), peer);
     } else if (msg.t === "doc.close") {
       hostDocAt(msg.path)?.subscribers.delete(peer);
+      docsChanged();
     } else if (msg.t === "presence") {
       const info = await cleanPresence(peer, msg);
       if (!info) return;

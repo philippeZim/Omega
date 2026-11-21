@@ -50,6 +50,8 @@ export class LspClient {
   /** uri -> version of what the server has */
   docs = new Map<string, { version: number; text: string }>();
   diagnostics = new Map<string, Json[]>();
+  /** uri -> the document version the last diagnostics were computed for, if the server said. */
+  diagnosticVersions = new Map<string, number | undefined>();
   diagnosticListeners = new Set<(uri: string) => void>();
   /** Called once the process exited (crash or stop), so editors can reconnect. */
   exitListeners = new Set<() => void>();
@@ -61,6 +63,10 @@ export class LspClient {
   failed = false;
   /** TypeScript project whose dependencies are still being installed: a failed start is not reported. */
   quiet = false;
+  /** Documents an editor has open (between `open` and `close`). */
+  private editorDocs = new Set<string>();
+  /** uri -> live text of a document kept open for Code Together guests (see `feed`). */
+  private feeds = new Map<string, () => string>();
 
   constructor(readonly kind: ServerKind, readonly root: string, cmd: string, args: string[], readonly initOptions?: Json) {
     this.id = `lsp-${kind}-${Math.random().toString(36).slice(2, 8)}`;
@@ -191,6 +197,7 @@ export class LspClient {
       // Servers spell Windows URIs differently (file:///C:/ vs file:///c%3A/): use our form.
       const uri = fileUri(uriPath(msg.params.uri));
       this.diagnostics.set(uri, msg.params.diagnostics);
+      this.diagnosticVersions.set(uri, Number.isInteger(msg.params.version) ? msg.params.version : undefined);
       for (const l of this.diagnosticListeners) l(uri);
     } else if (msg.method === "window/showMessage" && msg.params?.type <= 2 && this.current) {
       lspState.message[this.key] = msg.params.message;
@@ -200,8 +207,12 @@ export class LspClient {
   // ---------------------------------------------------------- documents
 
   open(uri: string, languageId: string, text: string) {
-    const d = this.docs.get(uri);
-    if (d) return this.change(uri, text);
+    this.editorDocs.add(uri);
+    if (this.docs.has(uri)) return this.change(uri, text);
+    this.openDoc(uri, languageId, text);
+  }
+
+  private openDoc(uri: string, languageId: string, text: string) {
     this.docs.set(uri, { version: 1, text });
     this.used = true;
     this.notify("textDocument/didOpen", { textDocument: { uri, languageId, version: 1, text } });
@@ -209,10 +220,27 @@ export class LspClient {
 
   change(uri: string, text: string) {
     const d = this.docs.get(uri);
-    if (!d || d.text === text) return;
+    // A fed document has one source of truth, whoever asks for the sync.
+    const next = this.feeds.get(uri)?.() ?? text;
+    if (!d || d.text === next) return;
     d.version++;
-    d.text = text;
-    this.notify("textDocument/didChange", { textDocument: { uri, version: d.version }, contentChanges: [{ text }] });
+    d.text = next;
+    this.notify("textDocument/didChange", { textDocument: { uri, version: d.version }, contentChanges: [{ text: next }] });
+  }
+
+  /**
+   * Keeps a document open independently of any editor, with `read` as its text: a Code Together
+   * document guests have open. An editor on the same file shares the one server document.
+   */
+  feed(uri: string, languageId: string, read: () => string) {
+    this.feeds.set(uri, read);
+    if (this.docs.has(uri)) this.change(uri, read());
+    else this.openDoc(uri, languageId, read());
+  }
+
+  /** Ends `feed`. The document closes unless an editor still has it open. */
+  unfeed(uri: string) {
+    if (this.feeds.delete(uri) && !this.editorDocs.has(uri)) this.closeDoc(uri);
   }
 
   save(uri: string, text: string) {
@@ -220,6 +248,11 @@ export class LspClient {
   }
 
   close(uri: string) {
+    this.editorDocs.delete(uri);
+    if (!this.feeds.has(uri)) this.closeDoc(uri);
+  }
+
+  private closeDoc(uri: string) {
     if (!this.docs.delete(uri)) return;
     this.notify("textDocument/didClose", { textDocument: { uri } });
     if (!this.docs.size) stopIdle();
@@ -408,6 +441,9 @@ export const INSTALLABLE: Partial<Record<ServerKind, string>> = {
 /** Tools a language server installation builds on. */
 const PREREQ: Partial<Record<ServerKind, ToolId[]>> = { python: ["node"], typescript: ["node"], java: ["jdk"], rust: ["rust"] };
 
+/** `askInstall` for work the host didn't start itself: never prompts, and doesn't count as declining. */
+export const neverInstall = async (_kind: ServerKind, _name: string) => false;
+
 /**
  * Returns a running client for this file's server, starting it if necessary.
  * `askInstall` is called when the server is missing; it should return true to install.
@@ -433,6 +469,7 @@ export async function clientFor(
   }
   const root = await findRoot(file, ROOT_MARKERS[kind], workspace);
   const key = `${kind}|${root}`;
+  if (askInstall === neverInstall && !clients.has(key) && !starting.has(key) && !(await resolveCommand(kind, root))) return null;
   const existing = clients.get(key);
   if (existing && needDebug && kind === "java" && !existing.initOptions?.bundles) {
     existing.stop();
