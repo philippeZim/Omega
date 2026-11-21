@@ -1,4 +1,4 @@
-/** Project detection and the recommended tool per language: cargo, uv, pnpm, CMake, Gradle, scala-cli, sbt, dune. */
+/** Project detection and the recommended tool per language: cargo, uv, pnpm, CMake, Gradle, scala-cli, sbt, dune, Mojo. */
 import { invoke } from "@tauri-apps/api/core";
 import { fsApi, basename, dirname, joinPath, isRoot } from "../api";
 import { q, cd, exe, IS_WIN, OS, runRel, rmrf, tmpPath } from "../platform";
@@ -8,9 +8,10 @@ import { suggestPythonAdd, suggestPythonRemove, pythonRemoveArg, suggestNodeAdd,
 import { validScriptName } from "./packageInput";
 import { duneTarget, findDuneExecutables, pickExecutable } from "./dune";
 import { ocamlShellPrefix } from "./ocamlTools";
+import { isMojoFile, mojoCompiles, mojoEntry, mojoStem, pixiUsesMojo } from "./mojo";
 import { t, i18n, type Key } from "../i18n/index.svelte";
 
-export type ProjectKind = "cargo" | "uv" | "pnpm" | "cmake" | "gradle" | "sbt" | "scala-cli" | "dune" | "file";
+export type ProjectKind = "cargo" | "uv" | "pnpm" | "cmake" | "gradle" | "sbt" | "scala-cli" | "dune" | "mojo" | "file";
 
 export interface Action {
   id: string;
@@ -67,19 +68,37 @@ const MARKERS: [string, ProjectKind][] = [
   ["project.scala", "scala-cli"],
 ];
 
+/** A Mojo project: `mojoproject.toml`, or a pixi manifest that depends on Mojo. */
+async function isMojoProject(dir: string, mojoFile: boolean): Promise<boolean> {
+  if (await fsApi.exists(joinPath(dir, "mojoproject.toml"))) return true;
+  const pixi = joinPath(dir, "pixi.toml");
+  if ((await fsApi.exists(pixi)) && pixiUsesMojo(await fsApi.readFile(pixi).catch(() => ""))) return true;
+  // A pyproject.toml stays a Python project unless a Mojo file is what's being run.
+  const pyproject = joinPath(dir, "pyproject.toml");
+  return mojoFile && (await fsApi.exists(pyproject)) && pixiUsesMojo(await fsApi.readFile(pyproject).catch(() => ""), true);
+}
+
 async function findProject(file: string | null, workspace: string | null): Promise<{ kind: ProjectKind; root: string } | null> {
   let dir = file ? dirname(file) : workspace;
   const stop = workspace ? dirname(workspace) : "/";
   let found: { kind: ProjectKind; root: string } | null = null;
+  const mojoFile = !!file && isMojoFile(file);
+  // A Python, C or other source file in a pixi folder keeps the behaviour it has without Mojo.
+  const lang = file ? langFor(file)?.id : undefined;
+  const mayBeMojo = !lang || lang === "mojo" || lang === "toml";
   while (dir && dir !== stop && !isRoot(dir)) {
+    if (mojoFile && (await isMojoProject(dir, true))) return found ?? { kind: "mojo", root: dir };
+    let marked = false;
     for (const [m, kind] of MARKERS) {
       if (await fsApi.exists(joinPath(dir, m))) {
         // Cargo and dune workspaces: keep walking, their build root is the outermost one.
         if (kind === "cargo" || kind === "dune") found = { kind, root: dir };
         else return found ?? { kind, root: dir };
+        marked = true;
         break;
       }
     }
+    if (!marked && !mojoFile && mayBeMojo && (await isMojoProject(dir, false))) return found ?? { kind: "mojo", root: dir };
     dir = dirname(dir);
   }
   return found;
@@ -392,6 +411,28 @@ export async function detectProject(file: string | null, workspace: string | nul
     };
   }
 
+  if (p?.kind === "mojo") {
+    // A project with a pixi manifest pins its own Mojo; without pixi, Omega's or the system's runs it.
+    const manifest = (await fsApi.exists(joinPath(p.root, "pixi.toml"))) || (await fsApi.exists(joinPath(p.root, "mojoproject.toml")));
+    const pixi = manifest && !!(await which("pixi"));
+    const mojo = pixi ? "pixi run mojo" : "mojo";
+    const entry = await mojoEntry(file, p.root);
+    const relEntry = entry && rel(entry, p.root);
+    const target = relEntry && q(relEntry.startsWith("-") ? `./${relEntry}` : relEntry);
+    return {
+      ...p,
+      label: pixi ? "pixi" : "Mojo",
+      needs: pixi ? ["cc"] : ["mojo", "cc"], // mojo links with the system's C compiler
+      run: target ? act("run", "common.run", `${mojo} run ${target}`, { shortcut: RUN, usesFile: true }) : null,
+      build: target ? act("build", "code.act.build", `mkdir -p build && ${mojo} build ${target} -o ${q(`build/${mojoStem(entry!)}`)}`, { shortcut: BUILD, usesFile: true }) : null,
+      test: null, // Mojo 1.x has no test command
+      more: [
+        { id: "fmt", label: "mojo format", cmd: `${mojo} format .` },
+        act("clean", "code.act.clean", rmrf("build")),
+      ],
+    };
+  }
+
   // No project: run the single file with the language's default tool.
   if (!file) return null;
   const lang = langFor(file)?.id;
@@ -440,6 +481,7 @@ async function singleFileRun(lang: LangId | undefined, file: string): Promise<[s
     case "typescript": return [`${TSX_DLX} ${f}`, ["node", "pnpm"]];
     case "rust": return [out, ["rust"], `rustc -g ${f} -o ${out}`];
     case "scala": return [`scala-cli run ${f}`, ["scala"]];
+    case "mojo": return mojoCompiles(file) ? [`mojo run ${f}`, ["mojo", "cc"]] : null; // Mojo 1.x refuses .🔥
     case "ocaml": return file.endsWith(".ml") ? [`${await ocamlShellPrefix()}ocaml ${f}`, ["ocaml"]] : null; // an interface doesn't run
     default: return null;
   }
@@ -610,6 +652,24 @@ export const TEMPLATES: Template[] = [
       },
       // The first build writes the config ocamllsp reads.
       cmds: [...(await gitInit()), `${await ocamlShellPrefix()}dune build`],
+    }),
+  },
+  {
+    id: "mojo",
+    label: "Mojo",
+    tool: "mojo",
+    // Where Mojo can't run, the project is still created: it opens with highlighting and the hint.
+    needs: async () => ((await invoke<string[]>("tool_installable").catch((): string[] => [])).includes("mojo") ? ["mojo", "cc"] : []),
+    marker: "pixi.toml",
+    open: ["main.mojo"],
+    create: async (n) => ({
+      files: {
+        // The marker comes first: the dialog opens the project as soon as it exists.
+        "pixi.toml": `[workspace]\nname = ${JSON.stringify(n)}\nchannels = ["https://conda.modular.com/max", "conda-forge"]\nplatforms = ["linux-64", "linux-aarch64", "osx-arm64"]\n\n[dependencies]\nmojo = ">=1.2,<25"\n`,
+        "main.mojo": `def main():\n    print("${t("code.tpl.hello")}")\n`,
+        ".gitignore": ".pixi/\nbuild/\n",
+      },
+      cmds: [...(await gitInit())],
     }),
   },
   {
