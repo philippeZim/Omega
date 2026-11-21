@@ -12,8 +12,12 @@ const h = vi.hoisted(() => ({
   client: null as any,
   clientFor: vi.fn(),
   pathOk: vi.fn(async (_rel: string, _root: string) => true),
+  publish: vi.fn(),
+  topics: new Map<string, any>(),
+  methods: new Map<string, any>(),
 }));
 vi.mock("./collab.svelte", () => ({ collab: h.collab, sessionEndHooks: h.endHooks, send: vi.fn(), onCollabMessage: vi.fn() }));
+vi.mock("./rpc.svelte", () => ({ publish: h.publish, registerTopic: (d: any) => void h.topics.set(d.name, d), registerMethod: (d: any) => void h.methods.set(d.name, d) }));
 vi.mock("./share.svelte", () => ({ sharedDocs: () => h.docs, sharedDocListeners: h.listeners, guestPathOk: h.pathOk }));
 vi.mock("../state.svelte", () => ({ app: h.app }));
 vi.mock("../api", () => ({ joinPath: (a: string, b: string) => `${a}/${b}` }));
@@ -26,13 +30,21 @@ vi.mock("../code/lsp.svelte", () => ({
 }));
 
 const { reconcileLspSessions, lspSessionFor, syncSession } = await import("./lspHost.svelte");
+const { LSP_LIMITS, textHash } = await import("./lspProtocol");
 
 function fakeClient() {
   const c = {
     alive: true,
+    capabilities: { hoverProvider: true, completionProvider: { triggerCharacters: ["."] } },
+    docs: new Map<string, { version: number; text: string }>(),
+    diagnostics: new Map<string, any[]>(),
+    diagnosticVersions: new Map<string, number | undefined>(),
     feeds: new Map<string, () => string>(),
     change: vi.fn(),
-    feed: vi.fn((uri: string, _l: string, read: () => string) => void c.feeds.set(uri, read)),
+    feed: vi.fn((uri: string, _l: string, read: () => string) => {
+      c.feeds.set(uri, read);
+      c.docs.set(uri, { version: 1, text: read() });
+    }),
     unfeed: vi.fn((uri: string) => void c.feeds.delete(uri)),
     diagnosticListeners: new Set(),
     exitListeners: new Set<() => void>(),
@@ -59,7 +71,17 @@ beforeEach(async () => {
   h.client = fakeClient();
   h.clientFor.mockReset().mockImplementation(async () => h.client);
   h.pathOk.mockReset().mockResolvedValue(true);
+  h.publish.mockReset();
 });
+
+const URI = "file:///p/a.py";
+const err = (line: number, message = "bad") => ({ range: { start: { line, character: 0 }, end: { line, character: 3 } }, severity: 1, message, source: "Pyright" });
+function diagnose(list: any[], version?: number) {
+  h.client.diagnostics.set(URI, list);
+  h.client.diagnosticVersions.set(URI, version);
+  for (const l of h.client.diagnosticListeners) (l as (u: string) => void)(URI);
+}
+const lastDocs = () => h.publish.mock.calls.at(-1)![1].docs;
 
 test("a doc a guest has open is fed to the server, without any host tab", async () => {
   const d = doc("a.py");
@@ -184,4 +206,68 @@ test("the end of the session stops everything", async () => {
   for (const f of h.endHooks) f();
   expect(h.client.unfeed).toHaveBeenCalled();
   expect(lspSessionFor("/p/a.py")).toBeNull();
+});
+
+test("diagnostics go out tagged with the text they were computed for", async () => {
+  doc("a.py", "x = (\n");
+  reconcileLspSessions();
+  await settle();
+  diagnose([err(0)], 1);
+  const e = lastDocs()["a.py"];
+  expect(e.diagnostics).toEqual([err(0)]);
+  expect(e.len).toBe(6);
+  expect(e.hash).toBe(textHash("x = (\n"));
+  expect(e.features).toMatchObject({ hover: true, triggers: ["."] });
+});
+
+test("a result for an older version of the text is dropped", async () => {
+  doc("a.py");
+  reconcileLspSessions();
+  await settle();
+  h.client.docs.get(URI).version = 3;
+  h.publish.mockClear();
+  diagnose([err(0)], 2);
+  expect(h.publish).not.toHaveBeenCalled();
+  diagnose([err(1)], 3);
+  expect(lastDocs()["a.py"].diagnostics).toEqual([err(1)]);
+});
+
+test("no absolute host path leaves in a diagnostic, and their number is capped", async () => {
+  doc("a.py");
+  reconcileLspSessions();
+  await settle();
+  diagnose([err(0, 'Cannot read "/p/src/b.py" or "/home/me/.ssh/id_rsa" (file:///etc/passwd)'), ...Array.from({ length: 900 }, (_, i) => err(i))]);
+  const e = lastDocs()["a.py"];
+  expect(e.diagnostics).toHaveLength(LSP_LIMITS.diagnostics);
+  expect(e.diagnostics[0].message).toBe('Cannot read "src/b.py" or "…/id_rsa" (…/passwd)');
+});
+
+test("the snapshot holds what's known, a late guest starts current", async () => {
+  doc("a.py");
+  reconcileLspSessions();
+  await settle();
+  diagnose([err(0)], 1);
+  const snap = h.topics.get("lsp.docs").snapshot();
+  expect(snap.full).toBe(true);
+  expect(snap.docs["a.py"].diagnostics).toEqual([err(0)]);
+});
+
+test("guests hear when a document's diagnostics are gone", async () => {
+  const d = doc("a.py");
+  reconcileLspSessions();
+  await settle();
+  diagnose([err(0)], 1);
+  d.subscribers.clear();
+  reconcileLspSessions();
+  expect(lastDocs()).toEqual({ "a.py": null });
+});
+
+test("a dead server's diagnostics are withdrawn", async () => {
+  doc("a.py");
+  reconcileLspSessions();
+  await settle();
+  diagnose([err(0)], 1);
+  h.client.alive = false;
+  for (const l of [...h.client.exitListeners]) (l as () => void)();
+  expect(lastDocs()).toEqual({ "a.py": null });
 });

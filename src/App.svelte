@@ -25,6 +25,7 @@
   import "./lib/collab/projectSearch.svelte";
   import "./lib/collab/session.svelte";
   import "./lib/collab/lspHost.svelte";
+  import "./lib/collab/lspGuest.svelte";
   import "./lib/ai/control.svelte";
   import "./lib/ai/ide.svelte";
   import DiffView from "./components/DiffView.svelte";

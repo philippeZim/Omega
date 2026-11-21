@@ -42,7 +42,7 @@ export const toOffset = (doc: Text, p: { line: number; character: number }) => {
 
 const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-function renderDoc(content: any): HTMLElement | null {
+export function renderDoc(content: any): HTMLElement | null {
   let md = "";
   if (!content) return null;
   if (typeof content === "string") md = content;
@@ -100,6 +100,35 @@ export function applyItem(view: EditorView, item: any, from: number, to: number)
   else view.dispatch(insertCompletionText(view.state, text, start, to));
 }
 
+/** Completion entries for LSP items in their final order; `resolve` fills in the details on demand. */
+export function completionOptions(items: any[], total: number, resolve: (item: any) => Promise<any>): Completion[] {
+  return items.map((item, i) => {
+    const label = String(item.filterText ?? item.label).trim();
+    return {
+      label,
+      displayLabel: String(item.label).trim(),
+      detail: item.labelDetails?.detail ?? item.detail?.split("\n")[0]?.slice(0, 60),
+      type: KIND[item.kind] ?? "text",
+      boost: total > 1 ? Math.round(99 - (i / (total - 1)) * 198) : 0,
+      info: async () => {
+        const full = await resolve(item);
+        const el = renderDoc(full.documentation);
+        if (!el && !full.detail) return null;
+        const wrap = document.createElement("div");
+        if (full.detail) {
+          const pre = document.createElement("pre");
+          pre.className = "lsp-detail";
+          pre.textContent = full.detail;
+          wrap.appendChild(pre);
+        }
+        if (el) wrap.appendChild(el);
+        return wrap;
+      },
+      apply: (view, _c, from, to) => applyItem(view, item, from, to),
+    };
+  });
+}
+
 function completionSource(getClient: () => LspClient | null, uri: string, flush: () => void) {
   return async (ctx: CompletionContext): Promise<CompletionResult | null> => {
     const client = getClient();
@@ -123,35 +152,11 @@ function completionSource(getClient: () => LspClient | null, uri: string, flush:
     if (ctx.aborted || !res) return null;
     const items: any[] = Array.isArray(res) ? res : res.items ?? [];
     const sorted = [...items].sort((a, b) => (a.sortText ?? a.label).localeCompare(b.sortText ?? b.label));
-    const n = sorted.length;
-    const options: Completion[] = sorted.slice(0, 300).map((item, i) => {
-      const label = String(item.filterText ?? item.label).trim();
-      return {
-        label,
-        displayLabel: String(item.label).trim(),
-        detail: item.labelDetails?.detail ?? item.detail?.split("\n")[0]?.slice(0, 60),
-        type: KIND[item.kind] ?? "text",
-        boost: n > 1 ? Math.round(99 - (i / (n - 1)) * 198) : 0,
-        info: async () => {
-          let full = item;
-          if (!item.documentation && client.capabilities.completionProvider?.resolveProvider) {
-            full = await client.request("completionItem/resolve", item).catch(() => item);
-            if (full.additionalTextEdits) item.additionalTextEdits = full.additionalTextEdits;
-          }
-          const el = renderDoc(full.documentation);
-          if (!el && !full.detail) return null;
-          const wrap = document.createElement("div");
-          if (full.detail) {
-            const pre = document.createElement("pre");
-            pre.className = "lsp-detail";
-            pre.textContent = full.detail;
-            wrap.appendChild(pre);
-          }
-          if (el) wrap.appendChild(el);
-          return wrap;
-        },
-        apply: (view, _c, from, to) => applyItem(view, item, from, to),
-      };
+    const options = completionOptions(sorted.slice(0, 300), sorted.length, async (item) => {
+      if (item.documentation || !client.capabilities.completionProvider?.resolveProvider) return item;
+      const full = await client.request("completionItem/resolve", item).catch(() => item);
+      if (full.additionalTextEdits) item.additionalTextEdits = full.additionalTextEdits;
+      return full;
     });
     return {
       from: word ? word.from : ctx.pos,
@@ -161,6 +166,32 @@ function completionSource(getClient: () => LspClient | null, uri: string, flush:
     };
   };
 }
+
+// ---------------------------------------------------------- shared with the Code Together guest
+
+export const severityName = (s: number | undefined): Diagnostic["severity"] => (s === 1 ? "error" : s === 2 ? "warning" : s === 3 ? "info" : "hint");
+
+/** Ctrl+. – apply the quick fix at the cursor (menu when there are several). */
+export function quickFixAtCursor(view: EditorView) {
+  const pos = view.state.selection.main.head;
+  const acts: Action[] = [];
+  forEachDiagnostic(view.state, (d, from, to) => {
+    if (pos >= from && pos <= to) for (const a of d.actions ?? []) acts.push({ ...a, apply: (v: EditorView) => a.apply(v, from, to) });
+  });
+  if (!acts.length) return ui.toast(t("code.qf.none")), true;
+  if (acts.length === 1) return acts[0].apply(view, pos, pos), true;
+  const c = view.coordsAtPos(pos);
+  ui.openMenu(new MouseEvent("contextmenu", { clientX: c?.left ?? 200, clientY: (c?.bottom ?? 200) + 4 }), acts.map((a) => ({ label: a.name, action: () => a.apply(view, pos, pos) })));
+  return true;
+}
+
+export const lspTheme = EditorView.baseTheme({
+  ".lsp-doc": { padding: "8px 12px", maxWidth: "560px", maxHeight: "320px", overflow: "auto", fontFamily: "var(--font)", fontSize: "12.5px", lineHeight: "1.5", color: "var(--label-2)" },
+  ".lsp-doc pre, .lsp-detail": { fontFamily: "var(--mono)", fontSize: "12px", color: "var(--label)", whiteSpace: "pre-wrap", margin: "4px 0" },
+  ".lsp-detail": { padding: "8px 12px 0" },
+  ".lsp-doc code": { fontFamily: "var(--mono)", fontSize: "0.92em", color: "var(--label)" },
+  ".cm-completionIcon": { opacity: "0.8", width: "1.2em" },
+});
 
 // ---------------------------------------------------------- extension
 
@@ -217,7 +248,7 @@ export function lspExtension(path: string, lang: LangInfo): Extension {
         return {
           from,
           to,
-          severity: d.severity === 1 ? "error" : d.severity === 2 ? "warning" : d.severity === 3 ? "info" : "hint",
+          severity: severityName(d.severity),
           message: d.message,
           source: d.source,
           ...(actions.length ? { actions } : {}),
@@ -230,20 +261,6 @@ export function lspExtension(path: string, lang: LangInfo): Extension {
     const fixes = await Promise.all(raw.map((d, i) => (i < 30 ? fixesFor(d) : Promise.resolve([]))));
     if (my !== diagSeq || viewRef !== view || view.state.doc !== docAt || !fixes.some((f) => f.length)) return;
     view.dispatch(setDiagnostics(view.state, build(fixes)));
-  };
-
-  /** Ctrl+. – apply the quick fix at the cursor (menu when there are several). */
-  const quickFix = (view: EditorView) => {
-    const pos = view.state.selection.main.head;
-    const acts: Action[] = [];
-    forEachDiagnostic(view.state, (d, from, to) => {
-      if (pos >= from && pos <= to) for (const a of d.actions ?? []) acts.push({ ...a, apply: (v: EditorView) => a.apply(v, from, to) });
-    });
-    if (!acts.length) return ui.toast(t("code.qf.none")), true;
-    if (acts.length === 1) return acts[0].apply(view, pos, pos), true;
-    const c = view.coordsAtPos(pos);
-    ui.openMenu(new MouseEvent("contextmenu", { clientX: c?.left ?? 200, clientY: (c?.bottom ?? 200) + 4 }), acts.map((a) => ({ label: a.name, action: () => a.apply(view, pos, pos) })));
-    return true;
   };
 
   const plugin = ViewPlugin.fromClass(
@@ -341,7 +358,7 @@ export function lspExtension(path: string, lang: LangInfo): Extension {
     viewActions.of({
       "lsp.gotoDefinition": (v) => (gotoDefinition(v), true),
       "lsp.format": (v) => (format(v), true),
-      "lsp.quickFix": quickFix,
+      "lsp.quickFix": quickFixAtCursor,
     }),
     EditorView.domEventHandlers({
       mousedown(e, view) {
@@ -353,13 +370,7 @@ export function lspExtension(path: string, lang: LangInfo): Extension {
         return true;
       },
     }),
-    EditorView.baseTheme({
-      ".lsp-doc": { padding: "8px 12px", maxWidth: "560px", maxHeight: "320px", overflow: "auto", fontFamily: "var(--font)", fontSize: "12.5px", lineHeight: "1.5", color: "var(--label-2)" },
-      ".lsp-doc pre, .lsp-detail": { fontFamily: "var(--mono)", fontSize: "12px", color: "var(--label)", whiteSpace: "pre-wrap", margin: "4px 0" },
-      ".lsp-detail": { padding: "8px 12px 0" },
-      ".lsp-doc code": { fontFamily: "var(--mono)", fontSize: "0.92em", color: "var(--label)" },
-      ".cm-completionIcon": { opacity: "0.8", width: "1.2em" },
-    }),
+    lspTheme,
   ];
 }
 

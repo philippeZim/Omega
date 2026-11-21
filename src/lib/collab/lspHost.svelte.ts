@@ -4,6 +4,8 @@
  */
 import type * as Y from "yjs";
 import { collab, sessionEndHooks } from "./collab.svelte";
+import { publish, registerTopic } from "./rpc.svelte";
+import { LSP_LIMITS, textHash, wireDiagnostic, wireFeatures, type LspDocEntry, type LspDocsPayload, type WireDiagnostic } from "./lspProtocol";
 import { guestPathOk, sharedDocListeners, sharedDocs, type SharedDocView } from "./share.svelte";
 import { app } from "../state.svelte";
 import { joinPath } from "../api";
@@ -17,6 +19,12 @@ const RECONNECT_MS = 1000;
 const RECONNECTS = 3;
 /** A session without a server (not installed yet) looks again this often, when it's being used. */
 const RETRY_MS = 5000;
+
+declare module "./rpc.svelte" {
+  interface RpcTopics {
+    "lsp.docs": LspDocsPayload;
+  }
+}
 
 export interface LspSession {
   doc: SharedDocView;
@@ -33,7 +41,14 @@ export interface LspSession {
   onText: () => void;
   onDiagnostics: (uri: string) => void;
   onExit: () => void;
+  /** What guests currently know about this document. */
+  entry: LspDocEntry | null;
+  /** The server's diagnostics behind `entry`, unchanged (for its code actions). */
+  raw: any[];
 }
+
+/** Revisions are unique across sessions, so a guest never takes a new entry for one it has shown. */
+let nextRev = 1;
 
 const sessions = new Map<string, LspSession>();
 
@@ -72,9 +87,14 @@ function startSession(abs: string, doc: SharedDocView, lang: LangInfo) {
       clearTimeout(s.timer);
       s.timer = setTimeout(() => syncSession(s), CHANGE_MS);
     },
-    onDiagnostics: () => {},
+    onDiagnostics: (uri) => {
+      if (uri === s.uri) publishEntry(s);
+    },
+    entry: null,
+    raw: [],
     onExit: () => {
       detach(s);
+      clearEntry(s); // the dead server's diagnostics are stale
       if (s.stopped || s.reconnects-- <= 0) return;
       setTimeout(() => !s.stopped && !s.client && void connect(s), RECONNECT_MS);
     },
@@ -98,7 +118,39 @@ function stopSession(s: LspSession) {
   clearTimeout(s.timer);
   s.ytext.unobserve(s.onText);
   detach(s);
+  clearEntry(s);
   if (sessions.get(s.abs) === s) sessions.delete(s.abs);
+}
+
+function clearEntry(s: LspSession) {
+  if (!s.entry) return;
+  const rel = s.entry && relOfEntry.get(s);
+  s.entry = null;
+  s.raw = [];
+  relOfEntry.delete(s);
+  if (rel !== undefined && collab.role === "host") publish("lsp.docs", { docs: { [rel]: null } });
+}
+
+/** The name a session's entry was published under (the doc can be renamed afterwards). */
+const relOfEntry = new Map<LspSession, string>();
+
+/**
+ * Guests get the diagnostics together with the exact text they belong to. A result for an older
+ * version than the server has is dropped: the one for the current version is on its way.
+ */
+function publishEntry(s: LspSession) {
+  const c = s.client;
+  const root = s.doc.root;
+  const sent = c?.docs.get(s.uri);
+  if (!c || !sent || !root || collab.role !== "host") return;
+  const version = c.diagnosticVersions.get(s.uri);
+  if (version !== undefined && version !== sent.version) return;
+  const raw = (c.diagnostics.get(s.uri) ?? []).slice(0, LSP_LIMITS.diagnostics);
+  const kept = raw.map((d) => ({ raw: d, wire: wireDiagnostic(d, root) })).filter((d): d is { raw: any; wire: WireDiagnostic } => !!d.wire);
+  s.raw = kept.map((d) => d.raw);
+  s.entry = { rev: nextRev++, hash: textHash(sent.text), len: sent.text.length, diagnostics: kept.map((d) => d.wire), features: wireFeatures(c.capabilities) };
+  relOfEntry.set(s, s.doc.rel);
+  publish("lsp.docs", { docs: { [s.doc.rel]: s.entry } });
 }
 
 /** Tells the server the current text now. */
@@ -122,12 +174,23 @@ function connect(s: LspSession): Promise<void> {
     c.feed(s.uri, s.lang.lspId, () => s.ytext.toString());
     c.diagnosticListeners.add(s.onDiagnostics);
     c.exitListeners.add(s.onExit);
+    publishEntry(s); // the server may know this file already
   })().finally(() => {
     s.connecting = null;
   });
   s.connecting = run;
   return run;
 }
+
+registerTopic({
+  name: "lsp.docs",
+  capability: null,
+  snapshot: () => {
+    const docs: Record<string, LspDocEntry> = {};
+    for (const s of sessions.values()) if (s.entry) docs[s.doc.rel] = s.entry;
+    return { full: true, docs };
+  },
+});
 
 export const lspSessionFor = (abs: string) => sessions.get(abs) ?? null;
 

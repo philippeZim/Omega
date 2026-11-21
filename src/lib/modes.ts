@@ -14,6 +14,7 @@ import { codeHighlight, proseLayout } from "./theme";
 import { latexExtensions } from "./latex/language";
 import { langFor, indentFor } from "./code/languages";
 import { lspExtension } from "./code/lspExtension";
+import { remoteLsp } from "./code/remoteLsp";
 import { debugExtension } from "./debug/editorExt";
 import { gitGutter } from "./git/gutter";
 import { gitBlame } from "./git/blame.svelte";
@@ -35,8 +36,8 @@ export function modeForExtension(ext: string): Mode | null {
 const markdownLang = markdown({ base: markdownLanguage, codeLanguages: languages, extensions: [Highlight, InlineMath, BlockMath, WikiLink] });
 
 export function modeExtensions(mode: Mode, rawPath: string | null): Extension {
-  // Shared files of a collab session (guest side): highlighting by extension, but no LSP,
-  // debugger or git – those run on the host.
+  // Shared files of a collab session (guest side): highlighting by extension, language
+  // intelligence from the host's server, no debugger or git – those run on the host.
   const remote = !!rawPath && rawPath.startsWith("collab:");
   const path = remote ? null : rawPath;
   switch (mode) {
@@ -84,7 +85,7 @@ export function modeExtensions(mode: Mode, rawPath: string | null): Extension {
         indentFor(lang),
         syntaxHighlighting(codeHighlight),
         lintGutter(),
-        lang?.server && path ? lspExtension(path, lang) : autocompletion(),
+        lang?.server && path ? lspExtension(path, lang) : (lang?.server && remote && remoteLsp.extension?.(rawPath!.slice("collab:".length))) || autocompletion(),
         EditorView.editorAttributes.of({ class: "mode-code" }),
       ];
     }
