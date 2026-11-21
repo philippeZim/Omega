@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { git, kind, commit, push, pull, rollback, absPath, initRepo, cloneRepo, publishGitHub, connectRemote, type Change } from "../lib/git/git.svelte";
+  import { git, kind, commit, push, pull, rollback, absPath, initRepo, cloneRepo, publishGitHub, connectRemote, isGuestGit, type Change } from "../lib/git/git.svelte";
+  import { guestChanges, guestStage, isStaged } from "../lib/collab/gitRemote.svelte";
   import { openDiff } from "../lib/git/diff.svelte";
   import { openFile, app } from "../lib/state.svelte";
   import { ui } from "../lib/ui.svelte";
@@ -31,6 +32,7 @@
     ui.openMenu(e, [
       { label: t("git.showDiff"), action: () => openDiff(absPath(c.path)) },
       ...(kind(c) !== "deleted" ? [{ label: t("git.openFile"), action: () => openFile(absPath(c.path)) }] : []),
+      ...(isGuestGit() ? [{ label: isStaged(c) ? t("git.unstage") : t("git.stage"), action: () => guestStage(c, !isStaged(c)) }] : []),
       { separator: true, label: "" },
       { label: kind(c) === "new" ? t("git.deleteEllipsis") : t("git.discardChangesEllipsis"), danger: true, action: () => rollback(c) },
     ]);
@@ -60,7 +62,9 @@
 </script>
 
 <div class="changes">
-  {#if !app.root}
+  {#if isGuestGit() && !git.repo}
+    <p class="hint">{t("git.guestNoGit")}</p>
+  {:else if !app.root && !isGuestGit()}
     <p class="hint">{t("git.openFolderHint")}</p>
   {:else if !git.repo}
     <div class="empty">
@@ -84,7 +88,7 @@
       </button>
     </div>
 
-    {#if !git.remoteUrl}
+    {#if !git.remoteUrl && !isGuestGit()}
       <div class="noremote">
         <span>{t("git.noRemote")}</span>
         <div class="nr-buttons">
@@ -106,13 +110,17 @@
           <button class="check" class:on={!git.excluded.includes(c.path)} onclick={() => toggle(c)} aria-label={t("git.select")}></button>
           <span class="name {k}">{basename(c.path)}</span>
           <span class="dir">{c.path.includes("/") ? c.path.slice(0, c.path.lastIndexOf("/")) : ""}</span>
+          {#if isGuestGit() && isStaged(c)}<span class="staged" title={t("git.staged")}>S</span>{/if}
           <span class="badge {k}">{k === "new" ? "N" : k === "modified" ? "M" : k === "deleted" ? "D" : k === "renamed" ? "R" : "!"}</span>
           <button class="undo" title={k === "new" ? t("common.delete") : t("git.discard")} onclick={(e) => { e.stopPropagation(); rollback(c); }} aria-label={t("git.revert")}>↺</button>
         </div>
       {/each}
     </div>
 
+    {#if isGuestGit() && guestChanges.truncated}<p class="note">{t("git.changesTruncated", { n: git.changes.length })}</p>{/if}
+
     <div class="commit">
+      {#if isGuestGit()}<p class="note">{t("git.guestCommitNote")}</p>{/if}
       <textarea bind:this={textarea} bind:value={git.message} onkeydown={onKey} oninput={grow} rows="2" placeholder={t("git.commitMessage")} spellcheck="true"></textarea>
       <div class="buttons">
         <button class="btn primary" onclick={() => commit(false)} disabled={!!git.busy || !selectedCount} title={formatKey("Mod-Enter")}>Commit</button>
@@ -154,6 +162,8 @@
   .name.deleted { color: var(--label-3); text-decoration: line-through; }
   .name.conflict { color: var(--red); }
   .dir { flex: 1; min-width: 0; color: var(--label-3); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .note { margin: 0 2px 6px; font-size: 11.5px; color: var(--label-3); }
+  .staged { flex-shrink: 0; font-family: var(--mono); font-size: 10.5px; font-weight: 700; color: var(--green); }
   .badge { flex-shrink: 0; font-family: var(--mono); font-size: 10.5px; font-weight: 700; color: var(--label-3); }
   .badge.new { color: var(--green); }
   .badge.modified { color: var(--accent); }

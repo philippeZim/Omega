@@ -3,7 +3,7 @@
   import { fsApi } from "../lib/api";
   import { t } from "../lib/i18n/index.svelte";
   import { aheadLabel } from "../lib/git/labels";
-  import { git, branches, switchBranch, newBranch, pull, push, fetchNow, continueOperation, abortOperation, cloneRepo, publishGitHub, initRepo, connectRemote } from "../lib/git/git.svelte";
+  import { git, isGuestGit, branches, switchBranch, newBranch, pull, push, fetchNow, continueOperation, abortOperation, cloneRepo, publishGitHub, initRepo, connectRemote } from "../lib/git/git.svelte";
 
   async function branchMenu(e: MouseEvent) {
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
@@ -19,7 +19,7 @@
       { label: t("app.fetch"), action: fetchNow },
       { label: t("app.push") + (git.ahead ? aheadLabel(git.ahead) : ""), shortcut: shortcutLabel("git.push"), action: push },
       { label: t("app.showChanges"), shortcut: shortcutLabel("git.commit"), action: () => showView("changes") },
-      { label: git.remoteUrl ? t("app.remoteChange", { url: git.remoteUrl.replace(/^https?:\/\/|^git@/, "").replace(/\.git$/, "") }) : t("app.connectRemote"), action: connectRemote },
+      ...(isGuestGit() ? [] : [{ label: git.remoteUrl ? t("app.remoteChange", { url: git.remoteUrl.replace(/^https?:\/\/|^git@/, "").replace(/\.git$/, "") }) : t("app.connectRemote"), action: connectRemote }]),
       { separator: true, label: "" },
       ...b.local.map((n) => ({ label: (n === git.branch ? "✓  " : "     ") + n, action: () => n !== git.branch && switchBranch(n) })),
       ...(b.remote.length ? [{ separator: true, label: "" }, ...b.remote.map((n) => ({ label: "     " + n, action: () => switchBranch(n, true) }))] : []),
