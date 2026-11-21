@@ -11,10 +11,26 @@ export interface CliStatus {
   available: boolean;
 }
 
-export const cliCommand = $state({ status: null as CliStatus | null, busy: false });
+export const cliCommand = $state({ status: null as CliStatus | null, busy: false, error: "" });
+
+/** Backend errors "launcher:<code>" become a translated text; anything else is shown as it is. */
+export function launcherError(e: unknown): string {
+  const text = String(e);
+  if (text === "launcher:foreign") return t("app.cli.err.foreign");
+  if (text === "launcher:non_ascii") return t("app.cli.err.nonAscii");
+  if (text === "launcher:test_instance") return t("app.cli.err.testInstance");
+  return text;
+}
 
 export async function refreshCliCommand() {
-  cliCommand.status = await invoke<CliStatus>("cli_status").catch(() => null);
+  try {
+    cliCommand.status = await invoke<CliStatus>("cli_status");
+    cliCommand.error = "";
+  } catch (e) {
+    // Stays visible in Settings instead of the section just being gone.
+    cliCommand.status = null;
+    cliCommand.error = t("app.cli.statusFailed", { error: launcherError(e) });
+  }
 }
 
 export async function installCliCommand() {
@@ -27,7 +43,7 @@ export async function installCliCommand() {
     cliCommand.status = await invoke<CliStatus>("cli_install", { replace: s.state === "foreign" });
     ui.toast(t("app.cli.installed"));
   } catch (e) {
-    ui.toast(t("app.cli.failed", { error: String(e) }), "error");
+    ui.toast(t("app.cli.failed", { error: launcherError(e) }), "error");
   } finally {
     cliCommand.busy = false;
   }

@@ -178,6 +178,11 @@
               </div>
             </div>
           </div>
+        {:else if cliCommand.error}
+          <h3>{t("app.cli.title")}</h3>
+          <div class="box">
+            <div class="srow"><div class="grow"><b>omega</b><span class="sub2">{cliCommand.error}</span></div></div>
+          </div>
         {/if}
         {#each INSTALL_GROUPS as g (g)}
           <h3>{t(`installs.group.${g}`)}</h3>

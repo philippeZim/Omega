@@ -217,6 +217,10 @@ export const en = {
   "app.cli.foreignTitle": "Replace the existing omega?",
   "app.cli.foreignMessage": "{path} isn't from Omega. Replacing it removes that program's command.",
   "app.cli.replace": "Replace",
+  "app.cli.statusFailed": "Couldn't check the omega command: {error}",
+  "app.cli.err.foreign": "Another program is already called omega.",
+  "app.cli.err.nonAscii": "The app's folder has characters a Windows command file can't hold. Install the command from the app's own folder.",
+  "app.cli.err.testInstance": "Test instances don't install the command.",
 };
 export const de: Record<keyof typeof en, string> = {
   "app.report.button": "Problem oder Idee melden",
@@ -431,6 +435,10 @@ export const de: Record<keyof typeof en, string> = {
   "app.cli.foreignTitle": "Vorhandenes omega ersetzen?",
   "app.cli.foreignMessage": "{path} stammt nicht von Omega. Beim Ersetzen geht der Befehl dieses Programms verloren.",
   "app.cli.replace": "Ersetzen",
+  "app.cli.statusFailed": "Der omega-Befehl konnte nicht geprüft werden: {error}",
+  "app.cli.err.foreign": "Ein anderes Programm heißt bereits omega.",
+  "app.cli.err.nonAscii": "Der Ordner der App enthält Zeichen, die eine Windows-Befehlsdatei nicht enthalten kann. Installiere den Befehl aus dem Ordner der App.",
+  "app.cli.err.testInstance": "Testinstanzen installieren den Befehl nicht.",
 };
 export const fr: Record<keyof typeof en, string> = {
   "app.report.button": "Signaler un problème ou une idée",
@@ -645,4 +653,8 @@ export const fr: Record<keyof typeof en, string> = {
   "app.cli.foreignTitle": "Remplacer le omega existant ?",
   "app.cli.foreignMessage": "{path} ne vient pas d'Omega. Le remplacer supprime la commande de ce programme.",
   "app.cli.replace": "Remplacer",
+  "app.cli.statusFailed": "Impossible de vérifier la commande omega : {error}",
+  "app.cli.err.foreign": "Un autre programme s'appelle déjà omega.",
+  "app.cli.err.nonAscii": "Le dossier de l'application contient des caractères qu'un fichier de commandes Windows ne peut pas contenir. Installez la commande depuis le dossier de l'application.",
+  "app.cli.err.testInstance": "Les instances de test n'installent pas la commande.",
 };
