@@ -101,6 +101,8 @@ export const en = {
   "ai.collab.rpc.sessionEnded": "The session has ended",
   "ai.collab.rpc.failed": "The host couldn't do that",
   "ai.collab.stopOnHost": "Stop on the host's machine",
+  "ai.collab.startRights": "New guests start with",
+  "ai.collab.startRightsHint": "For guests you approve from now on. Limits set on one guest are lost when they rejoin, so turn them off here too.",
   "ai.collab.versionUpdateYou": "Your Omega is older than the host's. Update Omega to join this session.",
   "ai.collab.versionUpdateHost": "The host's Omega is older than yours. Ask the host to update Omega, then join again.",
 };
@@ -205,6 +207,8 @@ export const de: Record<keyof typeof en, string> = {
   "ai.collab.rpc.sessionEnded": "Die Sitzung ist beendet",
   "ai.collab.rpc.failed": "Der Host konnte das nicht ausführen",
   "ai.collab.stopOnHost": "Auf dem Rechner des Hosts stoppen",
+  "ai.collab.startRights": "Neue Gäste starten mit",
+  "ai.collab.startRightsHint": "Für Gäste, die du ab jetzt zulässt. Limits für einzelne Gäste gehen beim erneuten Beitritt verloren, schalte sie also auch hier ab.",
   "ai.collab.versionUpdateYou": "Dein Omega ist älter als das des Hosts. Aktualisiere Omega, um dieser Sitzung beizutreten.",
   "ai.collab.versionUpdateHost": "Das Omega des Hosts ist älter als deins. Bitte den Host, Omega zu aktualisieren, und tritt dann erneut bei.",
 };
@@ -309,6 +313,8 @@ export const fr: Record<keyof typeof en, string> = {
   "ai.collab.rpc.sessionEnded": "La session est terminée",
   "ai.collab.rpc.failed": "L’hôte n’a pas pu le faire",
   "ai.collab.stopOnHost": "Arrêter sur la machine de l’hôte",
+  "ai.collab.startRights": "Les nouveaux invités commencent avec",
+  "ai.collab.startRightsHint": "Pour les invités que vous acceptez désormais. Les limites d’un invité sont perdues s’il revient : désactivez-les aussi ici.",
   "ai.collab.versionUpdateYou": "Votre Omega est plus ancien que celui de l’hôte. Mettez Omega à jour pour rejoindre cette session.",
   "ai.collab.versionUpdateHost": "L’Omega de l’hôte est plus ancien que le vôtre. Demandez à l’hôte de le mettre à jour, puis rejoignez à nouveau.",
 };

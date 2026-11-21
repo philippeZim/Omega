@@ -1,6 +1,6 @@
 <script lang="ts">
   import Glyph from "./Glyph.svelte";
-  import { collab, startHosting, join, leave, approve, deny, kick, setMyName, clipboardTicket, isMe as isMeOf } from "../lib/collab/collab.svelte";
+  import { collab, startHosting, join, leave, approve, deny, kick, setMyName, setStartCapability, clipboardTicket, isMe as isMeOf } from "../lib/collab/collab.svelte";
   import { onMount, tick } from "svelte";
 
   let codeInput: HTMLInputElement | undefined = $state();
@@ -126,6 +126,17 @@
       {/each}
     </div>
 
+    {#if collab.role === "host"}
+      <span class="lbl" id="startcaps">{t("ai.collab.startRights")}</span>
+      <div class="caps start" role="group" aria-labelledby="startcaps">
+        {#each CAPABILITIES as cap (cap)}
+          {@const on = collab.startCaps.includes(cap)}
+          <button class="followbtn cap" class:on role="switch" aria-checked={on} title={t(`ai.collab.capHint.${cap}`)} onclick={() => setStartCapability(cap, !on)}>{capabilityLabel(cap)}</button>
+        {/each}
+      </div>
+      <p class="hint starthint">{t("ai.collab.startRightsHint")}</p>
+    {/if}
+
     <button class="btn wide danger" onclick={leave}>{collab.role === "host" ? t("ai.collab.end") : t("ai.collab.leave")}</button>
   {/if}
 </div>
@@ -179,6 +190,8 @@
   .followbtn:hover { background: rgba(var(--fg-rgb), 0.12); color: var(--label); }
   .followbtn.on { background: var(--accent); color: #fff; }
   .caps { display: flex; flex-wrap: wrap; gap: 4px; padding: 0 8px 8px 41px; }
+  .caps.start { padding: 0 4px; }
+  .starthint { margin-bottom: 14px; }
   .avatar { flex-shrink: 0; width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; font-size: 11px; font-weight: 700; color: #111; }
   .tag { flex-shrink: 0; white-space: nowrap; font-size: 10px; padding: 1px 7px; border-radius: 999px; background: rgba(var(--fg-rgb), 0.1); color: var(--label-2); }
   .spacer { flex: 1; }

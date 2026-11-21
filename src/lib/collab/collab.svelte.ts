@@ -7,7 +7,7 @@ import { listen } from "@tauri-apps/api/event";
 import { ui } from "../ui.svelte";
 import { t } from "../i18n/index.svelte";
 import { collabErrorText } from "./collabError";
-import { guestGuard, DEFAULT_CAPABILITIES, type Capability } from "./guard";
+import { guestGuard, CAPABILITIES, DEFAULT_CAPABILITIES, type Capability } from "./guard";
 import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
 
 export const PEER_COLORS = ["#6b9be0", "#7bbf8e", "#d6a35f", "#cf8fb4", "#86b9cc", "#a996cf", "#df7067", "#c8b77e"];
@@ -51,6 +51,8 @@ export const collab = $state({
   myPeer: null as string | null,
   /** Guest: what the host allows me. */
   myCaps: [] as Capability[],
+  /** Host: what guests approved from now on start with, for this hosting session. */
+  startCaps: [...DEFAULT_CAPABILITIES] as Capability[],
   open: false,
 });
 
@@ -128,11 +130,19 @@ function nextColor() {
 
 export function approve(req: JoinRequest) {
   collab.requests = collab.requests.filter((r) => r.peer !== req.peer);
-  const p: Participant = { peer: req.peer, name: req.name, color: nextColor(), role: "guest", caps: [...DEFAULT_CAPABILITIES] };
+  const p: Participant = { peer: req.peer, name: req.name, color: nextColor(), role: "guest", caps: [...collab.startCaps] };
   collab.participants.push(p);
   send(req.peer, { t: "welcome", you: { peer: p.peer, name: p.name, color: p.color }, version: PROTOCOL_VERSION, caps: p.caps, participants: collab.participants.map(publicInfo) });
   broadcast({ t: "participants", participants: collab.participants.map(publicInfo) });
   ui.toast(t("ai.collab.joined", { name: req.name }));
+}
+
+/**
+ * Host: the rights of guests approved from now on; guests already here keep theirs. Guests have no
+ * identity that survives a rejoin, so this is what limits someone who leaves and comes back.
+ */
+export function setStartCapability(cap: Capability, on: boolean) {
+  collab.startCaps = CAPABILITIES.filter((c) => (c === cap ? on : collab.startCaps.includes(c)));
 }
 
 /** Approves the oldest pending request (command palette). */
@@ -220,7 +230,7 @@ export async function leave() {
   } catch (e) {
     console.error("collab teardown", e);
   }
-  Object.assign(collab, { role: null, status: "idle", ticket: "", participants: [], requests: [], hostPeer: null, myPeer: null, myCaps: [], error: "" });
+  Object.assign(collab, { role: null, status: "idle", ticket: "", participants: [], requests: [], hostPeer: null, myPeer: null, myCaps: [], startCaps: [...DEFAULT_CAPABILITIES], error: "" });
   for (const h of sessionEndHooks) {
     try {
       await h(wasGuest);

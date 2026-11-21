@@ -159,3 +159,36 @@ test("guest: a host that doesn't send a version counts as older", async () => {
   expect(s.collab.status).toBe("idle");
   expect(s.toast.mock.calls.map((c) => c[0]).join()).toContain("Ask the host");
 });
+
+test("start rights: approve applies them, a rejoin can't get more, later changes spare existing guests, ending clears them", async () => {
+  const s = await freshSession((cmd) => (cmd === "collab_host" ? "omega-t" : null));
+  const { DEFAULT_CAPABILITIES } = await import("./guard");
+  await s.startHosting();
+  expect(s.collab.startCaps).toEqual(DEFAULT_CAPABILITIES);
+  expect(s.collab.startCaps).not.toContain("terminal");
+
+  s.setStartCapability("run", false);
+  s.approve({ peer: "g1", name: "Gast" });
+  const caps = () => s.collab.participants.find((p) => p.peer === "g1")?.caps;
+  expect(caps()).not.toContain("run");
+  expect(s.sent().find((x) => x.msg.t === "welcome")!.msg.caps).not.toContain("run");
+
+  // Leaving and being approved again (with a new connection) gives no more than the start rights.
+  await emit("collab-closed", { peer: "g1", reason: "closed" });
+  s.approve({ peer: "g1-again", name: "Gast" });
+  expect(s.collab.participants.find((p) => p.peer === "g1-again")?.caps).not.toContain("run");
+
+  // A guest's own list is a copy: changing the start rights leaves it alone.
+  s.setStartCapability("git", false);
+  s.setStartCapability("run", true);
+  const existing = s.collab.participants.find((p) => p.peer === "g1-again")!.caps!;
+  expect(existing).toContain("git");
+  expect(existing).not.toContain("run");
+  s.approve({ peer: "g2", name: "Zwei" });
+  const later = s.collab.participants.find((p) => p.peer === "g2")!.caps!;
+  expect(later).toContain("run");
+  expect(later).not.toContain("git");
+
+  await s.leave();
+  expect(s.collab.startCaps).toEqual(DEFAULT_CAPABILITIES);
+});
