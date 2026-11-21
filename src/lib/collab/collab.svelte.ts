@@ -134,6 +134,8 @@ export async function startHosting() {
     if (collab.role !== "host" || collab.status !== "starting") return;
     collab.status = "error";
     collab.error = collabErrorText(e);
+    // The session is another window's: this one isn't a host, it only shows why.
+    if (String(e) === "collab:other_window") collab.role = null;
   }
 }
 

@@ -373,3 +373,11 @@ test("host: a refusal notice arriving outside a running session counts for nothi
   expect(s.collab.refused).toBe(0);
   await s.leave();
 });
+
+test("a window can't host while another window has the session, and says why", async () => {
+  const s = await freshSession((cmd) => (cmd === "collab_host" ? Promise.reject("collab:other_window") : null));
+  await s.startHosting();
+  expect(s.collab.role).toBeNull();
+  expect(s.collab.error).toContain("another Omega window");
+  Object.assign(s.collab, { role: null, status: "idle", error: "" });
+});
