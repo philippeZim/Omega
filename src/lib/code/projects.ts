@@ -1,4 +1,4 @@
-/** Project detection and the recommended tool per language: cargo, uv, pnpm, CMake, Gradle, scala-cli, sbt. */
+/** Project detection and the recommended tool per language: cargo, uv, pnpm, CMake, Gradle, scala-cli, sbt, dune. */
 import { invoke } from "@tauri-apps/api/core";
 import { fsApi, basename, dirname, joinPath, isRoot } from "../api";
 import { q, cd, exe, IS_WIN, OS, runRel, rmrf, tmpPath } from "../platform";
@@ -6,9 +6,10 @@ import type { ToolId } from "../tools.svelte";
 import { langFor, type LangId } from "./languages";
 import { suggestPythonAdd, suggestPythonRemove, pythonRemoveArg, suggestNodeAdd, suggestNodeRemove, type Suggest } from "./packages";
 import { validScriptName } from "./packageInput";
+import { duneTarget, findDuneExecutables, pickExecutable } from "./dune";
 import { t, i18n, type Key } from "../i18n/index.svelte";
 
-export type ProjectKind = "cargo" | "uv" | "pnpm" | "cmake" | "gradle" | "sbt" | "scala-cli" | "file";
+export type ProjectKind = "cargo" | "uv" | "pnpm" | "cmake" | "gradle" | "sbt" | "scala-cli" | "dune" | "file";
 
 export interface Action {
   id: string;
@@ -58,6 +59,9 @@ const MARKERS: [string, ProjectKind][] = [
   ["build.gradle", "gradle"],
   // Before package.json (Scala.js builds have both) and project.scala: such a project stays on sbt.
   ["build.sbt", "sbt"],
+  // Also before package.json (Melange projects have both).
+  ["dune-workspace", "dune"],
+  ["dune-project", "dune"],
   ["package.json", "pnpm"],
   ["project.scala", "scala-cli"],
 ];
@@ -69,8 +73,8 @@ async function findProject(file: string | null, workspace: string | null): Promi
   while (dir && dir !== stop && !isRoot(dir)) {
     for (const [m, kind] of MARKERS) {
       if (await fsApi.exists(joinPath(dir, m))) {
-        // Cargo workspaces: keep walking to the outermost Cargo.toml.
-        if (kind === "cargo") found = { kind, root: dir };
+        // Cargo and dune workspaces: keep walking, their build root is the outermost one.
+        if (kind === "cargo" || kind === "dune") found = { kind, root: dir };
         else return found ?? { kind, root: dir };
         break;
       }
@@ -373,6 +377,19 @@ export async function detectProject(file: string | null, workspace: string | nul
     };
   }
 
+  if (p?.kind === "dune") {
+    const target = pickExecutable(await findDuneExecutables(p.root), file, p.root);
+    return {
+      ...p,
+      label: "dune",
+      needs: ["ocaml"],
+      run: target ? act("run", "common.run", `dune exec ${q(duneTarget(target, "exe"))}`, { shortcut: RUN, usesFile: true }) : null,
+      build: act("build", "code.act.build", "dune build", { shortcut: BUILD }),
+      test: act("test", "code.act.test", "dune test"),
+      more: [{ id: "clean", label: "dune clean", cmd: "dune clean" }],
+    };
+  }
+
   // No project: run the single file with the language's default tool.
   if (!file) return null;
   const lang = langFor(file)?.id;
@@ -421,6 +438,7 @@ async function singleFileRun(lang: LangId | undefined, file: string): Promise<[s
     case "typescript": return [`${TSX_DLX} ${f}`, ["node", "pnpm"]];
     case "rust": return [out, ["rust"], `rustc -g ${f} -o ${out}`];
     case "scala": return [`scala-cli run ${f}`, ["scala"]];
+    case "ocaml": return file.endsWith(".ml") ? [`ocaml ${f}`, ["ocaml"]] : null; // an interface doesn't run
     default: return null;
   }
 }
@@ -570,6 +588,26 @@ export const TEMPLATES: Template[] = [
         ".gitignore": ".bsp/\n.bloop/\n.metals/\n.scala-build/\n",
       },
       cmds: [...(await gitInit()), "scala-cli setup-ide ."],
+    }),
+  },
+  {
+    id: "ocaml",
+    label: "OCaml",
+    tool: "dune",
+    needs: ["ocaml"],
+    marker: "dune-project",
+    open: ["bin/main.ml"],
+    create: async () => ({
+      files: {
+        // The marker comes first: the dialog opens the project as soon as it exists.
+        // Bytecode and unmapped source paths are what Earlybird needs to debug; Run stays native.
+        "dune-project": "(lang dune 3.7)\n(map_workspace_root false)\n",
+        "bin/dune": "(executable\n (name main)\n (modes byte exe))\n",
+        "bin/main.ml": `let () = print_endline "${t("code.tpl.hello")}"\n`,
+        ".gitignore": "_build/\n",
+      },
+      // The first build writes the config ocamllsp reads.
+      cmds: [...(await gitInit()), "dune build"],
     }),
   },
   {
