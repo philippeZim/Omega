@@ -637,7 +637,7 @@ fn path_inside(root: &Path, path: &Path) -> bool {
 /// Whether a file name means the git folder, also in the spellings Windows and macOS resolve to it:
 /// any case, trailing dots/spaces, an NTFS stream (".git::$INDEX_ALLOCATION"), the 8.3 short name
 /// and characters HFS+ ignores.
-fn is_git_name(name: &str) -> bool {
+pub(crate) fn is_git_name(name: &str) -> bool {
     name.split('\\').any(|part| {
         let visible: String = part.chars().filter(|c| !matches!(*c, '\u{200c}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{206a}'..='\u{206f}' | '\u{feff}')).collect();
         let base = visible.split(':').next().unwrap_or("").trim_end_matches(['.', ' ']).to_lowercase();
@@ -651,7 +651,7 @@ fn has_git_part(path: &Path) -> bool {
 
 /// Whether a guest may use `path`: inside `root` and not in a git folder, neither as written nor
 /// after resolving symlinks (`cfg -> .git/config`). Git config can run commands on the host.
-fn guest_path_ok(root: &Path, path: &Path) -> bool {
+pub(crate) fn guest_path_ok(root: &Path, path: &Path) -> bool {
     if !path_inside(root, path) || path.strip_prefix(root).is_ok_and(has_git_part) {
         return false;
     }

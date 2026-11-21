@@ -14,10 +14,10 @@ use tauri::{AppHandle, Emitter, Manager};
 #[derive(Serialize)]
 pub struct Diagnostic {
     /// Path of the file the message refers to (as reported by TeX, mapped back to the source dir).
-    file: String,
-    line: u32,
-    message: String,
-    severity: String,
+    pub(crate) file: String,
+    pub(crate) line: u32,
+    pub(crate) message: String,
+    pub(crate) severity: String,
 }
 
 /// One SyncTeX box: page (1-based), source line, and its PDF rectangle in PostScript points
@@ -25,7 +25,7 @@ pub struct Diagnostic {
 #[derive(Serialize)]
 pub struct SyncBox {
     page: u32,
-    file: String,
+    pub(crate) file: String,
     line: u32,
     x: f32,
     y: f32,
@@ -35,12 +35,12 @@ pub struct SyncBox {
 
 #[derive(Serialize)]
 pub struct CompileResult {
-    ok: bool,
-    pdf: Option<String>,
-    diagnostics: Vec<Diagnostic>,
-    log: String,
-    sync: Vec<SyncBox>,
-    millis: u128,
+    pub(crate) ok: bool,
+    pub(crate) pdf: Option<String>,
+    pub(crate) diagnostics: Vec<Diagnostic>,
+    pub(crate) log: String,
+    pub(crate) sync: Vec<SyncBox>,
+    pub(crate) millis: u128,
 }
 
 fn which(cmd: &str) -> Option<PathBuf> {
@@ -55,15 +55,9 @@ pub fn latex_available() -> bool {
 /// Finds the root document for `path`: `% !TEX root = …`, the file itself if it has
 /// `\documentclass`, else the nearest document in this or a parent folder that `\input`s /
 /// `\include`s it, else the nearest main.tex.
-fn find_root(path: &Path, content: &str) -> PathBuf {
-    for line in content.lines().take(10) {
-        let l = line.trim_start_matches('%').trim();
-        if let Some(rest) = l.strip_prefix("!TEX root").or_else(|| l.strip_prefix("!TeX root")) {
-            let rel = rest.trim_start_matches([' ', '=']).trim();
-            if let Some(dir) = path.parent() {
-                return dir.join(rel);
-            }
-        }
+pub(crate) fn find_root(path: &Path, content: &str) -> PathBuf {
+    if let Some(root) = magic_root(path, content) {
+        return root;
     }
     if content.contains("\\documentclass") {
         return path.to_path_buf();
@@ -86,6 +80,20 @@ fn find_root(path: &Path, content: &str) -> PathBuf {
         }
     }
     main.unwrap_or_else(|| path.to_path_buf())
+}
+
+/// The target of a `% !TEX root = …` comment in the first lines, as written (it can leave the folder).
+pub(crate) fn magic_root(path: &Path, content: &str) -> Option<PathBuf> {
+    for line in content.lines().take(10) {
+        let l = line.trim_start_matches('%').trim();
+        if let Some(rest) = l.strip_prefix("!TEX root").or_else(|| l.strip_prefix("!TeX root")) {
+            let rel = rest.trim_start_matches([' ', '=']).trim();
+            if let Some(dir) = path.parent() {
+                return Some(dir.join(rel));
+            }
+        }
+    }
+    None
 }
 
 /// How many folders (the file's own and its parents) `find_root` searches.
@@ -156,24 +164,39 @@ fn compile(app: &AppHandle, path: Option<String>, content: String) -> Result<Com
     std::fs::create_dir_all(&build).map_err(|e| e.to_string())?;
 
     let root_name = prepare_build(&build, &root, &root_dir, &src_path, &content)?;
+    let emit = |p: Progress| {
+        let _ = app.emit("latex-progress", p);
+    };
+    run_and_collect(&tectonic, &build, &root_dir, &root_name, started, &mut |mut c, cached| if cached { c.output() } else { run_with_progress(c, &emit, None) })
+}
 
+/// Runs Tectonic in a prepared build dir and reads the result. `run` starts each attempt
+/// (`cached`: the offline one).
+pub(crate) fn run_and_collect(
+    tectonic: &Path,
+    build: &Path,
+    root_dir: &Path,
+    root_name: &str,
+    started: std::time::Instant,
+    run: &mut dyn FnMut(std::process::Command, bool) -> std::io::Result<std::process::Output>,
+) -> Result<CompileResult, String> {
     // Offline first (≈0.2 s); if a package isn't cached yet, retry online so Tectonic can fetch it.
     // The online run can take minutes the first time (format + hundreds of support files), so it
     // keeps Tectonic's normal chatter and streams it to the UI as progress.
     let cmd = |cached: bool| {
-        let mut c = crate::env::command(&tectonic);
-        c.current_dir(&build);
+        let mut c = crate::env::command(tectonic);
+        c.current_dir(build);
         if cached {
             c.args(["--only-cached", "--chatter", "minimal"]);
         }
         c.args(["--synctex", "--keep-logs", "--keep-intermediates", "-Z", "continue-on-errors", "-Z"])
             .arg(format!("search-path={}", root_dir.display()))
-            .arg(&root_name);
+            .arg(root_name);
         c
     };
-    let mut out = cmd(true).output().map_err(|e| e.to_string())?;
+    let mut out = run(cmd(true), true).map_err(|e| e.to_string())?;
     if !out.status.success() {
-        out = run_with_progress(app, cmd(false)).map_err(|e| e.to_string())?;
+        out = run(cmd(false), false).map_err(|e| e.to_string())?;
     }
 
     let stem = root_name.trim_end_matches(".tex");
@@ -181,7 +204,7 @@ fn compile(app: &AppHandle, path: Option<String>, content: String) -> Result<Com
     log.push_str(&String::from_utf8_lossy(&out.stdout));
     let tex_log = std::fs::read_to_string(build.join(format!("{stem}.log"))).unwrap_or_default();
 
-    let map_file = |f: &str| map_source(f, &build, &root_dir);
+    let map_file = |f: &str| map_source(f, build, root_dir);
 
     let mut diagnostics = parse_tectonic(&log, &map_file);
     if diagnostics.iter().all(|d| d.severity != "error") {
@@ -202,13 +225,13 @@ fn compile(app: &AppHandle, path: Option<String>, content: String) -> Result<Com
 }
 
 /// Lists the overlays written into the build dir, so the next compile can remove them.
-const OVERLAYS: &str = ".omega-overlays";
+pub(crate) const OVERLAYS: &str = ".omega-overlays";
 
 /// Puts the sources into the build dir: the root copy plus an overlay of the edited buffer
 /// (relative to the root's directory). Overlays from earlier compiles are removed first: they
 /// would shadow the source file in later compiles (unsaved edits that were saved, reverted or
 /// discarded since). Returns the root's file name.
-fn prepare_build(build: &Path, root: &Path, root_dir: &Path, src_path: &Path, content: &str) -> Result<String, String> {
+pub(crate) fn prepare_build(build: &Path, root: &Path, root_dir: &Path, src_path: &Path, content: &str) -> Result<String, String> {
     if let Ok(list) = std::fs::read_to_string(build.join(OVERLAYS)) {
         for rel in list.lines().filter(|l| !l.is_empty()) {
             let rel = Path::new(rel);
@@ -264,38 +287,80 @@ fn map_source(f: &str, build: &Path, root_dir: &Path) -> String {
 
 /// `canonicalize` without the verbatim prefix Windows adds (`\\?\C:\…`), which would never
 /// match the plain `C:\…` paths TeX reports. UNC paths (`\\?\UNC\…`) are kept as they are.
-fn canonical(p: &Path) -> Option<PathBuf> {
+pub(crate) fn canonical(p: &Path) -> Option<PathBuf> {
     let c = p.canonicalize().ok()?;
     let plain = c.to_str().and_then(|s| s.strip_prefix(r"\\?\")).filter(|r| !r.starts_with("UNC\\")).map(PathBuf::from);
     Some(plain.unwrap_or(c))
 }
 
 #[derive(Serialize, Clone)]
-struct Progress {
+pub(crate) struct Progress {
     /// "format" (building the LaTeX format, first run only), "download", "tex", "rerun", "pdf", "write"
-    phase: &'static str,
+    pub(crate) phase: &'static str,
     /// Files downloaded so far in this run.
-    downloads: u32,
+    pub(crate) downloads: u32,
     /// File currently being downloaded.
-    file: Option<String>,
+    pub(crate) file: Option<String>,
 }
 
-/// Runs Tectonic, turning its `note:` lines (stdout) into `latex-progress` events.
-fn run_with_progress(app: &AppHandle, mut c: std::process::Command) -> std::io::Result<std::process::Output> {
+/// Stops a run from outside and bounds what it keeps in memory.
+pub(crate) struct RunGuard<'a> {
+    pub(crate) cancel: &'a std::sync::atomic::AtomicBool,
+    pub(crate) deadline: std::time::Instant,
+    pub(crate) max_output: usize,
+}
+
+/// Runs Tectonic, turning its `note:` lines (stdout) into progress. With a guard, a cancelled or
+/// overdue run is killed and ends in an `Interrupted` error.
+pub(crate) fn run_with_progress(mut c: std::process::Command, emit: &(dyn Fn(Progress) + Sync), guard: Option<&RunGuard>) -> std::io::Result<std::process::Output> {
     use std::io::BufRead;
     use std::process::Stdio;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let max_output = guard.map_or(usize::MAX, |g| g.max_output);
     let mut child = c.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
     let mut stderr = child.stderr.take().expect("piped stderr");
+    let child_stdout = child.stdout.take().expect("piped stdout");
     let err_thread = std::thread::spawn(move || {
         let mut b = Vec::new();
-        let _ = stderr.read_to_end(&mut b);
+        let mut chunk = [0u8; 8192];
+        while let Ok(n) = stderr.read(&mut chunk) {
+            if n == 0 {
+                break;
+            }
+            if b.len() < max_output {
+                b.extend_from_slice(&chunk[..n]);
+            }
+        }
         b
     });
+    let child = std::sync::Mutex::new(child);
+    let (finished, stopped) = (AtomicBool::new(false), AtomicBool::new(false));
     let mut stdout = Vec::new();
     let mut phase = "tex";
     let mut downloads = 0;
-    for line in std::io::BufReader::new(child.stdout.take().expect("piped stdout")).split(b'\n') {
-        let line = line?;
+    std::thread::scope(|scope| -> std::io::Result<()> {
+    if let Some(g) = guard {
+        let (child, finished, stopped) = (&child, &finished, &stopped);
+        scope.spawn(move || {
+            while !finished.load(Ordering::SeqCst) {
+                if g.cancel.load(Ordering::SeqCst) || std::time::Instant::now() > g.deadline {
+                    stopped.store(true, Ordering::SeqCst);
+                    let _ = child.lock().unwrap_or_else(|e| e.into_inner()).kill();
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(40));
+            }
+        });
+    }
+    let done = |r| {
+        finished.store(true, Ordering::SeqCst);
+        r
+    };
+    for line in std::io::BufReader::new(child_stdout).split(b'\n') {
+        let line = match line {
+            Ok(l) => l,
+            Err(e) => return done(Err(e)),
+        };
         let text = String::from_utf8_lossy(&line);
         let note = text.trim().strip_prefix("note: ").unwrap_or("");
         let mut file = None;
@@ -316,13 +381,20 @@ fn run_with_progress(app: &AppHandle, mut c: std::process::Command) -> std::io::
         } else if note.starts_with("Writing") {
             phase = "write";
         } else {
-            stdout.extend_from_slice(&line);
-            stdout.push(b'\n');
+            if stdout.len() < max_output {
+                stdout.extend_from_slice(&line);
+                stdout.push(b'\n');
+            }
             continue;
         }
-        let _ = app.emit("latex-progress", Progress { phase, downloads, file });
+        emit(Progress { phase, downloads, file });
     }
-    let status = child.wait()?;
+    done(Ok(()))
+    })?;
+    let status = child.into_inner().unwrap_or_else(|e| e.into_inner()).wait()?;
+    if stopped.load(Ordering::SeqCst) {
+        return Err(std::io::Error::from(std::io::ErrorKind::Interrupted));
+    }
     Ok(std::process::Output { status, stdout, stderr: err_thread.join().unwrap_or_default() })
 }
 
