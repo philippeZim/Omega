@@ -8,6 +8,7 @@
   import { find, runSearch, gotoHit, dockResults, replaceInFile, replaceAll, buildRegex, persistOptions, matchSummary, type Hit } from "../lib/search/search.svelte";
   import { matchHighlighter, refreshMatches } from "../lib/search/previewMatches";
   import { previewWriter } from "../lib/search/previewWriter";
+  import { activeRemote } from "../lib/search/remote";
   import { app } from "../lib/state.svelte";
   import { fsApi, basename, normPath } from "../lib/api";
   import * as ed from "../lib/editor";
@@ -26,7 +27,10 @@
   const writer = previewWriter((f, text) => fsApi.writeFile(f, text).catch(() => {}));
 
   const hit = $derived(find.hits[find.selected] as Hit | undefined);
-  const rel = (f: string) => (app.root && f.startsWith(app.root + "/") ? f.slice(app.root.length + 1) : f);
+  const rel = (f: string) => (f.startsWith("collab:") ? f.slice(7) : app.root && f.startsWith(app.root + "/") ? f.slice(app.root.length + 1) : f);
+  /** A guest in a session: the files are the host's, so the preview only shows them. */
+  const remote = activeRemote();
+  const folderName = (f: string) => (f === "collab:" ? "/" : basename(rel(f)));
 
   tick().then(() => {
     input?.focus();
@@ -54,8 +58,9 @@
         baseTheme,
         highlighter,
         EditorView.editorAttributes.of({ class: "mode-code" }),
+        remote ? [EditorState.readOnly.of(true), EditorView.editable.of(false)] : [],
         EditorView.updateListener.of((u) => {
-          if (!u.docChanged || !previewFile) return;
+          if (!u.docChanged || !previewFile || remote) return;
           // Edits go straight into the file: open tabs get the same changes (undo + autosave),
           // other files are written after a short pause.
           const tab = app.tabs.find((t) => t.path === previewFile);
@@ -76,7 +81,9 @@
       const tab = app.tabs.find((t) => t.path === h.file);
       let text: string;
       try {
-        text = tab ? ed.getText(tab.id) : await fsApi.readFile(h.file);
+        const read = tab ? ed.getText(tab.id) : remote ? await remote.read(h.file) : await fsApi.readFile(h.file);
+        if (read === null) return;
+        text = read;
       } catch {
         return;
       }
@@ -130,6 +137,7 @@
   }
 
   async function chooseFolder() {
+    if (remote) return setScope("folder"); // the folder of the active shared file (see openFind)
     const d = await openDialog({ directory: true, defaultPath: find.folder ?? app.root ?? undefined });
     if (typeof d === "string") {
       find.folder = normPath(d);
@@ -225,9 +233,9 @@
       <div class="scopes">
         <button class:on={find.scope === "project"} onclick={() => setScope("project")}>{t("git.search.scopeProject")}</button>
         <button class:on={find.scope === "folder"} onclick={() => (find.folder ? setScope("folder") : chooseFolder())} title={find.folder ?? ""}>
-          {t("git.search.scopeFolder")}{#if find.scope === "folder" && find.folder}: <b>{basename(find.folder)}</b>{/if}
+          {t("git.search.scopeFolder")}{#if find.scope === "folder" && find.folder}: <b>{folderName(find.folder)}</b>{/if}
         </button>
-        {#if find.scope === "folder"}<button class="pick" onclick={chooseFolder} title={t("git.search.chooseFolder")}>…</button>{/if}
+        {#if find.scope === "folder" && !remote}<button class="pick" onclick={chooseFolder} title={t("git.search.chooseFolder")}>…</button>{/if}
         <button class:on={find.scope === "open"} onclick={() => setScope("open")}>{t("git.search.scopeOpen")}</button>
       </div>
     </div>
@@ -241,12 +249,13 @@
       {:else}
         <p class="empty">{find.query ? (find.running ? t("git.search.searching") : t("common.noResults")) : t("git.search.enterQuery")}</p>
       {/each}
+      {#if remote && find.truncated}<p class="empty">{t("git.search.limited")}</p>{/if}
     </div>
 
     <div class="preview-head">
       {#if hit}
         <span class="pfile">{rel(hit.file)}</span>
-        <span class="phint">{t("git.search.previewHint")}</span>
+        <span class="phint">{remote ? t("git.search.guestPreviewHint") : t("git.search.previewHint")}</span>
       {/if}
     </div>
     <div class="preview" bind:this={previewHost}></div>

@@ -14,7 +14,7 @@
     }
     return [...m];
   });
-  const rel = (f: string) => (app.root && f.startsWith(app.root + "/") ? f.slice(app.root.length + 1) : f);
+  const rel = (f: string) => (f.startsWith("collab:") ? f.slice(7) : app.root && f.startsWith(app.root + "/") ? f.slice(app.root.length + 1) : f);
 
   function segs(h: Hit) {
     const lead = h.text.length - h.text.trimStart().length;
