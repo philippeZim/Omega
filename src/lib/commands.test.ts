@@ -216,4 +216,18 @@ describe("guest session guards", () => {
     expect(c.startHosting).not.toHaveBeenCalled();
     expect(c.joinFromClipboard).not.toHaveBeenCalled();
   });
+
+  test("hosting again or joining while hosting is blocked", async () => {
+    const { guestGuard } = await import("./collab/guard");
+    const c = await import("./collab/collab.svelte");
+    const { ui } = await import("./ui.svelte");
+    vi.mocked(ui.toast).mockClear();
+    guestGuard.hosting = () => true;
+    COMMANDS.find((x) => x.id === "collab.host")!.run();
+    COMMANDS.find((x) => x.id === "collab.join")!.run();
+    guestGuard.hosting = () => false;
+    expect(c.startHosting).not.toHaveBeenCalled();
+    expect(c.joinFromClipboard).not.toHaveBeenCalled();
+    expect(ui.toast).toHaveBeenCalledTimes(2);
+  });
 });
