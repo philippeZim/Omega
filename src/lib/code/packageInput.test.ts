@@ -180,3 +180,16 @@ describe("quoting", () => {
     }
   });
 });
+
+describe("uv: names that look like files", () => {
+  test.each(["foo.tar.zst", "foo.tzst", "foo.tbz", "foo.txz", "foo.toml", "foo.txt", "foo.in", "FOO.TXT", "requirements.txt", "pyproject.toml", "foo.tar.zst[x]", "foo.txt==1.0"])("refuses %s", (x) => {
+    expect(validPackage("uv", "add", x)).toBe(false);
+  });
+  test.each(["toml", "tomli", "tomlkit", "rtoml", "pytoml", "txt", "in", "python-in", "foo-toml", "foo_txt", "zstandard", "plone.index", "foo.input", "foo.tomlkit", "ruamel.yaml", "tbz", "txz"])("keeps the real name %s", (x) => {
+    expect(validPackage("uv", "add", x)).toBe(true);
+    expect(validPackage("uv", "remove", x)).toBe(true);
+  });
+  test("npm names aren't affected", () => {
+    expect(validPackage("pnpm", "add", "foo.in")).toBe(true);
+  });
+});

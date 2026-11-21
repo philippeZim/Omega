@@ -45,13 +45,16 @@ export const PACKAGE_LIMITS = { count: 20, length: 200 };
 /** Tools read these as local or remote archives, even when the text looks like a name. */
 const ARCHIVE = /\.(?:whl|zip|tgz|tar|gz|bz2|xz|egg)$/i;
 
+/** uv reads these as source archives or requirement files. Only with the dot: `toml` is a package. */
+const PY_FILE = /\.(?:tar\.zst|tzst|tbz|txz|toml|txt|in)$/i;
+
 const PY_NAME = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/;
 const PY_VERSION = /^(?:\d+!)?\d+(?:\.\d+)*(?:\.\*|(?:[-_.]?(?:a|b|c|rc|alpha|beta|pre|preview|post|rev|r|dev)[-_.]?\d*){0,3}(?:\+[A-Za-z0-9]+(?:[-_.][A-Za-z0-9]+)*)?)$/i;
 const PY_CLAUSE = /^(===|==|~=|!=|<=|>=|<|>)(.+)$/;
 
 function validPython(token: string, input: PackageInput) {
   const m = /^([^[\]<>=!~,]+)(?:\[([^\]]*)\])?(.*)$/.exec(token);
-  if (!m || !PY_NAME.test(m[1]) || ARCHIVE.test(m[1])) return false;
+  if (!m || !PY_NAME.test(m[1]) || ARCHIVE.test(m[1]) || PY_FILE.test(m[1])) return false;
   const [, , extras, spec] = m;
   if (input === "remove") return extras === undefined && spec === "";
   if (extras !== undefined && !extras.split(",").every((x) => PY_NAME.test(x))) return false;
