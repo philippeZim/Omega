@@ -9,7 +9,7 @@ import { setLinkHandler, resolvePath } from "./markdown/livePreview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import * as latexCtl from "./latex/controller.svelte";
 import { setLspHooks } from "./code/lspExtension";
-import { allClients, fileUri } from "./code/lsp.svelte";
+import { closeLspDoc, saveLspDoc } from "./code/lsp.svelte";
 import { t } from "./i18n/index.svelte";
 import { onFilesChanged, watchRoot } from "./fsWatch.svelte";
 import { detectEol, fromDisk, toDisk, type Eol } from "./eol";
@@ -501,7 +501,7 @@ export async function closeTab(id: string, force = false) {
     if (closedPaths.length > 30) closedPaths.shift();
   }
   ed.disposeDoc(id);
-  if (tab.path) for (const c of allClients()) c.close(fileUri(tab.path));
+  if (tab.path) closeLspDoc(tab.path);
   if (app.activeId === id) {
     const next = app.tabs[idx] ?? app.tabs[idx - 1];
     if (next) activate(next.id);
@@ -555,8 +555,9 @@ export async function save(id = app.activeId, forceDialog = false, overwrite = f
   ed.markSaved(tab.id, snapshot);
   tab.deleted = false;
   window.dispatchEvent(new CustomEvent("omega:saved", { detail: path }));
-  for (const c of allClients()) c.save(fileUri(path), ed.getText(tab.id));
+  void saveLspDoc(path, ed.getText(tab.id));
   if (tab.path !== path) {
+    if (tab.path) closeLspDoc(tab.path);
     tab.path = path;
     tab.name = basename(path);
     app.treeVersion++;
@@ -601,6 +602,7 @@ export function pathMoved(from: string, to: string | null) {
   for (const t of app.tabs) {
     if (!t.path) continue;
     if (t.path === from || t.path.startsWith(from + "/")) {
+      closeLspDoc(t.path);
       if (to === null) {
         t.path = null;
         t.dirty = true;
@@ -608,6 +610,7 @@ export function pathMoved(from: string, to: string | null) {
         t.path = to + t.path.slice(from.length);
         t.name = basename(t.path);
       }
+      ed.refreshLanguage(t.id, t.path);
     }
   }
   collabHooks.pathMoved(from, to);

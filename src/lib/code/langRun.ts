@@ -94,6 +94,12 @@ export function clangdFlags(lang: LangId, file: string): string | null {
   return `${lang === "cpp" ? "-std=c++20\n" : ""}-I${dir}\n`;
 }
 
+/**
+ * clangd goes by the extension and ignores `languageId`. For a real file in a C/C++ project this
+ * tells it the language without writing anything into the project.
+ */
+export const clangdCommand = (lang: LangId, file: string) => (lang === "cpp" ? ["clang++", "-x", "c++", "-std=c++20", file] : ["clang", "-x", "c", file]);
+
 /** Writes the language server's copy of `file` and returns its path. */
 export async function shadowForLsp(file: string, lang: LangInfo): Promise<string> {
   const text = await fsApi.readFile(file);

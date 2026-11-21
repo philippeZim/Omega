@@ -15,7 +15,7 @@ vi.mock("./native", () => ({ openDialog: h.openDialog, saveDialog: vi.fn(async (
 vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ onCloseRequested: async () => () => {}, destroy: async () => {} }) }));
 vi.mock("./latex/controller.svelte", () => ({ schedule: vi.fn() }));
 vi.mock("./code/lspExtension", () => ({ setLspHooks: vi.fn() }));
-vi.mock("./code/lsp.svelte", () => ({ allClients: () => [], fileUri: (p: string) => "file://" + p }));
+vi.mock("./code/lsp.svelte", () => ({ allClients: () => [], fileUri: (p: string) => "file://" + p, closeLspDoc: () => {}, saveLspDoc: async () => {} }));
 vi.mock("./markdown/livePreview", () => ({ setLinkHandler: vi.fn(), resolvePath: vi.fn() }));
 vi.mock("./modes", () => ({ modeForExtension: () => null }));
 vi.mock("./fsWatch.svelte", () => ({ onFilesChanged: vi.fn(), watchRoot: vi.fn() }));

@@ -34,7 +34,7 @@ import "../state.svelte"; // first: the app's modules import each other in a cyc
 import { effectiveLang, isForeignLang, moveLanguageOverrides, overrideFor, setLanguageOverride } from "./langOverride.svelte";
 import { LANGUAGES, langFor } from "./languages";
 import { clangdFlags, lspCopyName, overrideRun, runCopyName } from "./langRun";
-import { detectProject } from "./projects";
+import { detectProject, runsAlone } from "./projects";
 import { clientFor, neverInstall, realPathOf, registerShadow, shadowOf, stopServers } from "./lsp.svelte";
 import { noteGuestChange, resumeTool, toolChangeCount } from "../collab/guestChanges";
 import { planFor } from "../debug/adapters";
@@ -210,6 +210,27 @@ describe("Run for a file set to another language", () => {
     expect(runCopyName("scala", 'println("x")')).toBe("omega_main.sc");
     expect(runCopyName("scala", '@main def hi() = println("x")')).toBe("OmegaMain.scala");
     expect(runCopyName("scala", "object A extends App {}")).toBe("OmegaMain.scala");
+  });
+});
+
+describe("the one decision whether a file is alone", () => {
+  test.each([
+    ["pyproject.toml", "python", false],
+    ["pyproject.toml", "c", true],
+    ["Cargo.toml", "rust", false],
+    ["CMakeLists.txt", "cpp", false],
+    ["package.json", "typescript", true], // node and tsx go by the extension
+    ["Cargo.toml", "python", true],
+  ] as const)("%s with a file set to %s: alone = %s", async (marker, id, alone) => {
+    files.clear();
+    files.set(`/w/k/${marker}`, "");
+    files.set("/w/k/tool", "");
+    choose("/w/k/tool", id);
+    expect(await runsAlone("/w/k/tool", "/w/k")).toBe(alone);
+  });
+
+  test("a file on its extension's language never is", async () => {
+    expect(await runsAlone(`${PY}/main.py`, PY)).toBe(false);
   });
 });
 

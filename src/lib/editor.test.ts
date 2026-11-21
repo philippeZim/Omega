@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from "vitest";
 
-vi.mock("./modes", () => ({ modeExtensions: () => [] }));
+const modePaths = vi.hoisted(() => [] as (string | null)[]);
+vi.mock("./modes", () => ({ modeExtensions: (_m: string, p: string | null) => (modePaths.push(p), []) }));
 vi.mock("./spell", () => ({ spellcheck: () => [] }));
 
 const ed = await import("./editor");
@@ -32,5 +33,33 @@ describe("cursor of a reopened file", () => {
     ed.createDoc("d", "short");
     ed.activate("d", cfg("/p/big.log"));
     expect(ed.getView()!.state.selection.main.head).toBe(5);
+  });
+});
+
+describe("refreshLanguage", () => {
+  const cfg = (path: string) => ({ mode: "code" as const, path, spell: null });
+
+  test("a renamed background tab gets the new path, keeping its text and undo", () => {
+    ed.mount(document.createElement("div"));
+    ed.createDoc("bg", "abc");
+    ed.activate("bg", cfg("/p/old"));
+    ed.applyChanges("bg", { changes: { from: 3, insert: "d" } });
+    ed.createDoc("fg", "x");
+    ed.activate("fg", cfg("/p/front"));
+    modePaths.length = 0;
+    ed.refreshLanguage("bg", "/p/new");
+    expect(modePaths).toEqual(["/p/new"]);
+    expect(ed.getText("bg")).toBe("abcd");
+    // Coming back with the same path needs no second reconfigure: the stored path is the new one.
+    modePaths.length = 0;
+    ed.activate("bg", cfg("/p/new"));
+    expect(modePaths).toEqual([]);
+  });
+
+  test("a tab not shown yet is left to its first activation", () => {
+    ed.createDoc("lazy", "x");
+    modePaths.length = 0;
+    ed.refreshLanguage("lazy", "/p/z");
+    expect(modePaths).toEqual([]);
   });
 });

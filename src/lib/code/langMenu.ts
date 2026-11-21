@@ -1,17 +1,17 @@
 /** The language menu of the active file (picker in the tab bar, command palette). */
-import { activeTab, isRemotePath } from "../state.svelte";
+import { app, activeTab, isRemotePath } from "../state.svelte";
 import * as ed from "../editor";
 import { ui } from "../ui.svelte";
 import { t } from "../i18n/index.svelte";
 import { LANGUAGES, langFor } from "./languages";
-import { forgetLspDoc } from "./lsp.svelte";
+import { closeLspDoc } from "./lsp.svelte";
 import { onLanguageOverride, overrideFor, setLanguageOverride } from "./langOverride.svelte";
 
 // Whatever changed the choice (this menu, another window): the open editor follows at once. The
 // old server closes the document first, so it never keeps it under the previous language.
 onLanguageOverride((path) => {
-  forgetLspDoc(path);
-  ed.refreshLanguage(path);
+  closeLspDoc(path);
+  for (const tab of app.tabs) if (tab.path === path) ed.refreshLanguage(tab.id, path);
 });
 
 export function openLanguageMenu(x?: number, y?: number) {

@@ -9,6 +9,7 @@ import { IS_WIN, OS, platform } from "../platform";
 import { ensureTools, mojoInstallHint, withInstallProgress, serverProgressId, type ToolId } from "../tools.svelte";
 import { metalsPausedBy, onGuestChange, resumeTool, toolChangeCount, toolPausedBy, type PausedTool } from "../collab/guestChanges";
 import type { LangInfo } from "./languages";
+import { isForeignLang } from "./langOverride.svelte";
 
 type Json = any;
 
@@ -18,7 +19,12 @@ export type ServerStatus = "starting" | "ready" | "missing" | "installing" | "er
 export const lspState = $state({
   status: {} as Record<string, ServerStatus>,
   message: {} as Record<string, string>,
+  /** How a file set to another language is served (see `setLspRoute`). */
+  routes: {} as Record<string, LspRoute>,
 });
+
+/** pending: still deciding; project: the project's server; shadow: a private copy; none: no server. */
+export type LspRoute = "pending" | "project" | "shadow" | "none";
 
 /** file URI for a path ("/a/b" → file:///a/b, "C:/a" → file:///c%3A/a like VS Code). */
 export const fileUri = (path: string) => {
@@ -340,7 +346,10 @@ const shadowRoots = new Map<string, string>();
 export function registerShadow(real: string, copy: string) {
   shadows.set(real, copy);
   shadowRoots.set(dirname(copy), real);
+  lspState.routes[real] = "shadow";
 }
+
+export const setLspRoute = (path: string, route: LspRoute) => void (lspState.routes[path] = route);
 
 /** The file the language server sees for `file`. */
 export const shadowOf = (file: string) => shadows.get(file) ?? file;
@@ -357,11 +366,43 @@ const pauseRootOf = (root: string) => {
   return real ? dirname(real) : root;
 };
 
-/** The file's language changed: no server keeps it open under the old one. */
-export function forgetLspDoc(path: string) {
-  const uris = [fileUri(path), fileUri(shadowOf(path))];
-  for (const c of clients.values()) for (const uri of uris) c.close(uri);
+/** A private copy's server has no document left: it stops, also while it's still starting. */
+function stopPrivate(root: string) {
+  for (const [key, c] of clients) {
+    if (c.root !== root || c.docs.size || c.stopping) continue;
+    if (lspState.status[key] === "starting") {
+      c.failed = c.stopping = true;
+      invoke("proc_kill", { id: c.id }).catch(() => {});
+    } else c.stop();
+    clients.delete(key);
+    delete lspState.status[key];
+    delete lspState.message[key];
+  }
+}
+
+/** The file's tab closed, it moved, or its language changed: no server keeps it open. */
+export function closeLspDoc(path: string) {
+  const copy = shadows.get(path);
+  for (const c of [...clients.values()]) {
+    c.close(fileUri(path));
+    if (copy) c.close(fileUri(copy));
+  }
   shadows.delete(path);
+  delete lspState.routes[path];
+  if (!copy) return;
+  stopPrivate(dirname(copy));
+  shadowRoots.delete(dirname(copy));
+}
+
+/** The file was saved: a private copy is refreshed first, since servers re-read the disk on save. */
+export async function saveLspDoc(path: string, text: string) {
+  const copy = shadows.get(path);
+  if (copy) {
+    await invoke("lang_copy", { file: path, part: "lsp", name: copy.slice(copy.lastIndexOf("/") + 1), link: false }).catch(() => {});
+    if (shadows.get(path) !== copy) return;
+  }
+  const uri = fileUri(copy ?? path);
+  for (const c of clients.values()) c.save(uri, text);
 }
 
 const ROOT_MARKERS: Record<ServerKind, string[]> = {
@@ -781,6 +822,14 @@ export async function restartServer(
 ): Promise<LspClient | null> {
   const kind = lang.server;
   if (!kind) return null;
+  if (isForeignLang(file)) {
+    const route = lspState.routes[file];
+    if (route === "pending" || route === undefined) return null;
+    if (route === "none") {
+      for (const l of restartListeners) l(); // its editor tries again
+      return null;
+    }
+  }
   file = shadowOf(file);
   const root = shadowRoots.has(dirname(file)) ? dirname(file) : await findRoot(file, ROOT_MARKERS[kind], workspace);
   const key = `${kind}|${root}`;
@@ -846,6 +895,12 @@ export async function workspaceSymbols(query: string): Promise<WorkspaceSymbol[]
 
 export function statusFor(lang: LangInfo | null, file: string | null): { status: ServerStatus | null; message?: string } {
   if (!lang?.server || !file) return { status: null };
+  if (isForeignLang(file)) {
+    // Until it's known where this file goes, the project's server says nothing about it.
+    const route = lspState.routes[file];
+    if (route === "none") return { status: null };
+    if (route === "pending" || route === undefined) return { status: "starting" };
+  }
   file = shadowOf(file);
   // Find the client whose root contains the file (most specific).
   let best: string | null = null;

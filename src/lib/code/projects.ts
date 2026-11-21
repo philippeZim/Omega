@@ -267,10 +267,18 @@ const PROJECT_LANGS: Partial<Record<ProjectKind, LangId[]>> = { cargo: ["rust"],
 
 export const fitsProject = (kind: ProjectKind, lang: LangId | undefined) => !!lang && !!PROJECT_LANGS[kind]?.includes(lang);
 
+const aloneIn = (p: { kind: ProjectKind } | null, file: string) => isForeignLang(file) && !(p && fitsProject(p.kind, effectiveLang(file)?.id));
+
+/**
+ * The one decision for Run, Debug and the language server: the file is set to a language its
+ * extension doesn't stand for, and no project around it is of that language, so it's on its own.
+ */
+export const runsAlone = async (file: string, workspace: string | null) => isForeignLang(file) && aloneIn(await findProject(file, workspace), file);
+
 export async function detectProject(file: string | null, workspace: string | null): Promise<Project | null> {
   let p = await findProject(file, workspace);
-  const foreign = !!file && isForeignLang(file);
-  if (foreign && p && !fitsProject(p.kind, effectiveLang(file)?.id)) p = null;
+  const alone = !!file && aloneIn(p, file);
+  if (alone) p = null;
   const rel = (f: string, root: string) => (f.startsWith(root + "/") ? f.slice(root.length + 1) : f);
 
   if (p?.kind === "cargo")
@@ -458,7 +466,7 @@ export async function detectProject(file: string | null, workspace: string | nul
 
   // No project: run the single file with the language's default tool.
   if (!file) return null;
-  if (foreign) {
+  if (alone) {
     const own = await overrideRun(effectiveLang(file)!.id, file, TSX_DLX);
     if (!own) return null; // JSON, TOML: nothing to run, so no Run button
     const opts = { usesFile: true, prepare: own.prepare };

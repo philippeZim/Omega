@@ -1,9 +1,9 @@
 /** Per-language debug setup: adapter installation, build step and DAP launch configuration. */
 import { invoke } from "@tauri-apps/api/core";
 import { fsApi, basename, dirname, joinPath } from "../api";
-import { effectiveLang, isForeignLang } from "../code/langOverride.svelte";
+import { effectiveLang } from "../code/langOverride.svelte";
 import { refreshRunCopy, runCopyName, workDir } from "../code/langRun";
-import { detectProject, pythonEntry, cmakeConfigure, cmakeExecutable } from "../code/projects";
+import { detectProject, runsAlone, pythonEntry, cmakeConfigure, cmakeExecutable } from "../code/projects";
 import { duneProjectIssue, duneSourcePath, nearestDuneProject, duneTarget, findDuneExecutables, pickExecutable, sameToolchain } from "../code/dune";
 import { OCAML_PROGRAM_ENV, managedOcaml } from "../code/ocamlTools";
 import { mojoCompiles, mojoStem } from "../code/mojo";
@@ -221,8 +221,7 @@ export async function planFor(ctx: Ctx): Promise<Plan> {
   const project = await detectProject(ctx.file, ctx.workspace);
   const root = project?.root ?? dirname(ctx.file);
   const tools = await toolsDir();
-  // Set to a language its extension doesn't stand for, and not part of a project of that language.
-  const alone = isForeignLang(ctx.file) && (!project || project.isolated === true);
+  const alone = await runsAlone(ctx.file, ctx.workspace);
   // These debuggers need a build or language server project around the file.
   if (alone && (lang === "java" || lang === "scala" || lang === "ocaml")) throw new Error(t("code.lang.noDebugAlone", { lang: info!.label }));
   const ownCopy = async () => {

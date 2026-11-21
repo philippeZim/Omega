@@ -6,10 +6,12 @@ import { autocompletion, insertCompletionText, snippet, type Completion, type Co
 import { setDiagnostics, forEachDiagnostic, type Diagnostic, type Action } from "@codemirror/lint";
 import { ui } from "../ui.svelte";
 import { t } from "../i18n/index.svelte";
-import { clientFor, fileUri, realPathOf, registerShadow, restartListeners, restartServer, setLspWorkspace, uriPath, type LspClient, type ServerKind } from "./lsp.svelte";
+import { clientFor, fileUri, realPathOf, registerShadow, restartListeners, restartServer, setLspRoute, setLspWorkspace, uriPath, type LspClient, type ServerKind } from "./lsp.svelte";
 import type { LangInfo } from "./languages";
 import { isForeignLang } from "./langOverride.svelte";
-import { shadowForLsp } from "./langRun";
+import { clangdCommand, shadowForLsp } from "./langRun";
+import { runsAlone } from "./projects";
+import { dirname } from "../api";
 
 // ---------------------------------------------------------- app hooks
 
@@ -252,6 +254,8 @@ export function lspExtension(path: string, lang: LangInfo): Extension {
   let client: LspClient | null = null;
   let viewRef: EditorView | null = null;
   let changeTimer: number | undefined;
+  /** Counts connection attempts: a slower older one must not attach after a newer one. */
+  let connects = 0;
 
   const flush = () => {
     clearTimeout(changeTimer);
@@ -323,17 +327,31 @@ export function lspExtension(path: string, lang: LangInfo): Extension {
       }
       connect(view: EditorView) {
         if (!isForeignLang(path)) return this.attach(view, path);
-        shadowForLsp(path, lang).then((copy) => {
-          if (viewRef !== view) return; // the language changed again meanwhile
+        const mine = ++connects;
+        const live = () => viewRef === view && mine === connects;
+        setLspRoute(path, "pending");
+        (async () => {
+          if (!(await runsAlone(path, hooks.workspace()))) {
+            if (!live()) return;
+            setLspRoute(path, "project");
+            return this.attach(view, path);
+          }
+          const copy = await shadowForLsp(path, lang);
+          if (!live()) return; // the language changed or the tab closed meanwhile
           registerShadow(path, copy);
           uri = fileUri(copy);
           this.attach(view, copy);
-        }).catch(() => {}); // the file is gone or unreadable: highlighting still works
+        })().catch(() => {
+          if (live()) setLspRoute(path, "none"); // unreadable: highlighting still works
+        });
       }
       attach(view: EditorView, file: string) {
         clientFor(lang, file, hooks.workspace(), hooks.askInstall).then((c) => {
           if (!c || viewRef !== view) return;
           client = c;
+          // A real file in a C/C++ project: clangd would otherwise guess from the missing extension.
+          if (file === path && lang.server === "clangd" && isForeignLang(path))
+            c.notify("workspace/didChangeConfiguration", { settings: { compilationDatabaseChanges: { [path]: { workingDirectory: dirname(path), compilationCommand: clangdCommand(lang.id, path) } } } });
           c.open(uri, lang.lspId, view.state.doc.toString());
           c.diagnosticListeners.add(this.listener);
           c.exitListeners.add(this.onExit);
