@@ -5,11 +5,12 @@ import { langFor } from "../code/languages";
 import { detectProject, pythonEntry, cmakeConfigure, cmakeExecutable } from "../code/projects";
 import { duneProjectIssue, duneSourcePath, nearestDuneProject, duneTarget, findDuneExecutables, pickExecutable, sameToolchain } from "../code/dune";
 import { OCAML_PROGRAM_ENV, managedOcaml } from "../code/ocamlTools";
+import { mojoCompiles, mojoStem } from "../code/mojo";
 import { toolsDir, clientFor, fileUri, javaDebugBundles, metalsPausedFor, ocamlPauseRoot } from "../code/lsp.svelte";
 import { onGuestChange, toolPausedBy } from "../collab/guestChanges";
 import { t } from "../i18n/index.svelte";
 import { exe, tmpPath, venvPython, IS_WIN, OS } from "../platform";
-import { ensureTools, withInstallProgress, type ToolId } from "../tools.svelte";
+import { ensureTools, mojoInstallHint, withInstallProgress, type ToolId } from "../tools.svelte";
 
 type Json = any;
 
@@ -196,6 +197,21 @@ async function ocamlDebugTarget(root: string, file: string) {
   return target;
 }
 
+/** Omega's Mojo: the adapter is a launcher that loads the SDK's LLDB plugin. Installed if missing. */
+async function mojoDebugger(tools: string, ctx: Ctx) {
+  const adapter = `${tools}/mojo/bin/omega-mojo-dap`;
+  if (!(await exists(adapter))) {
+    const hint = await mojoInstallHint();
+    if (hint) throw new Error(hint);
+    const name = "Mojo";
+    if (!(await ctx.askInstall(name))) throw new Error(t("code.ad.required", { name }));
+    ctx.log(t("code.ad.installing", { name }));
+    await withInstallProgress("mojo", name, () => invoke("install_debugger", { kind: "mojo" }));
+    ctx.log(t("code.ad.installed", { name }));
+  }
+  return { adapter, mojo: `${tools}/mojo/bin/mojo` };
+}
+
 export async function planFor(ctx: Ctx): Promise<Plan> {
   const lang = langFor(ctx.file)?.id;
   const project = await detectProject(ctx.file, ctx.workspace);
@@ -375,6 +391,20 @@ export async function planFor(ctx: Ctx): Promise<Plan> {
           const source = duneSourcePath(root, p);
           return source !== p && (await exists(source)) ? source : p;
         },
+      };
+    }
+
+    case "mojo": {
+      if (!mojoCompiles(ctx.file)) throw new Error(t("code.ad.mojoFireExt"));
+      const { adapter, mojo } = await mojoDebugger(tools, ctx);
+      await need(["cc"]); // mojo links with the system's C compiler
+      const program = await tmpPath(exe(`omega-dbg-${mojoStem(ctx.file).replace(/[^\w.-]/g, "_")}`));
+      await capture(mojo, ["build", "-O0", "-g", ctx.file, "-o", program], root, ctx);
+      return {
+        label: `Mojo · ${basename(ctx.file)}`,
+        cwd: root,
+        adapter: { kind: "stdio", cmd: adapter, args: [] },
+        launch: { type: "mojo-lldb", request: "launch", name: "Mojo", program, args: [], cwd: root, stopOnEntry: false },
       };
     }
   }
