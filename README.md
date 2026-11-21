@@ -15,11 +15,11 @@
 
 ![LaTeX source next to the live PDF](docs/screenshots/latex.png)
 
-Obsidian, Overleaf and VS Code in one app. Switch modes with `Ctrl+1` to `Ctrl+4`.
+Obsidian, Overleaf and VS Code in one app.
 
 ### LaTeX, no setup
 
-Live PDF as you type. No TeX installation, no compile button. `Ctrl+J` jumps to your line in the PDF.
+Live PDF as you type. No TeX installation, no compile button.
 
 ### Notes that render as you type
 
@@ -38,7 +38,7 @@ Run, test and debug Python, Rust, C/C++, Java and JavaScript. Completion, termin
 - Live collaboration
 - Spell checking in German, English and French
 - Claude Code, Codex and OpenCode in the terminal
-- `F1` for a cheat sheet in every mode
+- Powerful, customizable keyboard shortcuts
 
 ## Install
 
