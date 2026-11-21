@@ -612,8 +612,11 @@ fn opam() -> Command {
 /// versions (Settings) is skipped while an install runs or waits, so it can't get in its way.
 static OPAM_WORK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 static OPAM_INSTALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// Tests that use the two above run one at a time.
+#[cfg(test)]
+pub(crate) static OPAM_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-struct OpamInstall(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+pub(crate) struct OpamInstall(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
 
 impl Drop for OpamInstall {
     fn drop(&mut self) {
@@ -621,7 +624,7 @@ impl Drop for OpamInstall {
     }
 }
 
-fn opam_install_lock() -> OpamInstall {
+pub(crate) fn opam_install_lock() -> OpamInstall {
     OPAM_INSTALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     OpamInstall(OPAM_WORK.lock().unwrap_or_else(|e| e.into_inner()))
 }
@@ -809,7 +812,7 @@ mod tests {
 
     #[test]
     fn a_version_check_is_skipped_while_an_install_runs_and_never_blocks_it() {
-        // The only test using these locks: other tests never start opam.
+        let _one = OPAM_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         assert!(opam_query_lock().is_some());
         let install = opam_install_lock();
         assert!(opam_query_lock().is_none());

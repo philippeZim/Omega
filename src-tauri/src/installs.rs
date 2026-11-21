@@ -595,6 +595,16 @@ fn uninstall(id: &str) -> Result<(), String> {
             run_ok(env::tool("rustup")?.args(["self", "uninstall", "-y"]))?;
             crate::tools::forget("rust")
         }
+        ("tool", "ocaml") => {
+            // Waits for a running install, then decides on what that install has left.
+            // Holds no other lock, and nothing below takes this one again.
+            let _work = crate::tools::opam_install_lock();
+            if !crate::tools::manifest().contains_key("ocaml") {
+                return Err("installs:not_ours:ocaml".into());
+            }
+            remove_dir(&t.join("ocaml"))?;
+            crate::tools::forget("ocaml")
+        }
         ("tool", name) | ("lsp", name @ "clangd") => {
             if !manifest.contains_key(name) {
                 return Err(format!("installs:not_ours:{name}"));
@@ -674,6 +684,19 @@ mod tests {
         // never got an update entry. Here (no scoop installed) it gets as far as looking for scoop.
         let o = Owner { manager: "scoop".into(), package: "uv".into() };
         assert_eq!(sys_available(&o, &None), Err("scoop: not found".to_string()));
+    }
+
+    #[test]
+    fn removing_ocaml_waits_for_a_running_install() {
+        let _one = crate::tools::OPAM_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let install = crate::tools::opam_install_lock();
+        let (tx, rx) = mpsc::channel();
+        let removal = std::thread::spawn(move || tx.send(uninstall("tool:ocaml")).unwrap());
+        assert!(rx.recv_timeout(Duration::from_millis(150)).is_err(), "removal ran during the install");
+        drop(install);
+        // Nothing is installed in the test's tools folder, so it stops before deleting anything.
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), Err("installs:not_ours:ocaml".to_string()));
+        removal.join().unwrap();
     }
 
     #[test]
