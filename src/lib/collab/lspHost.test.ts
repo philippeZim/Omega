@@ -40,6 +40,7 @@ vi.mock("./share.svelte", () => ({
     rel: (abs: string) => (abs.startsWith("/p/") && !abs.includes("/.git/") ? abs.slice(3) : null),
   }),
 }));
+vi.mock("@tauri-apps/api/path", () => ({ tempDir: async () => "/tmp" }));
 vi.mock("../state.svelte", () => ({ app: h.app }));
 vi.mock("../api", () => ({ joinPath: (a: string, b: string) => `${a}/${b}`, fsApi: { homeDir: async () => "/home/me" } }));
 vi.mock("../code/languages", () => ({ langFor: (p: string) => (p.endsWith(".py") ? { server: "python", lspId: "python" } : null) }));
@@ -92,6 +93,7 @@ function doc(rel: string, text = "x = 1\n", subscribers = ["g1"]) {
   h.docs.push(d);
   return d;
 }
+// Everything these tests wait for is promise chains over fakes, which a macrotask drains completely.
 const settle = async () => {
   for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
 };
