@@ -207,10 +207,76 @@ fn path_inside(root: &Path, path: &Path) -> bool {
     false
 }
 
-/// Host: checks a path a guest asked for against the shared folder (see `path_inside`).
+/// Whether a file name means the git folder, also in the spellings Windows and macOS resolve to it:
+/// any case, trailing dots/spaces, an NTFS stream (".git::$INDEX_ALLOCATION"), the 8.3 short name
+/// and characters HFS+ ignores.
+fn is_git_name(name: &str) -> bool {
+    name.split('\\').any(|part| {
+        let visible: String = part.chars().filter(|c| !matches!(*c, '\u{200c}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{206a}'..='\u{206f}' | '\u{feff}')).collect();
+        let base = visible.split(':').next().unwrap_or("").trim_end_matches(['.', ' ']).to_lowercase();
+        base == ".git" || base == "git~1"
+    })
+}
+
+fn has_git_part(path: &Path) -> bool {
+    path.components().any(|c| is_git_name(&c.as_os_str().to_string_lossy()))
+}
+
+/// Whether a guest may use `path`: inside `root` and not in a git folder, neither as written nor
+/// after resolving symlinks (`cfg -> .git/config`). Git config can run commands on the host.
+fn guest_path_ok(root: &Path, path: &Path) -> bool {
+    if !path_inside(root, path) || path.strip_prefix(root).is_ok_and(has_git_part) {
+        return false;
+    }
+    let Ok(real_root) = root.canonicalize() else { return false };
+    let mut p = Some(path);
+    while let Some(c) = p {
+        if let Ok(real) = c.canonicalize() {
+            return real.strip_prefix(&real_root).is_ok_and(|rel| !has_git_part(rel));
+        }
+        p = c.parent();
+    }
+    false
+}
+
+/// Host: checks a path a guest asked for against the shared folder (see `guest_path_ok`).
 #[tauri::command]
 pub fn collab_path_inside(root: String, path: String) -> bool {
-    path_inside(Path::new(&root), Path::new(&path))
+    guest_path_ok(Path::new(&root), Path::new(&path))
+}
+
+/// Entries `tree_has_git` looks at before it gives up and answers "yes".
+const GIT_SCAN_LIMIT: usize = 200_000;
+
+/// Whether a folder holds a git folder at any depth, so deleting or moving it would change a nested
+/// repository. Symlinks aren't followed; what can't be read or scanned counts as "yes".
+fn tree_has_git(path: &Path, limit: usize) -> bool {
+    let Ok(meta) = path.symlink_metadata() else { return false };
+    if !meta.is_dir() {
+        return false;
+    }
+    let mut stack = vec![path.to_path_buf()];
+    let mut seen = 0;
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { return true };
+        for entry in entries {
+            let Ok(entry) = entry else { return true };
+            seen += 1;
+            if seen > limit || is_git_name(&entry.file_name().to_string_lossy()) {
+                return true;
+            }
+            if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                stack.push(entry.path());
+            }
+        }
+    }
+    false
+}
+
+/// Host: whether a guest's delete or rename of `path` would touch a nested git folder.
+#[tauri::command]
+pub async fn collab_tree_has_git(path: String) -> bool {
+    tauri::async_runtime::spawn_blocking(move || tree_has_git(Path::new(&path), GIT_SCAN_LIMIT)).await.unwrap_or(true)
 }
 
 #[derive(Serialize)]
@@ -262,6 +328,45 @@ mod tests {
         assert!(!path_inside(&root, &root.join("ext/new.txt")));
         assert!(!path_inside(&root, &root.join("dangling")));
         assert!(!path_inside(&root, &root.join("../secret/key")));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn git_folder_spellings_are_recognized() {
+        for name in [".git", ".GIT", ".Git", ".git.", ".git ", ".git. .", ".git::$INDEX_ALLOCATION", ".git:x", "git~1", "GIT~1", ".g\u{200c}it", "a\\.git"] {
+            assert!(is_git_name(name), "{name:?}");
+        }
+        for name in [".github", ".gitignore", ".gitattributes", "git", "x.git", ".gitlab-ci.yml", "git~2"] {
+            assert!(!is_git_name(name), "{name:?}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn guests_cannot_reach_the_git_folder() {
+        let tmp = std::env::temp_dir().join(format!("omega-collab-git-{}", std::process::id()));
+        let root = tmp.join("proj");
+        std::fs::create_dir_all(root.join(".git/hooks")).unwrap();
+        std::fs::create_dir_all(root.join("sub/.git")).unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join(".git/config"), "").unwrap();
+        std::fs::write(root.join("src/a.rs"), "a").unwrap();
+        std::fs::write(root.join(".gitignore"), "").unwrap();
+        std::os::unix::fs::symlink(root.join(".git"), root.join("gitlink")).unwrap();
+        std::os::unix::fs::symlink(root.join(".git/config"), root.join("cfg")).unwrap();
+
+        for bad in [".git", ".git/config", ".GIT/config", ".git./config", "new/.git/config", "sub/.git", "gitlink", "gitlink/config", "gitlink/new", "cfg"] {
+            assert!(!guest_path_ok(&root, &root.join(bad)), "{bad}");
+        }
+        for good in ["", "src/a.rs", "src/new.rs", ".gitignore", "sub"] {
+            assert!(guest_path_ok(&root, &root.join(good)), "{good}");
+        }
+
+        assert!(tree_has_git(&root.join("sub"), GIT_SCAN_LIMIT));
+        assert!(!tree_has_git(&root.join("src"), GIT_SCAN_LIMIT));
+        assert!(!tree_has_git(&root.join("src/a.rs"), GIT_SCAN_LIMIT));
+        assert!(!tree_has_git(&root.join("gitlink"), GIT_SCAN_LIMIT), "a symlink is moved, not its target");
+        assert!(tree_has_git(&root.join("src"), 0), "too large to scan counts as containing one");
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
