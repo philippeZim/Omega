@@ -25,7 +25,8 @@ pub fn run() {
     // Hands over to a running Omega and exits, or detaches from the terminal.
     let startup = std::sync::Mutex::new(Some(cli::startup()));
     tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
+        // Links go through env::open_external (native.ts), so the browser gets the user's environment.
+        .plugin(tauri_plugin_opener::Builder::new().open_js_links_on_click(false).build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -74,6 +75,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             env::platform_info,
+            env::open_external,
             lang_shadow::lang_workdir,
             lang_shadow::lang_copy,
             env::refresh_path,

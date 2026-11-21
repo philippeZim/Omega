@@ -186,13 +186,13 @@ fn shell_command(run: bool, shell: Option<&str>, cwd: &str) -> CommandBuilder {
     if cfg!(windows) {
         let id = if run { "cmd" } else { shell.unwrap_or("") };
         if let Some(distro) = id.strip_prefix("wsl:") {
-            let mut c = CommandBuilder::new("wsl.exe");
+            let mut c = crate::env::pty_command("wsl.exe");
             c.args(["-d", distro, "--cd", cwd]);
             return c;
         }
         match id {
             "cmd" => {
-                let mut c = CommandBuilder::new("cmd.exe");
+                let mut c = crate::env::pty_command("cmd.exe");
                 if run {
                     c.arg("/Q");
                 }
@@ -200,20 +200,20 @@ fn shell_command(run: bool, shell: Option<&str>, cwd: &str) -> CommandBuilder {
             }
             "gitbash" => {
                 if let Some(b) = git_bash() {
-                    let mut c = CommandBuilder::new(b);
+                    let mut c = crate::env::pty_command(b);
                     c.args(["--login", "-i"]);
                     return c;
                 }
             }
             "powershell" => {
-                let mut c = CommandBuilder::new("powershell.exe");
+                let mut c = crate::env::pty_command("powershell.exe");
                 c.arg("-NoLogo");
                 return c;
             }
             _ => {}
         }
         let ps = crate::env::which("pwsh").map(|p| p.display().to_string()).unwrap_or_else(|| "powershell.exe".into());
-        let mut c = CommandBuilder::new(ps);
+        let mut c = crate::env::pty_command(ps);
         c.arg("-NoLogo");
         return c;
     }
@@ -222,7 +222,7 @@ fn shell_command(run: bool, shell: Option<&str>, cwd: &str) -> CommandBuilder {
         .map(String::from)
         .or_else(|| std::env::var("SHELL").ok())
         .unwrap_or_else(|| if cfg!(target_os = "macos") { "/bin/zsh".into() } else { "/bin/bash".into() });
-    let mut c = CommandBuilder::new(shell);
+    let mut c = crate::env::pty_command(shell);
     c.arg("-l");
     c
 }
@@ -239,14 +239,14 @@ fn single_command(id: &str, command: &str) -> Result<CommandBuilder, String> {
     if cfg!(windows) {
         let file = std::env::temp_dir().join(format!("omega-run-{}.cmd", id.replace(|c: char| !c.is_ascii_alphanumeric(), "_")));
         std::fs::write(&file, format!("@echo off\r\n{command}\r\n")).map_err(|e| e.to_string())?;
-        let mut c = CommandBuilder::new("cmd.exe");
+        let mut c = crate::env::pty_command("cmd.exe");
         c.args(BATCH_FLAGS);
         c.arg(file);
         return Ok(c);
     }
     let login = std::env::var("SHELL").ok().filter(|s| std::path::Path::new(s).is_file());
     let posix = login.as_deref().and_then(|s| s.rsplit('/').next()).is_some_and(|n| matches!(n, "bash" | "zsh" | "sh" | "dash" | "ksh" | "mksh"));
-    let mut c = CommandBuilder::new(if posix { login.unwrap() } else { "/bin/sh".into() });
+    let mut c = crate::env::pty_command(if posix { login.unwrap() } else { "/bin/sh".into() });
     c.args(["-l", "-c", command]);
     Ok(c)
 }
@@ -447,7 +447,7 @@ fn process_args(pid: i32) -> Option<Vec<String>> {
 
 #[cfg(all(unix, not(target_os = "linux")))]
 fn process_args(pid: i32) -> Option<Vec<String>> {
-    let out = std::process::Command::new("/bin/ps").args(["-ww", "-o", "args=", "-p", &pid.to_string()]).output().ok()?;
+    let out = crate::env::process("/bin/ps").args(["-ww", "-o", "args=", "-p", &pid.to_string()]).output().ok()?;
     let args: Vec<String> = String::from_utf8_lossy(&out.stdout).split_whitespace().map(String::from).collect();
     (out.status.success() && !args.is_empty()).then_some(args)
 }

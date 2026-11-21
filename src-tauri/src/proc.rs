@@ -295,7 +295,7 @@ fn kill_tree(child: &Child) {
     let mut groups = HashSet::new();
     let mut alive = HashSet::new();
     for _ in 0..KILL_TREE_ROUNDS {
-        let ps = Command::new("/bin/ps").args(["-A", "-o", "pid=,ppid=,pgid="]).stdin(Stdio::null()).stderr(Stdio::null()).output();
+        let ps = crate::env::process("/bin/ps").args(["-A", "-o", "pid=,ppid=,pgid="]).stdin(Stdio::null()).stderr(Stdio::null()).output();
         let text = ps.map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
         groups.extend(descendant_groups(&text, pid, own));
         alive = descendants(&ps_rows(&text), pid);

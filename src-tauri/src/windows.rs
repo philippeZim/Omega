@@ -122,7 +122,7 @@ fn process_cwd(pid: u32) -> Option<PathBuf> {
 
 #[cfg(target_os = "macos")]
 fn process_cwd(pid: u32) -> Option<PathBuf> {
-    let out = std::process::Command::new("/usr/sbin/lsof").args(["-a", "-p", &pid.to_string(), "-d", "cwd", "-Fn"]).output().ok()?;
+    let out = crate::env::process("/usr/sbin/lsof").args(["-a", "-p", &pid.to_string(), "-d", "cwd", "-Fn"]).output().ok()?;
     String::from_utf8_lossy(&out.stdout).lines().find_map(|l| l.strip_prefix('n').map(PathBuf::from))
 }
 
