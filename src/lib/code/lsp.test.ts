@@ -462,7 +462,7 @@ describe("client registry", () => {
         if (cmd === "tools_dir") return "/tools";
         if (cmd === "cmd_works") return true;
         if (cmd === "path_exists" && files.includes(args.path)) return true;
-        if (cmd === "which_cmd") return args.cmd === "basedpyright-langserver" ? "/usr/bin/basedpyright-langserver" : null;
+        if (cmd === "which_cmd") return args.cmd === "basedpyright-langserver" ? "/usr/bin/basedpyright-langserver" : args.cmd === "/tools/mojo/bin/mojo-lsp-server" ? args.cmd : null;
         if (cmd === "path_exists") return false;
         if (cmd === "proc_spawn") spawned.push(args.id);
         if (cmd === "proc_send") {
@@ -500,6 +500,17 @@ describe("client registry", () => {
     await L.clientFor({ server: "clangd", lspId: "c" } as any, "/w/a.c", "/w", ask);
     expect(ask).toHaveBeenCalledOnce(); // the host's own editor still gets its prompt
     expect(await L.clientFor(PY, "/w/a.py", "/w", L.neverInstall)).not.toBeNull();
+  });
+
+  // A deliberate decision: mojo-lsp-server ran no project code under strace, and the risk of its
+  // closed-source parser is accepted. Giving it a guest pause should be a conscious change too.
+  test("a guest without run may start mojo-lsp-server, also in a project it changed", async () => {
+    const spawned = await multiServer();
+    const { noteGuestChange } = await import("../collab/guestChanges");
+    noteGuestChange("peer", "/mojo-guest");
+    const client = await L.clientFor({ server: "mojo", lspId: "mojo" } as any, "/mojo-guest/a.mojo", "/mojo-guest", L.neverInstall);
+    expect(client).not.toBeNull();
+    expect(spawned.length).toBe(1);
   });
 
   test("guests can't start more than a few servers, one more is refused; a running one is free", async () => {

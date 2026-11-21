@@ -518,7 +518,12 @@ async function guestMayStart(kind: ServerKind, root: string, key: string) {
   return !!cmd;
 }
 
-/** Servers that execute project-controlled code, with the texts of their guest pause. */
+/**
+ * Servers that execute project-controlled code, with the texts of their guest pause.
+ * mojo-lsp-server is deliberately not here: under strace it ran no project code (no `comptime`
+ * evaluation, child processes, project libraries or writes). The remaining risk, its closed-source
+ * parser reading a guest's `.mojoc` file, is accepted.
+ */
 const PAUSABLE: Partial<Record<ServerKind, { tool: PausedTool; paused: Key; title: Key; msg: Key; ok: Key }>> = {
   scala: { tool: "metals", paused: "code.lsp.metalsPaused", title: "code.lsp.metalsResumeTitle", msg: "code.lsp.metalsResumeMsg", ok: "code.lsp.metalsResumeOk" },
   ocaml: { tool: "ocaml", paused: "code.lsp.ocamlPaused", title: "code.lsp.ocamlResumeTitle", msg: "code.lsp.ocamlResumeMsg", ok: "code.lsp.ocamlResumeOk" },
