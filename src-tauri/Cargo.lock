@@ -2382,6 +2382,7 @@ dependencies = [
  "futures-util",
  "getrandom 0.4.3",
  "globset",
+ "icu_normalizer",
  "ignore",
  "iroh",
  "libc",

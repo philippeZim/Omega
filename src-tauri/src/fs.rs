@@ -84,7 +84,8 @@ pub fn list_dir(path: String) -> Result<Vec<Entry>, String> {
 
 #[tauri::command]
 pub fn read_file(path: String) -> Result<String, String> {
-    let bytes = fs::read(&path).map_err(io_err)?;
+    // Windows reports reading a folder as "access denied".
+    let bytes = fs::read(&path).map_err(|e| if Path::new(&path).is_dir() { "fs:is_dir".to_string() } else { io_err(e) })?;
     String::from_utf8(bytes).map_err(|_| "fs:not_utf8".into())
 }
 

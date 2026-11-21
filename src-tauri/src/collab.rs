@@ -895,6 +895,39 @@ pub struct HooksCheck {
     structural: Vec<bool>,
 }
 
+/// A path for comparing, in the one spelling the file system resolves its variants to. Matters for
+/// parts that don't exist yet, which `canonicalize` can't settle. Exact on Linux.
+fn spelling_key(path: &Path) -> std::path::PathBuf {
+    if !cfg!(any(windows, target_os = "macos")) {
+        return path.to_path_buf();
+    }
+    path.components()
+        .map(|c| match c {
+            std::path::Component::Normal(n) => std::ffi::OsString::from(name_key(&n.to_string_lossy())),
+            other => other.as_os_str().to_os_string(),
+        })
+        .collect()
+}
+
+/// Windows: any case, trailing dots and spaces, and an NTFS stream (`hooks::$INDEX_ALLOCATION`).
+#[cfg(windows)]
+fn name_key(name: &str) -> String {
+    name.split(':').next().unwrap_or("").trim_end_matches(['.', ' ']).to_lowercase()
+}
+
+/// macOS: APFS ignores case and Unicode normalization by default. On a case-sensitive volume this
+/// locks a few paths too many, which is the safe side. Upper then lower also folds `ß` and `ſ`.
+#[cfg(target_os = "macos")]
+fn name_key(name: &str) -> String {
+    let nfd = icu_normalizer::DecomposingNormalizerBorrowed::new_nfd();
+    nfd.normalize(&nfd.normalize(name).to_uppercase().to_lowercase()).into_owned()
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn name_key(name: &str) -> String {
+    name.to_string()
+}
+
 fn hooks_check(root: &str, paths: &[String]) -> HooksCheck {
     let closed = || HooksCheck { ok: false, in_project: true, locked: vec![true; paths.len()], structural: vec![true; paths.len()] };
     let Ok(dir) = crate::git::hooks_dir(root) else { return closed() };
@@ -906,8 +939,10 @@ fn hooks_check(root: &str, paths: &[String]) -> HooksCheck {
         let Ok(includes) = crate::git::config_include_files(root) else { return closed() };
         roots.extend(includes.iter().map(|f| resolve_lenient(f)));
     }
+    let roots: Vec<_> = roots.iter().map(|r| spelling_key(r)).collect();
+    let real_root = spelling_key(&real_root);
     let in_project = roots.iter().any(|r| r.strip_prefix(&real_root).is_ok_and(|rel| !has_git_part(rel)));
-    let real: Vec<_> = paths.iter().map(|p| resolve_lenient(Path::new(p))).collect();
+    let real: Vec<_> = paths.iter().map(|p| spelling_key(&resolve_lenient(Path::new(p)))).collect();
     let locked: Vec<bool> = real.iter().map(|p| roots.iter().any(|r| p.starts_with(r))).collect();
     let structural = real.iter().zip(&locked).map(|(p, l)| *l || roots.iter().any(|r| r.starts_with(p))).collect();
     HooksCheck { ok: true, in_project, locked, structural }
@@ -1010,6 +1045,46 @@ mod tests {
         assert!(!may_serve(Some("main"), "w-b", Some(b), Some(b)));
         assert!(!may_serve(None, "main", Some(a), Some(a)));
         assert!(!may_serve(Some("main"), "main", None, Some(a)));
+    }
+
+    /// Windows opens all of these as `later/hooks/pre-commit`, also while the folder doesn't exist.
+    #[cfg(windows)]
+    #[test]
+    fn a_hooks_folder_is_found_in_every_windows_spelling() {
+        let dir = std::env::temp_dir().join(format!("omega-hooks-spelling-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = dir.canonicalize().unwrap();
+        let git = |args: &[&str]| assert!(std::process::Command::new("git").args(args).current_dir(&dir).status().unwrap().success());
+        git(&["init", "-q"]);
+        git(&["config", "core.hooksPath", "later/hooks"]);
+        let root = dir.to_str().unwrap();
+        let spellings = ["LATER/hooks/pre-commit", "later/HOOKS/pre-commit", "later./hooks/pre-commit", "later /hooks/pre-commit", "later/hooks./pre-commit", "later/hooks::$INDEX_ALLOCATION/pre-commit"];
+        let paths: Vec<String> = spellings.iter().map(|s| format!("{root}/{s}")).collect();
+        assert_eq!(hooks_check(root, &paths).locked, [true; 6], "{spellings:?}");
+        assert_eq!(hooks_check(root, &[format!("{root}/LATER")]).structural, [true]);
+        assert_eq!(hooks_check(root, &[format!("{root}/other/pre-commit")]).locked, [false]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A default APFS volume opens all of these as `läter/hooks/pre-commit`, also before it exists.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_hooks_folder_is_found_in_every_macos_spelling() {
+        let dir = std::env::temp_dir().join(format!("omega-hooks-spelling-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = dir.canonicalize().unwrap();
+        let git = |args: &[&str]| assert!(std::process::Command::new("git").args(args).current_dir(&dir).status().unwrap().success());
+        git(&["init", "-q"]);
+        git(&["config", "core.hooksPath", "l\u{e4}ter/hooks"]);
+        let root = dir.to_str().unwrap();
+        let spellings = ["L\u{c4}TER/hooks/pre-commit", "l\u{e4}ter/HOOKS/pre-commit", "la\u{308}ter/hooks/pre-commit", "LA\u{308}TER/hooks/pre-commit"];
+        let paths: Vec<String> = spellings.iter().map(|s| format!("{root}/{s}")).collect();
+        assert_eq!(hooks_check(root, &paths).locked, [true; 4], "{spellings:?}");
+        assert_eq!(hooks_check(root, &[format!("{root}/LA\u{308}TER")]).structural, [true]);
+        assert_eq!(hooks_check(root, &[format!("{root}/other/pre-commit")]).locked, [false]);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[cfg(unix)]

@@ -24,11 +24,32 @@ fn git_cmd(root: &str) -> Command {
     c
 }
 
+/// Turns git's hooks off. On Windows git reads `/dev/null` as `<drive>:\dev\null`, a real folder
+/// that can hold a `pre-commit` program (a project in `C:\dev`, say), and runs it. `//./NUL` is the
+/// null device there, so nothing can exist below it.
+const NO_HOOKS: &str = if cfg!(windows) { "core.hooksPath=//./NUL" } else { "core.hooksPath=/dev/null" };
+
+/// The frontend's guard (`GIT_GUARD`) is the same on every platform; the value is settled here.
+/// Only in git's own options before the command, so a commit message with this text stays as it is.
+fn with_no_hooks(mut args: Vec<String>) -> Vec<String> {
+    let mut i = 0;
+    while i < args.len() && args[i].starts_with('-') {
+        if args[i] == "-c" {
+            if let Some(value) = args.get_mut(i + 1).filter(|v| *v == "core.hooksPath=/dev/null") {
+                *value = NO_HOOKS.to_string();
+            }
+            i += 1;
+        }
+        i += 1;
+    }
+    args
+}
+
 /// For what Omega runs on its own (status poll, gutter, blame): never a hook or fsmonitor program.
 /// A Code Together guest can edit tracked files, and `core.hooksPath` may point at them.
 fn quiet_git_cmd(root: &str) -> Command {
     let mut c = git_cmd(root);
-    c.args(["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"]);
+    c.args(["-c", NO_HOOKS, "-c", "core.fsmonitor=false"]);
     c
 }
 
@@ -179,6 +200,7 @@ pub fn git_in_bare_repo(path: String) -> bool {
 /// `.git` into it, because `safe.bareRepository=explicit` makes git not see the repository.
 #[tauri::command]
 pub async fn git(root: String, args: Vec<String>) -> Result<GitOut, String> {
+    let args = with_no_hooks(args);
     tauri::async_runtime::spawn_blocking(move || {
         if init_targets(&root, &args).iter().any(|dir| inside_bare_repo(dir)) {
             return Ok(GitOut { code: 128, stdout: String::new(), stderr: INIT_IN_BARE.into() });
@@ -529,7 +551,16 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("omega-git-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        dir.canonicalize().unwrap()
+        // As the frontend passes it: git can't create folders below a `\\?\` path.
+        PathBuf::from(crate::env::norm(dir.canonicalize().unwrap()))
+    }
+
+    #[test]
+    fn the_hook_guard_names_a_path_that_cannot_hold_a_hook() {
+        let text = "core.hooksPath=/dev/null";
+        let args = with_no_hooks(["--no-pager", "-c", text, "commit", "-m", text].map(String::from).to_vec());
+        assert_eq!(args[2], if cfg!(windows) { "core.hooksPath=//./NUL" } else { text });
+        assert_eq!(args[5], text, "a commit message is not an option");
     }
 
     fn run_git(dir: &std::path::Path, args: &[&str]) {

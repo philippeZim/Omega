@@ -7,11 +7,15 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSy
 // @ts-expect-error No Node types in this project; the test runs under Node.
 import { tmpdir } from "node:os";
 // @ts-expect-error No Node types in this project; the test runs under Node.
-import { dirname, join, resolve, sep } from "node:path";
+import { dirname, join as nativeJoin, resolve as nativeResolve, sep } from "node:path";
 import { fakeUi } from "../../test/fakes";
 import { GIT_GUARD, gitArgv, gitFailCode, scopeChanges, validBranch, validMessage, validPath, validPaths } from "./gitArgs";
 
 type Msg = Record<string, any>;
+// Paths as the frontend holds them (normPath): "/" separators on Windows too.
+const slashes = (p: string) => p.replace(/\\/g, "/");
+const join = (...parts: string[]) => slashes(nativeJoin(...parts));
+const resolve = (...parts: string[]) => slashes(nativeResolve(...parts));
 const h = vi.hoisted(() => ({
   handlers: [] as ((peer: string, msg: Record<string, any>) => unknown)[],
   endHooks: [] as (() => unknown)[],
@@ -123,7 +127,7 @@ vi.mock("@tauri-apps/api/core", () => ({
   },
 }));
 
-const ID = ["-c", "user.name=Host Person", "-c", "user.email=host@example.invalid", "-c", "commit.gpgSign=false", "-c", "protocol.file.allow=always"];
+const ID = ["-c", "user.name=Host Person", "-c", "user.email=host@example.invalid", "-c", "commit.gpgSign=false", "-c", "protocol.file.allow=always", "-c", "core.autocrlf=false"];
 function gitRun(root: string, args: string[]) {
   const r = spawnSync("git", [...ID, ...args], { cwd: root, encoding: "utf8", env: { ...(globalThis as any).process.env, GIT_TERMINAL_PROMPT: "0", GIT_EDITOR: "true", LC_ALL: "C" } });
   return { code: r.status ?? -1, stdout: r.stdout, stderr: r.stderr };
@@ -183,7 +187,7 @@ const code = async (method: string, params: unknown, caps?: string[]) => (await 
 beforeEach(() => {
   // The host's own background fetch (git.svelte.ts) is not a guest's command and has its own rules.
   vi.spyOn(document, "hasFocus").mockReturnValue(false);
-  dir = realpathSync(mkdtempSync(join(tmpdir(), "omega-guest-git-")));
+  dir = slashes(realpathSync.native(mkdtempSync(join(tmpdir(), "omega-guest-git-"))));
   repo = join(dir, "repo");
   mkdirSync(repo);
   sh("init", "-q", "-b", "main");
