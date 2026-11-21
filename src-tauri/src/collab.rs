@@ -787,7 +787,13 @@ fn hooks_check(root: &str, paths: &[String]) -> HooksCheck {
     let closed = || HooksCheck { ok: false, in_project: true, locked: vec![true; paths.len()], structural: vec![true; paths.len()] };
     let Ok(dir) = crate::git::hooks_dir(root) else { return closed() };
     let Ok(real_root) = Path::new(root).canonicalize() else { return closed() };
-    let roots = dir.map(|d| hook_roots(&d)).unwrap_or_default();
+    let mut roots = Vec::new();
+    if let Some(d) = dir {
+        roots = hook_roots(&d);
+        // A file the repository's config includes can set the hooks folder, or any command.
+        let Ok(includes) = crate::git::config_include_files(root) else { return closed() };
+        roots.extend(includes.iter().map(|f| resolve_lenient(f)));
+    }
     let in_project = roots.iter().any(|r| r.strip_prefix(&real_root).is_ok_and(|rel| !has_git_part(rel)));
     let real: Vec<_> = paths.iter().map(|p| resolve_lenient(Path::new(p))).collect();
     let locked: Vec<bool> = real.iter().map(|p| roots.iter().any(|r| p.starts_with(r))).collect();
@@ -892,6 +898,28 @@ mod tests {
         let c = hooks_check(root, &[p("a.txt")]);
         assert!(!c.ok && c.in_project);
         assert_eq!(c.locked, [true]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn files_the_repo_config_includes_are_protected() {
+        let dir = std::env::temp_dir().join(format!("omega-hooks-include-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("cfg")).unwrap();
+        let dir = dir.canonicalize().unwrap();
+        let root = dir.to_str().unwrap();
+        let git = |args: &[&str]| assert!(std::process::Command::new("git").current_dir(&dir).args(args).status().unwrap().success());
+        git(&["init", "-q"]);
+        let p = |r: &str| format!("{root}/{r}");
+        assert!(!hooks_check(root, &[p("cfg/shared")]).locked[0]);
+        std::fs::write(dir.join("cfg/shared"), "[include]\n\tpath = nested\n").unwrap();
+        std::fs::write(dir.join("cfg/nested"), "").unwrap(); // empty: git lists no setting from it
+        git(&["config", "--add", "include.path", "../cfg/shared"]);
+        git(&["config", "--add", "includeIf.gitdir:/nowhere/.path", "../cfg/conditional"]);
+        let c = hooks_check(root, &[p("cfg/shared"), p("cfg/nested"), p("cfg/conditional"), p("cfg"), p("cfg/other")]);
+        assert!(c.ok && c.in_project);
+        assert_eq!(c.locked, [true, true, true, false, false]);
+        assert_eq!(c.structural, [true, true, true, true, false]);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

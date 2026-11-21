@@ -46,6 +46,40 @@ pub(crate) fn hooks_dir(root: &str) -> Result<Option<PathBuf>, ()> {
     Err(())
 }
 
+/// The files the repository's local config is read from: those with settings, and everything an
+/// `include.path` / `includeIf.*.path` names (also when its condition doesn't apply right now, or
+/// the file is empty). A guest who could edit one could set `core.hooksPath` or `core.sshCommand`.
+pub(crate) fn config_include_files(root: &str) -> Result<Vec<PathBuf>, ()> {
+    let out = git_cmd(root).args(["-c", "core.fsmonitor=false", "config", "--local", "--includes", "--list", "--show-origin", "-z"]).output().map_err(|_| ())?;
+    if !out.status.success() {
+        return Err(());
+    }
+    Ok(parse_config_includes(Path::new(root), &String::from_utf8_lossy(&out.stdout), std::env::var_os("HOME").map(PathBuf::from)))
+}
+
+/// `git config --list --show-origin -z`: `file:<path>` NUL `<key>` LF `<value>` NUL, and so on.
+fn parse_config_includes(root: &Path, text: &str, home: Option<PathBuf>) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let mut parts = text.split('\0');
+    while let (Some(origin), Some(entry)) = (parts.next(), parts.next()) {
+        let Some(origin) = origin.strip_prefix("file:") else { continue };
+        let file = root.join(origin);
+        let (key, value) = entry.split_once('\n').unwrap_or((entry, ""));
+        let key = key.to_ascii_lowercase();
+        if !value.is_empty() && (key == "include.path" || (key.starts_with("includeif.") && key.ends_with(".path"))) {
+            let named = match (value.strip_prefix("~/"), &home) {
+                (Some(rest), Some(home)) => home.join(rest),
+                _ => file.parent().unwrap_or(root).join(value),
+            };
+            files.push(named);
+        }
+        files.push(file);
+    }
+    files.sort();
+    files.dedup();
+    files
+}
+
 /// `stderr` of a refused `git init`; the frontend shows its own translated text for it.
 const INIT_IN_BARE: &str = "omega:init_in_bare_repository";
 
@@ -439,6 +473,16 @@ mod tests {
         git_cmd(dir.to_str().unwrap()).args(["status", "--porcelain"]).output().unwrap();
         assert!(marker.exists(), "plain status should have fired the hook");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn config_includes_are_listed_with_their_origin() {
+        let text = "file:.git/config\0core.bare\nfalse\0file:.git/config\0include.path\n../shared.cfg\0file:.git/../shared.cfg\0include.path\nnested.cfg\0file:.git/config\0includeif.gitdir:/x/.path\n~/h.cfg\0command line:\0x.y\nz\0";
+        let files = parse_config_includes(Path::new("/r"), text, Some(PathBuf::from("/home/u")));
+        for want in ["/r/.git/config", "/r/.git/../shared.cfg", "/r/.git/../nested.cfg", "/home/u/h.cfg"] {
+            assert!(files.contains(&PathBuf::from(want)), "{want} in {files:?}");
+        }
+        assert_eq!(files.len(), 4);
     }
 
     #[test]
