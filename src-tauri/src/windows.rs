@@ -37,6 +37,33 @@ pub fn take_owned<V>(map: &mut HashMap<String, V>, owner: &str) -> Vec<V> {
     keys.iter().filter_map(|k| map.remove(k)).collect()
 }
 
+/// What a reader thread finds when its stream ended.
+#[derive(Debug, PartialEq)]
+pub enum Ended<V> {
+    /// Its own entry, now removed.
+    Mine(V),
+    /// The id was used again meanwhile (a reloaded page): that entry stays, and nothing is reported.
+    Replaced,
+    /// Already killed.
+    Gone,
+}
+
+/// Removes `key` only if it's still the entry of the thread asking.
+pub fn end_own<V>(map: &mut HashMap<String, V>, key: &str, mine: impl Fn(&V) -> bool) -> Ended<V> {
+    match map.get(key) {
+        None => Ended::Gone,
+        Some(v) if !mine(v) => Ended::Replaced,
+        Some(_) => map.remove(key).map_or(Ended::Gone, Ended::Mine),
+    }
+}
+
+static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
+
+/// Tells apart two connections that used the same id one after the other.
+pub fn next_generation() -> u64 {
+    NEXT_GENERATION.fetch_add(1, Ordering::SeqCst)
+}
+
 /// Sends an event to one window only. Its listeners must be window-scoped (`lib/windowEvents.ts`):
 /// a JS listener without a target receives events meant for any other window too.
 pub fn emit<S: Serialize + Clone>(app: &AppHandle, owner: &str, event: &str, payload: S) {
@@ -605,6 +632,16 @@ mod tests {
         gone.sort();
         assert_eq!(gone, [1, 3]);
         assert_eq!(m.get(&key("w-a", "t1")), Some(&2));
+    }
+
+    #[test]
+    fn an_old_reader_leaves_a_new_connection_with_the_same_id() {
+        let mut m = HashMap::new();
+        m.insert(key("main", "lsp"), 2u64);
+        assert_eq!(end_own(&mut m, &key("main", "lsp"), |g| *g == 1), Ended::Replaced);
+        assert_eq!(m.len(), 1);
+        assert_eq!(end_own(&mut m, &key("main", "lsp"), |g| *g == 2), Ended::Mine(2));
+        assert_eq!(end_own(&mut m, &key("main", "lsp"), |g| *g == 2), Ended::Gone);
     }
 
     #[test]

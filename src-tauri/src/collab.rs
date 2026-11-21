@@ -581,6 +581,15 @@ fn may_serve(owner: Option<&str>, label: &str, open_root: Option<&Path>, request
     owner == Some(label) && requested.is_none_or(|r| open_root == Some(r))
 }
 
+/// Cancelling a guest's job: the session's window, or anyone once no session is left to protect.
+fn may_cancel(owner: Option<&str>, label: &str) -> bool {
+    owner.is_none_or(|o| o == label)
+}
+
+pub fn can_cancel(app: &AppHandle, window: &tauri::WebviewWindow) -> bool {
+    may_cancel(app.state::<CollabState>().owner.lock().unwrap().as_deref(), window.label())
+}
+
 /// `may_serve` for a command. `root` is the project the request names; `None`: no project (an unsaved tab).
 pub fn guard(app: &AppHandle, window: &tauri::WebviewWindow, root: Option<&str>) -> Result<(), String> {
     let owner = app.state::<CollabState>().owner.lock().unwrap().clone();
@@ -973,6 +982,13 @@ pub async fn collab_conn_info(app: AppHandle, window: tauri::WebviewWindow, peer
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn another_window_cannot_cancel_a_guests_job() {
+        assert!(may_cancel(Some("main"), "main"));
+        assert!(!may_cancel(Some("main"), "w-b"));
+        assert!(may_cancel(None, "w-b"));
+    }
 
     #[test]
     fn one_session_belongs_to_one_window() {

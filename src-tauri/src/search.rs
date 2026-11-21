@@ -343,7 +343,10 @@ fn guest_flag(token: u64) -> Arc<AtomicBool> {
 }
 
 #[tauri::command]
-pub fn guest_search_cancel(token: u64) {
+pub fn guest_search_cancel(app: AppHandle, window: tauri::WebviewWindow, token: u64) {
+    if !crate::collab::can_cancel(&app, &window) {
+        return;
+    }
     guest_flag(token).store(true, Ordering::SeqCst);
 }
 
@@ -860,7 +863,7 @@ mod tests {
     fn guest_search_stops_when_cancelled() {
         let (_d, _o, root) = guest_project();
         let run = GuestRun::new(9006);
-        guest_search_cancel(9006);
+        guest_flag(9006).store(true, Ordering::SeqCst);
         assert_eq!(run_guest_search(&root, &guest_query("needle"), &run).err().as_deref(), Some("cancelled"));
     }
 

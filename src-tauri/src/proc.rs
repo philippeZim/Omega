@@ -11,7 +11,7 @@ use tauri::{AppHandle, Manager};
 #[derive(Default)]
 pub struct ProcState {
     /// JSON-RPC endpoints (stdio pipes or TCP connections) by window-scoped id.
-    conns: Mutex<HashMap<String, Box<dyn Write + Send>>>,
+    conns: Mutex<HashMap<String, (u64, Box<dyn Write + Send>)>>,
     /// Child processes by window-scoped id (stdio servers and TCP debug adapters).
     children: Mutex<HashMap<String, Child>>,
     /// Children started by `run_killable`: `proc_kill` also ends what they started.
@@ -85,14 +85,16 @@ fn read_message<R: BufRead>(reader: &mut R) -> Option<Vec<u8>> {
 }
 
 /// Reads `Content-Length` framed messages and emits them as `proc-msg` events.
-fn pump_messages(app: AppHandle, owner: String, id: String, stream: impl Read + Send + 'static) {
+fn pump_messages(app: AppHandle, owner: String, id: String, generation: u64, stream: impl Read + Send + 'static) {
     std::thread::spawn(move || {
         let mut reader = BufReader::new(stream);
         while let Some(body) = read_message(&mut reader) {
             crate::windows::emit(&app, &owner, "proc-msg", Msg { id: id.clone(), msg: String::from_utf8_lossy(&body).into() });
         }
-        app.state::<ProcState>().conns.lock().unwrap().remove(&crate::windows::key(&owner, &id));
-        crate::windows::emit(&app, &owner, "proc-exit", id.clone());
+        let ended = crate::windows::end_own(&mut app.state::<ProcState>().conns.lock().unwrap(), &crate::windows::key(&owner, &id), |c| c.0 == generation);
+        if !matches!(ended, crate::windows::Ended::Replaced) {
+            crate::windows::emit(&app, &owner, "proc-exit", id.clone());
+        }
     });
 }
 
@@ -123,11 +125,12 @@ pub fn proc_spawn(
         .map_err(|e| format!("{cmd}: {e}"))?;
     let stdin = child.stdin.take().unwrap();
     let owner = window.label().to_string();
-    pump_messages(app.clone(), owner.clone(), id.clone(), child.stdout.take().unwrap());
+    let generation = crate::windows::next_generation();
+    pump_messages(app.clone(), owner.clone(), id.clone(), generation, child.stdout.take().unwrap());
     pump_lines(app.clone(), owner.clone(), id.clone(), child.stderr.take().unwrap());
     let state = app.state::<ProcState>();
     let key = crate::windows::key(&owner, &id);
-    state.conns.lock().unwrap().insert(key.clone(), Box::new(stdin));
+    state.conns.lock().unwrap().insert(key.clone(), (generation, Box::new(stdin)));
     state.children.lock().unwrap().insert(key, child);
     Ok(())
 }
@@ -179,8 +182,9 @@ pub async fn proc_connect(app: AppHandle, window: tauri::WebviewWindow, id: Stri
     .map_err(|e| e.to_string())??;
     let reader = stream.try_clone().map_err(|e| e.to_string())?;
     let owner = window.label().to_string();
-    pump_messages(app.clone(), owner.clone(), id.clone(), reader);
-    app.state::<ProcState>().conns.lock().unwrap().insert(crate::windows::key(&owner, &id), Box::new(stream));
+    let generation = crate::windows::next_generation();
+    pump_messages(app.clone(), owner.clone(), id.clone(), generation, reader);
+    app.state::<ProcState>().conns.lock().unwrap().insert(crate::windows::key(&owner, &id), (generation, Box::new(stream)));
     Ok(())
 }
 
@@ -188,7 +192,7 @@ pub async fn proc_connect(app: AppHandle, window: tauri::WebviewWindow, id: Stri
 pub fn proc_send(app: AppHandle, window: tauri::WebviewWindow, id: String, msg: String) -> Result<(), String> {
     let state = app.state::<ProcState>();
     let mut conns = state.conns.lock().unwrap();
-    let w = conns.get_mut(&crate::windows::key(window.label(), &id)).ok_or("proc:not_connected")?;
+    let (_, w) = conns.get_mut(&crate::windows::key(window.label(), &id)).ok_or("proc:not_connected")?;
     write!(w, "Content-Length: {}\r\n\r\n{}", msg.len(), msg).map_err(|e| e.to_string())?;
     w.flush().map_err(|e| e.to_string())
 }

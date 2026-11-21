@@ -546,7 +546,10 @@ pub async fn latex_guest_compile(app: AppHandle, window: tauri::WebviewWindow, j
 }
 
 #[tauri::command]
-pub fn latex_guest_cancel(job: String) {
+pub fn latex_guest_cancel(app: AppHandle, window: tauri::WebviewWindow, job: String) {
+    if !crate::collab::can_cancel(&app, &window) {
+        return;
+    }
     jobs().cancel(&job);
 }
 

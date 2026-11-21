@@ -93,6 +93,8 @@ struct Session {
     writes: WriteQueue,
     child: Box<dyn Child + Send + Sync>,
     kind: PtyKind,
+    /// Tells this session from a later one with the same id.
+    generation: u64,
 }
 
 #[derive(Default)]
@@ -321,12 +323,13 @@ pub fn pty_spawn(app: AppHandle, window: tauri::WebviewWindow, id: String, cwd: 
     drop(pair.slave);
     let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
     let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
+    let generation = crate::windows::next_generation();
     // Registered before the reader starts: a command that ends at once must still find its session.
     app.state::<PtyState>()
         .sessions
         .lock()
         .unwrap()
-        .insert(crate::windows::key(window.label(), &id), Session { master: pair.master, writes: WriteQueue::new(writer), child, kind: pty_kind });
+        .insert(crate::windows::key(window.label(), &id), Session { master: pair.master, writes: WriteQueue::new(writer), child, kind: pty_kind, generation });
 
     let app2 = app.clone();
     let owner = window.label().to_string();
@@ -346,8 +349,12 @@ pub fn pty_spawn(app: AppHandle, window: tauri::WebviewWindow, id: String, cwd: 
             }
         }
         // Killed sessions are already gone from the map (no exit code then).
-        let session = app2.state::<PtyState>().sessions.lock().unwrap().remove(&crate::windows::key(&owner, &id));
-        let code = session.and_then(finish_session);
+        let ended = crate::windows::end_own(&mut app2.state::<PtyState>().sessions.lock().unwrap(), &crate::windows::key(&owner, &id), |s| s.generation == generation);
+        let code = match ended {
+            crate::windows::Ended::Replaced => return,
+            crate::windows::Ended::Gone => None,
+            crate::windows::Ended::Mine(s) => finish_session(s),
+        };
         crate::windows::emit(&app2, &owner, "pty-exit", PtyExit { id, code });
     });
     Ok(())
@@ -658,7 +665,7 @@ mod tests {
         let child = pair.slave.spawn_command(c).unwrap();
         drop(pair.slave);
         let writer = pair.master.take_writer().unwrap();
-        Session { master: pair.master, writes: WriteQueue::new(writer), child, kind }
+        Session { master: pair.master, writes: WriteQueue::new(writer), child, kind, generation: 0 }
     }
 
     #[cfg(unix)]
