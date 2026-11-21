@@ -51,11 +51,19 @@ describe("cheat sheets", () => {
   test("key names in code columns follow the language", () => {
     const row = (l: Locale) => {
       setLocale(l);
-      return allSheets().find((s) => s.id === "python")!.sheet.sections.flatMap((s) => s.rows).find((r) => r[1] && /Ctrl|Strg/.test(r[0]) && /Space|Leertaste|Espace/.test(r[0]))!;
+      return allSheets().find((s) => s.id === "python")!.sheet.sections.flatMap((s) => s.rows).find((r) => r[1] && /Ctrl|Strg/.test(r[0]) && /Click|Klick|clic/.test(r[0]))!;
     };
-    expect(row("en")[0]).toBe("Ctrl Space");
-    expect(row("de")[0]).toBe("Strg Leertaste");
-    expect(row("fr")[0]).toBe("Ctrl Espace");
+    expect(row("en")[0]).toBe("{cmd:lsp.gotoDefinition} · Ctrl Click");
+    expect(row("de")[0]).toBe("{cmd:lsp.gotoDefinition} · Strg Klick");
+    expect(row("fr")[0]).toBe("{cmd:lsp.gotoDefinition} · Ctrl clic");
+  });
+
+  test("Markdown and LaTeX shortcuts are keymap placeholders, not fixed keys", () => {
+    for (const id of ["markdown", "latex"]) {
+      const rows = withKeys(allSheets().find((s) => s.id === id)!.sheet, (c) => `<${c}>`).sections.flatMap((s) => s.rows.map(([code]) => code));
+      expect(rows.join("\n"), id).toMatch(/<(md\.bold|latex\.sync)>/);
+      expect(rows.join("\n"), id).not.toMatch(/Ctrl [A-Z⇧]|Strg [A-Z⇧]/);
+    }
   });
 
   test("sheetIdFor", () => {
