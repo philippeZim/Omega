@@ -259,6 +259,60 @@ test("a pause in the output releases a held path but keeps a character split acr
   expect(out).toBe("x /hoä");
 });
 
+const ROOT = "/home/alice/proj";
+const HOME = "/home/alice";
+const toB64 = (text: string) => btoa(String.fromCharCode(...new TextEncoder().encode(text)));
+const fromB64 = (b64: string) => new TextDecoder().decode(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)));
+
+test("terminal output: colours, flags, links and titles don't hide a host path (#155)", () => {
+  const s = (text: string) => mirror.scrubTerminal(text, ROOT, HOME);
+  expect(s("\x1b[35m/home/alice/proj/a.py\x1b[0m")).toBe("\x1b[35ma.py\x1b[0m");
+  expect(s("\x1b[35m/home/alice/other.py")).toBe("\x1b[35m~/other.py");
+  expect(s("/home/\x1b[1malice/proj/a.py")).toBe("\x1b[1ma.py");
+  expect(s("cc -I/home/alice/inc -L/home/alice/proj/lib")).toBe("cc -I~/inc -Llib");
+  expect(s("file://box/home/alice/x")).toBe("~/x");
+  expect(s("\x1b]0;/home/alice/proj\x07ok")).toBe("\x1b]0;.\x07ok");
+  expect(s("\x1b]8;;file://box/home/alice/x.txt\x1b\\x.txt\x1b]8;;\x1b\\")).toBe("\x1b]8;;~/x.txt\x1b\\x.txt\x1b]8;;\x1b\\");
+  // What isn't the host's stays exactly as it was.
+  for (const same of ["\x1b[31m/usr/lib/x\x1b[0m", "foo/home/alice/x", "/home/alice2/x", "10/20 ä\r\n"]) expect(s(same)).toBe(same);
+});
+
+test("a path is scrubbed wherever the output is split, also inside colours and multi-byte text (#155)", () => {
+  const text = 'ä \x1b[35m/home/alice/proj/a.py\x1b[0m\n File "/home/\x1b[1malice/b.py" -I/home/alice/c \x1b]8;;file://box/home/alice/d\x1b\\link\x1b]8;;\x1b\\ 🙂\n';
+  const bytes = new TextEncoder().encode(text);
+  const whole = mirror.scrubTerminal(text, ROOT, HOME);
+  expect(whole).not.toContain("alice");
+  for (let i = 1; i < bytes.length; i++) {
+    const scrubber = new mirror.StreamScrubber(ROOT, HOME);
+    expect(scrubber.push(bytes.slice(0, i)) + scrubber.push(bytes.slice(i)) + scrubber.flush()).toBe(whole);
+  }
+  const scrubber = new mirror.StreamScrubber(ROOT, HOME);
+  let byByte = "";
+  for (let i = 0; i < bytes.length; i++) byByte += scrubber.push(bytes.slice(i, i + 1));
+  expect(byByte + scrubber.flush()).toBe(whole);
+});
+
+test("a complete path right before a held one is not cut apart (#155)", () => {
+  const scrubber = new mirror.StreamScrubber(ROOT, HOME);
+  const enc = new TextEncoder();
+  const out = scrubber.push(enc.encode("/home/alice/x /ho")) + scrubber.push(enc.encode("me/alice/y -")) + scrubber.push(enc.encode("I/home/alice/z")) + scrubber.flush();
+  expect(out).toBe("~/x ~/y -I~/z");
+});
+
+test("host: plain Run output is scrubbed for guests with no debug session (#155)", async () => {
+  h.collab.role = "host";
+  await vi.waitFor(async () => {
+    const later: string[] = [];
+    const out = remote.filterTerminal(toB64("Traceback: /home/alice/proj/a.py\n"), (b) => later.push(b));
+    expect([out, ...later].filter(Boolean).map(fromB64).join("")).toContain("a.py");
+  });
+  const later: string[] = [];
+  const out = remote.filterTerminal(toB64('File "/home/alice/other.py"\n'), (b) => later.push(b));
+  const seen = [out, ...later].filter(Boolean).map(fromB64).join("");
+  expect(seen).toContain('File "~/other.py"');
+  expect(seen).not.toContain("/home/alice");
+});
+
 test("the mirrored state holds no absolute host paths, and outside frames are only a name", async () => {
   stoppedHost();
   const state = await remote.buildState();

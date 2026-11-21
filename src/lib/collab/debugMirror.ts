@@ -49,8 +49,45 @@ function spellings(path: string) {
   return [...new Set([clean, clean.replace(/\//g, "\\")])].filter((p) => p.length > 1);
 }
 
-/** Matches `path` only as a whole path, so `/p/app` doesn't match inside `/p/app2` or `/x/p/app`. */
-const pathRe = (path: string) => new RegExp(`(?<![\\w.\\-/\\\\])(?:file://)?${escapeRe(path)}(?![\\w.\\-])([/\\\\]?)`, "g");
+/**
+ * Matches `path` only as a whole path, so `/p/app` doesn't match inside `/p/app2` or `/x/p/app`. Also
+ * after a one-letter compiler flag (`-I/p/app`) and as a file URL, with or without a host name.
+ */
+const PATH_START = `(?:(?<![\\w.\\-/\\\\])|(?<=(?:^|[\\s"'=,])-[A-Za-z]))`;
+const pathRe = (path: string) => new RegExp(`${PATH_START}(?:file://[^/\\s]*)?${escapeRe(path)}(?![\\w.\\-])([/\\\\]?)`, "g");
+const pathStartRe = new RegExp(PATH_START, "y");
+/** Characters before a path that decide whether it counts as one (see `PATH_START`). */
+const PATH_CONTEXT = 3;
+
+interface PathCut {
+  start: number;
+  end: number;
+  text: string;
+}
+
+/**
+ * The places in `text` naming the project or home folder, in order, with what replaces them.
+ * `before` is the text just ahead of it, which only decides where a path can start.
+ */
+function pathCuts(body: string, root: string | null, home: string | null, before = ""): PathCut[] {
+  const text = before + body;
+  const cuts: PathCut[] = [];
+  const scan = (paths: string[], replacement: (sep: string) => string) => {
+    for (const path of paths) {
+      for (const m of text.matchAll(pathRe(path))) {
+        const start = m.index;
+        const end = start + m[0].length;
+        if (cuts.every((c) => end <= c.start || start >= c.end)) cuts.push({ start, end, text: replacement(m[1]) });
+      }
+    }
+  };
+  scan(root ? spellings(root) : [], (sep) => (sep ? "" : "."));
+  scan(home ? spellings(home) : [], (sep) => `~${sep}`);
+  return cuts
+    .filter((c) => c.start >= before.length)
+    .map((c) => ({ ...c, start: c.start - before.length, end: c.end - before.length }))
+    .sort((a, b) => a.start - b.start);
+}
 
 /**
  * Host: takes the project folder and home directory out of text shown to guests: project files
@@ -58,57 +95,167 @@ const pathRe = (path: string) => new RegExp(`(?<![\\w.\\-/\\\\])(?:file://)?${es
  * and evaluation results are data and must stay exactly what the program holds.
  */
 export function scrubPaths(text: string, root: string | null, home: string | null): string {
-  let out = text;
-  for (const r of root ? spellings(root) : []) out = out.replace(pathRe(r), (_m, sep: string) => (sep ? "" : "."));
-  for (const h of home ? spellings(home) : []) out = out.replace(pathRe(h), (_m, sep: string) => `~${sep}`);
-  return out;
+  let out = "";
+  let pos = 0;
+  for (const cut of pathCuts(text, root, home)) {
+    out += text.slice(pos, cut.start) + cut.text;
+    pos = cut.end;
+  }
+  return out + text.slice(pos);
+}
+
+/** Terminal escape sequences: CSI, then OSC and the other string types, then the short forms. */
+const ESCAPES = /(?:\x1b\[|\x9b)[0-?]*[ -/]*[@-~]|(?:\x1b\]|\x9d)[^\x07\x1b\x9c]*(?:\x07|\x1b\\|\x9c)|(?:\x1b[PX^_]|[\x90\x98\x9e\x9f])[^\x1b\x9c]*(?:\x1b\\|\x9c)|\x1b[ -/]*[0-~]/g;
+
+/** Longest escape sequence held back while incomplete; a longer one is treated as plain text. */
+const MAX_ESCAPE = 4096;
+/** Longest host name in a `file://host/...` URL. */
+const MAX_URL_HOST = 255;
+
+/** Text without its escape sequences, and where each one was. */
+function splitEscapes(text: string) {
+  const seqs: { at: number; text: string }[] = [];
+  let plain = "";
+  let last = 0;
+  for (const m of text.matchAll(ESCAPES)) {
+    plain += text.slice(last, m.index);
+    seqs.push({ at: plain.length, text: m[0] });
+    last = m.index + m[0].length;
+  }
+  return { plain: plain + text.slice(last), seqs };
 }
 
 /**
- * `scrubPaths` for a byte stream (a terminal): a path can arrive split over two chunks, so the end
- * of a chunk that could still become one is held back until the next chunk or `flush`.
+ * `scrubPaths` for terminal output: colours may touch or interrupt a path, and titles and links
+ * carry paths inside their sequence. Sequences inside a replaced path are kept, after it.
+ */
+export function scrubTerminal(text: string, root: string | null, home: string | null, before = ""): string {
+  const { plain, seqs } = splitEscapes(text);
+  let out = "";
+  let pos = 0;
+  let next = 0;
+  const seqText = (seq: string) => (seq.length > 2 ? scrubPaths(seq, root, home) : seq);
+  const emitTo = (end: number) => {
+    for (; next < seqs.length && seqs[next].at <= end; next++) {
+      out += plain.slice(pos, seqs[next].at) + seqText(seqs[next].text);
+      pos = seqs[next].at;
+    }
+    out += plain.slice(pos, end);
+    pos = end;
+  };
+  for (const cut of pathCuts(plain, root, home, before)) {
+    emitTo(cut.start);
+    out += cut.text;
+    for (; next < seqs.length && seqs[next].at < cut.end; next++) out += seqText(seqs[next].text);
+    pos = cut.end;
+  }
+  emitTo(plain.length);
+  return out;
+}
+
+/** Where an escape sequence that the end of `text` leaves unfinished begins, or -1. */
+function openEscape(text: string): number {
+  for (let i = Math.max(0, text.length - MAX_ESCAPE); i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    if (c !== 0x1b && (c < 0x90 || c > 0x9f)) continue;
+    const body = c === 0x1b ? i + 2 : i + 1;
+    const kind = c === 0x1b ? text[i + 1] : c === 0x9b ? "[" : c === 0x9d ? "]" : c === 0x90 || c === 0x98 || c === 0x9e || c === 0x9f ? "P" : "";
+    if (kind === undefined) return i; // a lone ESC at the end
+    if (kind === "[") {
+      const m = /^[0-?]*[ -/]*([@-~])?/.exec(text.slice(body))!;
+      if (!m[1]) {
+        if (body + m[0].length >= text.length) return i;
+      } else i = body + m[0].length - 1;
+    } else if (kind === "]" || kind === "P" || kind === "X" || kind === "^" || kind === "_") {
+      const end = text.slice(body).search(kind === "]" ? /\x07|\x1b\\|\x9c/ : /\x1b\\|\x9c/);
+      if (end < 0) return i;
+      i = body + end;
+    } else if (c === 0x1b) {
+      const m = /^[ -/]*([0-~])?/.exec(text.slice(i + 1))!;
+      if (!m[1]) return i;
+      i += m[0].length;
+    }
+  }
+  return -1;
+}
+
+/**
+ * `scrubTerminal` for a byte stream: a path or an escape sequence can arrive split over two chunks,
+ * so the end of a chunk that could still become one is held back until the next chunk or `flush`.
  */
 export class StreamScrubber {
   private decoder = new TextDecoder();
   private tail = "";
+  /** The last characters already sent, for the look-behind of what comes next. */
+  private before = "";
   private needles: string[];
+  private firstChars: Set<string>;
+  private longest: number;
 
   constructor(private root: string | null, private home: string | null) {
-    this.needles = [root, home].flatMap((p) => (p ? spellings(p) : [])).flatMap((p) => [p, `file://${p}`]);
+    this.needles = [root, home].flatMap((p) => (p ? spellings(p) : []));
+    this.firstChars = new Set(["f", ...this.needles.map((n) => n[0])]);
+    this.longest = Math.max(0, ...this.needles.map((n) => n.length)) + "file://".length + MAX_URL_HOST;
   }
 
-  /** Where the part that may still grow into a path begins (one character earlier, for the look-behind). */
-  private safeEnd(text: string) {
-    for (let i = Math.max(0, text.length - Math.max(...this.needles.map((n) => n.length), 0)); i < text.length; i++) {
-      const rest = text.slice(i);
-      if (this.needles.some((n) => n.startsWith(rest))) return Math.max(0, i - 1);
+  /** Whether `rest`, the end of the text so far, could still turn into a path to scrub. */
+  private couldGrow(rest: string) {
+    if ("file://".startsWith(rest)) return true;
+    let path = rest;
+    if (rest.startsWith("file://")) {
+      const prefix = /^file:\/\/[^/\s]*/.exec(rest)![0];
+      if (prefix.length === rest.length) return prefix.length <= "file://".length + MAX_URL_HOST;
+      path = rest.slice(prefix.length);
     }
-    return text.length;
+    return this.needles.some((n) => n.startsWith(path));
+  }
+
+  /** Where the part that may still grow into a path begins. */
+  private safeEnd(text: string) {
+    const open = openEscape(text);
+    const end = open >= 0 ? open : text.length;
+    if (!this.needles.length) return end;
+    const { plain, seqs } = splitEscapes(text.slice(0, end));
+    const context = this.before + plain;
+    for (let i = Math.max(0, plain.length - this.longest); i < plain.length; i++) {
+      if (!this.firstChars.has(plain[i])) continue;
+      pathStartRe.lastIndex = this.before.length + i;
+      if (!pathStartRe.test(context) || !this.couldGrow(plain.slice(i))) continue;
+      return i + seqs.filter((s) => s.at <= i).reduce((sum, s) => sum + s.text.length, 0);
+    }
+    return end;
+  }
+
+  /** Scrubs text that is about to go out and remembers how it ended. */
+  private emit(text: string) {
+    const out = scrubTerminal(text, this.root, this.home, this.before);
+    this.before = (this.before + splitEscapes(text).plain).slice(-PATH_CONTEXT);
+    return out;
   }
 
   push(bytes: Uint8Array): string {
     const text = this.tail + this.decoder.decode(bytes, { stream: true });
     const end = this.safeEnd(text);
     this.tail = text.slice(end);
-    return scrubPaths(text.slice(0, end), this.root, this.home);
+    return this.emit(text.slice(0, end));
   }
 
   /** Output paused: releases held text, but a character split across chunks waits for its rest. */
   drain(): string {
     const text = this.tail;
     this.tail = "";
-    return scrubPaths(text, this.root, this.home);
+    return this.emit(text);
   }
 
   flush(): string {
     const text = this.tail + this.decoder.decode();
     this.tail = "";
-    return scrubPaths(text, this.root, this.home);
+    return this.emit(text);
   }
 }
 
 /**
- * Host: lets the debugger clean what the Run terminal mirrors to guests while a debug session runs.
+ * Host: cleans what the Run and Build terminal mirrors to guests; nothing is mirrored without it.
  * `filter` returns the chunk to send ("" for none); `later` sends text it held back.
  */
 export const termOut = { filter: null as ((b64: string, later: (b64: string) => void) => string) | null };
