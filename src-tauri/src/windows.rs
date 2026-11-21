@@ -109,14 +109,42 @@ fn window_of(pid: u32, parents: &HashMap<u32, u32>, shells: &[(u32, String)]) ->
     None
 }
 
-/// The first of these processes that runs in a terminal of a window.
+/// The window whose folder holds `cwd`; the innermost if folders are nested.
+fn window_of_cwd(cwd: &Path, roots: &[(String, PathBuf)]) -> Option<String> {
+    roots.iter().filter(|(_, r)| cwd.starts_with(r)).max_by_key(|(_, r)| r.components().count()).map(|(l, _)| l.clone())
+}
+
+/// Working folder of a process.
+#[cfg(target_os = "linux")]
+fn process_cwd(pid: u32) -> Option<PathBuf> {
+    std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
+}
+
+#[cfg(target_os = "macos")]
+fn process_cwd(pid: u32) -> Option<PathBuf> {
+    let out = std::process::Command::new("/usr/sbin/lsof").args(["-a", "-p", &pid.to_string(), "-d", "cwd", "-Fn"]).output().ok()?;
+    String::from_utf8_lossy(&out.stdout).lines().find_map(|l| l.strip_prefix('n').map(PathBuf::from))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn process_cwd(_pid: u32) -> Option<PathBuf> {
+    None
+}
+
+/// The window a client process belongs to: the one whose terminal runs it, else the one whose
+/// folder it works in (an agent started in another terminal).
 pub fn window_of_processes(app: &AppHandle, pids: &[u32]) -> Option<String> {
     let shells = crate::pty::shell_owners(app);
-    if shells.is_empty() {
-        return None;
+    if !shells.is_empty() {
+        let parents = crate::power::process_parents();
+        if let Some(w) = pids.iter().find_map(|p| window_of(*p, &parents, &shells)) {
+            return Some(w);
+        }
     }
-    let parents = crate::power::process_parents();
-    pids.iter().find_map(|p| window_of(*p, &parents, &shells))
+    let roots: Vec<(String, PathBuf)> = app.state::<Registry>().entries.lock().unwrap().iter()
+        .filter_map(|e| Some((e.label.clone(), Path::new(e.root.as_ref()?).canonicalize().ok()?)))
+        .collect();
+    pids.iter().find_map(|p| window_of_cwd(&process_cwd(*p)?, &roots))
 }
 
 /// The window's page is (re)loading: what its old page started has no UI any more.
@@ -582,6 +610,15 @@ mod tests {
     #[test]
     fn the_same_folder_twice_is_one_window() {
         assert_eq!(plan(&v(&["/c", "/c"]), &[], &open(&[("main", Some("/a"))]), Some("main"), Start::Running).len(), 1);
+    }
+
+    #[test]
+    fn a_client_outside_omega_belongs_to_the_folder_it_works_in() {
+        let roots = vec![("main".to_string(), PathBuf::from("/p/a")), ("w-b".to_string(), PathBuf::from("/p/a/sub")), ("w-c".to_string(), PathBuf::from("/p/ab"))];
+        assert_eq!(window_of_cwd(Path::new("/p/a/x"), &roots).as_deref(), Some("main"));
+        assert_eq!(window_of_cwd(Path::new("/p/a/sub/y"), &roots).as_deref(), Some("w-b"), "the innermost");
+        assert_eq!(window_of_cwd(Path::new("/p/ab"), &roots).as_deref(), Some("w-c"), "whole path parts only");
+        assert_eq!(window_of_cwd(Path::new("/q"), &roots), None);
     }
 
     #[test]

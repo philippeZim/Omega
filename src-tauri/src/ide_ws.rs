@@ -38,6 +38,8 @@ struct Inner {
     clients: HashMap<u64, (mpsc::UnboundedSender<String>, String)>,
     /// connection id → the window whose terminal runs that client
     client_windows: HashMap<u64, String>,
+    /// Connections whose window is still being looked up.
+    looking_up: std::collections::HashSet<u64>,
     /// Open tool calls: the window that has to answer, and where its answer goes.
     pending: HashMap<u64, (String, oneshot::Sender<Value>)>,
 }
@@ -269,6 +271,17 @@ fn client_pids(port: u16) -> Vec<u32> {
     netstat_pids(&String::from_utf8_lossy(&out.stdout), port).into_iter().filter(|p| *p != me).collect()
 }
 
+/// How long a client's first tool call waits to learn which window it belongs to.
+const LOOKUP_WAIT: Duration = Duration::from_millis(1500);
+
+/// Waits until `pending` is false, at most `limit`.
+async fn wait_for_lookup(pending: impl Fn() -> bool, limit: Duration) {
+    let start = std::time::Instant::now();
+    while pending() && start.elapsed() < limit {
+        tokio::time::sleep(Duration::from_millis(15)).await;
+    }
+}
+
 /// Who gets a notification from `sender`: a client in a window's terminal hears that window; one
 /// started elsewhere hears the focused window.
 fn hears(client_window: Option<&str>, sender: &str, focused: Option<&str>) -> bool {
@@ -317,14 +330,16 @@ async fn serve(app: AppHandle, stream: tokio::net::TcpStream, token: String) {
     app.state::<IdeState>().inner.lock().unwrap().clients.insert(conn, (tx.clone(), String::new()));
     emit_clients(&app);
     if let Some(port) = peer_port {
+        app.state::<IdeState>().inner.lock().unwrap().looking_up.insert(conn);
         // Looking through the process table takes a moment: not on the connection's task.
         let app2 = app.clone();
         tauri::async_runtime::spawn_blocking(move || {
-            let Some(window) = crate::windows::window_of_processes(&app2, &client_pids(port)) else { return };
+            let window = crate::windows::window_of_processes(&app2, &client_pids(port));
             let st = app2.state::<IdeState>();
             let mut inner = st.inner.lock().unwrap();
-            if inner.clients.contains_key(&conn) {
-                inner.client_windows.insert(conn, window);
+            inner.looking_up.remove(&conn);
+            if let (Some(w), true) = (window, inner.clients.contains_key(&conn)) {
+                inner.client_windows.insert(conn, w);
             }
         });
     }
@@ -408,6 +423,7 @@ async fn handle(app: &AppHandle, conn: u64, msg: &Value) -> Option<String> {
             let name = msg.pointer("/params/name").and_then(Value::as_str).unwrap_or("").to_string();
             let args = msg.pointer("/params/arguments").cloned().unwrap_or(json!({}));
             let call = NEXT.fetch_add(1, Ordering::SeqCst);
+            wait_for_lookup(|| app.state::<IdeState>().inner.lock().unwrap().looking_up.contains(&conn), LOOKUP_WAIT).await;
             let mine = app.state::<IdeState>().inner.lock().unwrap().client_windows.get(&conn).cloned();
             let Some(owner) = call_window(mine.as_deref(), |w| app.get_webview_window(w).is_some(), crate::windows::target(app)) else {
                 return Some(error(&id, -32000, "no window open"));
@@ -463,6 +479,21 @@ mod tests {
 
     fn parse(s: &str) -> Value {
         serde_json::from_str(s).unwrap()
+    }
+
+    #[tokio::test]
+    async fn the_first_call_waits_for_the_lookup_but_not_forever() {
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let d = done.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(60)).await;
+            d.store(true, Ordering::SeqCst);
+        });
+        wait_for_lookup(|| !done.load(Ordering::SeqCst), Duration::from_secs(5)).await;
+        assert!(done.load(Ordering::SeqCst), "waited for the answer");
+        let start = std::time::Instant::now();
+        wait_for_lookup(|| true, Duration::from_millis(50)).await;
+        assert!(start.elapsed() < Duration::from_secs(2), "a lookup that hangs doesn't block the call");
     }
 
     #[test]
