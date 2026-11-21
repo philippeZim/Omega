@@ -224,37 +224,45 @@ export function buildRegex(global = true): RegExp | null {
   }
 }
 
-/** Replaces the non-empty matches of one line, the ones the search shows. */
-function replaceInLine(line: string, re: RegExp, at: RegExp): { text: string; count: number } {
-  let out = "";
-  let last = 0;
+/** Expands a replacement string as `String.replace` does; a callback doesn't get that for free. */
+function expandReplacement(template: string, match: string, rest: unknown[], line: string): string {
+  const named = typeof rest.at(-1) === "object" ? (rest.at(-1) as Record<string, string | undefined>) : undefined;
+  const groups = rest.length - (named ? 3 : 2);
+  const offset = rest[groups] as number;
+  return template.replace(/\$(?:([$&`'])|(\d\d?)|<([^>]*)>)/g, (all, sign?: string, digits?: string, name?: string) => {
+    if (sign === "$") return "$";
+    if (sign === "&") return match;
+    if (sign === "`") return line.slice(0, offset);
+    if (sign === "'") return line.slice(offset + match.length);
+    if (name !== undefined) return named ? (named[name] ?? "") : all;
+    const n = Number(digits);
+    if (n >= 1 && n <= groups) return (rest[n - 1] as string | undefined) ?? "";
+    // "$12" with one group is group 1 and a literal 2.
+    const first = Number(digits![0]);
+    if (digits!.length === 2 && n > groups && first >= 1 && first <= groups) return ((rest[first - 1] as string | undefined) ?? "") + digits![1];
+    return all;
+  });
+}
+
+/** Replaces the non-empty matches of one line, the ones the search shows, in one pass. */
+function replaceInLine(line: string, re: RegExp): { text: string; count: number } {
   let count = 0;
-  for (const m of line.matchAll(re)) {
-    if (!m[0].length) continue;
-    const end = m.index + m[0].length;
-    let rep = find.replacement;
-    if (find.regex) {
-      // The native replacement handles $1, $<name>, $&, $$ etc.; `at` applies it to this match only.
-      at.lastIndex = m.index;
-      const replaced = line.replace(at, find.replacement);
-      rep = replaced.slice(m.index, replaced.length - (line.length - end));
-    }
-    out += line.slice(last, m.index) + rep;
-    last = end;
+  const text = line.replace(re, (match: string, ...rest: unknown[]) => {
+    if (!match) return "";
     count++;
-  }
-  return count ? { text: out + line.slice(last), count } : { text: line, count };
+    return find.regex ? expandReplacement(find.replacement, match, rest, line) : find.replacement;
+  });
+  return { text, count };
 }
 
 /** Replaces line by line like the backend search, so `^` and `$` mean the same and a CRLF stays. */
 function replaceText(text: string, re: RegExp, onlyLine?: number): { text: string; count: number } {
-  const at = new RegExp(re.source, re.flags.replace("g", "") + "y");
   const lines = text.split("\n");
   let count = 0;
   lines.forEach((raw, i) => {
     if (onlyLine !== undefined && i !== onlyLine - 1) return;
     const cr = i < lines.length - 1 && raw.endsWith("\r");
-    const r = replaceInLine(cr ? raw.slice(0, -1) : raw, re, at);
+    const r = replaceInLine(cr ? raw.slice(0, -1) : raw, re);
     if (!r.count) return;
     lines[i] = r.text + (cr ? "\r" : "");
     count += r.count;

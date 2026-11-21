@@ -82,6 +82,16 @@ describe("replaceInFile matches like the line-based search", () => {
     expect(await replaced("a\nb\n", "a\\nb", "X")).toEqual({ count: 0, text: "a\nb\n" });
   });
 
+  it.each([
+    ["(a)(b)", "$2$1"], ["(a)(b)", "$&-$&"], ["(a)(b)", "$$1"], ["(a)", "$1$2"], ["(a)", "$12"], ["(a)", "$01"], ["(a)", "$00"], ["(a)", "$0"],
+    ["(a)|(z)", "[$2]"], ["(?<x>a)(?<y>b)", "$<y>$<x>"], ["(?<x>a)", "$<nope>|$<x"], ["(a)", "$<x>"], ["b", "$`|$'"], ["a", "$"], ["a", "$x $"],
+    ["(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)", "$10$1$11"], ["(?<x>a)", "$1$&$`$'$$"],
+  ])("expands %s -> %s like the native replace", async (query, replacement) => {
+    const line = "xabcdefghijy abcdefghij z";
+    const native = line.replace(new RegExp(query, "gu"), replacement);
+    expect((await replaced(line, query, replacement)).text).toBe(native);
+  });
+
   it("expands groups and the line context per match", async () => {
     expect(await replaced("ab ab\nab\n", "(a)(b)", "$2$1")).toEqual({ count: 3, text: "ba ba\nba\n" });
     expect(await replaced("xay\nz\n", "a", "[$`|$']")).toEqual({ count: 1, text: "x[x|y]y\nz\n" });
