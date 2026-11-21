@@ -13,10 +13,12 @@ import { listen } from "@tauri-apps/api/event";
 import { collab, broadcast, onCollabMessage, sessionEndHooks } from "./collab.svelte";
 import { share, hostKeyChecked, syncSharedTabs, openRemote, isRemote } from "./share.svelte";
 import { blockedByCapability } from "./guard";
-import { call, isObj, publish, registerMethod, registerTopic, rpcErrorText, RpcFail, subscribe } from "./rpc.svelte";
+import { call, hasCapability, isObj, publish, registerMethod, registerTopic, rpcErrorText, RpcFail, subscribe } from "./rpc.svelte";
 import { app, activeTab, activate, closeTab, flushAutosave, newFile, openFile, setMode, setRoot } from "../state.svelte";
 import { runner, runAction, refreshProject, runnerRemote } from "../code/runner.svelte";
 import type { Action, Project } from "../code/projects";
+import { packageAction, PACKAGE_LIMITS, quotePackageArg, splitPackages, validPackages } from "../code/packageInput";
+import { pythonRemoveFlags, type Suggestion } from "../code/packages";
 import { remoteTerminal, writeTerminal, closeTerminal, terms, isTaskPty, setRunEcho, interruptTask, taskState, type TaskState } from "../terminal.svelte";
 import { showView } from "../layout.svelte";
 import * as ed from "../editor";
@@ -68,8 +70,8 @@ async function hostSession(): Promise<SessionInfo> {
           run: info(p.run),
           build: info(p.build),
           test: info(p.test),
-          // Actions that ask for input (e.g. "add package") would prompt on the host's screen.
-          more: p.more.filter((m) => !m.ask).map(info).filter((m): m is ActionInfo => !!m),
+          // Actions that ask for input only go out as package actions: the guest prompts for those.
+          more: p.more.filter((m) => !m.ask || packageAction(p.kind, m.id)).map(info).filter((m): m is ActionInfo => !!m),
         }
       : null,
   };
@@ -105,6 +107,8 @@ $effect.root(() => {
   });
 });
 
+const guestName = (peer: string) => collab.participants.find((p) => p.peer === peer)?.name ?? t("ai.collab.guest");
+
 function findAction(id: string): Action | null {
   const p = runner.project;
   if (!p) return null;
@@ -115,6 +119,8 @@ declare module "./rpc.svelte" {
   interface RpcMethods {
     "run.start": { params: { action: string }; result: null };
     "run.stop": { params: { taskId: number }; result: { stopped: boolean } };
+    "packages.run": { params: { action: string; packages: string[] }; result: null };
+    "packages.suggest": { params: { action: string; query: string }; result: Suggestion[] };
   }
   interface RpcTopics {
     "run.state": TaskState;
@@ -128,8 +134,8 @@ registerMethod({
   handle: ({ action }, { peer }) => {
     const a = findAction(action);
     if (!a) throw new RpcFail("unavailable");
-    const who = collab.participants.find((p) => p.peer === peer)?.name ?? t("ai.collab.guest");
-    ui.toast(t("ai.collab.guestRuns", { name: who, action: a.label }));
+    if (packageAction(runner.project!.kind, a.id) && !hasCapability(peer, "packages")) throw new RpcFail("forbidden");
+    ui.toast(t("ai.collab.guestRuns", { name: guestName(peer), action: a.label }));
     // Not awaited: it can wait for the host (missing tools), and the guest sees the run state anyway.
     void Promise.resolve(runAction(a)).catch((e) => console.error("guest run", e));
     return null;
@@ -141,6 +147,56 @@ registerMethod({
   capability: "run",
   validate: (raw) => (isObj(raw) && Number.isSafeInteger(raw.taskId) ? { taskId: raw.taskId as number } : null),
   handle: ({ taskId }) => ({ stopped: interruptTask(taskId) }),
+});
+
+const isShortString = (v: unknown, max: number): v is string => typeof v === "string" && v.length <= max;
+
+/** The current project's package action with this id. */
+function findPackageAction(id: string) {
+  const p = runner.project;
+  const pkg = p && packageAction(p.kind, id);
+  const action = pkg && p.more.find((m) => m.id === id && m.cmd);
+  return p && pkg && action ? { project: p, pkg, action } : null;
+}
+
+registerMethod({
+  name: "packages.run",
+  capability: "packages",
+  validate: (raw) => {
+    if (!isObj(raw) || !isShortString(raw.action, 64) || !Array.isArray(raw.packages) || raw.packages.length > PACKAGE_LIMITS.count) return null;
+    if (!raw.packages.every((x) => isShortString(x, PACKAGE_LIMITS.length))) return null;
+    return { action: raw.action, packages: raw.packages as string[] };
+  },
+  handle: async ({ action, packages }, { peer, signal }) => {
+    const found = findPackageAction(action);
+    if (!found) throw new RpcFail("unavailable");
+    const { project, pkg, action: a } = found;
+    let arg: string | undefined;
+    if (pkg.input) {
+      if (!validPackages(project.kind, pkg.input, packages)) throw new RpcFail("invalid_package");
+      const flags = project.kind === "uv" && pkg.input === "remove" ? await pythonRemoveFlags(project.root, packages) : [];
+      if (!flags) throw new RpcFail("invalid_package");
+      if (signal.aborted) throw new RpcFail("cancelled");
+      if (runner.project?.root !== project.root || runner.project.kind !== project.kind) throw new RpcFail("unavailable");
+      arg = [...flags, ...packages.map((x) => quotePackageArg(x))].join(" ");
+    } else if (packages.length) throw new RpcFail("invalid_package");
+    const label = a.label.replace("…", "");
+    ui.toast(packages.length ? t("ai.collab.guestPackages", { name: guestName(peer), action: label, packages: packages.join(", ") }) : t("ai.collab.guestRuns", { name: guestName(peer), action: label }));
+    void Promise.resolve(runAction(a, arg)).catch((e) => console.error("guest packages", e));
+    return null;
+  },
+});
+
+registerMethod({
+  name: "packages.suggest",
+  capability: "packages",
+  validate: (raw) => (isObj(raw) && isShortString(raw.action, 64) && isShortString(raw.query, 100) ? { action: raw.action, query: raw.query } : null),
+  handle: async ({ action, query }) => {
+    const a = findPackageAction(action)?.action;
+    // The host looks this up in the public registries, so only text that could be a name goes out.
+    if (!a?.suggest || !/^[\w@./-]*$/.test(query.trim())) return [];
+    return (await a.suggest(query)).slice(0, 40).map(({ value, detail, tag }) => ({ value, detail, tag }));
+  },
 });
 
 registerTopic({ name: "run.state", capability: null, snapshot: taskState });
@@ -291,11 +347,43 @@ async function stopOnHost() {
   if (!r.ok) ui.toast(rpcErrorText(r.error.code), "error");
 }
 
-async function runOnHost(a: Action) {
-  if (blockedByCapability("run")) return;
+function showRemoteRun() {
   ensureRemoteTerminal();
   showView("terminal");
   terms.active = remoteTermId;
+}
+
+const isSuggestion = (s: unknown): s is Suggestion =>
+  isObj(s) && typeof s.value === "string" && (s.detail === undefined || s.detail === null || typeof s.detail === "string") && (s.tag === undefined || s.tag === null || typeof s.tag === "string");
+
+/** Suggestions come from the host: it knows the project's dependencies. */
+const suggestOnHost = (action: string) => async (query: string) => {
+  const r = await call("packages.suggest", { action, query });
+  return r.ok && Array.isArray(r.value) ? r.value.filter(isSuggestion) : [];
+};
+
+/** A package action: the guest is asked here, the host checks the answer and runs it. */
+async function packagesOnHost(a: Action, kind: string) {
+  const pkg = packageAction(kind, a.id);
+  if (!pkg || blockedByCapability("packages")) return;
+  let packages: string[] = [];
+  if (pkg.input) {
+    const ask = kind === "cargo" ? t("code.act.askCrate") : pkg.example ? t("code.act.askPackage", { example: pkg.example }) : t("code.act.askPackagePlain");
+    const v = await ui.prompt(a.label.replace("…", ""), "", ask, undefined, kind === "cargo" ? undefined : suggestOnHost(a.id));
+    if (!v || !joined) return;
+    packages = splitPackages(v);
+    if (!validPackages(kind, pkg.input, packages)) return ui.toast(t("ai.collab.packageInvalid"), "error");
+  }
+  showRemoteRun();
+  const r = await call("packages.run", { action: a.id, packages });
+  if (!r.ok) ui.toast(r.error.code === "invalid_package" ? t("ai.collab.packageInvalid") : rpcErrorText(r.error.code), "error");
+}
+
+async function runOnHost(a: Action) {
+  const kind = hostProject?.kind;
+  if (kind && packageAction(kind, a.id)) return packagesOnHost(a, kind);
+  if (blockedByCapability("run")) return;
+  showRemoteRun();
   const r = await call("run.start", { action: a.id });
   if (!r.ok) ui.toast(rpcErrorText(r.error.code), "error");
 }
