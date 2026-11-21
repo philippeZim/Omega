@@ -134,6 +134,7 @@ pub fn run() {
             windows::windows_unsaved,
             windows::window_unsaved_reply,
             windows::windows_prepare_exit,
+            windows::windows_cancel_exit,
             mcp_control::mcp_control_start,
             mcp_control::mcp_control_stop,
             mcp_control::mcp_reply,

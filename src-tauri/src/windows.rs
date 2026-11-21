@@ -380,9 +380,18 @@ fn focus(app: &AppHandle, label: &str) {
     }
 }
 
+/// An update is about to restart the app.
 #[tauri::command]
 pub fn windows_prepare_exit(app: AppHandle) {
     exiting(&app);
+    crate::cli::mark_relaunch();
+}
+
+/// The restart failed and the app keeps running: closing a window forgets it again.
+#[tauri::command]
+pub fn windows_cancel_exit(app: AppHandle) {
+    app.state::<Registry>().exiting.store(false, Ordering::SeqCst);
+    crate::cli::clear_relaunch();
 }
 
 #[tauri::command]

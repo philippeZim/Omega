@@ -64,7 +64,12 @@ export async function checkForUpdates(manual = false) {
       }
     });
     await invoke("windows_prepare_exit").catch(() => {});
-    await relaunch();
+    try {
+      await relaunch();
+    } catch (e) {
+      await invoke("windows_cancel_exit").catch(() => {});
+      throw e;
+    }
   } catch (e) {
     ui.toast(t("app.update.failed", { error: String(e) }), "error");
   } finally {

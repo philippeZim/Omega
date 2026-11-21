@@ -22,6 +22,8 @@ const MAX_PATHS: usize = 256;
 const MAX_REQUEST: u64 = 1024 * 1024;
 /// How long a second process waits for a first one that is still starting.
 const WAIT_FOR_APP: Duration = Duration::from_secs(15);
+/// A mark older than this is from a restart that never happened.
+const RELAUNCH_MARK_AGE: Duration = Duration::from_secs(60);
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
 
 const USAGE: &str = "Usage: omega [--] [folder|file]...\n\n  omega            open Omega\n  omega .          open the current folder\n  omega <folder>   focus its window, or open a new one\n  omega <file>     open it as a tab in the active window\n  omega -- -name   open a path that starts with a dash\n";
@@ -60,7 +62,8 @@ fn resolve(arg: &OsStr, cwd: &Path, req: &mut Request) -> Result<(), String> {
     Ok(())
 }
 
-fn parse(args: Vec<OsString>, cwd: &Path) -> Result<Parsed, String> {
+/// `lenient`: a detached copy has no terminal to complain to, so it skips what it can't open.
+fn parse(args: Vec<OsString>, cwd: &Path, lenient: bool) -> Result<Parsed, String> {
     let mut req = Request::default();
     let mut only_paths = false;
     for arg in args {
@@ -77,10 +80,16 @@ fn parse(args: Vec<OsString>, cwd: &Path) -> Result<Parsed, String> {
                 _ => {}
             }
             if arg.as_encoded_bytes().first() == Some(&b'-') {
+                if lenient {
+                    continue;
+                }
                 return Err(format!("unknown option: {} (use `omega -- {0}` for a path)", arg.to_string_lossy()));
             }
         }
-        resolve(&arg, cwd, &mut req)?;
+        match resolve(&arg, cwd, &mut req) {
+            Err(_) if lenient => continue,
+            r => r?,
+        }
         if req.dirs.len() + req.files.len() > MAX_PATHS {
             return Err(format!("too many paths (at most {MAX_PATHS})"));
         }
@@ -147,16 +156,21 @@ fn private_dir(dir: &Path) -> Option<PathBuf> {
     (m.is_dir() && m.uid() == uid && m.mode() & 0o077 == 0).then(|| dir.to_path_buf())
 }
 
+/// Where the lock and channel live. On macOS `TMPDIR` differs between a terminal and a launched
+/// app, so two starts would miss each other there: it uses a folder in the home instead.
+#[cfg(unix)]
+fn runtime_path(xdg: Option<PathBuf>, home: &Path, temp: &Path, macos: bool, uid: u32) -> PathBuf {
+    match xdg {
+        Some(b) => b.join("omega").join("cli"),
+        None if macos => home.join("Library").join("Application Support").join("Omega").join("cli"),
+        None => temp.join(format!("omega-{uid}")),
+    }
+}
+
 #[cfg(unix)]
 fn runtime_dir() -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).filter(|p| p.is_dir());
-    match base {
-        Some(b) => {
-            std::fs::create_dir_all(b.join("omega")).ok()?;
-            private_dir(&b.join("omega").join("cli"))
-        }
-        None => private_dir(&std::env::temp_dir().join(format!("omega-{}", unsafe { libc::geteuid() }))),
-    }
+    let xdg = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).filter(|p| p.is_dir());
+    private_dir(&runtime_path(xdg, &crate::env::home(), &std::env::temp_dir(), cfg!(target_os = "macos"), unsafe { libc::geteuid() }))
 }
 
 #[cfg(windows)]
@@ -378,6 +392,42 @@ fn detached_command(req: &Request) -> std::io::Result<std::process::Command> {
     Ok(c)
 }
 
+/// Whether to start a detached copy: from a terminal, unless this already is one or a restart.
+/// Debug builds stay attached so `cargo run` keeps its logs; `OMEGA_DETACH=1` tests the real path.
+fn should_detach(terminal: bool, detached: bool, relaunch: bool, debug: bool, no_detach: bool, force: bool) -> bool {
+    terminal && !detached && !relaunch && !no_detach && (!debug || force)
+}
+
+// ------------------------------------------------------------------ restart after an update
+
+fn relaunch_mark(dir: &Path, key: &str) -> PathBuf {
+    dir.join(format!("{key}.relaunch"))
+}
+
+/// Consumes the mark the old process left. Tauri's restart starts the new process while the old
+/// one still holds the lock; without the mark it would hand over to the dying process and exit.
+fn take_relaunch_mark(dir: &Path, key: &str, max_age: Duration) -> bool {
+    let path = relaunch_mark(dir, key);
+    let Ok(meta) = std::fs::symlink_metadata(&path) else { return false };
+    let fresh = meta.is_file() && meta.modified().ok().and_then(|m| m.elapsed().ok()).is_some_and(|age| age <= max_age);
+    let _ = std::fs::remove_file(&path);
+    fresh
+}
+
+/// The app is about to restart itself.
+pub fn mark_relaunch() {
+    if let Some((dir, key)) = PROFILE.get() {
+        let _ = std::fs::write(relaunch_mark(dir, key), "");
+    }
+}
+
+/// The restart didn't happen.
+pub fn clear_relaunch() {
+    if let Some((dir, key)) = PROFILE.get() {
+        let _ = std::fs::remove_file(relaunch_mark(dir, key));
+    }
+}
+
 // ------------------------------------------------------------------ startup
 
 /// What the first process keeps: the lock (for its lifetime), the channel and its own request.
@@ -403,7 +453,12 @@ pub fn startup() -> Startup {
         unsafe { std::env::remove_var(DETACHED_ENV) };
     }
     let cwd = std::env::current_dir().unwrap_or_else(|_| crate::env::home());
-    let request = match parse(std::env::args_os().skip(1).collect(), &cwd) {
+    let key = this_profile();
+    let private = runtime_dir();
+    let relaunch = private.as_deref().is_some_and(|d| take_relaunch_mark(d, &key, RELAUNCH_MARK_AGE));
+    // A restart brings back the session; the paths of the original command may be long gone.
+    let args = if relaunch { Vec::new() } else { std::env::args_os().skip(1).collect() };
+    let request = match parse(args, &cwd, detached) {
         Ok(Parsed::Help) => {
             print!("{USAGE}");
             std::process::exit(0)
@@ -415,11 +470,10 @@ pub fn startup() -> Startup {
         Ok(Parsed::Open(r)) => r,
         Err(e) => fail(&e),
     };
-    let Some(dir) = runtime_dir() else {
+    let Some(dir) = private else {
         // No private place for the channel: run as a plain single process.
         return Startup { listener: None, request };
     };
-    let key = this_profile();
     let Ok(lock) = File::options().create(true).truncate(false).write(true).open(dir.join(format!("{key}.lock"))) else {
         return Startup { listener: None, request };
     };
@@ -428,18 +482,20 @@ pub fn startup() -> Startup {
         match lock.try_lock() {
             Ok(()) => break,
             Err(std::fs::TryLockError::WouldBlock) => {
-                if forward(&dir, &key, &request).is_ok() {
+                // After an update the holder is the old process, on its way out: wait for it.
+                if !relaunch && forward(&dir, &key, &request).is_ok() {
                     std::process::exit(0);
                 }
                 if Instant::now() > deadline {
-                    fail("the running Omega does not respond");
+                    fail(if relaunch { "the previous Omega did not exit" } else { "the running Omega does not respond" });
                 }
                 std::thread::sleep(Duration::from_millis(100));
             }
             Err(_) => return Startup { listener: None, request },
         }
     }
-    if terminal && !detached {
+    let env_set = |k: &str| std::env::var_os(k).is_some_and(|v| !v.is_empty());
+    if should_detach(terminal, detached, relaunch, cfg!(debug_assertions), env_set("OMEGA_NO_DETACH"), env_set("OMEGA_DETACH")) {
         let _ = lock.unlock();
         match detached_command(&request).and_then(|mut c| c.spawn()) {
             Ok(_) => std::process::exit(0),
@@ -492,11 +548,56 @@ mod tests {
     }
 
     #[test]
+    fn a_restart_finds_its_mark_once_and_ignores_an_old_one() {
+        let t = tempfile::tempdir().unwrap();
+        assert!(!take_relaunch_mark(t.path(), "k", RELAUNCH_MARK_AGE), "a normal start");
+        std::fs::write(relaunch_mark(t.path(), "k"), "").unwrap();
+        assert!(!take_relaunch_mark(t.path(), "other", RELAUNCH_MARK_AGE), "another profile's");
+        assert!(take_relaunch_mark(t.path(), "k", RELAUNCH_MARK_AGE));
+        assert!(!take_relaunch_mark(t.path(), "k", RELAUNCH_MARK_AGE), "used up");
+        std::fs::write(relaunch_mark(t.path(), "k"), "").unwrap();
+        std::thread::sleep(Duration::from_millis(30));
+        assert!(!take_relaunch_mark(t.path(), "k", Duration::from_millis(1)), "stale");
+        assert!(!relaunch_mark(t.path(), "k").exists(), "a stale mark is removed too");
+    }
+
+    #[test]
+    fn a_detached_copy_skips_paths_that_are_gone() {
+        let t = tempfile::tempdir().unwrap();
+        std::fs::write(t.path().join("ok"), "x").unwrap();
+        let Parsed::Open(r) = parse(os(&["gone", "-weird", "ok"]), t.path(), true).unwrap() else { panic!() };
+        assert_eq!(r.files, [real(&t.path().join("ok"))]);
+        assert!(parse(os(&["gone"]), t.path(), false).is_err());
+    }
+
+    #[test]
+    fn detaches_only_a_real_terminal_start_of_a_release_build() {
+        assert!(should_detach(true, false, false, false, false, false));
+        assert!(!should_detach(false, false, false, false, false, false), "no terminal");
+        assert!(!should_detach(true, true, false, false, false, false), "already detached");
+        assert!(!should_detach(true, false, true, false, false, false), "a restart");
+        assert!(!should_detach(true, false, false, true, false, false), "cargo run");
+        assert!(!should_detach(true, false, false, false, true, false), "OMEGA_NO_DETACH");
+        assert!(should_detach(true, false, false, true, false, true), "OMEGA_DETACH in a debug build");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_macos_lock_path_does_not_depend_on_tmpdir() {
+        let home = Path::new("/Users/u");
+        let a = runtime_path(None, home, Path::new("/var/folders/a/T"), true, 501);
+        let b = runtime_path(None, home, Path::new("/var/folders/b/T"), true, 501);
+        assert_eq!(a, b);
+        assert_eq!(runtime_path(Some("/run/user/1".into()), home, Path::new("/tmp"), false, 1), Path::new("/run/user/1/omega/cli"));
+        assert_eq!(runtime_path(None, home, Path::new("/tmp"), false, 1), Path::new("/tmp/omega-1"));
+    }
+
+    #[test]
     fn resolves_against_the_callers_folder() {
         let t = tempfile::tempdir().unwrap();
         std::fs::create_dir(t.path().join("my dir")).unwrap();
         std::fs::write(t.path().join("my dir/a b.txt"), "x").unwrap();
-        let Parsed::Open(r) = parse(os(&[".", "my dir", "my dir/a b.txt"]), t.path()).unwrap() else { panic!() };
+        let Parsed::Open(r) = parse(os(&[".", "my dir", "my dir/a b.txt"]), t.path(), false).unwrap() else { panic!() };
         assert_eq!(r.dirs, [real(t.path()), real(&t.path().join("my dir"))]);
         assert_eq!(r.files, [real(&t.path().join("my dir/a b.txt"))]);
     }
@@ -505,17 +606,17 @@ mod tests {
     fn a_dash_path_needs_the_separator() {
         let t = tempfile::tempdir().unwrap();
         std::fs::write(t.path().join("-x"), "x").unwrap();
-        assert!(parse(os(&["-x"]), t.path()).unwrap_err().contains("unknown option"));
-        let Parsed::Open(r) = parse(os(&["--", "-x"]), t.path()).unwrap() else { panic!() };
+        assert!(parse(os(&["-x"]), t.path(), false).unwrap_err().contains("unknown option"));
+        let Parsed::Open(r) = parse(os(&["--", "-x"]), t.path(), false).unwrap() else { panic!() };
         assert_eq!(r.files, [real(&t.path().join("-x"))]);
-        assert_eq!(parse(os(&["--help"]), t.path()).unwrap(), Parsed::Help);
-        assert!(matches!(parse(os(&["--", "--help"]), t.path()), Err(e) if e.contains("no such")));
+        assert_eq!(parse(os(&["--help"]), t.path(), false).unwrap(), Parsed::Help);
+        assert!(matches!(parse(os(&["--", "--help"]), t.path(), false), Err(e) if e.contains("no such")));
     }
 
     #[test]
     fn a_missing_path_is_an_error() {
         let t = tempfile::tempdir().unwrap();
-        assert!(parse(os(&["nope"]), t.path()).unwrap_err().contains("no such file or folder: nope"));
+        assert!(parse(os(&["nope"]), t.path(), false).unwrap_err().contains("no such file or folder: nope"));
     }
 
     #[cfg(unix)]
@@ -527,7 +628,7 @@ mod tests {
         if std::fs::write(t.path().join(&name), "x").is_err() {
             return; // the filesystem doesn't allow such names
         }
-        assert!(parse(vec![name], t.path()).unwrap_err().contains("UTF-8"));
+        assert!(parse(vec![name], t.path(), false).unwrap_err().contains("UTF-8"));
     }
 
     #[test]
