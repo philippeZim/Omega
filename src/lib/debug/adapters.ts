@@ -1,7 +1,8 @@
 /** Per-language debug setup: adapter installation, build step and DAP launch configuration. */
 import { invoke } from "@tauri-apps/api/core";
 import { fsApi, basename, dirname, joinPath } from "../api";
-import { langFor } from "../code/languages";
+import { effectiveLang, isForeignLang } from "../code/langOverride.svelte";
+import { refreshRunCopy, runCopyName, workDir } from "../code/langRun";
 import { detectProject, pythonEntry, cmakeConfigure, cmakeExecutable } from "../code/projects";
 import { duneProjectIssue, duneSourcePath, nearestDuneProject, duneTarget, findDuneExecutables, pickExecutable, sameToolchain } from "../code/dune";
 import { OCAML_PROGRAM_ENV, managedOcaml } from "../code/ocamlTools";
@@ -24,6 +25,8 @@ export interface Plan {
   launch: Json;
   /** The file to show for a path the adapter reports (a build copy → its source). */
   sourcePath?: (path: string) => Promise<string>;
+  /** The adapter works on a private copy of `file`: breakpoints and stops are translated. */
+  shadow?: { file: string; copy: string };
 }
 
 export interface Ctx {
@@ -213,10 +216,21 @@ async function mojoDebugger(tools: string, ctx: Ctx) {
 }
 
 export async function planFor(ctx: Ctx): Promise<Plan> {
-  const lang = langFor(ctx.file)?.id;
+  const info = effectiveLang(ctx.file);
+  const lang = info?.id;
   const project = await detectProject(ctx.file, ctx.workspace);
   const root = project?.root ?? dirname(ctx.file);
   const tools = await toolsDir();
+  // Set to a language its extension doesn't stand for, and not part of a project of that language.
+  const alone = isForeignLang(ctx.file) && (!project || project.isolated === true);
+  // These debuggers need a build or language server project around the file.
+  if (alone && (lang === "java" || lang === "scala" || lang === "ocaml")) throw new Error(t("code.lang.noDebugAlone", { lang: info!.label }));
+  const ownCopy = async () => {
+    const name = runCopyName(lang!, await fsApi.readFile(ctx.file))!;
+    const copy = await refreshRunCopy(ctx.file, name);
+    return { file: ctx.file, copy };
+  };
+  const ownProgram = async () => `${await workDir(ctx.file, "bin")}/${exe("omega_dbg")}`;
 
   switch (lang) {
     case "python": {
@@ -260,6 +274,9 @@ export async function planFor(ctx: Ctx): Promise<Plan> {
         // Prefer the binary whose sources contain the open file.
         const best = exes.find((m) => ctx.file.startsWith(dirname(m.target.src_path))) ?? exes[exes.length - 1];
         program = best.executable;
+      } else if (alone) {
+        program = await ownProgram();
+        await capture("rustc", ["-g", "--crate-name", "omega_main", ctx.file, "-o", program], root, ctx);
       } else {
         program = await tmpPath(exe(`omega-dbg-${basename(ctx.file).replace(/\.rs$/, "")}`));
         await capture("rustc", ["-g", ctx.file, "-o", program], root, ctx);
@@ -287,10 +304,11 @@ export async function planFor(ctx: Ctx): Promise<Plan> {
         program = cmakeProgram(root, lists);
       } else {
         await need(["cc"]);
-        program = await tmpPath(exe(`omega-dbg-${basename(ctx.file).replace(/\.\w+$/, "")}`));
+        program = alone ? await ownProgram() : await tmpPath(exe(`omega-dbg-${basename(ctx.file).replace(/\.\w+$/, "")}`));
         const linux = OS === "linux";
         const cc = lang === "c" ? (linux ? "gcc" : "clang") : linux ? "g++" : "clang++";
-        await capture(cc, ["-g", "-O0", ...(lang === "cpp" ? ["-std=c++20"] : []), ctx.file, "-o", program, ...(lang === "c" && linux ? ["-lm"] : [])], root, ctx);
+        // `-x` makes the compiler take the real file whatever its name, so debug info points at it.
+        await capture(cc, ["-g", "-O0", ...(lang === "cpp" ? ["-std=c++20"] : []), ...(alone ? ["-x", lang === "c" ? "c" : "c++"] : []), ctx.file, "-o", program, ...(lang === "c" && linux ? ["-lm"] : [])], root, ctx);
       }
       return {
         label: `${lang === "c" ? "C" : "C++"} · ${basename(program)}`,
@@ -306,7 +324,8 @@ export async function planFor(ctx: Ctx): Promise<Plan> {
       await need(lang === "typescript" ? ["node", "pnpm"] : ["node"]);
       await ensure("jsdebug", server, t("code.ad.jsdebug"), ctx);
       const node = (await which("node")) ?? "node";
-      const launch: Json = { type: "pwa-node", request: "launch", name: "Node", program: ctx.file, cwd: root, console: "integratedTerminal", sourceMaps: true, skipFiles: ["<node_internals>/**"] };
+      const shadow = alone ? await ownCopy() : undefined;
+      const launch: Json = { type: "pwa-node", request: "launch", name: "Node", program: shadow?.copy ?? ctx.file, cwd: root, console: "integratedTerminal", sourceMaps: true, skipFiles: ["<node_internals>/**"] };
       if (lang === "typescript") {
         const tsx = joinPath(root, IS_WIN ? "node_modules/.bin/tsx.cmd" : "node_modules/.bin/tsx");
         if (await exists(tsx)) launch.runtimeExecutable = tsx;
@@ -315,7 +334,7 @@ export async function planFor(ctx: Ctx): Promise<Plan> {
           launch.runtimeArgs = /pnpm(\.exe|\.cmd)?$/i.test(launch.runtimeExecutable) ? ["dlx", "tsx"] : ["-y", "tsx"];
         }
       }
-      return { label: `Node · ${basename(ctx.file)}`, cwd: root, adapter: { kind: "tcp", cmd: node, args: [server, "{port}", "127.0.0.1"] }, launch };
+      return { label: `Node · ${basename(ctx.file)}`, cwd: root, adapter: { kind: "tcp", cmd: node, args: [server, "{port}", "127.0.0.1"] }, launch, shadow };
     }
 
     case "java": {
@@ -323,7 +342,7 @@ export async function planFor(ctx: Ctx): Promise<Plan> {
       await need(["jdk"]);
       const hasJar = (await javaDebugBundles()).length > 0;
       if (!hasJar) await ensure("javadebug", `${dir}/__missing__`, t("code.ad.javadebug"), ctx);
-      const lsp = await clientFor(langFor(ctx.file)!, ctx.file, ctx.workspace, async () => ctx.askInstall("Eclipse JDT Language Server"), true);
+      const lsp = await clientFor(info!, ctx.file, ctx.workspace, async () => ctx.askInstall("Eclipse JDT Language Server"), true);
       if (!lsp) throw new Error(t("code.ad.noJavaLsp"));
       ctx.log(t("code.ad.resolvingMain"));
       const mains: Json[] = (await lsp.request("workspace/executeCommand", { command: "vscode.java.resolveMainClass", arguments: [] }, 60000)) ?? [];
@@ -343,7 +362,7 @@ export async function planFor(ctx: Ctx): Promise<Plan> {
       await need(["jdk"]);
       // Metals' debugger attaches through the JDK's debug interface (JDI), which a JRE lacks.
       if (!(await which("javac"))) throw new Error(t("code.ad.scalaNeedsJdk"));
-      const lsp = await clientFor(langFor(ctx.file)!, ctx.file, ctx.workspace, async () => ctx.askInstall("Metals"));
+      const lsp = await clientFor(info!, ctx.file, ctx.workspace, async () => ctx.askInstall("Metals"));
       const paused = () => metalsPausedFor(ctx.file, ctx.workspace);
       if (!lsp) throw new Error(t((await paused()) ? "code.lsp.metalsPaused" : "code.ad.noScalaLsp"));
       const session = await startScalaSession(
@@ -395,16 +414,18 @@ export async function planFor(ctx: Ctx): Promise<Plan> {
     }
 
     case "mojo": {
-      if (!mojoCompiles(ctx.file)) throw new Error(t("code.ad.mojoFireExt"));
+      if (!alone && !mojoCompiles(ctx.file)) throw new Error(t("code.ad.mojoFireExt"));
       const { adapter, mojo } = await mojoDebugger(tools, ctx);
       await need(["cc"]); // mojo links with the system's C compiler
-      const program = await tmpPath(exe(`omega-dbg-${mojoStem(ctx.file).replace(/[^\w.-]/g, "_")}`));
-      await capture(mojo, ["build", "-O0", "-g", ctx.file, "-o", program], root, ctx);
+      const shadow = alone ? await ownCopy() : undefined;
+      const program = alone ? await ownProgram() : await tmpPath(exe(`omega-dbg-${mojoStem(ctx.file).replace(/[^\w.-]/g, "_")}`));
+      await capture(mojo, ["build", "-O0", "-g", shadow?.copy ?? ctx.file, "-o", program], root, ctx);
       return {
         label: `Mojo · ${basename(ctx.file)}`,
         cwd: root,
         adapter: { kind: "stdio", cmd: adapter, args: [] },
         launch: { type: "mojo-lldb", request: "launch", name: "Mojo", program, args: [], cwd: root, stopOnEntry: false },
+        shadow,
       };
     }
   }
