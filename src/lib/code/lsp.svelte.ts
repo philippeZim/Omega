@@ -85,6 +85,8 @@ export class LspClient {
   failed = false;
   /** TypeScript project whose dependencies are still being installed: a failed start is not reported. */
   quiet = false;
+  /** Runs on a private copy of one file, so it ends with that file (see `releasePrivate`). */
+  privateCopy = false;
   /** Documents an editor has open (between `open` and `close`). */
   private editorDocs = new Set<string>();
   /** uri -> live text of a document kept open for Code Together guests (see `feed`). */
@@ -379,6 +381,11 @@ function stopPrivate(root: string) {
     delete lspState.status[key];
     delete lspState.message[key];
   }
+}
+
+/** A server that finished starting after its file was closed: nobody will use it. */
+export function releasePrivate(c: LspClient) {
+  if (c.privateCopy && !shadowRoots.has(c.root)) stopPrivate(c.root);
 }
 
 /** The file's tab closed, it moved, or its language changed: no server keeps it open. */
@@ -732,6 +739,7 @@ export async function clientFor(
     const init = shadow && kind === "rust" ? { checkOnSave: true, detachedFiles: [file] } : cmd.init;
     const c = new LspClient(kind, root, cmd.cmd, cmd.args, init);
     c.quiet = waitInstall;
+    c.privateCopy = shadow;
     clients.set(key, c);
     try {
       await c.ready;

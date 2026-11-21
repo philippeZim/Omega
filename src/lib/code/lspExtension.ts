@@ -6,7 +6,7 @@ import { autocompletion, insertCompletionText, snippet, type Completion, type Co
 import { setDiagnostics, forEachDiagnostic, type Diagnostic, type Action } from "@codemirror/lint";
 import { ui } from "../ui.svelte";
 import { t } from "../i18n/index.svelte";
-import { clientFor, fileUri, lspState, realPathOf, registerShadow, restartListeners, restartServer, setLspRoute, setLspWorkspace, uriPath, type LspClient, type ServerKind } from "./lsp.svelte";
+import { clientFor, fileUri, lspState, realPathOf, registerShadow, releasePrivate, restartListeners, restartServer, setLspRoute, setLspWorkspace, uriPath, type LspClient, type ServerKind } from "./lsp.svelte";
 import type { LangInfo } from "./languages";
 import { isForeignLang } from "./langOverride.svelte";
 import { clangdCommand, shadowForLsp } from "./langRun";
@@ -333,7 +333,7 @@ export function lspExtension(path: string, lang: LangInfo): Extension {
       connect(view: EditorView) {
         if (!isForeignLang(path)) return this.attach(view, path);
         const mine = ++connects;
-        const live = () => viewRef === view && mine === connects;
+        const live = () => viewRef === view && mine === connects && !closed();
         setLspRoute(path, "pending");
         (async () => {
           if (!(await runsAlone(path, hooks.workspace()))) {
@@ -352,7 +352,8 @@ export function lspExtension(path: string, lang: LangInfo): Extension {
       }
       attach(view: EditorView, file: string) {
         clientFor(lang, file, hooks.workspace(), hooks.askInstall).then((c) => {
-          if (!c || viewRef !== view) return;
+          if (!c) return;
+          if (viewRef !== view || closed()) return releasePrivate(c);
           client = c;
           // A real file in a C/C++ project: clangd would otherwise guess from the missing extension.
           if (file === path && lang.server === "clangd" && isForeignLang(path))

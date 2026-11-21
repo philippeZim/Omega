@@ -12,6 +12,8 @@ let exists: Set<string>;
 let calls: [string, any][];
 let sent: any[];
 let answerInit: boolean;
+/** Commands held back until the test releases them. */
+let gates: Map<string, Promise<void>>;
 let L: typeof import("./lsp.svelte");
 let O: typeof import("./langOverride.svelte");
 let X: typeof import("./lspExtension");
@@ -26,23 +28,29 @@ beforeEach(async () => {
   calls = [];
   sent = [];
   answerInit = true;
+  gates = new Map();
   mockIPC(
     (cmd, args: any) => {
       calls.push([cmd, args]);
-      if (cmd === "path_exists") return exists.has(args.path);
-      if (cmd === "read_file") return "int main(void) { return 0; }\n";
-      if (cmd === "tools_dir") return "/tools";
-      if (cmd === "which_cmd") return `/bin/${args.cmd.split("/").pop()}`;
-      if (cmd === "cmd_works") return true;
-      if (cmd === "lang_copy") return `/private/h/${args.part}/${args.name}`;
-      if (cmd === "list_dir") return [];
-      if (cmd === "proc_send") {
-        const m = JSON.parse(args.msg);
-        sent.push(m);
-        if (m.id !== undefined && m.method && (m.method !== "initialize" || answerInit))
-          setTimeout(() => emit("proc-msg", { id: args.id, msg: JSON.stringify({ jsonrpc: "2.0", id: m.id, result: m.method === "initialize" ? { capabilities: {} } : null }) }), 0);
-      }
-      return null;
+      const answer = () => {
+        if (cmd === "path_exists") return exists.has(args.path);
+        if (cmd === "read_file") return "int main(void) { return 0; }\n";
+        if (cmd === "tools_dir") return "/tools";
+        if (cmd === "which_cmd") return `/bin/${args.cmd.split("/").pop()}`;
+        if (cmd === "cmd_works") return true;
+        if (cmd === "lang_copy") return `/private/h/${args.part}/${args.name}`;
+        if (cmd === "list_dir") return [];
+        if (cmd === "proc_send") {
+          const m = JSON.parse(args.msg);
+          sent.push(m);
+          if (m.id !== undefined && m.method && (m.method !== "initialize" || answerInit))
+            setTimeout(() => emit("proc-msg", { id: args.id, msg: JSON.stringify({ jsonrpc: "2.0", id: m.id, result: m.method === "initialize" ? { capabilities: {} } : null }) }), 0);
+        }
+        return null;
+      };
+      // Only a gated command answers late: the others stay synchronous, as the tests read `sent`.
+      const held = gates.get(cmd === "which_cmd" ? `which:${args.cmd}` : cmd);
+      return held ? held.then(answer) : answer();
     },
     { shouldMockEvents: true },
   );
@@ -120,6 +128,50 @@ describe("the document's lifetime", () => {
     expect(spawned()[0].cwd).toBe("/private/h/lsp");
     await L.saveLspDoc("/w/prog", "x");
     expect(calls.find(([c]) => c === "lang_copy")![1].name).toBe("demo/app/Hello.java");
+  });
+
+  function gate(name: string) {
+    let open = () => {};
+    gates.set(name, new Promise<void>((r) => (open = r)));
+    return () => {
+      gates.delete(name);
+      open();
+    };
+  }
+
+  test("closing while the copy is being written starts nothing", async () => {
+    exists.add("/w/pyproject.toml");
+    const release = gate("lang_copy");
+    mount("/w/prog", "c");
+    await vi.waitFor(() => expect(calls.some(([c]) => c === "lang_copy")).toBe(true));
+    L.closeLspDoc("/w/prog");
+    release();
+    await settle();
+    expect(spawned()).toHaveLength(0);
+    expect("/w/prog" in L.lspState.routes).toBe(false);
+  });
+
+  test("closing while the project's route is decided leaves no route behind", async () => {
+    const release = gate("path_exists");
+    mount("/w/prog", "c");
+    await vi.waitFor(() => expect(calls.some(([c]) => c === "path_exists")).toBe(true));
+    L.closeLspDoc("/w/prog");
+    release();
+    await settle();
+    expect(spawned()).toHaveLength(0);
+    expect("/w/prog" in L.lspState.routes).toBe(false);
+  });
+
+  test("a server that comes up after its file closed is stopped and gets no document", async () => {
+    exists.add("/w/pyproject.toml");
+    const release = gate("which:clangd");
+    mount("/w/prog", "c");
+    await vi.waitFor(() => expect(calls.some(([c, a]) => c === "which_cmd" && a.cmd === "clangd")).toBe(true));
+    L.closeLspDoc("/w/prog");
+    release();
+    await vi.waitFor(() => expect(sent.some((m) => m.method === "shutdown")).toBe(true));
+    expect(L.allClients()).toHaveLength(0);
+    expect(opened()).toHaveLength(0);
   });
 
   test("a save refreshes the copy and reaches the server under its name", async () => {
