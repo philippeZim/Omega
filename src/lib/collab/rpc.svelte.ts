@@ -16,6 +16,10 @@
  *
  * `call` never throws. Paths from guests go through `guestScope()` (share.svelte.ts).
  *
+ * Handlers doing long work must observe `ctx.signal`: check it before every side effect and pass it
+ * on where possible. It fires when the caller cancels or leaves or loses the capability, and the
+ * RPC layer can't stop a handler that ignores it.
+ *
  * Push state: declare it in `RpcTopics`, `registerTopic({ name, capability, snapshot })` on the host,
  * `publish(name, value)` on every change, `subscribe(name, cb)` on the guest. A subscriber gets the
  * snapshot first, so late joiners are current; `cb(null)` means the value is gone (session ended or
@@ -81,6 +85,8 @@ export const RPC_LIMITS = {
   maxBytes: 24 * 1024 * 1024,
   burst: 120,
   perSecond: 60,
+  /** Answers to calls over the limit. Beyond this they're dropped and the caller's timeout ends them. */
+  maxRefusalsPerSecond: 10,
   maxConcurrent: 16,
   timeoutMs: 15_000,
 };
@@ -88,7 +94,7 @@ export const RPC_LIMITS = {
 export const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
 /** Whether a JSON text fits the limit (cheap for the common small case). */
-function fits(json: string) {
+export function fits(json: string) {
   if (json.length * 3 <= RPC_LIMITS.maxBytes) return true;
   return json.length <= RPC_LIMITS.maxBytes && new TextEncoder().encode(json).length <= RPC_LIMITS.maxBytes;
 }
@@ -102,6 +108,8 @@ interface Running {
 interface PeerState {
   tokens: number;
   refilled: number;
+  refusals: number;
+  refusalsFrom: number;
   running: Map<number, Running>;
   topics: Set<string>;
 }
@@ -120,18 +128,19 @@ export function registerTopic<T extends RpcTopic>(def: TopicDef<T>) {
 
 /** The approved guest behind a transport id. The id is the only identity that counts. */
 const approved = (peer: string): Participant | undefined => collab.participants.find((p) => p.peer === peer && p.role === "guest" && !p.removing);
+export const isApproved = (peer: string) => !!approved(peer);
 
 export const hasCapability = (peer: string, cap: Capability) => !!approved(peer)?.caps?.includes(cap);
 const allowed = (peer: string, cap: Capability | null) => (cap ? hasCapability(peer, cap) : !!approved(peer));
 
 function peerState(peer: string) {
   let st = peers.get(peer);
-  if (!st) peers.set(peer, (st = { tokens: RPC_LIMITS.burst, refilled: Date.now(), running: new Map(), topics: new Set() }));
+  if (!st) peers.set(peer, (st = { tokens: RPC_LIMITS.burst, refilled: performance.now(), refusals: 0, refusalsFrom: -Infinity, running: new Map(), topics: new Set() }));
   return st;
 }
 
 function takeToken(st: PeerState) {
-  const now = Date.now();
+  const now = performance.now(); // monotonic: a clock step can't drain the bucket
   st.tokens = Math.min(RPC_LIMITS.burst, st.tokens + ((now - st.refilled) / 1000) * RPC_LIMITS.perSecond);
   st.refilled = now;
   if (st.tokens < 1) return false;
@@ -140,6 +149,18 @@ function takeToken(st: PeerState) {
 }
 
 const replyError = (peer: string, id: number, code: string) => send(peer, { t: "rpc.res", id, ok: false, error: { code } });
+
+/** Answers a call over the limit, unless the peer is flooding: refusals mustn't become traffic too. */
+function refuseOverLimit(peer: string, st: PeerState, id: number) {
+  const now = performance.now();
+  if (now - st.refusalsFrom >= 1000) {
+    st.refusalsFrom = now;
+    st.refusals = 0;
+  }
+  if (st.refusals >= RPC_LIMITS.maxRefusalsPerSecond) return;
+  st.refusals++;
+  return replyError(peer, id, "rate_limited");
+}
 
 function replyResult(peer: string, id: number, result: unknown) {
   let json: string | undefined;
@@ -157,7 +178,7 @@ async function onRequest(peer: string, msg: Record<string, unknown>) {
   if (!Number.isSafeInteger(id) || !approved(peer)) return; // unapproved peers get no answer at all
   const st = peerState(peer);
   if (st.running.has(id)) return;
-  if (!takeToken(st) || st.running.size >= RPC_LIMITS.maxConcurrent) return replyError(peer, id, "rate_limited");
+  if (!takeToken(st) || st.running.size >= RPC_LIMITS.maxConcurrent) return refuseOverLimit(peer, st, id);
   const def = typeof msg.method === "string" ? methods.get(msg.method) : undefined;
   if (!def) return replyError(peer, id, "unknown_method");
   if (!allowed(peer, def.capability)) return replyError(peer, id, "forbidden");
@@ -373,7 +394,9 @@ onCollabMessage((peer, msg) => {
     else if (msg.t === "rpc.sub" && typeof msg.topic === "string") {
       const def = topics.get(msg.topic);
       if (!def) return;
-      peerState(peer).topics.add(def.name);
+      const st = peerState(peer);
+      if (st.topics.has(def.name) || !takeToken(st)) return;
+      st.topics.add(def.name);
       if (allowed(peer, def.capability)) sendSnapshot(peer, def);
     } else if (msg.t === "rpc.unsub") peers.get(peer)?.topics.delete(msg.topic);
     return;
@@ -386,7 +409,7 @@ onCollabMessage((peer, msg) => {
     if (!p) return;
     if (msg.ok === true) p.settle({ ok: true, value: msg.result });
     else p.settle({ ok: false, error: { code: typeof msg.error?.code === "string" ? msg.error.code : "internal" } });
-  } else if (msg.t === "rpc.pub" && typeof msg.topic === "string") {
+  } else if (msg.t === "rpc.pub" && typeof msg.topic === "string" && subscribers.has(msg.topic)) {
     if (msg.payload === null || msg.payload === undefined) lastValues.delete(msg.topic);
     else lastValues.set(msg.topic, msg.payload);
     deliver(msg.topic, msg.payload ?? null);

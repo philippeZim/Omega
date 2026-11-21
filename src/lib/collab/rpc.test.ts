@@ -190,7 +190,7 @@ test("the cap counts bytes, not characters", async () => {
 });
 
 test("rate limit: a burst is cut off per peer, others are unaffected, and it refills", async () => {
-  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.useFakeTimers({ toFake: ["performance"] });
   for (let i = 0; i < RPC_LIMITS.burst + 5; i++) await req("g1", i, "t.open");
   const codes = replies().map((r) => r.error?.code);
   expect(codes.filter((c) => c === "rate_limited")).toHaveLength(5);
@@ -432,5 +432,44 @@ test("guest: a capability change updates the state, tells the user and the liste
   expect(h.collab.myCaps).toEqual(["edit", "git"]);
   expect(changed).toHaveBeenCalledWith(["edit", "run"], ["edit", "git"]);
   expect(ui.toasts.map((x) => x.text)).toEqual(["The host allowed: Git", "The host turned off: Run"]);
+  off();
+});
+
+// ------------------------------------------------------------------ hardening
+
+test("a clock stepping backwards can't lock a guest out", async () => {
+  await req("g1", 1, "t.open");
+  const now = vi.spyOn(Date, "now").mockReturnValue(Date.now() - 86_400_000);
+  try {
+    await req("g1", 2, "t.open");
+    expect(replies()[1]).toMatchObject({ id: 2, ok: true });
+  } finally {
+    now.mockRestore();
+  }
+});
+
+test("a flooding peer gets a bounded number of refusals; a dropped call still ends by timeout", async () => {
+  vi.useFakeTimers({ toFake: ["performance"] });
+  for (let i = 0; i < RPC_LIMITS.burst + 500; i++) await req("g1", i, "t.open");
+  const refused = replies().filter((r) => r.error?.code === "rate_limited");
+  expect(refused).toHaveLength(RPC_LIMITS.maxRefusalsPerSecond);
+  vi.useRealTimers();
+
+  asGuest();
+  const p = call("t.echo", { v: "dropped" }, { timeoutMs: 10 });
+  expect(await p).toEqual({ ok: false, error: { code: "timeout" } });
+});
+
+test("repeating a subscription doesn't make the host resend its snapshot", async () => {
+  for (let i = 0; i < 50; i++) await receive("g1", { t: "rpc.sub", topic: "t.state" });
+  expect(pubs()).toHaveLength(1);
+});
+
+test("guest: pushes for topics nobody follows are not kept", async () => {
+  asGuest();
+  await receive("host-peer", { t: "rpc.pub", topic: "t.state", payload: { n: 1 } });
+  const cb = vi.fn();
+  const off = subscribe("t.state", cb);
+  expect(cb).not.toHaveBeenCalled();
   off();
 });
