@@ -117,8 +117,8 @@ export const en = {
   "ai.collab.shell.confirmBody": "This opens a real shell on this computer under your user account. {name} can read, change and delete everything you can, including files outside this project, saved keys and passwords, and can run any program. It is not limited to the project. Only allow this for someone you fully trust.",
   "ai.collab.shell.confirmOk": "Give full control",
   "ai.collab.shell.startTitle": "Give every new guest full control of this computer?",
-  "ai.collab.shell.startBody": "Every guest you approve from now on can open a real shell on this computer under your user account. They can read, change and delete everything you can, including files outside this project, saved keys and passwords, and can run any program. It is not limited to the project.",
-  "ai.collab.shell.startWarning": "Guests you allow now get full control of this computer (Terminal is on for new guests).",
+  "ai.collab.shell.startBody": "Every guest you approve from now on can get a real shell on this computer under your user account, with full access to everything you can read, change and run, not limited to the project. You'll be asked again for each guest.",
+  "ai.collab.shell.startWarning": "Terminal is on for new guests: you'll be asked for each one whether they get full control of this computer.",
   "ai.collab.shell.tabTitle": "Shell on {name}'s computer",
   "ai.collab.shell.tabBadge": "HOST",
   "ai.collab.shell.viewTitle": "{name}'s shell (view only)",
@@ -132,6 +132,7 @@ export const en = {
   "ai.collab.shell.skipped": "[output skipped: too much at once]",
   "ai.collab.shell.limit": "Too many shells are open on the host",
   "ai.collab.shell.noFolder": "The host has no folder open",
+  "ai.collab.shell.withoutTerminal": "Allow without Terminal",
 };
 export const de: Record<keyof typeof en, string> = {
   "ai.noActiveFile": "Keine Datei aktiv",
@@ -250,8 +251,8 @@ export const de: Record<keyof typeof en, string> = {
   "ai.collab.shell.confirmBody": "Das öffnet eine echte Shell auf diesem Computer unter deinem Benutzerkonto. {name} kann alles lesen, ändern und löschen, was du auch kannst, auch Dateien außerhalb dieses Projekts, gespeicherte Schlüssel und Passwörter, und jedes Programm starten. Das ist nicht auf das Projekt beschränkt. Erlaube das nur Personen, denen du voll vertraust.",
   "ai.collab.shell.confirmOk": "Volle Kontrolle geben",
   "ai.collab.shell.startTitle": "Jedem neuen Gast die volle Kontrolle über diesen Computer geben?",
-  "ai.collab.shell.startBody": "Jeder Gast, den du ab jetzt zulässt, kann eine echte Shell auf diesem Computer unter deinem Benutzerkonto öffnen. Gäste können alles lesen, ändern und löschen, was du auch kannst, auch Dateien außerhalb dieses Projekts, gespeicherte Schlüssel und Passwörter, und jedes Programm starten. Das ist nicht auf das Projekt beschränkt.",
-  "ai.collab.shell.startWarning": "Gäste, die du jetzt zulässt, erhalten die volle Kontrolle über diesen Computer (Terminal ist für neue Gäste an).",
+  "ai.collab.shell.startBody": "Jeder Gast, den du ab jetzt zulässt, kann eine echte Shell auf diesem Computer unter deinem Benutzerkonto bekommen, mit vollem Zugriff auf alles, was du lesen, ändern und starten kannst, nicht auf das Projekt beschränkt. Du wirst bei jedem Gast noch einmal gefragt.",
+  "ai.collab.shell.startWarning": "Terminal ist für neue Gäste an: Du wirst bei jedem gefragt, ob er die volle Kontrolle über diesen Computer erhält.",
   "ai.collab.shell.tabTitle": "Shell auf dem Computer von {name}",
   "ai.collab.shell.tabBadge": "HOST",
   "ai.collab.shell.viewTitle": "Shell von {name} (nur ansehen)",
@@ -265,6 +266,7 @@ export const de: Record<keyof typeof en, string> = {
   "ai.collab.shell.skipped": "[Ausgabe übersprungen: zu viel auf einmal]",
   "ai.collab.shell.limit": "Beim Host sind zu viele Shells offen",
   "ai.collab.shell.noFolder": "Der Host hat keinen Ordner geöffnet",
+  "ai.collab.shell.withoutTerminal": "Ohne Terminal zulassen",
 };
 export const fr: Record<keyof typeof en, string> = {
   "ai.noActiveFile": "Aucun fichier actif",
@@ -383,8 +385,8 @@ export const fr: Record<keyof typeof en, string> = {
   "ai.collab.shell.confirmBody": "Cela ouvre un vrai shell sur cet ordinateur avec votre compte utilisateur. {name} pourra lire, modifier et supprimer tout ce que vous pouvez, y compris les fichiers hors de ce projet, les clés et mots de passe enregistrés, et lancer n’importe quel programme. Ce n’est pas limité au projet. N’autorisez cela que pour une personne en qui vous avez entièrement confiance.",
   "ai.collab.shell.confirmOk": "Donner le contrôle total",
   "ai.collab.shell.startTitle": "Donner à chaque nouvel invité le contrôle total de cet ordinateur ?",
-  "ai.collab.shell.startBody": "Chaque invité que vous approuvez à partir de maintenant pourra ouvrir un vrai shell sur cet ordinateur avec votre compte utilisateur. Il pourra lire, modifier et supprimer tout ce que vous pouvez, y compris les fichiers hors de ce projet, les clés et mots de passe enregistrés, et lancer n’importe quel programme. Ce n’est pas limité au projet.",
-  "ai.collab.shell.startWarning": "Les invités que vous acceptez maintenant obtiennent le contrôle total de cet ordinateur (Terminal est activé pour les nouveaux invités).",
+  "ai.collab.shell.startBody": "Chaque invité que vous approuvez à partir de maintenant peut obtenir un vrai shell sur cet ordinateur avec votre compte utilisateur, avec un accès complet à tout ce que vous pouvez lire, modifier et lancer, sans limite au projet. La question vous sera reposée pour chaque invité.",
+  "ai.collab.shell.startWarning": "Terminal est activé pour les nouveaux invités : pour chacun, il vous sera demandé s’il obtient le contrôle total de cet ordinateur.",
   "ai.collab.shell.tabTitle": "Shell sur l’ordinateur de {name}",
   "ai.collab.shell.tabBadge": "HÔTE",
   "ai.collab.shell.viewTitle": "Shell de {name} (lecture seule)",
@@ -398,4 +400,5 @@ export const fr: Record<keyof typeof en, string> = {
   "ai.collab.shell.skipped": "[sortie ignorée : trop de données d’un coup]",
   "ai.collab.shell.limit": "Trop de shells sont ouverts chez l’hôte",
   "ai.collab.shell.noFolder": "L’hôte n’a aucun dossier ouvert",
+  "ai.collab.shell.withoutTerminal": "Autoriser sans Terminal",
 };

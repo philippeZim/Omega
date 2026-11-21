@@ -133,9 +133,36 @@ function nextColor() {
   return PEER_COLORS.find((c) => !used.has(c)) ?? PEER_COLORS[collab.participants.length % PEER_COLORS.length];
 }
 
-export function approve(req: JoinRequest) {
+const askingTerminal = new Set<string>();
+
+/**
+ * Host: lets a guest in with the start rights. `terminal` among them is control over this computer,
+ * so it's asked for each guest by name; without a yes the guest joins without it.
+ */
+export function approve(req: JoinRequest): void | Promise<void> {
+  if (collab.startCaps.includes("terminal")) return approveAsking(req);
+  admit(req, false);
+}
+
+async function approveAsking(req: JoinRequest) {
+  if (askingTerminal.has(req.peer)) return;
+  askingTerminal.add(req.peer);
+  try {
+    const choice = await ui.choose(t("ai.collab.shell.confirmTitle", { name: req.name }), t("ai.collab.shell.confirmBody", { name: req.name }), [
+      { label: t("ai.collab.shell.withoutTerminal"), value: "without", primary: true },
+      { label: t("ai.collab.shell.confirmOk"), value: "full", danger: true },
+    ]);
+    // Denied, gone or the session ended while the host was deciding.
+    if (collab.role !== "host" || !collab.requests.some((r) => r.peer === req.peer)) return;
+    admit(req, choice === "full");
+  } finally {
+    askingTerminal.delete(req.peer);
+  }
+}
+
+function admit(req: JoinRequest, terminal: boolean) {
   collab.requests = collab.requests.filter((r) => r.peer !== req.peer);
-  const p: Participant = { peer: req.peer, name: req.name, color: nextColor(), role: "guest", caps: [...collab.startCaps] };
+  const p: Participant = { peer: req.peer, name: req.name, color: nextColor(), role: "guest", caps: collab.startCaps.filter((c) => c !== "terminal" || terminal) };
   collab.participants.push(p);
   send(req.peer, { t: "welcome", you: { peer: p.peer, name: p.name, color: p.color }, version: PROTOCOL_VERSION, caps: p.caps, participants: collab.participants.map(publicInfo) });
   // The new guest has the list from its welcome.
@@ -154,7 +181,7 @@ export function setStartCapability(cap: Capability, on: boolean, opts: { confirm
 
 /** Approves the oldest pending request (command palette). */
 export function approveNext() {
-  if (collab.requests[0]) approve(collab.requests[0]);
+  if (collab.requests[0]) void approve(collab.requests[0]);
 }
 
 /** Reads an invite code from the clipboard, if there is one. */
