@@ -343,6 +343,26 @@ describe("documents fed for Code Together", () => {
     expect(c.docs.get(U)).toEqual({ version: 2, text: "" });
   });
 
+  test("closing a document forgets its diagnostics, so a reopened one can't show old positions", async () => {
+    const c = await readyClient();
+    c.open(U, "python", "x");
+    await srv.send({ jsonrpc: "2.0", method: "textDocument/publishDiagnostics", params: { uri: U, version: 1, diagnostics: [{ message: "old" }] } });
+    await settle();
+    c.close(U);
+    expect(c.diagnostics.has(U)).toBe(false);
+    expect(c.diagnosticVersions.has(U)).toBe(false);
+  });
+
+  test("resend repeats the text under a new version without counting as an edit", async () => {
+    const c = await readyClient();
+    c.feed(U, "python", () => "x");
+    const at = c.textChangedAt.get(U);
+    c.resend(U);
+    expect(c.docs.get(U)!.version).toBe(2);
+    expect(c.textChangedAt.get(U)).toBe(at);
+    expect(srv.sent.at(-1).params).toMatchObject({ textDocument: { version: 2 }, contentChanges: [{ text: "x" }] });
+  });
+
   test("without a feed, open/change/close behave as before", async () => {
     const c = await readyClient();
     c.open(U, "python", "a");
@@ -480,6 +500,25 @@ describe("client registry", () => {
     await L.clientFor({ server: "clangd", lspId: "c" } as any, "/w/a.c", "/w", ask);
     expect(ask).toHaveBeenCalledOnce(); // the host's own editor still gets its prompt
     expect(await L.clientFor(PY, "/w/a.py", "/w", L.neverInstall)).not.toBeNull();
+  });
+
+  test("guests can't start more than a few servers, one more is refused; a running one is free", async () => {
+    const spawned = await multiServer(["/w/a/pyproject.toml", "/w/b/pyproject.toml", "/w/c/pyproject.toml", "/w/d/pyproject.toml"]);
+    for (const d of ["a", "b", "c"]) expect(await L.clientFor(PY, `/w/${d}/x.py`, "/w", L.neverInstall)).not.toBeNull();
+    expect(await L.clientFor(PY, "/w/d/x.py", "/w", L.neverInstall)).toBeNull();
+    expect(spawned.length).toBe(L.MAX_GUEST_SERVERS);
+    expect(await L.clientFor(PY, "/w/a/y.py", "/w", L.neverInstall)).not.toBeNull();
+    expect(await L.clientFor(PY, "/w/d/x.py", "/w", no)).not.toBeNull(); // the host itself isn't limited
+  });
+
+  test("servers started only for guests stop with the session; ones in use stay", async () => {
+    await multiServer(["/w/a/pyproject.toml", "/w/b/pyproject.toml"]);
+    const idle = (await L.clientFor(PY, "/w/a/x.py", "/w", L.neverInstall))!;
+    const used = (await L.clientFor(PY, "/w/b/x.py", "/w", L.neverInstall))!;
+    used.open("file:///w/b/x.py", "python", "x");
+    L.stopGuestServers();
+    expect(idle.stopping).toBe(true);
+    expect(used.stopping).toBe(false);
   });
 
   // Regression (#22): a stopped client's exit used to delete its key from the registry and set

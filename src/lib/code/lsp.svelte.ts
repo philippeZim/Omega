@@ -52,6 +52,8 @@ export class LspClient {
   diagnostics = new Map<string, Json[]>();
   /** uri -> the document version the last diagnostics were computed for, if the server said. */
   diagnosticVersions = new Map<string, number | undefined>();
+  /** uri -> when its text last changed, to judge results from servers that don't send a version. */
+  textChangedAt = new Map<string, number>();
   diagnosticListeners = new Set<(uri: string) => void>();
   /** Called once the process exited (crash or stop), so editors can reconnect. */
   exitListeners = new Set<() => void>();
@@ -214,6 +216,7 @@ export class LspClient {
 
   private openDoc(uri: string, languageId: string, text: string) {
     this.docs.set(uri, { version: 1, text });
+    this.textChangedAt.set(uri, Date.now());
     this.used = true;
     this.notify("textDocument/didOpen", { textDocument: { uri, languageId, version: 1, text } });
   }
@@ -225,7 +228,16 @@ export class LspClient {
     if (!d || d.text === next) return;
     d.version++;
     d.text = next;
+    this.textChangedAt.set(uri, Date.now());
     this.notify("textDocument/didChange", { textDocument: { uri, version: d.version }, contentChanges: [{ text: next }] });
+  }
+
+  /** Sends the unchanged text again, so the server analyses it and reports on exactly this text. */
+  resend(uri: string) {
+    const d = this.docs.get(uri);
+    if (!d) return;
+    d.version++;
+    this.notify("textDocument/didChange", { textDocument: { uri, version: d.version }, contentChanges: [{ text: d.text }] });
   }
 
   /**
@@ -254,6 +266,10 @@ export class LspClient {
 
   private closeDoc(uri: string) {
     if (!this.docs.delete(uri)) return;
+    // What the server said was about this open text: a reopened document starts clean.
+    this.diagnostics.delete(uri);
+    this.diagnosticVersions.delete(uri);
+    this.textChangedAt.delete(uri);
     this.notify("textDocument/didClose", { textDocument: { uri } });
     if (!this.docs.size) stopIdle();
   }
@@ -444,6 +460,38 @@ const PREREQ: Partial<Record<ServerKind, ToolId[]>> = { python: ["node"], typesc
 /** `askInstall` for work the host didn't start itself: never prompts, and doesn't count as declining. */
 export const neverInstall = async (_kind: ServerKind, _name: string) => false;
 
+/** Language server processes guests can cause (a guest could add a project marker per folder). */
+export const MAX_GUEST_SERVERS = 3;
+/** Servers running only because a guest needed them. */
+const guestServers = new Set<string>();
+const guestReserving = new Set<string>();
+
+/** Whether a guest may start this server: it's installed and within the limit. */
+async function guestMayStart(kind: ServerKind, root: string, key: string) {
+  for (const k of guestServers) if (!clients.has(k) && !starting.has(k) && !guestReserving.has(k)) guestServers.delete(k);
+  if (declined.has(kind) || failed.has(key)) return false;
+  if (!guestServers.has(key) && guestServers.size >= MAX_GUEST_SERVERS) return false;
+  guestServers.add(key);
+  guestReserving.add(key);
+  const cmd = await resolveCommand(kind, root).catch(() => null);
+  guestReserving.delete(key);
+  if (!cmd) guestServers.delete(key);
+  return !!cmd;
+}
+
+/** The session ended: servers that only guests needed and that have no documents left stop. */
+export function stopGuestServers() {
+  for (const key of guestServers) {
+    const c = clients.get(key);
+    if (!c || c.docs.size || c.stopping) continue;
+    c.stop();
+    clients.delete(key);
+    delete lspState.status[key];
+    delete lspState.message[key];
+  }
+  guestServers.clear();
+}
+
 /**
  * Returns a running client for this file's server, starting it if necessary.
  * `askInstall` is called when the server is missing; it should return true to install.
@@ -469,7 +517,8 @@ export async function clientFor(
   }
   const root = await findRoot(file, ROOT_MARKERS[kind], workspace);
   const key = `${kind}|${root}`;
-  if (askInstall === neverInstall && !clients.has(key) && !starting.has(key) && !(await resolveCommand(kind, root))) return null;
+  if (askInstall !== neverInstall) guestServers.delete(key); // the host wants this one itself
+  else if (!clients.has(key) && !starting.has(key) && !(await guestMayStart(kind, root, key))) return null;
   const existing = clients.get(key);
   if (existing && needDebug && kind === "java" && !existing.initOptions?.bundles) {
     existing.stop();
