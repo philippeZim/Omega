@@ -10,6 +10,7 @@ const h = vi.hoisted(() => ({
   call: vi.fn(),
   topic: null as ((p: unknown) => void) | null,
   can: true,
+  openRemote: vi.fn(async () => {}),
 }));
 vi.mock("./rpc.svelte", () => ({
   call: h.call,
@@ -17,13 +18,19 @@ vi.mock("./rpc.svelte", () => ({
   subscribe: (_t: string, cb: (p: unknown) => void) => ((h.topic = cb), () => {}),
   rpcErrorText: (c: string) => c,
 }));
-vi.mock("./share.svelte", () => ({ sharedText: (rel: string) => h.texts.get(rel) ?? null, openRemote: vi.fn() }));
+vi.mock("./collab.svelte", () => ({ collab: { role: "guest" } }));
+vi.mock("./share.svelte", () => ({ REMOTE: "collab:", sharedText: (rel: string) => h.texts.get(rel) ?? null, openRemote: h.openRemote }));
+vi.mock("../editor", () => ({ getView: () => view }));
 vi.mock("./guard", () => ({ guestCan: () => h.can, blockedByCapability: () => !h.can }));
 vi.mock("../ui.svelte", () => ({ ui: { toast: vi.fn(), openMenu: vi.fn() } }));
 vi.mock("../rpc", () => ({ onRpc: () => () => {} }));
 vi.mock("../tools.svelte", () => ({ ensureTools: async () => true, withInstallProgress: async () => {}, serverProgressId: (k: string) => k }));
 
 const { guestLspExtension, applyDocs } = await import("./lspGuest.svelte");
+const { runViewAction } = await import("../editorActions");
+const { ui } = await import("../ui.svelte");
+const { remoteLsp } = await import("../code/remoteLsp");
+const { t } = await import("../i18n/index.svelte");
 const { textHash } = await import("./lspProtocol");
 
 const features = { triggers: ["."], hover: true, definition: true, format: true, codeActions: true, resolve: false };
@@ -118,4 +125,86 @@ test("malformed entries from the wire are ignored", async () => {
   applyDocs("nonsense");
   await tick();
   expect(shown()).toEqual([]);
+});
+
+const edit0 = (c1: number, c2: number, newText: string) => ({ range: { start: { line: 0, character: c1 }, end: { line: 0, character: c2 } }, newText });
+
+test("quick fixes from the host appear on the diagnostic and edit the text", async () => {
+  open("y = (\n");
+  const e = entry("y = (\n", [err(0, 4, 5)]);
+  h.call.mockResolvedValue({ ok: true, value: { base: { len: e.len, hash: e.hash }, fixes: [[{ title: "Close it", edits: [edit0(5, 5, ")")] }]] } });
+  applyDocs({ docs: { "a.py": e } });
+  await tick();
+  await tick();
+  let action: any;
+  forEachDiagnostic(view.state, (d) => (action = d.actions?.[0]));
+  expect(action.name).toBe("Close it");
+  action.apply(view, 0, 0);
+  expect(view.state.doc.toString()).toBe("y = ()\n");
+});
+
+test("a read-only guest isn't offered quick fixes", async () => {
+  h.can = false;
+  open("y = (\n");
+  applyDocs({ docs: { "a.py": entry("y = (\n", [err(0, 4, 5)]) } });
+  await tick();
+  expect(h.call).not.toHaveBeenCalled();
+  expect(shown()).toHaveLength(1);
+});
+
+test("a quick fix for text that moved on is refused, not applied at wrong positions", async () => {
+  open("y = (\n");
+  const e = entry("y = (\n", [err(0, 4, 5)]);
+  h.call.mockResolvedValue({ ok: true, value: { base: { len: e.len, hash: e.hash }, fixes: [[{ title: "Close it", edits: [edit0(5, 5, ")")] }]] } });
+  applyDocs({ docs: { "a.py": e } });
+  await tick();
+  await tick();
+  let action: any;
+  forEachDiagnostic(view.state, (d) => (action = d.actions?.[0]));
+  edit(0, "# ");
+  action.apply(view, 0, 0);
+  expect(view.state.doc.toString()).toBe("# y = (\n");
+  expect(ui.toast).toHaveBeenCalledWith(t("code.lsp.guestStale"), "error");
+});
+
+test("format applies the host's edits to the guest's text", async () => {
+  open("x=1\n");
+  h.call.mockResolvedValue({ ok: true, value: { base: { len: 4, hash: textHash("x=1\n") }, edits: [edit0(0, 3, "x = 1")] } });
+  runViewAction(view, "lsp.format");
+  await tick();
+  expect(h.call.mock.calls[0][0]).toBe("lsp.format");
+  expect(view.state.doc.toString()).toBe("x = 1\n");
+});
+
+test("format without the edit right stops before asking the host", async () => {
+  h.can = false;
+  open("x=1\n");
+  runViewAction(view, "lsp.format");
+  await tick();
+  expect(h.call).not.toHaveBeenCalled();
+});
+
+test("go to definition opens the project file at the position", async () => {
+  open("import b\n");
+  h.texts.set("b.py", ytext);
+  h.call.mockResolvedValue({ ok: true, value: { path: "b.py", line: 0, character: 3 } });
+  runViewAction(view, "lsp.gotoDefinition");
+  await tick();
+  expect(h.openRemote).toHaveBeenCalledWith("b.py", 1);
+  expect(view.state.selection.main.head).toBe(3);
+});
+
+test("a definition outside the project is a clear message", async () => {
+  open("print\n");
+  h.openRemote.mockClear();
+  h.call.mockResolvedValue({ ok: true, value: { outside: "builtins.pyi" } });
+  runViewAction(view, "lsp.gotoDefinition");
+  await tick();
+  expect(h.openRemote).not.toHaveBeenCalled();
+  expect(ui.toast).toHaveBeenCalledWith(t("code.lsp.guestOutside", { name: "builtins.pyi" }));
+});
+
+test("symbols from the host come back as shared paths", async () => {
+  h.call.mockResolvedValue({ ok: true, value: [{ name: "f", kind: 12, path: "src/b.py", line: 1, character: 0 }] });
+  expect(await remoteLsp.symbols!("f")).toEqual([{ name: "f", kind: 12, path: "collab:src/b.py", line: 1, character: 0 }]);
 });

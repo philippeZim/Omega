@@ -169,6 +169,30 @@ function completionSource(getClient: () => LspClient | null, uri: string, flush:
 
 // ---------------------------------------------------------- shared with the Code Together guest
 
+/** The text edits of a WorkspaceEdit that target this document. */
+export function editsForDoc(edit: any, uri: string): any[] {
+  const mine = (u: string) => uriPath(u) === uriPath(uri);
+  return [
+    ...Object.entries(edit?.changes ?? {}).flatMap(([u, es]) => (mine(u) ? (es as any[]) : [])),
+    ...(edit?.documentChanges ?? []).flatMap((c: any) => (c.textDocument && mine(c.textDocument.uri) ? c.edits : [])),
+  ];
+}
+
+/** Quick fixes for one diagnostic: inline (clangd) or via textDocument/codeAction. */
+export async function quickFixesFor(client: LspClient | null, uri: string, d: any): Promise<any[]> {
+  let acts: any[] | null = d.codeActions ?? null;
+  if (!acts && client?.capabilities.codeActionProvider && (d.severity ?? 1) <= 2) {
+    acts = await client
+      .request("textDocument/codeAction", { textDocument: { uri }, range: d.range, context: { diagnostics: [d], only: ["quickfix"] } }, 5000)
+      .catch(() => null);
+  }
+  // Only actions that carry an edit (command-only actions would need workspace/applyEdit).
+  return (acts ?? []).filter((a: any) => a?.edit && (!a.kind || String(a.kind).startsWith("quickfix")));
+}
+
+/** Diagnostics per document that get their quick fixes looked up. */
+export const MAX_FIXES = 30;
+
 export const severityName = (s: number | undefined): Diagnostic["severity"] => (s === 1 ? "error" : s === 2 ? "warning" : s === 3 ? "info" : "hint");
 
 /** Ctrl+. – apply the quick fix at the cursor (menu when there are several). */
@@ -211,26 +235,10 @@ export function lspExtension(path: string, lang: LangInfo): Extension {
 
   /** Applies the parts of a WorkspaceEdit that target this document. */
   const applyEdit = (view: EditorView, edit: any) => {
-    const mine = (u: string) => uriPath(u) === uriPath(uri);
-    const edits: any[] = [
-      ...Object.entries(edit?.changes ?? {}).flatMap(([u, es]) => (mine(u) ? (es as any[]) : [])),
-      ...(edit?.documentChanges ?? []).flatMap((c: any) => (c.textDocument && mine(c.textDocument.uri) ? c.edits : [])),
-    ];
+    const edits = editsForDoc(edit, uri);
     if (!edits.length) return;
     const doc = view.state.doc;
     view.dispatch({ changes: edits.map((e) => ({ from: toOffset(doc, e.range.start), to: toOffset(doc, e.range.end), insert: e.newText })), userEvent: "input.quickfix" });
-  };
-
-  /** Quick fixes for one diagnostic: inline (clangd) or via textDocument/codeAction. */
-  const fixesFor = async (d: any): Promise<any[]> => {
-    let acts: any[] | null = d.codeActions ?? null;
-    if (!acts && client?.capabilities.codeActionProvider && (d.severity ?? 1) <= 2) {
-      acts = await client
-        .request("textDocument/codeAction", { textDocument: { uri }, range: d.range, context: { diagnostics: [d], only: ["quickfix"] } }, 5000)
-        .catch(() => null);
-    }
-    // Only actions that carry an edit (command-only actions would need workspace/applyEdit).
-    return (acts ?? []).filter((a: any) => a?.edit && (!a.kind || String(a.kind).startsWith("quickfix")));
   };
 
   let diagSeq = 0;
@@ -258,7 +266,7 @@ export function lspExtension(path: string, lang: LangInfo): Extension {
     // Show diagnostics right away; fixes are added when they arrive (if nothing changed meanwhile).
     view.dispatch(setDiagnostics(view.state, build(null)));
     const docAt = view.state.doc;
-    const fixes = await Promise.all(raw.map((d, i) => (i < 30 ? fixesFor(d) : Promise.resolve([]))));
+    const fixes = await Promise.all(raw.map((d, i) => (i < MAX_FIXES ? quickFixesFor(client, uri, d) : Promise.resolve([]))));
     if (my !== diagSeq || viewRef !== view || view.state.doc !== docAt || !fixes.some((f) => f.length)) return;
     view.dispatch(setDiagnostics(view.state, build(fixes)));
   };

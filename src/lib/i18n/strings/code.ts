@@ -203,6 +203,9 @@ export const en = {
   "code.lsp.statusTitle": "Language server {kind}: {status}",
   "code.lsp.restart": "Click to restart the language server",
   "code.lsp.install": "Click to install the language server",
+  "code.lsp.guestStale": "The text changed in the meantime. Please try again.",
+  "code.lsp.guestNoServer": "The host has no language server running for this file.",
+  "code.lsp.guestOutside": "Defined outside the shared project ({name}).",
 
   // Editor pane
   "code.ed.noSuggestions": "No suggestions",
@@ -450,6 +453,9 @@ export const de: Record<keyof typeof en, string> = {
   "code.lsp.statusTitle": "Language Server {kind}: {status}",
   "code.lsp.restart": "Klicken, um den Language Server neu zu starten",
   "code.lsp.install": "Klicken, um den Language Server zu installieren",
+  "code.lsp.guestStale": "Der Text hat sich inzwischen geändert. Bitte noch einmal versuchen.",
+  "code.lsp.guestNoServer": "Beim Host läuft für diese Datei kein Language Server.",
+  "code.lsp.guestOutside": "Außerhalb des geteilten Projekts definiert ({name}).",
 
   "code.ed.noSuggestions": "Keine Vorschläge",
   "code.ed.addToDict": "„{word}“ zum Wörterbuch hinzufügen",
@@ -695,6 +701,9 @@ export const fr: Record<keyof typeof en, string> = {
   "code.lsp.statusTitle": "Serveur de langage {kind} : {status}",
   "code.lsp.restart": "Cliquer pour redémarrer le serveur de langage",
   "code.lsp.install": "Cliquer pour installer le serveur de langage",
+  "code.lsp.guestStale": "Le texte a changé entre-temps. Veuillez réessayer.",
+  "code.lsp.guestNoServer": "L’hôte n’a aucun serveur de langage actif pour ce fichier.",
+  "code.lsp.guestOutside": "Défini en dehors du projet partagé ({name}).",
 
   "code.ed.noSuggestions": "Aucune suggestion",
   "code.ed.addToDict": "Ajouter « {word} » au dictionnaire",
