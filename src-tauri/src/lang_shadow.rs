@@ -4,6 +4,8 @@
 //! atomically (never reused if it already exists) and is removed when the app exits. Each source
 //! file has three folders: `run` (copy plus links to its neighbours), `bin` (build output, never
 //! any links, so a compiler can't write through one) and `lsp` (the language server's copy).
+//! Everything sits below a folder per window, so two windows never share a copy or a server's
+//! index, and closing or reloading one removes only its own.
 //!
 //! A running Omega holds a lock on `.lock` in its base folder. After a crash the lock is gone, and
 //! the next start removes the leftover folder (see `sweep_in`).
@@ -237,20 +239,38 @@ fn drop_sources_in(dir: &Path, keep: &Path, top: bool) {
 
 /// The private folder for `file` (`part`: "run", "bin" or "lsp").
 #[tauri::command]
-pub fn lang_workdir(file: String, part: String) -> Result<String, String> {
-    Ok(norm(file_dir(&base()?, &file, part_name(&part)?)?))
+pub fn lang_workdir(window: tauri::WebviewWindow, file: String, part: String) -> Result<String, String> {
+    Ok(norm(file_dir(&base()?.join(window.label()), &file, part_name(&part)?)?))
 }
 
 /// Copies `file` as `name` into its private folder and returns the copy's path. With `link`, what
 /// lies next to the file is linked beside the copy.
 #[tauri::command]
-pub fn lang_copy(file: String, part: String, name: String, link: bool) -> Result<String, String> {
-    let dir = file_dir(&base()?, &file, part_name(&part)?)?;
+pub fn lang_copy(window: tauri::WebviewWindow, file: String, part: String, name: String, link: bool) -> Result<String, String> {
+    let dir = file_dir(&base()?.join(window.label()), &file, part_name(&part)?)?;
     let copy = copy_into(&dir, &file, &name, link)?;
     if part == "lsp" {
         drop_other_sources(&dir, &name);
     }
     Ok(norm(copy))
+}
+
+/// Moves a window's folder out of the way at once, so its next page starts with a fresh one. The
+/// caller deletes the returned folder after ending the processes that work in it.
+fn detach_in(base: &Path, owner: &str) -> Option<PathBuf> {
+    let from = base.join(owner);
+    from.symlink_metadata().ok()?;
+    let mut id = [0u8; 8];
+    getrandom::fill(&mut id).ok()?;
+    let to = base.join(format!(".gone-{}", hex(&id)));
+    fs::rename(from, &to).ok()?;
+    Some(to)
+}
+
+/// The window closes or reloads: takes its private folder away (see `detach_in`).
+pub fn detach_window(owner: &str) -> Option<PathBuf> {
+    let slot = BASE.lock().ok()?;
+    detach_in(&slot.as_ref()?.0, owner)
 }
 
 pub fn cleanup() {
@@ -264,6 +284,27 @@ pub fn cleanup() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_window_only_loses_its_own_copies() {
+        let base = tempfile::tempdir().unwrap();
+        let source = base.path().join("prog");
+        fs::write(&source, "x").unwrap();
+        let file = source.to_str().unwrap();
+        let a = file_dir(&base.path().join("main"), file, "lsp").unwrap();
+        let b = file_dir(&base.path().join("w-b"), file, "lsp").unwrap();
+        assert_ne!(a, b, "the same file in two windows has two folders");
+        fs::write(a.join("copy"), "a").unwrap();
+        fs::write(b.join("copy"), "b").unwrap();
+        let gone = detach_in(base.path(), "main").unwrap();
+        assert!(!a.exists());
+        assert_eq!(fs::read_to_string(b.join("copy")).unwrap(), "b");
+        // The reloaded page gets a clean folder, while the old one waits for its processes to end.
+        let again = file_dir(&base.path().join("main"), file, "lsp").unwrap();
+        assert!(!again.join("copy").exists());
+        assert!(gone.is_dir());
+        assert!(detach_in(base.path(), "w-none").is_none());
+    }
 
     #[test]
     fn names_cannot_leave_the_folder_or_read_as_options() {

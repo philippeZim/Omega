@@ -41,9 +41,9 @@ export interface Ctx {
 const exists = (p: string) => fsApi.exists(p);
 const which = (c: string) => invoke<string | null>("which_cmd", { cmd: c });
 
-async function capture(cmd: string, args: string[], cwd: string, ctx: Ctx) {
+async function capture(cmd: string, args: string[], cwd: string, ctx: Ctx, sharedDone?: string) {
   ctx.log(`$ ${cmd} ${args.join(" ")}`, "build");
-  const r = await invoke<{ code: number; stdout: string; stderr: string }>("run_capture", { cmd, args, cwd });
+  const r = await invoke<{ code: number; stdout: string; stderr: string }>(sharedDone ? "run_shared_install" : "run_capture", sharedDone ? { cmd, args, cwd, done: sharedDone } : { cmd, args, cwd });
   if (r.code !== 0) {
     ctx.log((r.stderr || r.stdout).trim(), "error");
     throw new Error(t("code.ad.buildFailed"));
@@ -339,7 +339,8 @@ export async function planFor(ctx: Ctx): Promise<Plan> {
           const loader = `${tsxDir}/node_modules/tsx/dist/loader.mjs`;
           if (!(await exists(loader))) {
             await fsApi.createDir(tsxDir).catch(() => {});
-            await capture("pnpm", ["add", "--dir", tsxDir, "--allow-build=esbuild", "tsx"], tsxDir, ctx);
+            // The folder is shared by all windows: the backend runs one install at a time.
+            await capture("pnpm", ["add", "--dir", tsxDir, "--allow-build=esbuild", "tsx"], tsxDir, ctx, loader);
           }
           launch.runtimeExecutable = node;
           launch.runtimeArgs = ["--import", fileUri(loader)];

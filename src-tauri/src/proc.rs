@@ -3,7 +3,7 @@
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager};
@@ -340,6 +340,31 @@ pub async fn run_capture(cmd: String, args: Vec<String>, cwd: Option<String>) ->
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// One shared tool install at a time, across all windows.
+static SHARED_INSTALL: Mutex<()> = Mutex::new(());
+
+/// `run_capture` for installing into a folder all windows share: one at a time, and nothing to do
+/// if `done` appeared while waiting for another window's install.
+#[tauri::command]
+pub async fn run_shared_install(cmd: String, args: Vec<String>, cwd: Option<String>, done: String) -> Result<Captured, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        run_once(&SHARED_INSTALL, Path::new(&done), || {
+            let out = command(&cmd, &args, cwd, None)?.output().map_err(|e| e.to_string())?;
+            Ok(Captured { code: out.status.code().unwrap_or(-1), stdout: String::from_utf8_lossy(&out.stdout).into(), stderr: String::from_utf8_lossy(&out.stderr).into() })
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+fn run_once(lock: &Mutex<()>, done: &Path, run: impl FnOnce() -> Result<Captured, String>) -> Result<Captured, String> {
+    let _one = lock.lock().unwrap_or_else(|e| e.into_inner());
+    if done.exists() {
+        return Ok(Captured { code: 0, stdout: String::new(), stderr: String::new() });
+    }
+    run()
 }
 
 /// Reads a pipe to its end on its own thread, so a full pipe can't block the child.
@@ -727,6 +752,27 @@ Content-Type: x\r\nContent-Length: 7\r\n\r\n{\"a\":1}";
 mod window_tests {
     use super::*;
     use std::sync::Arc;
+
+    #[test]
+    fn a_shared_install_runs_once_for_two_windows() {
+        let t = tempfile::tempdir().unwrap();
+        let done = Arc::new(t.path().join("done"));
+        let lock = Arc::new(Mutex::new(()));
+        let runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let threads: Vec<_> = (0..2).map(|_| {
+            let (done, lock, runs) = (done.clone(), lock.clone(), runs.clone());
+            std::thread::spawn(move || {
+                run_once(&lock, &done, || {
+                    runs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    std::fs::write(&*done, "x").unwrap();
+                    Ok(Captured { code: 0, stdout: String::new(), stderr: String::new() })
+                }).unwrap();
+            })
+        }).collect();
+        for th in threads { th.join().unwrap(); }
+        assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
 
     #[test]
     fn closing_a_window_ends_only_its_processes_without_deadlock() {

@@ -67,11 +67,16 @@ pub fn target(app: &AppHandle) -> Option<String> {
 
 /// The window's page is (re)loading: what its old page started has no UI any more.
 pub fn page_loading(app: &AppHandle, label: &str) {
+    // Before the new page runs, so it can't get a folder that's about to be deleted.
+    let private = crate::lang_shadow::detach_window(label);
     let (app, label) = (app.clone(), label.to_string());
     std::thread::spawn(move || {
         crate::pty::kill_window(&app, &label);
         crate::proc::kill_window(&app, &label);
         crate::search::cancel_window(&label);
+        if let Some(dir) = private {
+            let _ = std::fs::remove_dir_all(dir);
+        }
     });
 }
 

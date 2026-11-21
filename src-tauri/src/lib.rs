@@ -166,6 +166,7 @@ pub fn run() {
             proc::proc_connect,
             proc::run_capture,
             proc::run_killable,
+            proc::run_shared_install,
             proc::install_debugger,
             proc::proc_send,
             proc::proc_kill,
