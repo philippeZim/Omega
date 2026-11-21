@@ -80,7 +80,8 @@ export async function pyprojectScripts(root: string): Promise<{ name: string; ta
   try {
     const toml = await fsApi.readFile(joinPath(root, "pyproject.toml"));
     const sec = /^\[project\.scripts\]\s*$([\s\S]*?)(?=^\[|$(?![\s\S]))/m.exec(toml)?.[1] ?? "";
-    return [...sec.matchAll(/^\s*["']?([\w.-]+)["']?\s*=\s*["']([^"']+)["']/gm)].map((m) => ({ name: m[1], target: m[2] }));
+    // No `%`: cmd.exe expands it even inside quotes, and a real entry point never has one.
+    return [...sec.matchAll(/^\s*["']?([\w.-]+)["']?\s*=\s*["']([^"'%]+)["']/gm)].map((m) => ({ name: m[1], target: m[2] }));
   } catch {
     return [];
   }
@@ -131,6 +132,16 @@ export async function pythonEntry(file: string | null, root: string): Promise<{ 
   if (isPy) return { kind: "file", file };
   const main = await findPythonMain(root);
   return main ? { kind: "file", file: main } : { kind: "none" };
+}
+
+/**
+ * What follows `uv run`: names from the project must not read as options, and on Windows a file
+ * with `%` can't be run at all, because cmd.exe would expand it even inside quotes.
+ */
+export function uvRunTarget(entry: Awaited<ReturnType<typeof pythonEntry>>, relFile: string, windows = IS_WIN): string | null {
+  if (entry.kind === "script") return `${entry.name.startsWith("-") ? "-- " : ""}${q(entry.name)}`;
+  if (entry.kind !== "file" || (windows && relFile.includes("%"))) return null;
+  return q(relFile.startsWith("-") ? `./${relFile}` : relFile);
 }
 
 /** Removes `#` line comments and `#[[ … ]]` bracket comments, leaving quoted strings alone. */
@@ -235,9 +246,7 @@ export async function detectProject(file: string | null, workspace: string | nul
 
   if (p?.kind === "uv") {
     const entry = await pythonEntry(file, p.root);
-    // Names from the project must not read as options of `uv run`.
-    const relFile = entry.kind === "file" ? rel(entry.file, p.root) : "";
-    const target = entry.kind === "script" ? `${entry.name.startsWith("-") ? "-- " : ""}${q(entry.name)}` : entry.kind === "file" ? q(relFile.startsWith("-") ? `./${relFile}` : relFile) : null;
+    const target = uvRunTarget(entry, entry.kind === "file" ? rel(entry.file, p.root) : "");
     return {
       ...p,
       label: "uv",

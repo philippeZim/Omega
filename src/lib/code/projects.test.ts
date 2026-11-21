@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, test } from "vitest";
 import { mockIPC } from "@tauri-apps/api/mocks";
-import { cmakeExecutable, detectProject, findPythonMain, pyprojectScripts, pythonEntry, TEMPLATES } from "./projects";
+import { cmakeExecutable, detectProject, findPythonMain, pyprojectScripts, pythonEntry, TEMPLATES, uvRunTarget } from "./projects";
 import { i18n } from "../i18n/index.svelte";
 
 let files: Record<string, string> = {};
@@ -270,5 +270,18 @@ describe("project files can't put shell text into a run action", () => {
     files["/p/pyproject.toml"] = `[project]\nname = "x"\n`;
     files["/p/-x.py"] = "print(1)";
     expect((await detectProject("/p/-x.py", "/p"))?.run?.cmd).toBe("uv run ./-x.py");
+  });
+});
+
+describe("`%` can't reach cmd.exe through a uv entry", () => {
+  test("[project.scripts] entries with % are dropped", async () => {
+    files["/p/pyproject.toml"] = `[project.scripts]\n"%PATH%" = "m:f"\nbad = "%TEMP%:f"\ngood = "m:f"\n`;
+    expect(await pyprojectScripts("/p")).toEqual([{ name: "good", target: "m:f" }]);
+  });
+
+  test("a file with % isn't run on Windows, and still is elsewhere", () => {
+    const entry = { kind: "file" as const, file: "/p/100%.py" };
+    expect(uvRunTarget(entry, "100%.py", true)).toBeNull();
+    expect(uvRunTarget(entry, "100%.py", false)).toBe("100%.py");
   });
 });
