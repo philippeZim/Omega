@@ -404,20 +404,78 @@ fn relaunch_mark(dir: &Path, key: &str) -> PathBuf {
     dir.join(format!("{key}.relaunch"))
 }
 
+/// The mark names the old process. Only what that process started itself counts as its restart.
+fn mark_is_for(text: &str, starters: &[u32], by_launchd: bool) -> bool {
+    text.trim().parse::<u32>().is_ok_and(|pid| pid != 0 && (by_launchd || starters.contains(&pid)))
+}
+
 /// Consumes the mark the old process left. Tauri's restart starts the new process while the old
 /// one still holds the lock; without the mark it would hand over to the dying process and exit.
-fn take_relaunch_mark(dir: &Path, key: &str, max_age: Duration) -> bool {
+/// Any other `omega` leaves the mark alone and starts normally; a stale one is removed.
+fn take_relaunch_mark(dir: &Path, key: &str, max_age: Duration, starters: impl FnOnce() -> Vec<u32>, by_launchd: bool) -> bool {
     let path = relaunch_mark(dir, key);
     let Ok(meta) = std::fs::symlink_metadata(&path) else { return false };
-    let fresh = meta.is_file() && meta.modified().ok().and_then(|m| m.elapsed().ok()).is_some_and(|age| age <= max_age);
-    let _ = std::fs::remove_file(&path);
-    fresh
+    if !meta.is_file() || !meta.modified().ok().and_then(|m| m.elapsed().ok()).is_some_and(|age| age <= max_age) {
+        let _ = std::fs::remove_file(&path);
+        return false;
+    }
+    let ours = std::fs::read_to_string(&path).is_ok_and(|t| mark_is_for(&t, &starters(), by_launchd));
+    if ours {
+        let _ = std::fs::remove_file(&path);
+    }
+    ours
+}
+
+/// Processes that may have started this one for a restart: the parent, and for an AppImage
+/// without a terminal also its parent (the runtime stays in between when it extracts itself). A
+/// shell in one of Omega's terminals has a terminal, so `omega` typed there never qualifies.
+fn restart_starters(terminal: bool) -> Vec<u32> {
+    let parents = crate::power::process_parents();
+    let Some(&parent) = parents.get(&std::process::id()) else { return vec![] };
+    let mut out = vec![parent];
+    if !terminal && std::env::var_os("APPIMAGE").is_some() {
+        out.extend(parents.get(&parent));
+    }
+    out
+}
+
+/// macOS restarts through LaunchServices, so launchd is the parent.
+#[cfg(target_os = "macos")]
+fn started_by_launchd(terminal: bool) -> bool {
+    !terminal && unsafe { libc::getppid() } == 1
+}
+
+#[cfg(not(target_os = "macos"))]
+fn started_by_launchd(_terminal: bool) -> bool {
+    false
+}
+
+/// `--help` / `--version` among the options, which only print and never touch the app's state.
+fn info_request(args: &[OsString]) -> Option<Parsed> {
+    for a in args {
+        match a.to_str() {
+            Some("--") => return None,
+            Some("-h" | "--help") => return Some(Parsed::Help),
+            Some("-v" | "--version") => return Some(Parsed::Version),
+            _ => {}
+        }
+    }
+    None
+}
+
+fn print_info(info: Parsed) -> ! {
+    if info == Parsed::Help {
+        print!("{USAGE}");
+    } else {
+        println!("Omega {}", env!("CARGO_PKG_VERSION"));
+    }
+    std::process::exit(0)
 }
 
 /// The app is about to restart itself.
 pub fn mark_relaunch() {
     if let Some((dir, key)) = PROFILE.get() {
-        let _ = std::fs::write(relaunch_mark(dir, key), "");
+        let _ = std::fs::write(relaunch_mark(dir, key), std::process::id().to_string());
     }
 }
 
@@ -452,22 +510,19 @@ pub fn startup() -> Startup {
         // Terminals opened in the app must not inherit it. No other thread runs yet.
         unsafe { std::env::remove_var(DETACHED_ENV) };
     }
+    let argv: Vec<OsString> = std::env::args_os().skip(1).collect();
+    if let Some(info) = info_request(&argv) {
+        print_info(info);
+    }
     let cwd = std::env::current_dir().unwrap_or_else(|_| crate::env::home());
     let key = this_profile();
     let private = runtime_dir();
-    let relaunch = private.as_deref().is_some_and(|d| take_relaunch_mark(d, &key, RELAUNCH_MARK_AGE));
+    let relaunch = private.as_deref().is_some_and(|d| take_relaunch_mark(d, &key, RELAUNCH_MARK_AGE, || restart_starters(terminal), started_by_launchd(terminal)));
     // A restart brings back the session; the paths of the original command may be long gone.
-    let args = if relaunch { Vec::new() } else { std::env::args_os().skip(1).collect() };
+    let args = if relaunch { Vec::new() } else { argv };
     let request = match parse(args, &cwd, detached) {
-        Ok(Parsed::Help) => {
-            print!("{USAGE}");
-            std::process::exit(0)
-        }
-        Ok(Parsed::Version) => {
-            println!("Omega {}", env!("CARGO_PKG_VERSION"));
-            std::process::exit(0)
-        }
         Ok(Parsed::Open(r)) => r,
+        Ok(info) => print_info(info),
         Err(e) => fail(&e),
     };
     let Some(dir) = private else {
@@ -550,15 +605,38 @@ mod tests {
     #[test]
     fn a_restart_finds_its_mark_once_and_ignores_an_old_one() {
         let t = tempfile::tempdir().unwrap();
-        assert!(!take_relaunch_mark(t.path(), "k", RELAUNCH_MARK_AGE), "a normal start");
-        std::fs::write(relaunch_mark(t.path(), "k"), "").unwrap();
-        assert!(!take_relaunch_mark(t.path(), "other", RELAUNCH_MARK_AGE), "another profile's");
-        assert!(take_relaunch_mark(t.path(), "k", RELAUNCH_MARK_AGE));
-        assert!(!take_relaunch_mark(t.path(), "k", RELAUNCH_MARK_AGE), "used up");
-        std::fs::write(relaunch_mark(t.path(), "k"), "").unwrap();
+        let old = || vec![4242];
+        assert!(!take_relaunch_mark(t.path(), "k", RELAUNCH_MARK_AGE, old, false), "a normal start");
+        std::fs::write(relaunch_mark(t.path(), "k"), "4242").unwrap();
+        assert!(!take_relaunch_mark(t.path(), "other", RELAUNCH_MARK_AGE, old, false), "another profile's");
+        assert!(take_relaunch_mark(t.path(), "k", RELAUNCH_MARK_AGE, old, false));
+        assert!(!take_relaunch_mark(t.path(), "k", RELAUNCH_MARK_AGE, old, false), "used up");
+        std::fs::write(relaunch_mark(t.path(), "k"), "4242").unwrap();
         std::thread::sleep(Duration::from_millis(30));
-        assert!(!take_relaunch_mark(t.path(), "k", Duration::from_millis(1)), "stale");
+        assert!(!take_relaunch_mark(t.path(), "k", Duration::from_millis(1), old, false), "stale");
         assert!(!relaunch_mark(t.path(), "k").exists(), "a stale mark is removed too");
+    }
+
+    #[test]
+    fn another_omega_neither_uses_nor_consumes_the_mark() {
+        let t = tempfile::tempdir().unwrap();
+        std::fs::write(relaunch_mark(t.path(), "k"), "4242").unwrap();
+        assert!(!take_relaunch_mark(t.path(), "k", RELAUNCH_MARK_AGE, || vec![77], false), "started by a shell");
+        assert!(relaunch_mark(t.path(), "k").exists(), "still there for the real restart");
+        assert!(take_relaunch_mark(t.path(), "k", RELAUNCH_MARK_AGE, || vec![4242], false));
+        // A planted file names nobody who started us.
+        for planted in ["", "x", "0", "-1"] {
+            assert!(!mark_is_for(planted, &[0, 4242], false), "{planted:?}");
+        }
+        assert!(mark_is_for("4242", &[], true), "macOS restarts through launchd");
+    }
+
+    #[test]
+    fn help_and_version_are_found_before_anything_else() {
+        assert_eq!(info_request(&os(&["a", "--help"])), Some(Parsed::Help));
+        assert_eq!(info_request(&os(&["-v"])), Some(Parsed::Version));
+        assert_eq!(info_request(&os(&["--", "--help"])), None);
+        assert_eq!(info_request(&os(&["a"])), None);
     }
 
     #[test]
