@@ -104,6 +104,12 @@ export const validPackages = (kind: string, input: PackageInput, tokens: string[
 
 export const splitPackages = (text: string) => text.split(/\s+/).filter(Boolean);
 
+/** A dependency group name as PEP 735 allows it (the same form as a package name). */
+export const validGroupName = (g: string) => g.length <= PACKAGE_LIMITS.length && PY_NAME.test(g);
+
+/** A package.json script name that is safe to offer: no option, quote, expansion or `{file}`. */
+export const validScriptName = (s: string) => s.length <= PACKAGE_LIMITS.length && /^[\p{L}\p{N}_][\p{L}\p{N}_:.@/+ -]*$/u.test(s);
+
 /**
  * One shell word for a validated package. The grammar above excludes both quote characters, `$`,
  * `%`, backslash, backtick and all whitespace, so nothing can end or expand the quoted word.

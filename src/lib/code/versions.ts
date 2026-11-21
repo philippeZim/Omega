@@ -11,6 +11,7 @@
  */
 import { invoke } from "@tauri-apps/api/core";
 import { fsApi, joinPath } from "../api";
+import { q } from "../platform";
 import { t, type Key } from "../i18n/index.svelte";
 import type { Project } from "./projects";
 import type { Suggestion } from "./packages";
@@ -30,6 +31,16 @@ export interface VersionSetting {
 }
 
 const read = (p: string) => fsApi.readFile(p).catch(() => null);
+
+/**
+ * A version as one shell word. The offered values include the one read from the project's files,
+ * so it can't go into the command as it is.
+ */
+export function versionArg(v: string): string {
+  if (v.length > 100 || !/^[A-Za-z0-9<>=~^!][A-Za-z0-9._+@~^=<>!,*/-]*$/.test(v)) throw new Error(t("code.ver.badVersion", { value: v.slice(0, 40) }));
+  return q(v);
+}
+
 const capture = (cmd: string, args: string[], cwd: string) =>
   invoke<{ code: number; stdout: string }>("run_capture", { cmd, args, cwd }).catch(() => ({ code: -1, stdout: "" }));
 
@@ -75,12 +86,13 @@ async function python(root: string): Promise<VersionSetting> {
       return markCurrent(opts, pin);
     },
     async apply(v) {
+      const arg = versionArg(v);
       // Keep requires-python compatible, otherwise `uv sync` refuses the pinned interpreter.
       if (pyproject && req) {
         const minor = v.match(/^(\d+\.\d+)/)?.[1];
         if (minor) await fsApi.writeFile(joinPath(root, "pyproject.toml"), pyproject.replace(/^(\s*requires-python\s*=\s*)["'][^"']*["']/m, `$1">=${minor}"`));
       }
-      return `uv python pin ${v} && uv sync`;
+      return `uv python pin ${arg} && uv sync`;
     },
   };
 }
@@ -116,7 +128,7 @@ async function node(root: string): Promise<VersionSetting> {
       const major = current?.match(/\d+/)?.[0] ?? null;
       return markCurrent(opts, current && opts.some((o) => o.value === major) ? major : current);
     },
-    apply: async (v) => `pnpm runtime set node ${v} -y && pnpm install`,
+    apply: async (v) => `pnpm runtime set node ${versionArg(v)} -y && pnpm install`,
   };
 }
 
@@ -148,11 +160,12 @@ async function rust(root: string): Promise<VersionSetting[]> {
         return markCurrent(base.map((b) => (installed.includes(b.value) && !b.tag ? { ...b, tag: t("code.pkg.installed") } : b)), channel);
       },
       async apply(v) {
+        const arg = versionArg(v);
         const body = toml
           ? toml.replace(/^(\s*channel\s*=\s*)["'][^"']*["']/m, `$1"${v}"`)
           : `[toolchain]\nchannel = "${v}"\n`;
         await fsApi.writeFile(tomlPath, /channel\s*=/.test(body) ? body : `${body.trimEnd()}\nchannel = "${v}"\n`);
-        return `rustup toolchain install ${v} && cargo build`;
+        return `rustup toolchain install ${arg} && cargo build`;
       },
     },
     ...(cargo && edition

@@ -175,7 +175,7 @@ registerMethod({
     if (pkg.input) {
       if (!validPackages(project.kind, pkg.input, packages)) throw new RpcFail("invalid_package");
       const flags = project.kind === "uv" && pkg.input === "remove" ? await pythonRemoveFlags(project.root, packages) : [];
-      if (!flags) throw new RpcFail("invalid_package");
+      if (!flags) throw new RpcFail("invalid_group");
       if (signal.aborted) throw new RpcFail("cancelled");
       if (runner.project?.root !== project.root || runner.project.kind !== project.kind) throw new RpcFail("unavailable");
       arg = [...flags, ...packages.map((x) => quotePackageArg(x))].join(" ");
@@ -376,7 +376,9 @@ async function packagesOnHost(a: Action, kind: string) {
   }
   showRemoteRun();
   const r = await call("packages.run", { action: a.id, packages });
-  if (!r.ok) ui.toast(r.error.code === "invalid_package" ? t("ai.collab.packageInvalid") : rpcErrorText(r.error.code), "error");
+  if (r.ok) return;
+  const code = r.error.code;
+  ui.toast(code === "invalid_package" ? t("ai.collab.packageInvalid") : code === "invalid_group" ? t("code.act.badGroup") : rpcErrorText(code), "error");
 }
 
 async function runOnHost(a: Action) {

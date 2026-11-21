@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, test } from "vitest";
 import { mockIPC } from "@tauri-apps/api/mocks";
-import { versionSettings } from "./versions";
+import { versionArg, versionSettings } from "./versions";
 import type { Project, ProjectKind } from "./projects";
 
 let files: Record<string, string> = {};
@@ -178,5 +178,14 @@ describe("Java (Gradle)", () => {
     expect(await versionSettings(proj("gradle"))).toEqual([]);
     expect(await versionSettings(proj("file"))).toEqual([]);
     expect(await versionSettings(null)).toEqual([]);
+  });
+});
+
+describe("versionArg: a version read from a project file can't inject", () => {
+  test.each(["3.12; touch /tmp/pwned", "$(id)", "`id`", "--force", "-y", "a b", "a|b", "a&b", "a'b", 'a"b', "a\\b", "a\nb", "%PATH%", ""])("refuses %j", (v) => {
+    expect(() => versionArg(v)).toThrow();
+  });
+  test.each([["3.12", "3.12"], ["22", "22"], ["stable", "stable"], ["nightly-2026-01-01", "nightly-2026-01-01"], ["1.80.0", "1.80.0"], ["pypy@3.10", "pypy@3.10"], [">=3.12", "'>=3.12'"], ["^22", "'^22'"]])("%s", (v, word) => {
+    expect(versionArg(v)).toBe(word);
   });
 });

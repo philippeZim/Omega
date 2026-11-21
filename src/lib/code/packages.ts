@@ -7,6 +7,8 @@
  * - Remove: the dependencies declared in pyproject.toml / package.json.
  */
 import { fsApi, joinPath } from "../api";
+import { t } from "../i18n/index.svelte";
+import { quotePackageArg, validGroupName, validPackage } from "./packageInput";
 
 export interface Suggestion {
   /** Text put into the input field. */
@@ -212,6 +214,11 @@ export async function pythonDeps(root: string): Promise<{ name: string; group: s
   return out;
 }
 
+// A picked suggestion goes into the command line, and these lists come from project files and the
+// registries, so only real package names are offered.
+const isPyName = (n: string) => validPackage("uv", "remove", n);
+const isNodeName = (n: string) => validPackage("pnpm", "remove", n);
+
 export function suggestPythonAdd(root: string, dev: boolean): Suggest {
   return async (q) => {
     const installed = new Set((await pythonDeps(root)).map((d) => norm(d.name)));
@@ -219,14 +226,14 @@ export function suggestPythonAdd(root: string, dev: boolean): Suggest {
     const desc = new Map([...PY_POPULAR, ...PY_DEV]);
     const tag = (n: string) => (installed.has(norm(n)) ? "installed" : undefined);
     if (!q.trim()) return curated.map(([value, detail]) => ({ value, detail, tag: tag(value) }));
-    const names = rank(await loadPypiNames(), q.trim());
+    const names = rank((await loadPypiNames()).filter(isPyName), q.trim());
     return names.map((value) => ({ value, detail: desc.get(value), tag: tag(value) }));
   };
 }
 
 export function suggestPythonRemove(root: string): Suggest {
   return async (q) => {
-    const deps = await pythonDeps(root);
+    const deps = (await pythonDeps(root)).filter((d) => isPyName(d.name));
     const hit = q.trim() ? rank(deps.map((d) => d.name), q.trim(), 200) : deps.map((d) => d.name);
     return hit.map((value) => ({ value, tag: deps.find((d) => d.name === value)?.group || undefined }));
   };
@@ -238,7 +245,11 @@ export async function pythonRemoveArg(root: string, input: string): Promise<stri
   const parts = input.split(/\s+/).filter(Boolean);
   if (parts.some((p) => p.startsWith("-"))) return input; // user passed flags themselves
   const g = removeGroup(deps, parts);
-  return !g ? input : g === "dev" ? `--dev ${input}` : `--group ${g} ${input}`;
+  if (!g) return input;
+  if (g === "dev") return `--dev ${input}`;
+  // The name comes from pyproject.toml, which isn't necessarily the host's own text.
+  if (!validGroupName(g)) throw new Error(t("code.act.badGroup"));
+  return `--group ${quotePackageArg(g)} ${input}`;
 }
 
 /** The one group all these packages are in; null when they're in the main list or in several. */
@@ -255,7 +266,7 @@ export async function pythonRemoveFlags(root: string, names: string[]): Promise<
   const g = removeGroup(await pythonDeps(root), names);
   if (!g) return [];
   if (g === "dev") return ["--dev"];
-  return /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/.test(g) ? ["--group", g] : null;
+  return validGroupName(g) ? ["--group", quotePackageArg(g)] : null;
 }
 
 // ------------------------------------------------------------------ npm
@@ -280,7 +291,7 @@ export function suggestNodeAdd(root: string, dev: boolean): Suggest {
     try {
       const r = await fetch(`https://registry.npmjs.org/-/v1/search?text=${encodeURIComponent(q.trim())}&size=20`);
       const objs = ((await r.json()) as { objects: { package: { name: string; description?: string } }[] }).objects;
-      return objs.map((o) => ({ value: o.package.name, detail: o.package.description, tag: tag(o.package.name) }));
+      return objs.filter((o) => isNodeName(o.package.name)).map((o) => ({ value: o.package.name, detail: o.package.description, tag: tag(o.package.name) }));
     } catch {
       return rank([...NPM_POPULAR, ...NPM_DEV].map(([n]) => n), q.trim()).map((value) => ({ value, tag: tag(value) }));
     }
@@ -289,7 +300,7 @@ export function suggestNodeAdd(root: string, dev: boolean): Suggest {
 
 export function suggestNodeRemove(root: string): Suggest {
   return async (q) => {
-    const deps = await nodeDeps(root);
+    const deps = (await nodeDeps(root)).filter((d) => isNodeName(d.name));
     const hit = q.trim() ? rank(deps.map((d) => d.name), q.trim(), 200) : deps.map((d) => d.name);
     return hit.map((value) => ({ value, tag: deps.find((d) => d.name === value)?.dev ? "dev" : undefined }));
   };

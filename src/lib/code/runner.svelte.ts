@@ -158,7 +158,13 @@ export async function runAction(action: Action | null | undefined, checkedArg?: 
   else if (a.ask) {
     const v = await ui.prompt(a.label.replace("…", ""), "", a.ask, undefined, a.suggest);
     if (!v) return;
-    cmd = cmd.replace("{}", a.arg ? await a.arg(v) : v);
+    let arg = v;
+    try {
+      if (a.arg) arg = await a.arg(v);
+    } catch (e) {
+      return ui.toast(e instanceof Error ? e.message : String(e), "error");
+    }
+    cmd = cmd.replace("{}", () => arg);
   }
   // `{file}` in a (custom) command = the file open in the editor.
   if (cmd.includes("{file}")) {

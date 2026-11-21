@@ -193,3 +193,16 @@ describe("runAction with an argument checked for a Code Together guest", () => {
     expect(h.runCommand.mock.calls[0][0]).toBe("uv add requests");
   });
 });
+
+describe("package actions on the host", () => {
+  const add = (over: Partial<Action> = {}): Action => ({ id: "add", label: "Add…", cmd: "uv add {}", ask: "Package", ...over });
+
+  test("a group name that fails validation stops with its message, nothing runs", async () => {
+    await refreshProject();
+    vi.mocked(ui.prompt).mockResolvedValueOnce("evil");
+    vi.mocked(ui.toast).mockClear();
+    await runAction(add({ arg: async () => { throw new Error("bad group"); } }));
+    expect(ui.toast).toHaveBeenCalledWith("bad group", "error");
+    expect(h.runCommand).not.toHaveBeenCalled();
+  });
+});

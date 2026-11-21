@@ -339,7 +339,7 @@ test("host: uv remove finds the group, and refuses a group name that would injec
   expect(runAction).toHaveBeenLastCalledWith(a, "requests");
   vi.mocked(runAction).mockClear();
   await pkgReq(43, "remove", ["evil"]);
-  expect(replyTo("g1", 43)).toMatchObject({ ok: false, error: { code: "invalid_package" } });
+  expect(replyTo("g1", 43)).toMatchObject({ ok: false, error: { code: "invalid_group" } });
   expect(runAction).not.toHaveBeenCalled();
 });
 

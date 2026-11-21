@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, test } from "vitest";
 import { mockIPC } from "@tauri-apps/api/mocks";
-import { nodeDeps, pythonDeps, pythonRemoveArg, suggestNodeRemove, suggestPythonRemove } from "./packages";
+import { nodeDeps, pythonDeps, pythonRemoveArg, pythonRemoveFlags, suggestNodeRemove, suggestPythonRemove } from "./packages";
 
 let files: Record<string, string> = {};
 beforeEach(() => {
@@ -132,5 +132,29 @@ describe("remove suggestions", () => {
     files["/n/package.json"] = JSON.stringify({ dependencies: { zod: "1" }, devDependencies: { vitest: "1" } });
     expect(await suggestNodeRemove("/n")("vi")).toEqual([{ value: "vitest", tag: "dev" }]);
     expect(await suggestNodeRemove("/n")("zo")).toEqual([{ value: "zod", tag: undefined }]);
+  });
+});
+
+describe("project files can't put shell text into a package command", () => {
+  const ATTACKS = ["x; touch /tmp/pwned #", "x$(id)", "x`id`", "x|id", "x&id", "-x", "--index=evil", "a b", "x'y", "x\\ny"];
+
+  test.each(ATTACKS)("uv remove refuses the group %j", async (group) => {
+    files["/p/pyproject.toml"] = `[project]\nname = "x"\n\n[dependency-groups]\n"${group}" = ["evil"]\n`;
+    await expect(pythonRemoveArg("/p", "evil")).rejects.toThrow(/group/i);
+    expect(await pythonRemoveFlags("/p", ["evil"])).toBeNull();
+  });
+
+  test.each(["docs", "Docs_2", "test.unit", "a-b"])("uv remove accepts the group %s", async (group) => {
+    files["/p/pyproject.toml"] = `[project]\nname = "x"\n\n[dependency-groups]\n"${group}" = ["pkg"]\n`;
+    expect(await pythonRemoveArg("/p", "pkg")).toBe(`--group ${group} pkg`);
+    expect(await pythonRemoveFlags("/p", ["pkg"])).toEqual(["--group", group]);
+  });
+
+  test("remove suggestions only offer real package names", async () => {
+    files["/n/package.json"] = JSON.stringify({ dependencies: { zod: "1", "x; touch /tmp/pwned": "1", "$(id)": "1", "-x": "1" }, devDependencies: { "@types/node": "1", "a b": "1" } });
+    expect((await suggestNodeRemove("/n")("")).map((s) => s.value)).toEqual(["zod", "@types/node"]);
+    expect(await suggestNodeRemove("/n")("touch")).toEqual([]);
+    files["/p/pyproject.toml"] = `[project]\ndependencies = ["requests", "foo.whl", "ok>=1"]\n`;
+    expect((await suggestPythonRemove("/p")("")).map((s) => s.value)).toEqual(["requests", "ok"]);
   });
 });

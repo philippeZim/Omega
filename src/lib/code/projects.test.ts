@@ -256,3 +256,19 @@ describe("template hello world follows the UI language (#82)", () => {
     }
   });
 });
+
+describe("project files can't put shell text into a run action", () => {
+  test("package.json: script names with shell text or options aren't offered, others are quoted", async () => {
+    files["/p/package.json"] = JSON.stringify({ scripts: { lint: "x", "test:unit": "x", "watch all": "x", "x; touch /tmp/pwned": "x", "$(id)": "x", "`id`": "x", "--registry=evil": "x", "{file}": "x", "a'b": "x", "a\nb": "x" } });
+    const p = (await detectProject(null, "/p"))!;
+    expect(p.more.filter((a) => a.id.startsWith("script:")).map((a) => a.cmd)).toEqual(["pnpm run lint", "pnpm run test:unit", "pnpm run 'watch all'"]);
+  });
+
+  test("uv: an entry point or file starting with a dash isn't read as an option", async () => {
+    files["/p/pyproject.toml"] = `[project]\nname = "x"\n\n[project.scripts]\n"--with" = "m:f"\n`;
+    expect((await detectProject(null, "/p"))?.run?.cmd).toBe("uv run -- --with");
+    files["/p/pyproject.toml"] = `[project]\nname = "x"\n`;
+    files["/p/-x.py"] = "print(1)";
+    expect((await detectProject("/p/-x.py", "/p"))?.run?.cmd).toBe("uv run ./-x.py");
+  });
+});

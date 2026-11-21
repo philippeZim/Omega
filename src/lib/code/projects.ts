@@ -5,6 +5,7 @@ import { q, cd, exe, IS_WIN, OS, runRel, rmrf, tmpPath } from "../platform";
 import type { ToolId } from "../tools.svelte";
 import { langFor, type LangId } from "./languages";
 import { suggestPythonAdd, suggestPythonRemove, pythonRemoveArg, suggestNodeAdd, suggestNodeRemove, type Suggest } from "./packages";
+import { validScriptName } from "./packageInput";
 import { t, i18n, type Key } from "../i18n/index.svelte";
 
 export type ProjectKind = "cargo" | "uv" | "pnpm" | "cmake" | "gradle" | "file";
@@ -234,7 +235,9 @@ export async function detectProject(file: string | null, workspace: string | nul
 
   if (p?.kind === "uv") {
     const entry = await pythonEntry(file, p.root);
-    const target = entry.kind === "script" ? q(entry.name) : entry.kind === "file" ? q(rel(entry.file, p.root)) : null;
+    // Names from the project must not read as options of `uv run`.
+    const relFile = entry.kind === "file" ? rel(entry.file, p.root) : "";
+    const target = entry.kind === "script" ? `${entry.name.startsWith("-") ? "-- " : ""}${q(entry.name)}` : entry.kind === "file" ? q(relFile.startsWith("-") ? `./${relFile}` : relFile) : null;
     return {
       ...p,
       label: "uv",
@@ -276,7 +279,7 @@ export async function detectProject(file: string | null, workspace: string | nul
           : null, // plain JavaScript: nothing to build or typecheck
       test: scripts.includes("test") ? act("test", "code.act.test", "pnpm test") : null,
       more: [
-        ...scripts.map((s) => ({ id: `script:${s}`, label: `pnpm run ${s}`, cmd: `pnpm run ${s}` })),
+        ...scripts.filter(validScriptName).map((s) => ({ id: `script:${s}`, label: `pnpm run ${s}`, cmd: `pnpm run ${q(s)}` })),
         { id: "install", label: "pnpm install", cmd: "pnpm install" },
         act("add", "code.act.addDep", "pnpm add {}", { ask: askPkg("zod"), suggest: suggestNodeAdd(p.root, false) }),
         act("adddev", "code.act.addDevDep", "pnpm add -D {}", { ask: askPkg("vitest"), suggest: suggestNodeAdd(p.root, true) }),
