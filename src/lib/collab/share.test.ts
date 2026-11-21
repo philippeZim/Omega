@@ -1572,3 +1572,176 @@ test("guest: a refused hook is reported for its file, the other files still go t
   expect(report.errors[0].file).toBe(".husky/x");
   expect(report.errors[0].message).toBe(t("git.guestErr.hooks"));
 });
+
+test("real changes by a guest without run pause compiling, a passive guest doesn't", async () => {
+  const changes = await import("./guestChanges");
+  changes.guestChangeHooks.mayRun = (peer) => !!(collab.participants as { peer: string; caps: string[] }[]).find((p) => p.peer === peer)?.caps.includes("run");
+  const accept = () => changes.resumeCompiling("t", "/p/a.tex");
+  accept();
+  hostFs({ "/p/a.tex": "one\n" });
+  (collab.participants[1] as { caps: string[] }).caps = ["edit"];
+  await receive("g1", { t: "doc.open", path: "a.tex" });
+  await receive("g2", { t: "doc.open", path: "a.tex" });
+  const doc = share.sharedDocs().find((d) => d.rel === "a.tex")!;
+  const edit = async (peer: string, text: string) => {
+    const g = new Y.Doc();
+    Y.applyUpdate(g, Y.encodeStateAsUpdate(doc.ytext.doc!));
+    const before = Y.encodeStateVector(g);
+    g.getText("content").insert(0, text);
+    await receive(peer, { t: "doc.update", path: "a.tex", update: b64(Y.encodeStateAsUpdate(g, before)) });
+  };
+  // Opening and listing change nothing; a guest with run and the host may edit.
+  await fsList("g2", "", 900);
+  await edit("g1", "with run\n");
+  doc.ytext.insert(0, "host\n");
+  expect(changes.isPaused("/p", null)).toBe(false);
+
+  await edit("g2", "without run\n");
+  expect(changes.isPaused("/p", null)).toBe(true);
+  accept();
+  await fsOp("g2", 901, { op: "create", path: "new.tex" });
+  expect(changes.isPaused("/p", null)).toBe(true);
+  accept();
+  changes.guestChangeHooks.mayRun = () => false;
+});
+
+test("a compile takes the current shared text, only for a guest who has the doc open", async () => {
+  hostFs({ "/p/main.tex": "saved\n", "/p/ch.tex": "chapter\n", "/p/dirty.tex": "disk\n" });
+  await receive("g1", { t: "doc.open", path: "main.tex" });
+  await receive("g1", { t: "doc.open", path: "ch.tex" });
+  share.sharedDocs().find((d) => d.rel === "ch.tex")!.ytext.insert(0, "unsaved ");
+  app.tabs.push({ id: "t9", path: "/p/dirty.tex", name: "dirty.tex", dirty: true });
+  texts.set("t9", "host buffer\n");
+  expect(share.hostCompileTexts("main.tex", "g2")).toBeNull();
+  expect(share.hostCompileTexts("nope.tex", "g1")).toBeNull();
+  const r = share.hostCompileTexts("main.tex", "g1")!;
+  expect(r.text).toBe("saved\n");
+  expect(Object.fromEntries(r.overlays.map((o) => [o.rel, o.text]))).toEqual({ "ch.tex": "unsaved chapter\n", "dirty.tex": "host buffer\n" });
+});
+
+test("a guest's Replace in Files counts as its change, one that replaces nothing doesn't", async () => {
+  const changes = await import("./guestChanges");
+  changes.guestChangeHooks.mayRun = () => false;
+  changes.resumeCompiling("t", "/p/b.txt");
+  const { fs } = searchFs({ "/p/b.txt": "old\n", "/p/c.txt": "nothing\n" });
+  await replaceReq(950, "c.txt", "nothing\n");
+  expect(changes.isPaused("/p", null)).toBe(false);
+  await replaceReq(951, "b.txt", "old\n");
+  expect(fs.files.get("/p/b.txt")).toBe("new\n");
+  expect(changes.isPaused("/p", null)).toBe(true);
+  changes.resumeCompiling("t", "/p/b.txt");
+});
+
+
+/** A guest's own copy, as the host handed it out. */
+function copyOf(rel: string, client: number) {
+  const g = new Y.Doc();
+  g.clientID = client;
+  Y.applyUpdate(g, Y.encodeStateAsUpdate(share.sharedDocs().find((d) => d.rel === rel)!.ytext.doc!));
+  return g;
+}
+const editOf = (g: Y.Doc, fn: (t: Y.Text) => void) => {
+  const before = Y.encodeStateVector(g);
+  fn(g.getText("content"));
+  return b64(Y.encodeStateAsUpdate(g, before));
+};
+
+test("an update held back on another guest's edit can't land under that guest's name", async () => {
+  const changes = await import("./guestChanges");
+  changes.guestChangeHooks.mayRun = (peer) => !!(collab.participants as { peer: string; caps: string[] }[]).find((p) => p.peer === peer)?.caps.includes("run");
+  changes.resumeCompiling("t", "/p/h.tex");
+  hostFs({ "/p/h.tex": "abc" });
+  (collab.participants[1] as { caps: string[] }).caps = ["edit"]; // g2: no `run`
+  await receive("g1", { t: "doc.open", path: "h.tex" });
+  await receive("g2", { t: "doc.open", path: "h.tex" });
+  const doc = share.sharedDocs().find((d) => d.rel === "h.tex")!;
+  const ydoc = doc.ytext.doc!;
+  const b = copyOf("h.tex", 1001);
+  const a = copyOf("h.tex", 1002);
+  const bNext = editOf(b, (t) => t.insert(3, "bc"));
+  Y.applyUpdate(a, unb64(bNext));
+  const evil = editOf(a, (t) => t.insert(5, "EVIL"));
+  sent.length = 0;
+
+  await receive("g2", { t: "doc.update", path: "h.tex", update: evil });
+  expect(ydoc.store.pendingStructs).toBeNull();
+  expect(ydoc.store.pendingDs).toBeNull();
+  expect(doc.ytext.toString()).toBe("abc");
+  // The refused guest gets the host's text back.
+  const fresh = sent.filter((s) => s.peer === "g2" && s.msg.t === "doc.state");
+  expect(fresh).toHaveLength(1);
+  const copy = new Y.Doc();
+  Y.applyUpdate(copy, unb64(fresh[0].msg.update));
+  expect(copy.getText("content").toString()).toBe("abc");
+
+  // B's next edit doesn't carry it in, and nothing counts as paused for it.
+  await receive("g1", { t: "doc.update", path: "h.tex", update: bNext });
+  expect(doc.ytext.toString()).toBe("abcbc");
+  expect(changes.isPaused("/p", null)).toBe(false);
+  changes.guestChangeHooks.mayRun = () => false;
+});
+
+test("a refused guest gets one fresh copy for its whole stale history, and can edit again", async () => {
+  hostFs({ "/p/r.tex": "abc" });
+  await receive("g1", { t: "doc.open", path: "r.tex" });
+  const doc = share.sharedDocs().find((d) => d.rel === "r.tex")!;
+  const stale = copyOf("r.tex", 2001);
+  editOf(stale, (t) => t.insert(0, "lost")); // never reaches the host
+  const second = editOf(stale, (t) => t.insert(0, "x"));
+  const third = editOf(stale, (t) => t.insert(0, "y"));
+  sent.length = 0;
+  await receive("g1", { t: "doc.update", path: "r.tex", update: second });
+  await receive("g1", { t: "doc.update", path: "r.tex", update: third });
+  const states = () => sent.filter((s) => s.peer === "g1" && s.msg.t === "doc.state");
+  expect(states()).toHaveLength(1);
+  expect(doc.ytext.toString()).toBe("abc");
+  // The fresh copy has a new client id, and its edits go through.
+  const next = new Y.Doc();
+  next.clientID = 2002;
+  Y.applyUpdate(next, unb64(states()[0].msg.update));
+  await receive("g1", { t: "doc.update", path: "r.tex", update: editOf(next, (t) => t.insert(3, "!")) });
+  expect(doc.ytext.toString()).toBe("abc!");
+});
+
+test("a later refusal after a fresh copy resyncs again, even if both touched the same text", async () => {
+  hostFs({ "/p/s.tex": "abc" });
+  await receive("g1", { t: "doc.open", path: "s.tex" });
+  const doc = share.sharedDocs().find((d) => d.rel === "s.tex")!;
+  const broken = (client: number) => {
+    const g = copyOf("s.tex", client);
+    editOf(g, (t) => t.insert(0, "lost"));
+    return editOf(g, (t) => t.delete(1, 2)); // also deletes the host's own text
+  };
+  sent.length = 0;
+  vi.useFakeTimers();
+  try {
+    await receive("g1", { t: "doc.update", path: "s.tex", update: broken(4001) });
+    expect(sent.filter((s) => s.msg.t === "doc.state")).toHaveLength(1);
+    await receive("g1", { t: "doc.update", path: "s.tex", update: broken(4002) });
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(sent.filter((s) => s.msg.t === "doc.state")).toHaveLength(2);
+  } finally {
+    vi.useRealTimers();
+  }
+  expect(doc.ytext.toString()).toBe("abc");
+});
+
+test("concurrent guests relayed through the host are not refused", async () => {
+  hostFs({ "/p/c.tex": "base" });
+  await receive("g1", { t: "doc.open", path: "c.tex" });
+  await receive("g2", { t: "doc.open", path: "c.tex" });
+  const doc = share.sharedDocs().find((d) => d.rel === "c.tex")!;
+  const [a, b] = [copyOf("c.tex", 3001), copyOf("c.tex", 3002)];
+  sent.length = 0;
+  const ua = editOf(a, (t) => t.insert(0, "A"));
+  const ub = editOf(b, (t) => t.insert(4, "B"));
+  await receive("g1", { t: "doc.update", path: "c.tex", update: ua });
+  await receive("g2", { t: "doc.update", path: "c.tex", update: ub });
+  // Each builds on the other's edit as the host relayed it, including a delete of it.
+  Y.applyUpdate(a, unb64(ub));
+  Y.applyUpdate(b, unb64(ua));
+  const del = editOf(a, (t) => t.delete(t.length - 1, 1));
+  await receive("g1", { t: "doc.update", path: "c.tex", update: del });
+  expect(doc.ytext.toString()).toBe("Abase");
+  expect(sent.filter((s) => s.msg.t === "doc.state")).toEqual([]);
+});

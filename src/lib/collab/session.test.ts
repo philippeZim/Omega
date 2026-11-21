@@ -275,6 +275,37 @@ test.each([
   expect(runAction).not.toHaveBeenCalled();
 });
 
+test("host: a package action pauses LaTeX auto-compile for a guest without run, before it starts", async () => {
+  const changes = await import("./guestChanges");
+  changes.guestChangeHooks.mayRun = (peer) => !!(collab.participants as { peer: string; caps?: string[] }[]).find((p) => p.peer === peer)?.caps?.includes("run");
+  const a = pkgAct("add", "uv add {}");
+  hostWithPackages("uv", ["packages"], [a]);
+  const root = (runner as { project: { root: string } }).project.root;
+  const where = (await import("../state.svelte")).app.root ?? root;
+  changes.resumeCompiling("t", `${where}/x`);
+  let pausedAtStart = false;
+  vi.mocked(runAction).mockImplementationOnce(async () => void (pausedAtStart = changes.isPaused(where, null)));
+  await pkgReq(70, "add", ["requests"]);
+  expect(replyTo("g1", 70)).toMatchObject({ ok: true });
+  expect(pausedAtStart).toBe(true);
+  changes.resumeCompiling("t", `${where}/x`);
+
+  // Refused packages change nothing, and with `run` there's nothing to pause for.
+  await pkgReq(71, "add", ["--registry=https://evil.test"]);
+  expect(changes.isPaused(where, null)).toBe(false);
+  hostWithPackages("uv", ["packages", "run"], [a]);
+  await pkgReq(72, "add", ["requests"]);
+  expect(changes.isPaused(where, null)).toBe(false);
+
+  // A package action through run.start counts the same, should it ever run without `run`.
+  hostWithPackages("uv", ["packages", "run"], [pkgAct("sync", "uv sync", false)]);
+  changes.guestChangeHooks.mayRun = () => false;
+  await receive("g1", { t: "rpc.req", id: 73, method: "run.start", params: { action: "sync" } });
+  expect(replyTo("g1", 73)).toMatchObject({ ok: true });
+  expect(changes.isPaused(where, null)).toBe(true);
+  changes.resumeCompiling("t", `${where}/x`);
+});
+
 test("host: packages.run needs `packages`, `run` is not enough", async () => {
   hostWithPackages("uv", ["run"], [pkgAct("add", "uv add {}")]);
   await pkgReq(12, "add", ["requests"]);

@@ -33,6 +33,7 @@ setLspHooks({
 setLinkHandler(async (href, fromPath) => {
   if (/^[a-z][a-z0-9+.-]*:/i.test(href)) return openUrl(href).catch((e) => ui.toast(String(e), "error"));
   if (href.startsWith("#")) return jumpToHeading(href.slice(1));
+  if (isRemotePath(fromPath)) return collabHooks.openLink(href, fromPath!, jumpToHeading);
   let p = resolvePath(href, fromPath);
   if (!p) return ui.toast(t("app.relativeLinkUnsaved"), "error");
   if (!(await fsApi.exists(p)) && (await fsApi.exists(p + ".md"))) p += ".md";
@@ -119,6 +120,9 @@ const uid = () => Math.random().toString(36).slice(2, 10);
 /** Live-collaboration hooks (set by collab/share.svelte.ts; avoids an import cycle). */
 export const collabHooks = {
   openRemote: (_path: string) => {},
+  /** The edit being applied right now came from someone who may not cause a compile. */
+  editBlocksCompile: () => false,
+  openLink: async (_href: string, _from: string, _jumpToHeading: (fragment: string) => void): Promise<void> => {},
   tabOpened: (_id: string, _path: string) => {},
   tabClosed: (_path: string | null, _id: string) => {},
   pathMoved: (_from: string, _to: string | null) => {},
@@ -333,7 +337,10 @@ ed.setCallbacks({
   onChange(id) {
     // Only the active buffer: a background tab reloaded from disk must not be compiled under the
     // active tab's path (#50). The controller recompiles on dependency changes by itself.
-    if (app.mode === "latex" && id === app.activeId) latexCtl.schedule(id, activeTab()?.path ?? null);
+    if (app.mode === "latex" && id === app.activeId) {
+      if (collabHooks.editBlocksCompile()) latexCtl.schedule(id, activeTab()?.path ?? null, undefined, false);
+      else latexCtl.schedule(id, activeTab()?.path ?? null);
+    }
   },
 });
 

@@ -49,7 +49,7 @@ export function modeExtensions(mode: Mode, rawPath: string | null): Extension {
         proseLayout,
         markdownLang,
         syntaxHighlighting(codeHighlight),
-        livePreview(path),
+        livePreview(rawPath),
         Prec.high(keymap.of(markdownKeymap)),
         EditorView.editorAttributes.of({ class: "mode-markdown" }),
       ];

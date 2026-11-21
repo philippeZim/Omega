@@ -1,3 +1,4 @@
+import { ASSET_PREFIX } from "../collab/guestAssets";
 import { WidgetType, type EditorView } from "@codemirror/view";
 import katex from "katex";
 import "katex/dist/katex.min.css";
@@ -92,6 +93,9 @@ export class HrWidget extends WidgetType {
 /** URLs made by convertFileSrc: asset://localhost/… (Linux, macOS) or http(s)://asset.localhost/… (Windows). */
 export const isAssetUrl = (src: string) => /^(asset:|https?:\/\/asset\.localhost\/)/i.test(src);
 
+/** Loads images that aren't a URL (a shared doc's project images, see collab/assets.svelte.ts). */
+export const imageHooks = { load: null as ((img: HTMLImageElement, rel: string) => void) | null };
+
 export class ImageWidget extends WidgetType {
   constructor(readonly src: string, readonly alt: string) {
     super();
@@ -105,10 +109,13 @@ export class ImageWidget extends WidgetType {
     // Local files come through Tauri's asset protocol. WebKitGTK drops a plain (no-cors) <img> request
     // for it before Tauri sees it; a CORS request is answered (#89).
     if (isAssetUrl(this.src)) img.crossOrigin = "anonymous";
-    img.src = this.src;
     img.alt = this.alt;
     img.title = this.alt;
     img.onerror = () => img.classList.add("broken");
+    if (this.src.startsWith(ASSET_PREFIX)) {
+      if (imageHooks.load) imageHooks.load(img, this.src.slice(ASSET_PREFIX.length));
+      else img.classList.add("broken");
+    } else img.src = this.src;
     return img;
   }
   ignoreEvent() {

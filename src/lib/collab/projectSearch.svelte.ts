@@ -5,6 +5,7 @@
  * Replace goes file by file, so a guest always knows which files changed, also when the host takes
  * `edit` away halfway. Patterns run in the host's Rust `regex` (linear time), never in its JS engine.
  */
+import { noteGuestChange } from "./guestChanges";
 import { invoke } from "@tauri-apps/api/core";
 import { collab } from "./collab.svelte";
 import { blockedByCapability, guestCan } from "./guard";
@@ -261,7 +262,7 @@ registerMethod({
       if (!visible(scope, file)) throw new RpcFail("unavailable");
       const replace = replaceSpec(q, replacement, expect);
       try {
-        return { count: await hostReplaceIn(scope, file, (text) => invoke<ReplacePlan>("guest_replace_plan", { text, replace }), signal, peer) };
+        return { count: await hostReplaceIn(scope, file, (text) => invoke<ReplacePlan>("guest_replace_plan", { text, replace }).then((plan) => (plan.count && noteGuestChange(peer, scope.root, file), plan)), signal, peer) };
       } catch (e) {
         throw failure(e);
       }

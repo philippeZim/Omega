@@ -1,4 +1,6 @@
 <script lang="ts">
+  import "./lib/collab/assets.svelte";
+  import "./lib/collab/latexRemote.svelte";
   import TopBar from "./components/TopBar.svelte";
   import TabBar from "./components/TabBar.svelte";
   import EditorPane from "./components/EditorPane.svelte";

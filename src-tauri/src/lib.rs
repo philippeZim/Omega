@@ -1,6 +1,7 @@
 mod fs;
 mod spell;
 mod latex;
+mod latex_guest;
 mod pty;
 mod proc;
 mod search;
@@ -112,6 +113,9 @@ pub fn run() {
             spell::spell_add,
             latex::latex_available,
             latex::latex_compile,
+            latex_guest::latex_guest_compile,
+            latex_guest::latex_guest_cancel,
+            latex_guest::collab_read_image,
             pty::pty_spawn,
             pty::pty_write,
             pty::pty_write_guest,
