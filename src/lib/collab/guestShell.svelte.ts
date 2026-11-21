@@ -4,7 +4,7 @@
  * PTY in the project root; the host sees who has one (GuestShellBar), can watch it read-only and end
  * it. Losing the capability, leaving, being removed and the end of the session kill it at once.
  */
-import { listen } from "@tauri-apps/api/event";
+import { listen } from "../windowEvents";
 import { collab, onCollabMessage, peerGoneHooks, send, sessionEndHooks, setStartCapability } from "./collab.svelte";
 import { blockedByCapability, guestGuard, type Capability } from "./guard";
 import { call, hasCapability, isObj, onCapabilitiesChanged, onCapabilityRevoked, registerMethod, rpcErrorText, RpcFail, setCapability } from "./rpc.svelte";

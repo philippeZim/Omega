@@ -7,17 +7,17 @@ use serde_json::{json, Value};
 use std::io::{Read, Write};
 #[cfg(unix)]
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 #[cfg(unix)]
 use std::time::Duration;
-#[cfg(unix)]
-use tauri::Emitter;
 use tauri::{AppHandle, Manager};
 
 #[derive(Default)]
 pub struct CodexState {
-    context: Mutex<Value>,
+    /// Latest context of each window; Codex gets the one of the focused window.
+    contexts: Mutex<HashMap<String, Value>>,
     /// Socket we own (removed on exit); None if another IDE already serves it.
     socket: Mutex<Option<PathBuf>>,
     status: Mutex<String>,
@@ -62,8 +62,11 @@ fn serve(app: AppHandle, mut s: UnixStream) {
         }
         let id = msg["requestId"].clone();
         let reply = if msg["method"] == "ide-context" {
-            let ctx = app.state::<CodexState>().context.lock().unwrap().clone();
-            let _ = app.emit("codex-ide-request", ());
+            let owner = crate::windows::target(&app);
+            let ctx = owner.as_ref().and_then(|o| app.state::<CodexState>().contexts.lock().unwrap().get(o).cloned()).unwrap_or(Value::Null);
+            if let Some(o) = &owner {
+                crate::windows::emit(&app, o, "codex-ide-request", ());
+            }
             json!({
                 "type": "response", "requestId": id, "resultType": "success", "method": "ide-context",
                 "handledByClientId": "omega",
@@ -126,8 +129,12 @@ pub fn cleanup(app: &AppHandle) {
 }
 
 #[tauri::command]
-pub fn codex_set_context(app: AppHandle, context: Value) {
-    *app.state::<CodexState>().context.lock().unwrap() = context;
+pub fn codex_set_context(app: AppHandle, window: tauri::WebviewWindow, context: Value) {
+    app.state::<CodexState>().contexts.lock().unwrap().insert(window.label().to_string(), context);
+}
+
+pub fn forget_window(app: &AppHandle, owner: &str) {
+    app.state::<CodexState>().contexts.lock().unwrap().remove(owner);
 }
 
 #[tauri::command]

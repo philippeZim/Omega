@@ -6,13 +6,13 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 
 #[derive(Default)]
 pub struct ProcState {
-    /// JSON-RPC endpoints (stdio pipes or TCP connections) by id.
+    /// JSON-RPC endpoints (stdio pipes or TCP connections) by window-scoped id.
     conns: Mutex<HashMap<String, Box<dyn Write + Send>>>,
-    /// Child processes by id (stdio servers and TCP debug adapters).
+    /// Child processes by window-scoped id (stdio servers and TCP debug adapters).
     children: Mutex<HashMap<String, Child>>,
     /// Children started by `run_killable`: `proc_kill` also ends what they started.
     trees: Mutex<HashSet<String>>,
@@ -85,21 +85,21 @@ fn read_message<R: BufRead>(reader: &mut R) -> Option<Vec<u8>> {
 }
 
 /// Reads `Content-Length` framed messages and emits them as `proc-msg` events.
-fn pump_messages(app: AppHandle, id: String, stream: impl Read + Send + 'static) {
+fn pump_messages(app: AppHandle, owner: String, id: String, stream: impl Read + Send + 'static) {
     std::thread::spawn(move || {
         let mut reader = BufReader::new(stream);
         while let Some(body) = read_message(&mut reader) {
-            let _ = app.emit("proc-msg", Msg { id: id.clone(), msg: String::from_utf8_lossy(&body).into() });
+            crate::windows::emit(&app, &owner, "proc-msg", Msg { id: id.clone(), msg: String::from_utf8_lossy(&body).into() });
         }
-        app.state::<ProcState>().conns.lock().unwrap().remove(&id);
-        let _ = app.emit("proc-exit", id.clone());
+        app.state::<ProcState>().conns.lock().unwrap().remove(&crate::windows::key(&owner, &id));
+        crate::windows::emit(&app, &owner, "proc-exit", id.clone());
     });
 }
 
-fn pump_lines(app: AppHandle, id: String, stream: impl Read + Send + 'static) {
+fn pump_lines(app: AppHandle, owner: String, id: String, stream: impl Read + Send + 'static) {
     std::thread::spawn(move || {
         for line in BufReader::new(stream).lines().map_while(Result::ok) {
-            let _ = app.emit("proc-stderr", Msg { id: id.clone(), msg: line });
+            crate::windows::emit(&app, &owner, "proc-stderr", Msg { id: id.clone(), msg: line });
         }
     });
 }
@@ -108,6 +108,7 @@ fn pump_lines(app: AppHandle, id: String, stream: impl Read + Send + 'static) {
 #[tauri::command]
 pub fn proc_spawn(
     app: AppHandle,
+    window: tauri::WebviewWindow,
     id: String,
     cmd: String,
     args: Vec<String>,
@@ -121,11 +122,13 @@ pub fn proc_spawn(
         .spawn()
         .map_err(|e| format!("{cmd}: {e}"))?;
     let stdin = child.stdin.take().unwrap();
-    pump_messages(app.clone(), id.clone(), child.stdout.take().unwrap());
-    pump_lines(app.clone(), id.clone(), child.stderr.take().unwrap());
+    let owner = window.label().to_string();
+    pump_messages(app.clone(), owner.clone(), id.clone(), child.stdout.take().unwrap());
+    pump_lines(app.clone(), owner.clone(), id.clone(), child.stderr.take().unwrap());
     let state = app.state::<ProcState>();
-    state.conns.lock().unwrap().insert(id.clone(), Box::new(stdin));
-    state.children.lock().unwrap().insert(id, child);
+    let key = crate::windows::key(&owner, &id);
+    state.conns.lock().unwrap().insert(key.clone(), Box::new(stdin));
+    state.children.lock().unwrap().insert(key, child);
     Ok(())
 }
 
@@ -134,6 +137,7 @@ pub fn proc_spawn(
 #[tauri::command]
 pub async fn proc_spawn_tcp(
     app: AppHandle,
+    window: tauri::WebviewWindow,
     id: String,
     cmd: String,
     args: Vec<String>,
@@ -148,17 +152,18 @@ pub async fn proc_spawn_tcp(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("{cmd}: {e}"))?;
-    pump_lines(app.clone(), id.clone(), child.stdout.take().unwrap());
-    pump_lines(app.clone(), id.clone(), child.stderr.take().unwrap());
+    let owner = window.label().to_string();
+    pump_lines(app.clone(), owner.clone(), id.clone(), child.stdout.take().unwrap());
+    pump_lines(app.clone(), owner.clone(), id.clone(), child.stderr.take().unwrap());
     // No probe connection here: some adapters (CodeLLDB) accept exactly one client.
     // proc_connect retries until the port is open.
-    app.state::<ProcState>().children.lock().unwrap().insert(id, child);
+    app.state::<ProcState>().children.lock().unwrap().insert(crate::windows::key(&owner, &id), child);
     Ok(port)
 }
 
 /// Opens a JSON-RPC connection to a TCP port (debug adapters, java-debug, js-debug child sessions).
 #[tauri::command]
-pub async fn proc_connect(app: AppHandle, id: String, port: u16) -> Result<(), String> {
+pub async fn proc_connect(app: AppHandle, window: tauri::WebviewWindow, id: String, port: u16) -> Result<(), String> {
     let stream = tauri::async_runtime::spawn_blocking(move || {
         let mut last = String::new();
         for _ in 0..100 {
@@ -173,27 +178,42 @@ pub async fn proc_connect(app: AppHandle, id: String, port: u16) -> Result<(), S
     .await
     .map_err(|e| e.to_string())??;
     let reader = stream.try_clone().map_err(|e| e.to_string())?;
-    pump_messages(app.clone(), id.clone(), reader);
-    app.state::<ProcState>().conns.lock().unwrap().insert(id, Box::new(stream));
+    let owner = window.label().to_string();
+    pump_messages(app.clone(), owner.clone(), id.clone(), reader);
+    app.state::<ProcState>().conns.lock().unwrap().insert(crate::windows::key(&owner, &id), Box::new(stream));
     Ok(())
 }
 
 #[tauri::command]
-pub fn proc_send(app: AppHandle, id: String, msg: String) -> Result<(), String> {
+pub fn proc_send(app: AppHandle, window: tauri::WebviewWindow, id: String, msg: String) -> Result<(), String> {
     let state = app.state::<ProcState>();
     let mut conns = state.conns.lock().unwrap();
-    let w = conns.get_mut(&id).ok_or("proc:not_connected")?;
+    let w = conns.get_mut(&crate::windows::key(window.label(), &id)).ok_or("proc:not_connected")?;
     write!(w, "Content-Length: {}\r\n\r\n{}", msg.len(), msg).map_err(|e| e.to_string())?;
     w.flush().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn proc_kill(app: AppHandle, id: String) {
+pub fn proc_kill(app: AppHandle, window: tauri::WebviewWindow, id: String) {
     let state = app.state::<ProcState>();
-    if let Some(w) = state.conns.lock().unwrap().remove(&id) {
+    let key = crate::windows::key(window.label(), &id);
+    if let Some(w) = state.conns.lock().unwrap().remove(&key) {
         drop(w);
     }
-    kill_registered(&state.children, &state.trees, &id);
+    kill_registered(&state.children, &state.trees, &key);
+}
+
+/// Ends every language server, debugger and Run task of one window.
+pub fn kill_window(app: &AppHandle, owner: &str) {
+    let state = app.state::<ProcState>();
+    drop(crate::windows::take_owned(&mut state.conns.lock().unwrap(), owner));
+    for key in owned_children(&state.children.lock().unwrap(), owner) {
+        kill_registered(&state.children, &state.trees, &key);
+    }
+}
+
+fn owned_children(children: &HashMap<String, Child>, owner: &str) -> Vec<String> {
+    children.keys().filter(|k| crate::windows::is_owned(k, owner)).cloned().collect()
 }
 
 fn kill_registered(children: &Mutex<HashMap<String, Child>>, trees: &Mutex<HashSet<String>>, id: &str) {
@@ -360,11 +380,11 @@ fn run_registered(children: &Mutex<HashMap<String, Child>>, trees: &Mutex<HashSe
 /// `run_capture` for a build that may have to stop early: `proc_kill` with this `id` ends it and,
 /// on Unix, the actions it started (not one that detached itself with `setsid`).
 #[tauri::command]
-pub async fn run_killable(app: AppHandle, id: String, cmd: String, args: Vec<String>, cwd: Option<String>) -> Result<Captured, String> {
+pub async fn run_killable(app: AppHandle, window: tauri::WebviewWindow, id: String, cmd: String, args: Vec<String>, cwd: Option<String>) -> Result<Captured, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let mut c = command(&cmd, &args, cwd, None)?;
         let state = app.state::<ProcState>();
-        run_registered(&state.children, &state.trees, &id, &mut c)
+        run_registered(&state.children, &state.trees, &crate::windows::key(window.label(), &id), &mut c)
     })
     .await
     .map_err(|e| e.to_string())?

@@ -1,5 +1,5 @@
 /** Shared event bus for JSON-RPC child processes/connections (LSP + DAP) managed by proc.rs. */
-import { listen } from "@tauri-apps/api/event";
+import { listen } from "./windowEvents";
 
 type Fn<T> = (v: T) => void;
 const messages = new Map<string, Fn<any>>();

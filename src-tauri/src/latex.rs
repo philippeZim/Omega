@@ -9,7 +9,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 
 #[derive(Serialize)]
 pub struct Diagnostic {
@@ -137,13 +137,14 @@ fn includes(text: &str, rel: &Path) -> bool {
 }
 
 #[tauri::command]
-pub async fn latex_compile(app: AppHandle, path: Option<String>, content: String) -> Result<CompileResult, String> {
-    tauri::async_runtime::spawn_blocking(move || compile(&app, path, content))
+pub async fn latex_compile(app: AppHandle, window: tauri::WebviewWindow, path: Option<String>, content: String) -> Result<CompileResult, String> {
+    let owner = window.label().to_string();
+    tauri::async_runtime::spawn_blocking(move || compile(&app, &owner, path, content))
         .await
         .map_err(|e| e.to_string())?
 }
 
-fn compile(app: &AppHandle, path: Option<String>, content: String) -> Result<CompileResult, String> {
+fn compile(app: &AppHandle, owner: &str, path: Option<String>, content: String) -> Result<CompileResult, String> {
     let started = std::time::Instant::now();
     let tectonic = which("tectonic").ok_or("TECTONIC_MISSING")?;
 
@@ -165,7 +166,7 @@ fn compile(app: &AppHandle, path: Option<String>, content: String) -> Result<Com
 
     let root_name = prepare_build(&build, &root, &root_dir, &src_path, &content)?;
     let emit = |p: Progress| {
-        let _ = app.emit("latex-progress", p);
+        crate::windows::emit(app, owner, "latex-progress", p);
     };
     run_and_collect(&tectonic, &build, &root_dir, &root_name, started, &mut |mut c, cached| if cached { c.output() } else { run_with_progress(c, &emit, None) })
 }

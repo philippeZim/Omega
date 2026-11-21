@@ -4,7 +4,7 @@
  * at_mentioned notifications, so `claude` in our terminal knows what you're looking at.
  */
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { listen } from "../windowEvents";
 import { EditorView } from "@codemirror/view";
 import { app, activeTab, openFile, save, syncFromDisk } from "../state.svelte";
 import * as ed from "../editor";

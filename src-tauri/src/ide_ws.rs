@@ -32,10 +32,12 @@ struct Inner {
     token: String,
     lock_file: Option<PathBuf>,
     tools: Value,
-    folders: Vec<String>,
+    /// Each window's workspace folders; the lock file lists all of them.
+    folders: HashMap<String, Vec<String>>,
     /// connection id → outgoing message channel
     clients: HashMap<u64, (mpsc::UnboundedSender<String>, String)>,
-    pending: HashMap<u64, oneshot::Sender<Value>>,
+    /// Open tool calls: the window that has to answer, and where its answer goes.
+    pending: HashMap<u64, (String, oneshot::Sender<Value>)>,
 }
 
 fn home_dir() -> PathBuf {
@@ -112,14 +114,48 @@ fn error(id: &Value, code: i64, msg: &str) -> String {
     json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": msg } }).to_string()
 }
 
-/// Starts the server once; `tools` = MCP tool definitions, `folders` = workspace folders.
+/// All windows' folders for the lock file: sorted, without duplicates.
+fn all_folders(by_window: &HashMap<String, Vec<String>>) -> Vec<String> {
+    let set: std::collections::BTreeSet<&String> = by_window.values().flatten().collect();
+    set.into_iter().cloned().collect()
+}
+
+/// Records one window's folders and rewrites the lock file if the union changed.
+fn update_folders(app: &AppHandle, owner: &str, folders: Option<Vec<String>>) {
+    let st = app.state::<IdeState>();
+    let mut inner = st.inner.lock().unwrap();
+    let before = all_folders(&inner.folders);
+    match folders {
+        Some(f) => inner.folders.insert(owner.to_string(), f),
+        None => inner.folders.remove(owner),
+    };
+    let after = all_folders(&inner.folders);
+    let port = PORT.load(Ordering::SeqCst);
+    if port != 0 && before != after {
+        inner.lock_file = write_lock(port, &inner.token.clone(), &after);
+    }
+}
+
+/// The window is gone: its folders leave the lock file, its open calls end.
+pub fn forget_window(app: &AppHandle, owner: &str) {
+    update_folders(app, owner, None);
+    app.state::<IdeState>().inner.lock().unwrap().pending.retain(|_, (o, _)| o != owner);
+}
+
+/// A window registers its tool definitions and folders; the server itself is already running.
 #[tauri::command]
-pub async fn ide_start(app: AppHandle, tools: Value, folders: Vec<String>) -> Result<u16, String> {
+pub async fn ide_start(app: AppHandle, window: tauri::WebviewWindow, tools: Value, folders: Vec<String>) -> Result<u16, String> {
+    let port = start_server(app.clone()).await?;
+    if tools.as_array().is_some_and(|t| !t.is_empty()) {
+        app.state::<IdeState>().inner.lock().unwrap().tools = tools;
+    }
+    update_folders(&app, window.label(), Some(folders));
+    Ok(port)
+}
+
+/// Starts the server once.
+pub async fn start_server(app: AppHandle) -> Result<u16, String> {
     if PORT.load(Ordering::SeqCst) != 0 {
-        if tools.as_array().is_some_and(|t| !t.is_empty()) {
-            app.state::<IdeState>().inner.lock().unwrap().tools = tools;
-        }
-        ide_set_folders(app, folders);
         return Ok(PORT.load(Ordering::SeqCst));
     }
     remove_stale_locks();
@@ -144,9 +180,7 @@ pub async fn ide_start(app: AppHandle, tools: Value, folders: Vec<String>) -> Re
         let st = app.state::<IdeState>();
         let mut inner = st.inner.lock().unwrap();
         inner.token = token.clone();
-        inner.tools = tools;
-        inner.lock_file = write_lock(port, &token, &folders);
-        inner.folders = folders;
+        inner.lock_file = write_lock(port, &token, &[]);
     }
     PORT.store(port, Ordering::SeqCst);
 
@@ -162,14 +196,8 @@ pub async fn ide_start(app: AppHandle, tools: Value, folders: Vec<String>) -> Re
 
 /// Updates workspaceFolders in the lock file (project switched).
 #[tauri::command]
-pub fn ide_set_folders(app: AppHandle, folders: Vec<String>) {
-    let st = app.state::<IdeState>();
-    let mut inner = st.inner.lock().unwrap();
-    let port = PORT.load(Ordering::SeqCst);
-    if port != 0 && inner.folders != folders {
-        inner.lock_file = write_lock(port, &inner.token.clone(), &folders);
-        inner.folders = folders;
-    }
+pub fn ide_set_folders(app: AppHandle, window: tauri::WebviewWindow, folders: Vec<String>) {
+    update_folders(&app, window.label(), Some(folders));
 }
 
 /// uid owning the client end of a local TCP connection (from /proc/net/tcp), to recognise
@@ -295,9 +323,12 @@ async fn handle(app: &AppHandle, conn: u64, msg: &Value) -> Option<String> {
             let name = msg.pointer("/params/name").and_then(Value::as_str).unwrap_or("").to_string();
             let args = msg.pointer("/params/arguments").cloned().unwrap_or(json!({}));
             let call = NEXT.fetch_add(1, Ordering::SeqCst);
+            let Some(owner) = crate::windows::target(app) else {
+                return Some(error(&id, -32000, "no window open"));
+            };
             let (otx, orx) = oneshot::channel();
-            app.state::<IdeState>().inner.lock().unwrap().pending.insert(call, otx);
-            let _ = app.emit("ide-call", json!({ "call": call, "conn": conn, "name": name, "args": args }));
+            app.state::<IdeState>().inner.lock().unwrap().pending.insert(call, (owner.clone(), otx));
+            crate::windows::emit(app, &owner, "ide-call", json!({ "call": call, "conn": conn, "name": name, "args": args }));
             match orx.await {
                 Ok(r) if r.get("__error").is_some() => error(&id, -32000, r["__error"].as_str().unwrap_or("Fehler")),
                 Ok(r) => result(&id, r),
@@ -309,15 +340,24 @@ async fn handle(app: &AppHandle, conn: u64, msg: &Value) -> Option<String> {
 }
 
 #[tauri::command]
-pub fn ide_reply(app: AppHandle, call: u64, result: Value) {
-    if let Some(tx) = app.state::<IdeState>().inner.lock().unwrap().pending.remove(&call) {
-        let _ = tx.send(result);
+pub fn ide_reply(app: AppHandle, window: tauri::WebviewWindow, call: u64, result: Value) {
+    let st = app.state::<IdeState>();
+    let mut inner = st.inner.lock().unwrap();
+    // Only the window the call went to can answer it.
+    if inner.pending.get(&call).is_some_and(|(owner, _)| owner == window.label()) {
+        if let Some((_, tx)) = inner.pending.remove(&call) {
+            let _ = tx.send(result);
+        }
     }
 }
 
 /// Sends a notification (selection_changed, at_mentioned …) to all connected Claude sessions.
+/// Only the focused window speaks for the app, so a background window can't change the selection.
 #[tauri::command]
-pub fn ide_notify(app: AppHandle, method: String, params: Value) {
+pub fn ide_notify(app: AppHandle, window: tauri::WebviewWindow, method: String, params: Value) {
+    if crate::windows::target(&app).as_deref() != Some(window.label()) {
+        return;
+    }
     let text = json!({ "jsonrpc": "2.0", "method": method, "params": params }).to_string();
     for (tx, _) in app.state::<IdeState>().inner.lock().unwrap().clients.values() {
         let _ = tx.send(text.clone());

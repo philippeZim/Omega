@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 
 /// What runs in a PTY. Guest input is only ever accepted for the matching kind.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -262,7 +262,7 @@ fn apply_git_guard(cmd: &mut CommandBuilder) {
 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-pub fn pty_spawn(app: AppHandle, id: String, cwd: Option<String>, cols: u16, rows: u16, kind: Option<String>, shell: Option<String>, command: Option<String>) -> Result<(), String> {
+pub fn pty_spawn(app: AppHandle, window: tauri::WebviewWindow, id: String, cwd: Option<String>, cols: u16, rows: u16, kind: Option<String>, shell: Option<String>, command: Option<String>) -> Result<(), String> {
     let pair = native_pty_system()
         .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
         .map_err(|e| e.to_string())?;
@@ -326,9 +326,10 @@ pub fn pty_spawn(app: AppHandle, id: String, cwd: Option<String>, cols: u16, row
         .sessions
         .lock()
         .unwrap()
-        .insert(id.clone(), Session { master: pair.master, writes: WriteQueue::new(writer), child, kind: pty_kind });
+        .insert(crate::windows::key(window.label(), &id), Session { master: pair.master, writes: WriteQueue::new(writer), child, kind: pty_kind });
 
     let app2 = app.clone();
+    let owner = window.label().to_string();
     let mut pacer = (pty_kind == PtyKind::GuestShell).then(|| OutputPacer::new(std::time::Instant::now()));
     std::thread::spawn(move || {
         let mut buf = [0u8; 16384];
@@ -337,7 +338,7 @@ pub fn pty_spawn(app: AppHandle, id: String, cwd: Option<String>, cols: u16, row
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
                     let data = base64::engine::general_purpose::STANDARD.encode(&buf[..n]);
-                    let _ = app2.emit("pty-data", PtyData { id: id.clone(), data });
+                    crate::windows::emit(&app2, &owner, "pty-data", PtyData { id: id.clone(), data });
                     if let Some(p) = &mut pacer {
                         std::thread::sleep(p.delay(n, std::time::Instant::now()));
                     }
@@ -345,18 +346,18 @@ pub fn pty_spawn(app: AppHandle, id: String, cwd: Option<String>, cols: u16, row
             }
         }
         // Killed sessions are already gone from the map (no exit code then).
-        let session = app2.state::<PtyState>().sessions.lock().unwrap().remove(&id);
+        let session = app2.state::<PtyState>().sessions.lock().unwrap().remove(&crate::windows::key(&owner, &id));
         let code = session.and_then(finish_session);
-        let _ = app2.emit("pty-exit", PtyExit { id, code });
+        crate::windows::emit(&app2, &owner, "pty-exit", PtyExit { id, code });
     });
     Ok(())
 }
 
 #[tauri::command]
-pub fn pty_write(app: AppHandle, id: String, data: String) -> Result<(), String> {
+pub fn pty_write(app: AppHandle, window: tauri::WebviewWindow, id: String, data: String) -> Result<(), String> {
     let state = app.state::<PtyState>();
     let mut sessions = state.sessions.lock().unwrap();
-    let s = sessions.get_mut(&id).ok_or("terminal does not exist")?;
+    let s = sessions.get_mut(&crate::windows::key(window.label(), &id)).ok_or("terminal does not exist")?;
     s.writes.push(data.into_bytes())
 }
 
@@ -458,10 +459,10 @@ fn shell_in_foreground(_: &Session) -> bool {
 /// Input from a Code Together guest. `target` says what the host means to reach: "task" only
 /// lands in a live Build/Run command, "shell" only in a shell granted to a guest. Never blocks.
 #[tauri::command(async)]
-pub fn pty_write_guest(app: AppHandle, id: String, data: String, target: String) -> Result<(), String> {
+pub fn pty_write_guest(app: AppHandle, window: tauri::WebviewWindow, id: String, data: String, target: String) -> Result<(), String> {
     let state = app.state::<PtyState>();
     let mut sessions = state.sessions.lock().unwrap();
-    let s = sessions.get_mut(&id).ok_or("pty:ended")?;
+    let s = sessions.get_mut(&crate::windows::key(window.label(), &id)).ok_or("pty:ended")?;
     if !guest_may_write(s, &target) {
         return Err("pty:ended".into());
     }
@@ -477,25 +478,29 @@ fn guest_may_write(s: &mut Session, target: &str) -> bool {
 }
 
 #[tauri::command]
-pub fn pty_resize(app: AppHandle, id: String, cols: u16, rows: u16) -> Result<(), String> {
+pub fn pty_resize(app: AppHandle, window: tauri::WebviewWindow, id: String, cols: u16, rows: u16) -> Result<(), String> {
     let state = app.state::<PtyState>();
     let sessions = state.sessions.lock().unwrap();
-    if let Some(s) = sessions.get(&id) {
+    if let Some(s) = sessions.get(&crate::windows::key(window.label(), &id)) {
         s.master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 }).map_err(|e| e.to_string())?;
     }
     Ok(())
 }
 
-/// Ends all terminals (frontend reload: its xterm instances are gone, so the shells – and e.g.
-/// a `claude` running in them – would otherwise keep running invisibly).
-/// Process ids of all terminal shells (for the keep-awake monitor).
+/// Process ids of all terminal shells in all windows (for the keep-awake monitor).
 pub fn shell_pids(app: &AppHandle) -> Vec<u32> {
     app.state::<PtyState>().sessions.lock().unwrap().values().filter_map(|s| s.child.process_id()).collect()
 }
 
+/// Ends this window's terminals (frontend reload: its xterm instances are gone, so the shells –
+/// and e.g. a `claude` running in them – would otherwise keep running invisibly).
 #[tauri::command]
-pub fn pty_kill_all(app: AppHandle) {
-    let sessions: Vec<Session> = app.state::<PtyState>().sessions.lock().unwrap().drain().map(|(_, s)| s).collect();
+pub fn pty_kill_all(app: AppHandle, window: tauri::WebviewWindow) {
+    kill_window(&app, window.label());
+}
+
+pub fn kill_window(app: &AppHandle, owner: &str) {
+    let sessions = crate::windows::take_owned(&mut app.state::<PtyState>().sessions.lock().unwrap(), owner);
     for s in sessions {
         end_session(s);
     }
@@ -565,8 +570,8 @@ fn end_session(mut s: Session) {
 }
 
 #[tauri::command]
-pub fn pty_kill(app: AppHandle, id: String) {
-    let session = app.state::<PtyState>().sessions.lock().unwrap().remove(&id);
+pub fn pty_kill(app: AppHandle, window: tauri::WebviewWindow, id: String) {
+    let session = app.state::<PtyState>().sessions.lock().unwrap().remove(&crate::windows::key(window.label(), &id));
     if let Some(s) = session {
         end_session(s);
     }

@@ -11,7 +11,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 
 use crate::collab::{guest_path_ok, is_git_name};
 use crate::latex::{canonical, find_root, magic_root, prepare_build, run_and_collect, run_with_progress, Diagnostic, Progress, RunGuard, SyncBox, OVERLAYS};
@@ -526,7 +526,7 @@ struct JobProgress {
 
 /// Host: compiles a shared file for a guest. Errors are stable codes without paths.
 #[tauri::command]
-pub async fn latex_guest_compile(app: AppHandle, job: String, root: Option<String>, file: Option<String>, content: String, overlays: Vec<Overlay>) -> Result<GuestCompile, String> {
+pub async fn latex_guest_compile(app: AppHandle, window: tauri::WebviewWindow, job: String, root: Option<String>, file: Option<String>, content: String, overlays: Vec<Overlay>) -> Result<GuestCompile, String> {
     let cancel = jobs().claim(&job)?;
     let slot = Slot;
     let tectonic = crate::env::which("tectonic").ok_or("tectonic_missing")?;
@@ -534,7 +534,7 @@ pub async fn latex_guest_compile(app: AppHandle, job: String, root: Option<Strin
     tauri::async_runtime::spawn_blocking(move || {
         let _slot = slot;
         let emit = |progress: Progress| {
-            let _ = app.emit("latex-guest-progress", JobProgress { job: job.clone(), progress });
+            crate::windows::emit(&app, window.label(), "latex-guest-progress", JobProgress { job: job.clone(), progress });
         };
         let req = Request { root: root.as_deref().map(Path::new), file: file.as_deref(), content: &content, overlays: &overlays };
         compile_job(&tectonic, &cache, &req, &cancel, &emit).map_err(str::to_string)

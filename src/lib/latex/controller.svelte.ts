@@ -2,7 +2,7 @@
 import { ensureTools } from "../tools.svelte";
 import { t } from "../i18n/index.svelte";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { listen } from "../windowEvents";
 import { onFilesChanged } from "../fsWatch.svelte";
 import { setDiagnostics, type Diagnostic as CmDiagnostic } from "@codemirror/lint";
 import * as ed from "../editor";

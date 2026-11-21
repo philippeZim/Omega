@@ -16,6 +16,7 @@ mod installs;
 mod power;
 mod instance;
 mod lang_shadow;
+mod windows;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -32,10 +33,20 @@ pub fn run() {
         .manage(mcp_control::McpControlState::default())
         .manage(ide_ws::IdeState::default())
         .manage(codex_ipc::CodexState::default())
+        .manage(windows::FocusState::default())
         .on_page_load(|webview, payload| {
             use tauri::Manager;
             if payload.event() == tauri::webview::PageLoadEvent::Started {
                 collab::frontend_loading(webview.app_handle());
+                windows::page_loading(webview.app_handle(), webview.label());
+            }
+        })
+        .on_window_event(|window, event| {
+            use tauri::Manager;
+            match event {
+                tauri::WindowEvent::Focused(true) => windows::focused(window.app_handle(), window.label()),
+                tauri::WindowEvent::Destroyed => windows::destroyed(window.app_handle(), window.label()),
+                _ => {}
             }
         })
         .setup(|app| {
@@ -45,7 +56,7 @@ pub fn run() {
             std::thread::spawn(lang_shadow::sweep_stale);
             // Start the Claude Code IDE server before any terminal spawns (they get its port).
             let h = app.handle().clone();
-            if let Err(e) = tauri::async_runtime::block_on(ide_ws::ide_start(h, serde_json::json!([]), vec![])) {
+            if let Err(e) = tauri::async_runtime::block_on(ide_ws::start_server(h)) {
                 eprintln!("IDE-Server: {e}");
             }
             codex_ipc::start(app.handle());

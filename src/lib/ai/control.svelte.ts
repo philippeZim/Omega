@@ -3,7 +3,7 @@
  * clicking, typing, screenshots, console, terminal). Executed here, transported by mcp_control.rs.
  */
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { listen } from "../windowEvents";
 import { snapshotPng } from "./snapshot";
 import { app, activeTab, openFile, save, setMode, setRoot } from "../state.svelte";
 import { guestGuard } from "../collab/guard";
