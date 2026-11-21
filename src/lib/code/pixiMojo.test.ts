@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 // Runs the real shell script, through Node (no @types/node here).
 const proc = (globalThis as any).process;
 const { execFileSync, spawnSync } = proc.getBuiltinModule("node:child_process");
-const { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } = proc.getBuiltinModule("node:fs");
+const { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } = proc.getBuiltinModule("node:fs");
 const { tmpdir } = proc.getBuiltinModule("node:os");
 const { dirname, join } = proc.getBuiltinModule("node:path");
 
@@ -76,7 +76,8 @@ function launch(args: string[] = ["run", "main.mojo"], extra: Record<string, str
 const marker = (env: string) => join(root, ".pixi/envs", env, "share/max/firstActivation");
 
 beforeEach(() => {
-  base = mkdtempSync(join(tmpdir(), "omega-pixi-mojo-"));
+  // The launcher reports physical paths, and macOS keeps tmpdir behind the /var -> /private/var link.
+  base = realpathSync(mkdtempSync(join(tmpdir(), "omega-pixi-mojo-")));
   root = join(base, "my project");
   mkdirSync(root);
   writeFileSync(join(root, "pixi.toml"), "[workspace]\n");
