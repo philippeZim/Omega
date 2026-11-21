@@ -50,14 +50,18 @@ pick_env() {
     }'
 }
 
-# True if everything in this activation script that could contact Modular is inside the block
-# that `share/max/firstActivation` switches off.
+# What marks an activation script as able to reach the network or run other code (lowercase).
+word='(^|[^a-z0-9_])(nc|ncat|socat|telnet|ssh|scp|ftp|python[0-9.]*|perl|ruby|node|php|lua|eval|base64)([^a-z0-9_]|$)'
+risky="telemetry|curl|wget|http|modular\\.com|socket|/dev/tcp|/dev/udp|$word"
+
+# True if everything risky in this activation script is inside the block that
+# `share/max/firstActivation` switches off.
 guarded() {
   grep -Fxq 'export MODULAR_HOME="${CONDA_PREFIX}/share/max"' "$1" || return 1
-  awk '
+  RISKY=$risky awk '
     $0 == "if ! [[ -f \"${MODULAR_HOME}/firstActivation\" ]]; then" { if (state) bad = 1; state = 1; next }
-    state == 1 && /^fi[[:space:]]*$/ { state = 2; next }
-    state != 1 && tolower($0) ~ /telemetry|curl|wget|modular\.com/ { bad = 1 }
+    state == 1 && /^fi[ \t]*$/ { state = 2; next }
+    state != 1 && tolower($0) ~ ENVIRON["RISKY"] { bad = 1 }
     END { exit (bad || state != 2) }' "$1"
 }
 
@@ -89,9 +93,13 @@ esac
 found=0
 for script in "$prefix"/etc/conda/activate.d/*; do
   [ -f "$script" ] || continue
-  grep -Eqi 'telemetry|curl|wget|modular\.com' "$script" || continue
-  guarded "$script" || direct "$prefix" "$@"
-  found=1
+  # 1 is "nothing risky"; anything else, like an unreadable file, doesn't count as harmless.
+  grep -Eqi -- "$risky" "$script"
+  case $? in
+    0) guarded "$script" || direct "$prefix" "$@"; found=1 ;;
+    1) ;;
+    *) direct "$prefix" "$@" ;;
+  esac
 done
 
 if [ "$found" = 1 ]; then

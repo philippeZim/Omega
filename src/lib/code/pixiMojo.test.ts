@@ -192,6 +192,54 @@ describe.skipIf(proc.platform === "win32")("pixi-mojo launcher", () => {
     expect(launch().log).not.toMatch(/^run /m);
   });
 
+  test.each([
+    "wget -q https://example.com",
+    "exec 3<>/dev/tcp/example.com/443",
+    "nc example.com 443 < /dev/null",
+    "python3 -c 'print(1)'",
+    "perl -e 1",
+    "ruby -e 1",
+    "node -e 1",
+    "echo http://example.com",
+    "socat - TCP:example.com:443",
+    'eval "$X"',
+  ])("a script outside the known shape that uses the network or an interpreter goes direct: %s", (line) => {
+    const prefix = makeEnv("default");
+    write(join(prefix, "etc/conda/activate.d/20-other.sh"), `#!/bin/sh\n${line}\n`);
+    const r = launch();
+    expect(r.log).toContain(`direct home=${prefix}/share/max`);
+    expect(r.log).not.toMatch(/^run /m);
+    expect(existsSync(marker("default"))).toBe(false);
+  });
+
+  test.each(["python3 -c 1", "nc example.com 443", "exec 3<>/dev/tcp/example.com/443"])("the same line in Modular's script, outside its block, goes direct: %s", (line) => {
+    const prefix = makeEnv("default", `${ACTIVATION}${line}\n`);
+    expect(launch().log).toContain(`direct home=${prefix}/share/max`);
+  });
+
+  test("an interpreter inside the guarded block is what the real script does", () => {
+    makeEnv("default", ACTIVATION.replace("  curl", "  now=$(python3 -c 'print(1)')\n  curl"));
+    expect(launch().log).toMatch(/^run --manifest-path/m);
+  });
+
+  test.each(["export FOO=1", "export ENCODING=utf-8", "# nothing to see, sync done", "export NODES=4 PERLITE=1"])("a clearly harmless script keeps pixi run: %s", (line) => {
+    const prefix = makeEnv("default");
+    write(join(prefix, "etc/conda/activate.d/20-other.sh"), `#!/bin/sh\n${line}\n`);
+    expect(launch().log).toMatch(/^run --manifest-path/m);
+    expect(existsSync(marker("default"))).toBe(true);
+  });
+
+  test("a script that can't be read doesn't count as harmless", () => {
+    const prefix = makeEnv("default");
+    const other = join(prefix, "etc/conda/activate.d/20-other.sh");
+    write(other, "export FOO=1\n");
+    chmodSync(other, 0o000);
+    const r = launch();
+    chmodSync(other, 0o644);
+    expect(r.log).toContain(`direct home=${prefix}/share/max`);
+    expect(r.log).not.toMatch(/^run /m);
+  });
+
   test("no Modular script: no marker, plain pixi run", () => {
     makeEnv("default", null);
     const r = launch();
