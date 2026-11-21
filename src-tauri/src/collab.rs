@@ -1011,6 +1011,27 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn a_peer_that_stalls_before_its_join_message_is_closed_and_frees_its_slot() {
+        let (host, limits, peers, mut joins) = test_host().await;
+        // One never opens a stream, the other stops in the middle of its join message.
+        let (a, b) = (test_endpoint().await, test_endpoint().await);
+        let no_stream = a.connect(host.addr(), ALPN).await.unwrap();
+        let half = b.connect(host.addr(), ALPN).await.unwrap();
+        let (mut s, _r) = half.open_bi().await.unwrap();
+        s.write_all(&(HELLO.len() as u32).to_be_bytes()).await.unwrap();
+
+        let limit = FIRST_STREAM_TIMEOUT.max(JOIN_MSG_TIMEOUT) + Duration::from_secs(3);
+        timeout(limit, no_stream.closed()).await.expect("no stream: closed in time");
+        timeout(limit, half.closed()).await.expect("half a message: closed in time");
+        assert_eq!(close_code(&no_stream).as_deref(), Some("collab:expired"));
+        assert_eq!(close_code(&half).as_deref(), Some("collab:expired"));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(limits.handshakes.available_permits(), MAX_HANDSHAKES);
+        assert!(peers.lock().await.by_handle.is_empty());
+        assert!(joins.try_recv().is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn a_reply_to_welcome_passes_even_if_the_read_was_already_waiting() {
         let (host, _limits, _peers, mut joins) = test_host().await;
         let (_g, _conn, mut gsend, _grecv) = join_as_guest(&host).await;
