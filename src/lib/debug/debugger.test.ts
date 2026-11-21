@@ -216,6 +216,14 @@ describe("debugger controller with a fake adapter", () => {
     expect(S.dbg.scopes[0].children!.some((v) => v.changed)).toBe(false);
   });
 
+  test("Earlybird isn't asked for exception breakpoints, which it never answers", async () => {
+    m.plan = { ...m.plan, launch: { ...m.plan.launch, type: "ocaml.earlybird" } };
+    fake.noReply.add("setExceptionBreakpoints");
+    await startAndStop();
+    expect(fake.commands()).not.toContain("setExceptionBreakpoints");
+    expect(fake.commands()).toContain("configurationDone");
+  });
+
   test("restart stops and starts a new session even if the adapter supports restart (#101)", async () => {
     const init = fake.replies.initialize;
     fake.replies.initialize = (a, r) => ({ ...init(a, r), supportsRestartRequest: true });

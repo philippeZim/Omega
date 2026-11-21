@@ -115,10 +115,11 @@ export function inProject(path: string) {
   return !app.root || inRoot(path, app.root) || path === lastPlan?.file;
 }
 
-async function configure(s: DapSession) {
+async function configure(s: DapSession, type?: string) {
   for (const path of Object.keys(dbg.breakpoints)) if (dbg.breakpoints[path].length && inProject(path)) await sendBreakpoints(s, path);
   const filters = (s.capabilities.exceptionBreakpointFilters ?? []).filter((f: Json) => f.default).map((f: Json) => f.filter);
-  await s.request("setExceptionBreakpoints", { filters }).catch(() => {});
+  // Earlybird never answers this request, which would hold the program back until it times out.
+  if (type !== "ocaml.earlybird") await s.request("setExceptionBreakpoints", { filters }).catch(() => {});
   configured.add(s);
   if (s.capabilities.supportsConfigurationDoneRequest) await s.request("configurationDone").catch(() => {});
 }
@@ -129,7 +130,7 @@ async function launchSession(s: DapSession, request: "launch" | "attach", args: 
   const init = waitInitialized(s);
   const launched = s.request(request, args, 0);
   await Promise.race([init, launched.then(() => init)]);
-  await configure(s);
+  await configure(s, args.type);
   await launched;
 }
 
