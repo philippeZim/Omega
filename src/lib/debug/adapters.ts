@@ -329,8 +329,16 @@ export async function planFor(ctx: Ctx): Promise<Plan> {
         const tsx = joinPath(root, IS_WIN ? "node_modules/.bin/tsx.cmd" : "node_modules/.bin/tsx");
         if (await exists(tsx)) launch.runtimeExecutable = tsx;
         else {
-          launch.runtimeExecutable = (await which("pnpm")) ?? "npx";
-          launch.runtimeArgs = /pnpm(\.exe|\.cmd)?$/i.test(launch.runtimeExecutable) ? ["dlx", "tsx"] : ["-y", "tsx"];
+          // One node process with tsx's loader. Through `pnpm dlx` the debugger attaches to pnpm,
+          // whose session ends while the program waits for it.
+          const tsxDir = `${tools}/tsx`;
+          const loader = `${tsxDir}/node_modules/tsx/dist/loader.mjs`;
+          if (!(await exists(loader))) {
+            await fsApi.createDir(tsxDir).catch(() => {});
+            await capture("pnpm", ["add", "--dir", tsxDir, "--allow-build=esbuild", "tsx"], tsxDir, ctx);
+          }
+          launch.runtimeExecutable = node;
+          launch.runtimeArgs = ["--import", fileUri(loader)];
         }
       }
       return { label: `Node · ${basename(ctx.file)}`, cwd: root, adapter: { kind: "tcp", cmd: node, args: [server, "{port}", "127.0.0.1"] }, launch, shadow };
