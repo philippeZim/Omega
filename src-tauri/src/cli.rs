@@ -18,6 +18,8 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 const DETACHED_ENV: &str = "OMEGA_DETACHED";
+/// Set only on the process a restart starts: the pid of the process it replaces.
+const RELAUNCH_ENV: &str = "OMEGA_RELAUNCH_PID";
 const MAX_PATHS: usize = 256;
 const MAX_REQUEST: u64 = 1024 * 1024;
 /// How long a second process waits for a first one that is still starting.
@@ -426,17 +428,19 @@ fn take_relaunch_mark(dir: &Path, key: &str, max_age: Duration, starters: impl F
     ours
 }
 
-/// Processes that may have started this one for a restart: the parent, and for an AppImage
-/// without a terminal also its parent (the runtime stays in between when it extracts itself). A
-/// shell in one of Omega's terminals has a terminal, so `omega` typed there never qualifies.
-fn restart_starters(terminal: bool) -> Vec<u32> {
-    let parents = crate::power::process_parents();
-    let Some(&parent) = parents.get(&std::process::id()) else { return vec![] };
-    let mut out = vec![parent];
-    if !terminal && std::env::var_os("APPIMAGE").is_some() {
-        out.extend(parents.get(&parent));
-    }
-    out
+/// The process this one replaces, as told by the restart. The parent can't say: the old process
+/// exits right after starting this one, often before this line runs.
+fn restart_starters(value: Option<&OsStr>) -> Vec<u32> {
+    value.and_then(OsStr::to_str).and_then(|v| v.parse().ok()).into_iter().collect()
+}
+
+/// Starts the replacement of this process, detached from it. An AppImage's mount ends with the old
+/// process, so the new one must not depend on anything of it.
+#[cfg(not(target_os = "macos"))]
+pub fn spawn_relaunch() -> std::io::Result<()> {
+    let mut c = detached_command(&Request::default())?;
+    c.env(RELAUNCH_ENV, std::process::id().to_string());
+    c.spawn().map(drop)
 }
 
 /// macOS restarts through LaunchServices, so launchd is the parent.
@@ -517,7 +521,12 @@ pub fn startup() -> Startup {
     let cwd = std::env::current_dir().unwrap_or_else(|_| crate::env::home());
     let key = this_profile();
     let private = runtime_dir();
-    let relaunch = private.as_deref().is_some_and(|d| take_relaunch_mark(d, &key, RELAUNCH_MARK_AGE, || restart_starters(terminal), started_by_launchd(terminal)));
+    let told = std::env::var_os(RELAUNCH_ENV);
+    if told.is_some() {
+        // Terminals opened in the app must not inherit it. No other thread runs yet.
+        unsafe { std::env::remove_var(RELAUNCH_ENV) };
+    }
+    let relaunch = private.as_deref().is_some_and(|d| take_relaunch_mark(d, &key, RELAUNCH_MARK_AGE, || restart_starters(told.as_deref()), started_by_launchd(terminal)));
     // A restart brings back the session; the paths of the original command may be long gone.
     let args = if relaunch { Vec::new() } else { argv };
     let request = match parse(args, &cwd, detached) {
@@ -629,6 +638,22 @@ mod tests {
             assert!(!mark_is_for(planted, &[0, 4242], false), "{planted:?}");
         }
         assert!(mark_is_for("4242", &[], true), "macOS restarts through launchd");
+    }
+
+    #[test]
+    fn a_restart_is_recognised_after_the_old_process_is_gone() {
+        // What the old process wrote and told the new one; its parent no longer matters.
+        let t = tempfile::tempdir().unwrap();
+        std::fs::write(relaunch_mark(t.path(), "k"), "4242").unwrap();
+        let told = OsString::from("4242");
+        assert!(take_relaunch_mark(t.path(), "k", RELAUNCH_MARK_AGE, || restart_starters(Some(&told)), false));
+        // Told nothing, or another pid: not a restart, and the mark stays.
+        std::fs::write(relaunch_mark(t.path(), "k"), "4242").unwrap();
+        assert!(!take_relaunch_mark(t.path(), "k", RELAUNCH_MARK_AGE, || restart_starters(None), false));
+        let other = OsString::from("77");
+        assert!(!take_relaunch_mark(t.path(), "k", RELAUNCH_MARK_AGE, || restart_starters(Some(&other)), false));
+        assert!(relaunch_mark(t.path(), "k").exists());
+        assert!(restart_starters(Some(OsStr::new("junk"))).is_empty());
     }
 
     #[test]

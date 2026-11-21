@@ -468,18 +468,27 @@ fn focus(app: &AppHandle, label: &str) {
     }
 }
 
-/// An update is about to restart the app.
+/// Restarts the app after an update. All windows stay in the saved session.
 #[tauri::command]
-pub fn windows_prepare_exit(app: AppHandle) {
+pub fn window_relaunch(app: AppHandle) -> Result<(), String> {
     exiting(&app);
     crate::cli::mark_relaunch();
-}
-
-/// The restart failed and the app keeps running: closing a window forgets it again.
-#[tauri::command]
-pub fn windows_cancel_exit(app: AppHandle) {
-    app.state::<Registry>().exiting.store(false, Ordering::SeqCst);
-    crate::cli::clear_relaunch();
+    // macOS goes through LaunchServices, which passes no environment (see `started_by_launchd`).
+    #[cfg(target_os = "macos")]
+    app.restart();
+    #[cfg(not(target_os = "macos"))]
+    match crate::cli::spawn_relaunch() {
+        Ok(()) => {
+            app.exit(0);
+            Ok(())
+        }
+        Err(e) => {
+            // The app keeps running: closing a window forgets it again.
+            app.state::<Registry>().exiting.store(false, Ordering::SeqCst);
+            crate::cli::clear_relaunch();
+            Err(e.to_string())
+        }
+    }
 }
 
 /// A window that kept its workspace passes on the folder it was offered.

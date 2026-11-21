@@ -5,7 +5,6 @@
  * manually and also reports "up to date".
  */
 import { check, type Update } from "@tauri-apps/plugin-updater";
-import { relaunch } from "@tauri-apps/plugin-process";
 import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { t } from "./i18n/index.svelte";
@@ -63,13 +62,7 @@ export async function checkForUpdates(manual = false) {
         if (total) updater.progress = done / total;
       }
     });
-    await invoke("windows_prepare_exit").catch(() => {});
-    try {
-      await relaunch();
-    } catch (e) {
-      await invoke("windows_cancel_exit").catch(() => {});
-      throw e;
-    }
+    await invoke("window_relaunch");
   } catch (e) {
     ui.toast(t("app.update.failed", { error: String(e) }), "error");
   } finally {
