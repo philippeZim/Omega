@@ -27,8 +27,71 @@ struct Peer {
 #[derive(Default)]
 pub struct CollabState {
     endpoint: Mutex<Option<Endpoint>>,
-    peers: Mutex<HashMap<String, Arc<Peer>>>,
+    peers: Mutex<PeerTable<Arc<Peer>>>,
     hosting: Mutex<bool>,
+}
+
+/// The connected peers. A peer *is* its full endpoint id, the key its connection authenticated. The
+/// frontend and other guests only see a random per-connection handle, which says nothing about it.
+struct PeerTable<P> {
+    by_handle: HashMap<String, (String, P)>,
+    handle_of: HashMap<String, String>,
+}
+
+impl<P> Default for PeerTable<P> {
+    fn default() -> Self {
+        Self { by_handle: HashMap::new(), handle_of: HashMap::new() }
+    }
+}
+
+impl<P> PeerTable<P> {
+    /// Registers a connection under `handle`. A second one for an id that is still connected is
+    /// refused and the first keeps working; one whose connection is gone (`alive`) makes room.
+    fn claim(&mut self, id: &str, handle: String, peer: P, alive: impl Fn(&P) -> bool) -> Result<(), ()> {
+        if let Some(old) = self.handle_of.get(id).cloned() {
+            if self.by_handle.get(&old).is_some_and(|(_, p)| alive(p)) {
+                return Err(());
+            }
+            self.by_handle.remove(&old);
+        }
+        self.handle_of.insert(id.to_string(), handle.clone());
+        self.by_handle.insert(handle, (id.to_string(), peer));
+        Ok(())
+    }
+
+    fn get(&self, handle: &str) -> Option<&P> {
+        self.by_handle.get(handle).map(|(_, p)| p)
+    }
+
+    /// Removes this connection only: a newer one of the same id stays.
+    fn remove(&mut self, handle: &str) -> Option<P> {
+        let (id, peer) = self.by_handle.remove(handle)?;
+        if self.handle_of.get(&id).is_some_and(|h| h == handle) {
+            self.handle_of.remove(&id);
+        }
+        Some(peer)
+    }
+
+    fn drain(&mut self) -> Vec<P> {
+        self.handle_of.clear();
+        self.by_handle.drain().map(|(_, (_, p))| p).collect()
+    }
+}
+
+fn new_handle() -> Result<String, String> {
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes).map_err(err)?;
+    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// Adds an authenticated connection to the table and returns its handle.
+async fn admit(peers: &Mutex<PeerTable<Arc<Peer>>>, conn: &Connection, send: SendStream) -> Result<String, String> {
+    let handle = new_handle()?;
+    let id = conn.remote_id().to_string();
+    let peer = Arc::new(Peer { conn: conn.clone(), send: Mutex::new(send) });
+    let claimed = peers.lock().await.claim(&id, handle.clone(), peer, |p| p.conn.close_reason().is_none());
+    claimed.map_err(|_| "collab:already_connected".to_string())?;
+    Ok(handle)
 }
 
 #[derive(Serialize, Clone)]
@@ -67,10 +130,8 @@ async fn endpoint(app: &AppHandle) -> Result<Endpoint, String> {
     Ok(ep)
 }
 
-/// Registers a peer and pumps its incoming messages into `collab-msg` events.
-async fn register(app: AppHandle, peer_id: String, conn: Connection, send: SendStream, mut recv: iroh::endpoint::RecvStream) {
-    let peer = Arc::new(Peer { conn: conn.clone(), send: Mutex::new(send) });
-    app.state::<CollabState>().peers.lock().await.insert(peer_id.clone(), peer);
+/// Pumps an admitted peer's incoming messages into `collab-msg` events until it disconnects.
+async fn pump(app: AppHandle, peer_id: String, conn: Connection, mut recv: iroh::endpoint::RecvStream) {
     let _ = app.emit("collab-connected", PeerEvent { peer: peer_id.clone() });
 
     let reason = loop {
@@ -91,10 +152,6 @@ async fn register(app: AppHandle, peer_id: String, conn: Connection, send: SendS
     app.state::<CollabState>().peers.lock().await.remove(&peer_id);
     conn.close(0u32.into(), b"bye");
     let _ = app.emit("collab-closed", ClosedEvent { peer: peer_id, reason });
-}
-
-fn short_id(conn: &Connection) -> String {
-    conn.remote_id().to_string().chars().take(10).collect()
 }
 
 /// Starts hosting; returns the invite code (base64 of the endpoint address incl. relay URL).
@@ -118,8 +175,10 @@ pub async fn collab_host(app: AppHandle) -> Result<String, String> {
                 tauri::async_runtime::spawn(async move {
                     let Ok(conn) = incoming.await else { return };
                     let Ok((send, recv)) = conn.accept_bi().await else { return };
-                    let id = short_id(&conn);
-                    register(app3, id, conn, send, recv).await;
+                    match admit(&app3.state::<CollabState>().peers, &conn, send).await {
+                        Ok(handle) => pump(app3, handle, conn, recv).await,
+                        Err(_) => conn.close(2u32.into(), b"already connected"),
+                    }
                 });
             }
         });
@@ -145,18 +204,16 @@ pub async fn collab_join(app: AppHandle, ticket: String) -> Result<String, Strin
         .map_err(|_| "collab:timeout".to_string())?
         .map_err(|e| format!("collab:connect_failed:{e}"))?;
     let (send, recv) = conn.open_bi().await.map_err(err)?;
-    let id = short_id(&conn);
-    let app2 = app.clone();
-    let id2 = id.clone();
-    tauri::async_runtime::spawn(async move { register(app2, id2, conn, send, recv).await });
-    // Give register() a moment to insert the peer before the frontend sends its first message.
-    for _ in 0..50 {
-        if app.state::<CollabState>().peers.lock().await.contains_key(&id) {
-            break;
+    let handle = match admit(&app.state::<CollabState>().peers, &conn, send).await {
+        Ok(handle) => handle,
+        Err(e) => {
+            conn.close(2u32.into(), b"already connected");
+            return Err(e);
         }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-    Ok(id)
+    };
+    let (app2, handle2) = (app.clone(), handle.clone());
+    tauri::async_runtime::spawn(async move { pump(app2, handle2, conn, recv).await });
+    Ok(handle)
 }
 
 #[tauri::command]
@@ -180,7 +237,7 @@ pub async fn collab_kick(app: AppHandle, peer: String) {
 #[tauri::command]
 pub async fn collab_stop(app: AppHandle) {
     let state = app.state::<CollabState>();
-    for (_, p) in state.peers.lock().await.drain() {
+    for p in state.peers.lock().await.drain() {
         p.conn.close(0u32.into(), b"session ended");
     }
     *state.hosting.lock().await = false;
@@ -368,6 +425,114 @@ mod tests {
         assert!(!tree_has_git(&root.join("gitlink"), GIT_SCAN_LIMIT), "a symlink is moved, not its target");
         assert!(tree_has_git(&root.join("src"), 0), "too large to scan counts as containing one");
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    const A: &str = "abcdef0123aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const B: &str = "abcdef0123bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    #[test]
+    fn ids_sharing_their_first_characters_are_different_peers() {
+        let mut t = PeerTable::default();
+        t.claim(A, "h-a".into(), "first", |_| true).unwrap();
+        t.claim(B, "h-b".into(), "second", |_| true).unwrap();
+        assert_eq!(t.get("h-a"), Some(&"first"));
+        assert_eq!(t.get("h-b"), Some(&"second"));
+    }
+
+    #[test]
+    fn a_second_connection_of_a_connected_id_is_refused() {
+        let mut t = PeerTable::default();
+        t.claim(A, "h1".into(), "first", |_| true).unwrap();
+        assert!(t.claim(A, "h2".into(), "second", |_| true).is_err());
+        assert_eq!(t.get("h1"), Some(&"first"));
+        assert_eq!(t.get("h2"), None);
+    }
+
+    #[test]
+    fn a_reconnect_replaces_a_dead_entry_and_its_late_cleanup_keeps_the_new_one() {
+        let mut t = PeerTable::default();
+        t.claim(A, "old".into(), "old", |_| true).unwrap();
+        t.claim(A, "new".into(), "new", |_| false).unwrap();
+        assert_eq!(t.get("old"), None);
+        assert_eq!(t.remove("old"), None);
+        assert_eq!(t.get("new"), Some(&"new"));
+        // Still the registered connection of this id.
+        assert!(t.claim(A, "third".into(), "third", |_| true).is_err());
+    }
+
+    #[test]
+    fn a_peer_that_left_can_come_back() {
+        let mut t = PeerTable::default();
+        t.claim(A, "h1".into(), "first", |_| true).unwrap();
+        assert_eq!(t.remove("h1"), Some("first"));
+        t.claim(A, "h2".into(), "again", |_| true).unwrap();
+        assert_eq!(t.drain(), vec!["again"]);
+        t.claim(A, "h3".into(), "after stop", |_| true).unwrap();
+    }
+
+    #[test]
+    fn handles_are_random_and_unrelated_to_the_id() {
+        let (a, b) = (new_handle().unwrap(), new_handle().unwrap());
+        assert_eq!(a.len(), 32);
+        assert_ne!(a, b);
+    }
+
+    /// Accepts one connection on `host` and admits it, after the guest opened its stream.
+    async fn connect(host: &Endpoint, guest: &Endpoint, peers: &Mutex<PeerTable<Arc<Peer>>>) -> (Connection, SendStream, iroh::endpoint::RecvStream, Connection, Result<String, String>) {
+        let addr = host.addr();
+        let (out, incoming) = tokio::join!(guest.connect(addr, ALPN), async { host.accept().await.unwrap().await.unwrap() });
+        let out = out.unwrap();
+        let (mut gsend, grecv) = out.open_bi().await.unwrap();
+        gsend.write_all(b"hi").await.unwrap();
+        let (hsend, mut hrecv) = incoming.accept_bi().await.unwrap();
+        let mut buf = [0u8; 2];
+        hrecv.read_exact(&mut buf).await.unwrap();
+        let admitted = admit(peers, &incoming, hsend).await;
+        (out, gsend, grecv, incoming, admitted)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn real_connections_with_one_key_duplicate_refused_first_keeps_working_reconnect_works() {
+        let bind = |key: Option<iroh::SecretKey>| async move {
+            let b = Endpoint::builder(presets::Minimal).alpns(vec![ALPN.to_vec()]);
+            match key {
+                Some(k) => b.secret_key(k),
+                None => b,
+            }
+            .bind()
+            .await
+            .unwrap()
+        };
+        let key = iroh::SecretKey::generate();
+        let host = bind(None).await;
+        let (first, second) = (bind(Some(key.clone())).await, bind(Some(key.clone())).await);
+        let peers = Mutex::new(PeerTable::default());
+
+        let (conn1, _s1, mut r1, hconn1, h1) = connect(&host, &first, &peers).await;
+        let h1 = h1.unwrap();
+        assert!(!h1.contains(&key.public().to_string()[..10]));
+
+        let (_conn2, _s2, _r2, hconn2, dup) = connect(&host, &second, &peers).await;
+        assert_eq!(dup.unwrap_err(), "collab:already_connected");
+        hconn2.close(2u32.into(), b"already connected");
+
+        // The first connection is still the registered one, and it still delivers.
+        let p = peers.lock().await.get(&h1).cloned().unwrap();
+        p.send.lock().await.write_all(b"ok").await.unwrap();
+        let mut buf = [0u8; 2];
+        r1.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"ok");
+        drop(p);
+
+        // A real disconnect whose cleanup hasn't run yet doesn't block the reconnect.
+        conn1.close(0u32.into(), b"gone");
+        tokio::time::timeout(std::time::Duration::from_secs(5), hconn1.closed()).await.unwrap();
+        let third = bind(Some(key)).await;
+        let (_c3, _s3, _r3, _h3, again) = connect(&host, &third, &peers).await;
+        let again = again.unwrap();
+        assert_ne!(again, h1);
+        assert!(peers.lock().await.remove(&h1).is_none());
+        assert!(peers.lock().await.get(&again).is_some());
     }
 
     #[test]
