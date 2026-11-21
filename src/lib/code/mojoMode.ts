@@ -24,7 +24,7 @@ export const mojoParser: StreamParser<unknown> = {
 };
 
 /** The line without strings and comments. */
-const code = (line: string) => line.replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|#.*$/g, (m) => (m[0] === "#" ? "" : '""')).trimEnd();
+const code = (line: string) => line.replace(/"""[^]*?(?:"""|$)|'''[^]*?(?:'''|$)|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|#.*$/g, (m) => (m[0] === "#" ? "" : '""')).trimEnd();
 
 /** Indent steps for the line after this one: in after a `:`, out after a statement that ends a block. */
 export function mojoIndentStep(line: string): -1 | 0 | 1 {
