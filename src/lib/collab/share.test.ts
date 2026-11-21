@@ -621,3 +621,51 @@ test("guest: after the host changed folder the tab stays as an unsaved copy", as
   expect(closeTab).not.toHaveBeenCalled();
   expect(ui.toasts.at(-1)?.text).toContain("switched folders");
 });
+
+/** Opens folder /q the moment the host is busy with `cmd` for a guest request. */
+function switchFolderDuring(fs: ReturnType<typeof hostFs>, cmd: string) {
+  const other = fs.other;
+  fs.other = (c, args) => {
+    const result = other(c, args);
+    if (c === cmd) app.root = "/q";
+    return result;
+  };
+}
+const effects = (fs: ReturnType<typeof hostFs>) => fs.calls.filter((c) => !["collab_path_inside", "collab_tree_has_git", "path_exists"].includes(c.cmd));
+
+test("a folder switch during a guest's file operation doesn't apply it to the new folder", async () => {
+  for (const [op, during] of [
+    [{ op: "create", path: "new.txt" }, "collab_path_inside"],
+    [{ op: "mkdir", path: "dir" }, "collab_path_inside"],
+    [{ op: "rename", path: "a.txt", to: "b.txt" }, "collab_path_inside"],
+    [{ op: "delete", path: "a.txt" }, "collab_path_inside"],
+    [{ op: "delete", path: "a.txt" }, "collab_tree_has_git"],
+    [{ op: "rename", path: "a.txt", to: "b.txt" }, "collab_tree_has_git"],
+  ] as const) {
+    app.root = "/p";
+    const fs = hostFs({ "/p/a.txt": "p\n", "/q/a.txt": "q\n" });
+    switchFolderDuring(fs, during);
+    sent.length = 0;
+    await receive("g1", { t: "fs.op", req: 11, ...op });
+    expect(sent.find((s) => s.msg.t === "fs.op.res")!.msg, `${op.op} during ${during}`).toEqual({ t: "fs.op.res", req: 11, error: "unavailable" });
+    expect(effects(fs), `${op.op} during ${during}`).toEqual([]);
+    expect([fs.files.get("/p/a.txt"), fs.files.get("/q/a.txt")]).toEqual(["p\n", "q\n"]);
+  }
+});
+
+test("a folder switch during a guest's folder listing doesn't list the new folder", async () => {
+  const fs = hostFs({ "/p/a.txt": "p\n", "/q/private.txt": "q\n" });
+  switchFolderDuring(fs, "collab_path_inside");
+  await receive("g1", { t: "fs.list", path: "", req: 12 });
+  expect(sent.at(-1)!.msg).toEqual({ t: "fs.list.res", req: 12, entries: [] });
+  expect(fs.calls.filter((c) => c.cmd === "list_dir")).toEqual([]);
+});
+  const other = fs.other;
+  fs.other = (c, args) => {
+    if (c === "collab_path_inside") share.forgetPeer("g1");
+    return other(c, args);
+  };
+  await receive("g1", { t: "presence", file: "a.txt", line: 2 });
+  expect(share.share.presence.g1).toBeUndefined();
+  expect(sent.filter((s) => s.msg.t === "presence")).toEqual([]);
+});

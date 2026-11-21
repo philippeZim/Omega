@@ -491,17 +491,20 @@ const safeRel = (rel: unknown): rel is string =>
  */
 async function hostFsOp(peer: string, op: unknown, rel: unknown, toRel: unknown): Promise<string | null> {
   if (!isFsOp(op)) return "invalid";
-  if (!app.root) return "unavailable";
+  // Checked and used against one folder: the host can open another during any await below.
+  const root = app.root;
+  if (!root) return "unavailable";
   if (!safeRel(rel) || (op === "rename" && !safeRel(toRel))) return "invalid";
   // Also through symlinks, nothing outside the shared folder (#138).
-  if (!(await guestPathOk(rel)) || (op === "rename" && !(await guestPathOk(toRel as string)))) return "invalid";
-  const abs = joinPath(app.root, rel);
-  const to = op === "rename" ? joinPath(app.root, toRel as string) : null;
+  if (!(await guestPathOk(rel, root)) || (op === "rename" && !(await guestPathOk(toRel as string, root)))) return "invalid";
+  const abs = joinPath(root, rel);
+  const to = op === "rename" ? joinPath(root, toRel as string) : null;
   // Moving or deleting a folder would take a nested repository's git folder with it.
   if ((op === "rename" || op === "delete") && (await invoke<boolean>("collab_tree_has_git", { path: abs }).catch(() => true))) return "invalid";
   const who = collab.participants.find((p) => p.peer === peer)?.name ?? t("ai.collab.guest");
   try {
-    if ((op === "create" || op === "mkdir" || op === "rename") && (await fsApi.exists(to ?? abs))) return "exists";
+    if ((op === "create" || op === "mkdir" || op === "rename") && (await fsApi.exists(to ?? abs))) return app.root === root ? "exists" : "unavailable";
+    if (app.root !== root) return "unavailable";
     if (op === "create") await fsApi.createFile(abs);
     else if (op === "mkdir") await fsApi.createDir(abs);
     else if (op === "rename") {
@@ -665,9 +668,11 @@ onCollabMessage(async (peer, msg) => {
     } else if (msg.t === "fs.list") {
       const rel = String(msg.path || "");
       let entries: { name: string; rel: string; is_dir: boolean }[] = [];
-      if (app.root && (await guestPathOk(rel))) {
+      const root = app.root;
+      if (root && (await guestPathOk(rel, root)) && app.root === root) {
         try {
-          entries = (await fsApi.listDir(rel ? joinPath(app.root, rel) : app.root)).filter((e) => !isGitName(e.name)).map((e) => ({ name: e.name, rel: rel ? `${rel}/${e.name}` : e.name, is_dir: e.is_dir }));
+          const listed = await fsApi.listDir(rel ? joinPath(root, rel) : root);
+          if (app.root === root) entries = listed.filter((e) => !isGitName(e.name)).map((e) => ({ name: e.name, rel: rel ? `${rel}/${e.name}` : e.name, is_dir: e.is_dir }));
         } catch {
           /* ignore */
         }
