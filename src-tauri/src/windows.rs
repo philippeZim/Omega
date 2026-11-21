@@ -27,6 +27,10 @@ pub fn is_owned(key: &str, owner: &str) -> bool {
     key.split_once(SEP).is_some_and(|(o, _)| o == owner)
 }
 
+pub fn owner_of(key: &str) -> Option<&str> {
+    key.split_once(SEP).map(|(o, _)| o)
+}
+
 /// Removes and returns everything `owner` holds in a map with scoped keys.
 pub fn take_owned<V>(map: &mut HashMap<String, V>, owner: &str) -> Vec<V> {
     let keys: Vec<String> = map.keys().filter(|k| is_owned(k, owner)).cloned().collect();
@@ -63,6 +67,29 @@ pub fn focused(app: &AppHandle, label: &str) {
 pub fn target(app: &AppHandle) -> Option<String> {
     let open: Vec<String> = app.webview_windows().into_keys().collect();
     pick_target(&app.state::<FocusState>().order.lock().unwrap(), &open)
+}
+
+/// The window whose terminal `pid` runs in: walks up the parents to one of its shells.
+fn window_of(pid: u32, parents: &HashMap<u32, u32>, shells: &[(u32, String)]) -> Option<String> {
+    let mut seen = HashSet::new();
+    let mut p = pid;
+    while seen.insert(p) {
+        if let Some((_, label)) = shells.iter().find(|(s, _)| *s == p) {
+            return Some(label.clone());
+        }
+        p = *parents.get(&p)?;
+    }
+    None
+}
+
+/// The first of these processes that runs in a terminal of a window.
+pub fn window_of_processes(app: &AppHandle, pids: &[u32]) -> Option<String> {
+    let shells = crate::pty::shell_owners(app);
+    if shells.is_empty() {
+        return None;
+    }
+    let parents = crate::power::process_parents();
+    pids.iter().find_map(|p| window_of(*p, &parents, &shells))
 }
 
 /// The window's page is (re)loading: what its old page started has no UI any more.
@@ -514,6 +541,17 @@ mod tests {
     #[test]
     fn the_same_folder_twice_is_one_window() {
         assert_eq!(plan(&v(&["/c", "/c"]), &[], &open(&[("main", Some("/a"))]), Some("main"), Start::Running).len(), 1);
+    }
+
+    #[test]
+    fn a_process_belongs_to_the_window_of_its_terminal() {
+        let parents: HashMap<u32, u32> = [(30, 20), (20, 10), (10, 1), (40, 11), (11, 1), (50, 1), (60, 61), (61, 60)].into();
+        let shells = vec![(10, "main".to_string()), (11, "w-b".to_string())];
+        assert_eq!(window_of(30, &parents, &shells).as_deref(), Some("main"));
+        assert_eq!(window_of(40, &parents, &shells).as_deref(), Some("w-b"));
+        assert_eq!(window_of(10, &parents, &shells).as_deref(), Some("main"));
+        assert_eq!(window_of(50, &parents, &shells), None, "started outside Omega");
+        assert_eq!(window_of(60, &parents, &shells), None, "a parent loop ends");
     }
 
     #[test]

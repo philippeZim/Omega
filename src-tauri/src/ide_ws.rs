@@ -36,6 +36,8 @@ struct Inner {
     folders: HashMap<String, Vec<String>>,
     /// connection id → outgoing message channel
     clients: HashMap<u64, (mpsc::UnboundedSender<String>, String)>,
+    /// connection id → the window whose terminal runs that client
+    client_windows: HashMap<u64, String>,
     /// Open tool calls: the window that has to answer, and where its answer goes.
     pending: HashMap<u64, (String, oneshot::Sender<Value>)>,
 }
@@ -216,6 +218,71 @@ fn peer_uid(peer_port: u16) -> Option<u32> {
     None
 }
 
+/// Socket inode of the connection whose local port is `port`, from a /proc/net/tcp table.
+#[cfg(any(target_os = "linux", test))]
+fn tcp_inode(table: &str, port: u16) -> Option<String> {
+    let want = format!(":{port:04X}");
+    table.lines().skip(1).find_map(|line| {
+        let f: Vec<&str> = line.split_whitespace().collect();
+        (f.len() > 9 && f[1].ends_with(&want)).then(|| f[9].to_string())
+    })
+}
+
+/// Process ids from `netstat -ano` whose local address ends in `port`.
+#[cfg(any(windows, test))]
+fn netstat_pids(text: &str, port: u16) -> Vec<u32> {
+    let want = format!(":{port}");
+    text.lines()
+        .filter_map(|l| {
+            let f: Vec<&str> = l.split_whitespace().collect();
+            (f.len() >= 5 && f[0] == "TCP" && f[1].ends_with(&want)).then(|| f[4].parse().ok()).flatten()
+        })
+        .collect()
+}
+
+/// The processes holding the client end of a local connection.
+#[cfg(target_os = "linux")]
+fn client_pids(port: u16) -> Vec<u32> {
+    let inode = ["/proc/net/tcp", "/proc/net/tcp6"].iter().find_map(|f| tcp_inode(&std::fs::read_to_string(f).ok()?, port));
+    let Some(inode) = inode else { return vec![] };
+    let target = format!("socket:[{inode}]");
+    let me = std::process::id();
+    let Ok(dir) = std::fs::read_dir("/proc") else { return vec![] };
+    dir.flatten()
+        .filter_map(|e| e.file_name().to_str()?.parse::<u32>().ok())
+        .filter(|pid| *pid != me)
+        .filter(|pid| std::fs::read_dir(format!("/proc/{pid}/fd")).is_ok_and(|fds| fds.flatten().any(|fd| std::fs::read_link(fd.path()).is_ok_and(|l| l.as_os_str() == target.as_str()))))
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn client_pids(port: u16) -> Vec<u32> {
+    let me = std::process::id();
+    let Ok(out) = std::process::Command::new("/usr/sbin/lsof").args(["-nP", "-t", &format!("-iTCP:{port}")]).output() else { return vec![] };
+    String::from_utf8_lossy(&out.stdout).lines().filter_map(|l| l.trim().parse().ok()).filter(|p| *p != me).collect()
+}
+
+#[cfg(windows)]
+fn client_pids(port: u16) -> Vec<u32> {
+    let me = std::process::id();
+    let Ok(out) = crate::env::command("netstat").args(["-ano", "-p", "TCP"]).output() else { return vec![] };
+    netstat_pids(&String::from_utf8_lossy(&out.stdout), port).into_iter().filter(|p| *p != me).collect()
+}
+
+/// Who gets a notification from `sender`: a client in a window's terminal hears that window; one
+/// started elsewhere hears the focused window.
+fn hears(client_window: Option<&str>, sender: &str, focused: Option<&str>) -> bool {
+    match client_window {
+        Some(w) => w == sender,
+        None => focused == Some(sender),
+    }
+}
+
+/// The window a client's tool calls act on: its terminal's while that's open, else the focused one.
+fn call_window(client_window: Option<&str>, is_open: impl Fn(&str) -> bool, focused: Option<String>) -> Option<String> {
+    client_window.filter(|w| is_open(w)).map(str::to_string).or(focused)
+}
+
 fn my_uid() -> Option<u32> {
     let s = std::fs::read_to_string("/proc/self/status").ok()?;
     s.lines().find(|l| l.starts_with("Uid:"))?.split_whitespace().nth(1)?.parse().ok()
@@ -224,7 +291,8 @@ fn my_uid() -> Option<u32> {
 async fn serve(app: AppHandle, stream: tokio::net::TcpStream, token: String) {
     // OpenCode connects without a token when it found the port via CLAUDE_CODE_SSE_PORT; allow
     // that for processes of the same user (they could read the 0600 lock file anyway).
-    let same_user = stream.peer_addr().ok().and_then(|a| peer_uid(a.port())).is_some_and(|u| Some(u) == my_uid());
+    let peer_port = stream.peer_addr().ok().map(|a| a.port());
+    let same_user = peer_port.and_then(peer_uid).is_some_and(|u| Some(u) == my_uid());
     let check = |req: &Request, mut resp: Response| -> Result<Response, ErrorResponse> {
         let h = req.headers();
         let given = h.get("x-claude-code-ide-authorization").and_then(|v| v.to_str().ok());
@@ -248,6 +316,18 @@ async fn serve(app: AppHandle, stream: tokio::net::TcpStream, token: String) {
     let conn = NEXT.fetch_add(1, Ordering::SeqCst);
     app.state::<IdeState>().inner.lock().unwrap().clients.insert(conn, (tx.clone(), String::new()));
     emit_clients(&app);
+    if let Some(port) = peer_port {
+        // Looking through the process table takes a moment: not on the connection's task.
+        let app2 = app.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let Some(window) = crate::windows::window_of_processes(&app2, &client_pids(port)) else { return };
+            let st = app2.state::<IdeState>();
+            let mut inner = st.inner.lock().unwrap();
+            if inner.clients.contains_key(&conn) {
+                inner.client_windows.insert(conn, window);
+            }
+        });
+    }
 
     // Writer task: outgoing messages + keepalive pings.
     let writer = tauri::async_runtime::spawn(async move {
@@ -277,7 +357,12 @@ async fn serve(app: AppHandle, stream: tokio::net::TcpStream, token: String) {
         });
     }
     writer.abort();
-    app.state::<IdeState>().inner.lock().unwrap().clients.remove(&conn);
+    {
+        let st = app.state::<IdeState>();
+        let mut inner = st.inner.lock().unwrap();
+        inner.clients.remove(&conn);
+        inner.client_windows.remove(&conn);
+    }
     emit_clients(&app);
 }
 
@@ -323,7 +408,8 @@ async fn handle(app: &AppHandle, conn: u64, msg: &Value) -> Option<String> {
             let name = msg.pointer("/params/name").and_then(Value::as_str).unwrap_or("").to_string();
             let args = msg.pointer("/params/arguments").cloned().unwrap_or(json!({}));
             let call = NEXT.fetch_add(1, Ordering::SeqCst);
-            let Some(owner) = crate::windows::target(app) else {
+            let mine = app.state::<IdeState>().inner.lock().unwrap().client_windows.get(&conn).cloned();
+            let Some(owner) = call_window(mine.as_deref(), |w| app.get_webview_window(w).is_some(), crate::windows::target(app)) else {
                 return Some(error(&id, -32000, "no window open"));
             };
             let (otx, orx) = oneshot::channel();
@@ -351,16 +437,17 @@ pub fn ide_reply(app: AppHandle, window: tauri::WebviewWindow, call: u64, result
     }
 }
 
-/// Sends a notification (selection_changed, at_mentioned …) to all connected Claude sessions.
-/// Only the focused window speaks for the app, so a background window can't change the selection.
+/// Sends a notification (selection_changed, at_mentioned …) to the Claude sessions of this window.
 #[tauri::command]
 pub fn ide_notify(app: AppHandle, window: tauri::WebviewWindow, method: String, params: Value) {
-    if crate::windows::target(&app).as_deref() != Some(window.label()) {
-        return;
-    }
+    let focused = crate::windows::target(&app);
     let text = json!({ "jsonrpc": "2.0", "method": method, "params": params }).to_string();
-    for (tx, _) in app.state::<IdeState>().inner.lock().unwrap().clients.values() {
-        let _ = tx.send(text.clone());
+    let st = app.state::<IdeState>();
+    let inner = st.inner.lock().unwrap();
+    for (conn, (tx, _)) in &inner.clients {
+        if hears(inner.client_windows.get(conn).map(String::as_str), window.label(), focused.as_deref()) {
+            let _ = tx.send(text.clone());
+        }
     }
 }
 
@@ -376,6 +463,31 @@ mod tests {
 
     fn parse(s: &str) -> Value {
         serde_json::from_str(s).unwrap()
+    }
+
+    #[test]
+    fn a_client_acts_on_the_window_of_its_terminal() {
+        let open = |w: &str| w == "w-b" || w == "main";
+        assert_eq!(call_window(Some("w-b"), open, Some("main".into())).as_deref(), Some("w-b"));
+        assert_eq!(call_window(None, open, Some("main".into())).as_deref(), Some("main"));
+        assert_eq!(call_window(Some("w-gone"), open, Some("main".into())).as_deref(), Some("main"), "its window closed");
+    }
+
+    #[test]
+    fn a_client_hears_its_own_window() {
+        assert!(hears(Some("w-b"), "w-b", Some("main")));
+        assert!(!hears(Some("w-b"), "main", Some("main")), "the focused window isn't this client's");
+        assert!(hears(None, "main", Some("main")));
+        assert!(!hears(None, "w-b", Some("main")));
+    }
+
+    #[test]
+    fn finds_the_client_socket() {
+        let table = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n   0: 0100007F:1F90 0100007F:C350 01 00000000:00000000 00:00000000 00000000  1000        0 11111 1\n   1: 0100007F:C350 0100007F:1F90 01 00000000:00000000 00:00000000 00000000  1000        0 22222 1\n";
+        assert_eq!(tcp_inode(table, 0xC350).as_deref(), Some("22222"));
+        assert_eq!(tcp_inode(table, 0x1234), None);
+        let netstat = "  Proto  Local Address  Foreign Address  State  PID\n  TCP  127.0.0.1:50000  127.0.0.1:8080  ESTABLISHED  4242\n  TCP  127.0.0.1:8080  127.0.0.1:50000  ESTABLISHED  7\n";
+        assert_eq!(netstat_pids(netstat, 50000), [4242]);
     }
 
     #[test]

@@ -493,6 +493,13 @@ pub fn shell_pids(app: &AppHandle) -> Vec<u32> {
     app.state::<PtyState>().sessions.lock().unwrap().values().filter_map(|s| s.child.process_id()).collect()
 }
 
+/// Each terminal's shell with the window it belongs to.
+pub fn shell_owners(app: &AppHandle) -> Vec<(u32, String)> {
+    let state = app.state::<PtyState>();
+    let sessions = state.sessions.lock().unwrap();
+    sessions.iter().filter_map(|(k, s)| Some((s.child.process_id()?, crate::windows::owner_of(k)?.to_string()))).collect()
+}
+
 /// Ends this window's terminals (frontend reload: its xterm instances are gone, so the shells –
 /// and e.g. a `claude` running in them – would otherwise keep running invisibly).
 #[tauri::command]
