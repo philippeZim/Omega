@@ -14,6 +14,8 @@ import { EditorView } from "@codemirror/view";
 import { collab, send, broadcast, onCollabMessage } from "./collab.svelte";
 import { blockedByCapability, guestCan } from "./guard";
 import { guestMayWrite, hookLocked, refreshHookLocks, resetHookLocks } from "./hooksGuard";
+import { moveGuestChange, noteGuestChange } from "./guestChanges";
+import { checkUpdate } from "./yjsDeps";
 import { call, fits, forgetRpcPeer, hasCapability, isApproved, isObj, onCapabilitiesChanged, registerMethod, rpcErrorText, RpcFail } from "./rpc.svelte";
 import { app, openFile, activeTab, activate, collabHooks, setMode, pathMoved, type Tab } from "../state.svelte";
 import type { Mode } from "../modes";
@@ -46,6 +48,10 @@ interface SharedDoc {
   tabId: string | null;
   /** Host: guests that opened this doc. */
   subscribers: Set<string>;
+  /** Host: Yjs clients whose updates were refused, by guest (see `applyGuestUpdate`). */
+  refused: Map<string, Set<number>>;
+  resyncedAt: Map<string, number>;
+  resyncTimers: Map<string, number>;
   writeTimer?: number;
   /** Host, background docs: the write in progress, so writes land in order. */
   writing?: Promise<void>;
@@ -59,23 +65,63 @@ interface SharedDoc {
 const docs = new Map<string, SharedDoc>();
 /** Host: runs after every change of a shared doc, with the guest who made it (null: the host). */
 export const docEditListeners = new Set<(peer: string | null) => void>();
-/** Who the update being applied right now is from. Editors update synchronously inside it. */
-let applyingFrom: string | null = null;
+/** At most one fresh copy per guest and doc in this time, however many updates it refuses. */
+const RESYNC_MS = 1000;
+const MAX_REFUSED_CLIENTS = 64;
 
-function applyFrom(d: SharedDoc, update: Uint8Array, origin: string) {
-  applyingFrom = origin;
+/**
+ * Host: applies a guest's edit, or refuses it whole if it rests on something this doc doesn't have.
+ * Yjs would keep such an update and integrate it later inside someone else's transaction, under
+ * their name and past any change of this guest's rights. An honest guest only builds on what the
+ * host relayed, so a refusal means its copy went wrong: it gets a fresh one (with a new client id).
+ */
+function applyGuestUpdate(d: SharedDoc, peer: string, raw: unknown) {
+  let update: Uint8Array;
   try {
-    Y.applyUpdate(d.ydoc, update, origin);
+    update = unb64(String(raw));
+  } catch {
+    return resyncGuest(d, peer);
+  }
+  const check = checkUpdate(d.ydoc, update);
+  if (check.ready) return Y.applyUpdate(d.ydoc, update, peer);
+  // More of the same broken history, still on its way: the fresh copy is already out.
+  let stale = d.refused.get(peer);
+  if (stale && check.missing.some((c) => stale!.has(c))) return;
+  if (!stale || stale.size >= MAX_REFUSED_CLIENTS) d.refused.set(peer, (stale = new Set()));
+  for (const c of check.missing) stale.add(c);
+  resyncGuest(d, peer);
+}
+
+function resyncGuest(d: SharedDoc, peer: string) {
+  if (d.resyncTimers.has(peer)) return;
+  const wait = Math.max(0, (d.resyncedAt.get(peer) ?? -Infinity) + RESYNC_MS - performance.now());
+  const go = () => {
+    d.resyncTimers.delete(peer);
+    if (!d.cleanup.length || !d.subscribers.has(peer) || !isApproved(peer)) return;
+    d.resyncedAt.set(peer, performance.now());
+    const tab = d.tabId ? app.tabs.find((x) => x.id === d.tabId) : null;
+    const state = { t: "doc.state", path: d.rel, name: tab?.name ?? basename(d.rel), update: b64(Y.encodeStateAsUpdate(d.ydoc)) };
+    if (fits(JSON.stringify(state))) send(peer, state);
+    else send(peer, { t: "doc.error", path: d.rel, error: "too_large" });
+  };
+  if (wait === 0) go();
+  else d.resyncTimers.set(peer, window.setTimeout(go, wait));
+}
+
+/** Guest: an edit from the session is being applied. Editors update synchronously inside it. */
+let applyingRemote = false;
+
+function applyRemote(d: SharedDoc, update: Uint8Array) {
+  applyingRemote = true;
+  try {
+    Y.applyUpdate(d.ydoc, update, "remote");
   } finally {
-    applyingFrom = null;
+    applyingRemote = false;
   }
 }
 
-/**
- * Whether the edit being applied may not start a compile here. Host: it's from a guest without
- * `run`. Guest: it's from anyone else, and the host says when it's fine (`latex.changed`).
- */
-export const applyingEditWithoutRun = () => applyingFrom !== null && (collab.role !== "host" || !hasCapability(applyingFrom, "run"));
+/** Guest: such an edit starts no compile by itself, the host says when to (`latex.changed`). */
+export const applyingRemoteEdit = () => applyingRemote;
 /** Host: old key → new key of renamed docs, for guest messages still sent under the old name. */
 const renamed = new Map<string, string>();
 const hostDocAt = (path: string) => docs.get(path) ?? docs.get(renamed.get(path) ?? "");
@@ -118,15 +164,19 @@ function makeDoc(rel: string, isHost: boolean): SharedDoc {
   // Undo only covers edits made in this editor (yCollab adds its origin when bound): not the
   // initial load of the text (origin null), which would otherwise be the first undo step (#126).
   const undo = new Y.UndoManager(ytext, { trackedOrigins: new Set([GUEST_REPLACE]) });
-  const d: SharedDoc = { rel, root: app.root, ydoc, ytext, awareness, undo, tabId: null, subscribers: new Set(), cleanup: [] };
+  const d: SharedDoc = { rel, root: app.root, ydoc, ytext, awareness, undo, tabId: null, subscribers: new Set(), refused: new Map(), resyncedAt: new Map(), resyncTimers: new Map(), cleanup: [] };
 
   // Local Yjs changes → network. Origin = peer id for remote updates, so they aren't echoed back.
   const onUpdate = (update: Uint8Array, origin: unknown) => {
     const msg = { t: "doc.update", path: d.rel, update: b64(update) };
     if (isHost) {
+      // A guest's edit, as opposed to the host's or a replace (which reports its own change).
+      const peer = typeof origin === "string" && origin !== REPLACE_ORIGIN ? origin : null;
+      // First: nothing may compile this text, also not in reaction to the messages below.
+      if (peer) noteGuestChange(peer, d.root, d.rel);
       for (const p of d.subscribers) if (p !== origin) send(p, msg);
       scheduleHostWrite(d);
-      for (const fn of docEditListeners) fn(typeof origin === "string" ? origin : null);
+      for (const fn of docEditListeners) fn(peer);
     } else if (origin !== "remote") send(collab.hostPeer!, msg);
   };
   ydoc.on("update", onUpdate);
@@ -164,6 +214,8 @@ function makeDoc(rel: string, isHost: boolean): SharedDoc {
   ytext.observe(onText);
 
   d.cleanup.push(() => {
+    for (const timer of d.resyncTimers.values()) clearTimeout(timer);
+    d.resyncTimers.clear();
     ydoc.off("update", onUpdate);
     awareness.off("update", onAwareness);
     ytext.unobserve(onText);
@@ -935,6 +987,7 @@ async function hostFsOp(peer: string, { op, path: rel, to: toRel }: FsOpParams, 
   try {
     if ((op === "create" || op === "mkdir" || op === "rename") && (await fsApi.exists(to ?? abs))) return live() ? "exists" : "unavailable";
     if (!live()) return "unavailable";
+    noteGuestChange(peer, scope.root, rel); // before the change, which the file watcher will report
     if (op === "create") await fsApi.createFile(abs);
     else if (op === "mkdir") await fsApi.createDir(abs);
     else if (op === "rename") {
@@ -1178,7 +1231,7 @@ onCollabMessage(async (peer, msg) => {
       const d = hostDocAt(msg.path);
       if (d?.subscribers.has(peer) && hasCapability(peer, "edit")) {
         if (hookLocked(peer, d.root, d.rel)) return refuseHookEdit(peer, d);
-        applyFrom(d, unb64(msg.update), peer);
+        applyGuestUpdate(d, peer, msg.update);
       }
     } else if (msg.t === "aw") {
       const d = hostDocAt(msg.path);
@@ -1251,7 +1304,7 @@ onCollabMessage(async (peer, msg) => {
     share.treeGen++;
   } else if (msg.t === "doc.update") {
     const d = docs.get(msg.path);
-    if (d) applyFrom(d, unb64(msg.update), "remote");
+    if (d) applyRemote(d, unb64(msg.update));
   } else if (msg.t === "aw") {
     const d = docs.get(msg.path);
     if (d) applyAwarenessUpdate(d.awareness, unb64(msg.update), "remote");
@@ -1311,7 +1364,10 @@ setInterval(publishPresence, 600);
 collabHooks.openRemote = (path) => openRemote(path.slice(REMOTE.length));
 collabHooks.tabOpened = (id, path) => onHostTabOpened(id, path);
 collabHooks.tabClosed = (path, id) => (collab.role === "host" ? onHostTabClosed(id) : onTabClosed(path));
-collabHooks.pathMoved = (from, to) => onHostPathMoved(from, to);
+collabHooks.pathMoved = (from, to) => {
+  moveGuestChange(from, to);
+  return onHostPathMoved(from, to);
+};
 
 // Host: files changed on disk (new/deleted/renamed, git checkout …) → guests reload their tree,
 // shared files without a host tab are reloaded (open tabs follow the disk via state.svelte.ts).

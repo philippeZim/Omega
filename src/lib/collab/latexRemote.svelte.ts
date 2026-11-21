@@ -1,17 +1,18 @@
 /**
  * Code Together: LaTeX for guests compiles on the host, with the host's project and the current
- * shared text (latex_guest.rs). It needs `run`, and so does causing one: edits of a guest without
- * `run` start no compile, neither on the host nor for another guest.
+ * shared text (latex_guest.rs). It needs `run`. Text from a guest without `run` compiles only after
+ * the host pressed Compile (guestChanges.ts), also when another guest asks.
  */
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { call, hasCapability, isObj, onCapabilitiesChanged, publish, registerMethod, registerTopic, rpcErrorText, RpcFail, subscribe } from "./rpc.svelte";
 import { collab } from "./collab.svelte";
-import { applyingEditWithoutRun, docEditListeners, guestScope, hostCompileTexts, openRemote } from "./share.svelte";
-import { editorWithoutRun, guestFile } from "./guestAssets";
-import { applyProgress, autoCompileGate, recompileRemote, remoteLatex, type CompileResult, type LatexProgress } from "../latex/controller.svelte";
+import { applyingRemoteEdit, docEditListeners, guestScope, hostCompileTexts, openRemote } from "./share.svelte";
+import { guestFile } from "./guestAssets";
+import { guestChangeHooks, isPaused } from "./guestChanges";
+import { applyProgress, recompileRemote, remoteLatex, type CompileResult, type LatexProgress } from "../latex/controller.svelte";
 import { onFilesChanged } from "../fsWatch.svelte";
-import { collabHooks } from "../state.svelte";
+import { app, collabHooks } from "../state.svelte";
 import { t } from "../i18n/index.svelte";
 
 interface HostCompile extends Omit<CompileResult, "pdf"> {
@@ -54,6 +55,8 @@ registerMethod({
     const overlays: { rel: string; text: string }[] = [];
     if (scope) for (const o of texts.overlays) if (await scope.check(o.rel)) overlays.push(o);
     if (signal.aborted || (scope && !scope.live())) throw new RpcFail("cancelled");
+    // After the last await: nothing a guest without `run` wrote compiles until the host says so.
+    if (isPaused(scope?.root ?? null, untitled ? texts.key.slice(4) : null)) throw new RpcFail("latex_paused");
     const job = `${peer}:${nonce}`;
     jobs.set(job, nonce);
     const cancel = () => void invoke("latex_guest_cancel", { job }).catch(() => {});
@@ -77,12 +80,9 @@ listen<{ job: string; phase: LatexProgress["phase"]; downloads: number; file: st
   if (nonce) publish("latex.progress", { nonce, phase: p.phase, downloads: p.downloads, file: p.file });
 });
 
-/** Whether a guest could change files without being allowed to cause a compile. */
-const fileChangesUntrusted = () => collab.role === "host" && editorWithoutRun(collab.participants);
-
-collabHooks.editBlocksCompile = applyingEditWithoutRun;
-// A change on disk doesn't say who made it, so while such a guest is here it starts no compile.
-autoCompileGate.fileChangeBlocked = fileChangesUntrusted;
+guestChangeHooks.mayRun = (peer) => hasCapability(peer, "run");
+guestChangeHooks.name = (peer) => collab.participants.find((p) => p.peer === peer)?.name || t("ai.collab.guest");
+collabHooks.editBlocksCompile = applyingRemoteEdit;
 
 let changedGen = 0;
 let changedTimer: ReturnType<typeof setTimeout> | undefined;
@@ -91,11 +91,14 @@ function announceChange(by: string | null) {
   changedTimer = setTimeout(() => publish("latex.changed", { gen: ++changedGen, by }), 500);
 }
 onFilesChanged((files) => {
-  if (collab.role === "host" && !fileChangesUntrusted() && files.some((f) => DEPENDENCY.test(f))) announceChange(null);
+  if (collab.role === "host" && !isPaused(app.root, null) && files.some((f) => DEPENDENCY.test(f))) announceChange(null);
 });
 docEditListeners.add((peer) => {
-  if (!peer || hasCapability(peer, "run")) announceChange(peer);
+  if (collab.role === "host" && !isPaused(app.root, null) && (!peer || hasCapability(peer, "run"))) announceChange(peer);
 });
+remoteLatex.resumed = () => {
+  if (collab.role === "host") announceChange(null);
+};
 
 // ------------------------------------------------------------------ guest
 
@@ -117,6 +120,10 @@ export function compileErrorText(code: string): string {
       return t("ai.collab.latex.timeout");
     case "busy":
       return t("ai.collab.latex.busy");
+    case "pdf_too_large":
+      return t("ai.collab.latex.pdfTooLarge");
+    case "latex_paused":
+      return t("ai.collab.latex.paused");
     case "latex_no_doc":
       return t("ai.collab.latex.noDoc");
     default:

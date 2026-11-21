@@ -21,7 +21,7 @@ vi.mock("@tauri-apps/api/core", () => ({
   },
 }));
 
-import { latex, remoteLatex, remotePdfBytes, schedule } from "./controller.svelte";
+import { compileNow, latex, remoteLatex, remotePdfBytes, schedule } from "./controller.svelte";
 
 const result = {
   ok: false,
@@ -77,6 +77,91 @@ describe("latex controller", () => {
     schedule("gated", null, 0, false);
     await vi.advanceTimersByTimeAsync(2000);
     expect(invoked.slice(before)).not.toContain("latex_compile");
+  });
+
+  test("text from a guest without run waits for the host's Compile, which stays valid until the next change", async () => {
+    const changes = await import("../collab/guestChanges");
+    changes.guestChangeHooks.name = () => "Ada";
+    await vi.advanceTimersByTimeAsync(1000);
+    finish(result);
+    await vi.advanceTimersByTimeAsync(1);
+    schedule("doc", "/proj/main.tex", 0);
+    await vi.advanceTimersByTimeAsync(1);
+    finish(result);
+    await vi.advanceTimersByTimeAsync(1);
+
+    changes.noteGuestChange("g", "/proj", "main.tex");
+    expect(latex.pausedBy).toBe("Ada");
+    let before = invoked.length;
+    schedule("doc", "/proj/main.tex", 0); // a keystroke
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(invoked.slice(before)).not.toContain("latex_compile");
+    schedule("doc2", "/proj/other.tex", 0); // another file of that project
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(invoked.slice(before)).not.toContain("latex_compile");
+    schedule("doc", "/proj/main.tex", 0);
+    await vi.advanceTimersByTimeAsync(1);
+
+    compileNow();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(latex.pausedBy).toBeNull();
+    expect(invoked.slice(before)).toContain("latex_compile");
+    finish(result);
+    await vi.advanceTimersByTimeAsync(1);
+
+    before = invoked.length;
+    schedule("doc", "/proj/main.tex", 0);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(invoked.slice(before)).toContain("latex_compile");
+    finish(result);
+    await vi.advanceTimersByTimeAsync(1);
+
+    changes.noteGuestChange("g", "/proj", "main.tex");
+    before = invoked.length;
+    schedule("doc", "/proj/main.tex", 0);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(invoked.slice(before)).not.toContain("latex_compile");
+    changes.resumeCompiling("doc", "/proj/main.tex");
+  });
+
+  test("a guest's change during a compile starts no second one, and the host is told", async () => {
+    const changes = await import("../collab/guestChanges");
+    await vi.advanceTimersByTimeAsync(1000);
+    finish(result);
+    await vi.advanceTimersByTimeAsync(1);
+    schedule("during", "/during/main.tex", 0);
+    await vi.advanceTimersByTimeAsync(1); // compiling now
+    const before = invoked.length;
+    schedule("during", "/during/main.tex", 0); // an edit meanwhile asks for another run
+    await vi.advanceTimersByTimeAsync(1);
+    changes.noteGuestChange("g", "/during", "main.tex");
+    expect(latex.guestInRun).toBe(false);
+    finish({ ...result, ok: true, pdf: "/x.pdf", diagnostics: [] });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(latex.guestInRun).toBe(true);
+    expect(invoked.slice(before)).not.toContain("latex_compile");
+    compileNow();
+    expect(latex.guestInRun).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    finish(result);
+    await vi.advanceTimersByTimeAsync(1);
+  });
+
+  test("a compile timer already running doesn't take a guest's text in", async () => {
+    const changes = await import("../collab/guestChanges");
+    await vi.advanceTimersByTimeAsync(1000);
+    finish(result);
+    await vi.advanceTimersByTimeAsync(1);
+    schedule("late", "/late/main.tex", 0);
+    await vi.advanceTimersByTimeAsync(1);
+    finish(result);
+    await vi.advanceTimersByTimeAsync(1);
+    const before = invoked.length;
+    schedule("late", "/late/main.tex"); // the host typed, the debounce is running
+    changes.noteGuestChange("g", "/late", "main.tex"); // then the guest's edit arrived
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(invoked.slice(before)).not.toContain("latex_compile");
+    changes.resumeCompiling("late", "/late/main.tex");
   });
 
   test("applies diagnostics when the compile ends in LaTeX mode", async () => {

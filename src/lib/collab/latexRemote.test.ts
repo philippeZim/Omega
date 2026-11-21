@@ -10,8 +10,8 @@ const h = vi.hoisted(() => ({
   openRemote: vi.fn(),
   recompile: vi.fn(),
   remote: {} as Record<string, any>,
-  gate: { fileChangeBlocked: () => false },
   hooks: { editBlocksCompile: () => false },
+  app: { root: "/p" },
   collab: { role: "host", myPeer: "me", participants: [] as any[] },
 }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: h.invoke }));
@@ -34,18 +34,19 @@ vi.mock("./rpc.svelte", () => ({
   subscribe: vi.fn(),
 }));
 vi.mock("./share.svelte", () => ({
-  applyingEditWithoutRun: () => false,
+  applyingRemoteEdit: () => false,
   docEditListeners: new Set(),
   guestScope: () => ({ root: "/p", live: () => true, check: h.check }),
   hostCompileTexts: h.texts,
   openRemote: h.openRemote,
 }));
-vi.mock("../latex/controller.svelte", () => ({ applyProgress: vi.fn(), autoCompileGate: h.gate, recompileRemote: h.recompile, remoteLatex: h.remote }));
+vi.mock("../latex/controller.svelte", () => ({ applyProgress: vi.fn(), recompileRemote: h.recompile, remoteLatex: h.remote }));
 vi.mock("../fsWatch.svelte", () => ({ onFilesChanged: vi.fn() }));
-vi.mock("../state.svelte", () => ({ collabHooks: h.hooks }));
+vi.mock("../state.svelte", () => ({ app: h.app, collabHooks: h.hooks }));
 vi.mock("../i18n/index.svelte", () => ({ t: (k: string) => k }));
 
 const { toGuestResult } = await import("./latexRemote.svelte");
+const changes = await import("./guestChanges");
 const method = h.methods.get("latex.compile");
 const ctx = (signal = new AbortController().signal) => ({ peer: "g1", signal });
 
@@ -124,9 +125,20 @@ test("getting run back recompiles, other changes don't", () => {
   expect(h.recompile).toHaveBeenCalledOnce();
 });
 
-test("file changes start no compile while a guest can edit without run", () => {
+test("text from a guest without run doesn't compile for another guest until the host accepts it", async () => {
+  h.collab.participants = [{ peer: "g1", role: "guest", caps: ["edit", "run"] }, { peer: "g2", role: "guest", caps: ["edit"] }];
+  h.texts.mockReturnValue({ key: "main.tex", text: "x", overlays: [] });
+  h.invoke.mockResolvedValue({ ok: true });
+  changes.noteGuestChange("g2", "/p", "main.tex");
+  await expect(method.handle({ key: "main.tex", nonce: "n3" }, ctx())).rejects.toMatchObject({ code: "latex_paused" });
+  expect(h.invoke).not.toHaveBeenCalled();
+  changes.resumeCompiling("t", "/p/main.tex");
+  await method.handle({ key: "main.tex", nonce: "n4" }, ctx());
+  expect(h.invoke).toHaveBeenCalledWith("latex_guest_compile", expect.anything());
+});
+
+test("a guest with run changing text pauses nothing", () => {
   h.collab.participants = [{ peer: "g1", role: "guest", caps: ["edit", "run"] }];
-  expect(h.gate.fileChangeBlocked()).toBe(false);
-  h.collab.participants.push({ peer: "g2", role: "guest", caps: ["edit"] });
-  expect(h.gate.fileChangeBlocked()).toBe(true);
+  changes.noteGuestChange("g1", "/p", "main.tex");
+  expect(changes.isPaused("/p", null)).toBe(false);
 });

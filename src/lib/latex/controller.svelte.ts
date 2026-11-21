@@ -7,6 +7,8 @@ import { onFilesChanged } from "../fsWatch.svelte";
 import { setDiagnostics, type Diagnostic as CmDiagnostic } from "@codemirror/lint";
 import * as ed from "../editor";
 import { outline, type OutlineItem } from "./language";
+import { onGuestChange, pausedBy, resumeCompiling } from "../collab/guestChanges";
+import { ui } from "../ui.svelte";
 
 export interface TexDiagnostic {
   file: string;
@@ -47,6 +49,10 @@ export const latex = $state({
   target: null as { page: number; x: number; y: number; w: number; h: number; seq: number } | null,
   /** Live progress of a slow (online) compile; null while idle or for the fast cached compile. */
   progress: null as LatexProgress | null,
+  /** Who changed this document without being allowed to compile: it waits for the host's Compile. */
+  pausedBy: null as string | null,
+  /** That guest's change came while this result was compiling, so the PDF may already hold it. */
+  guestInRun: false,
 });
 
 export interface LatexProgress {
@@ -87,12 +93,27 @@ export const remoteLatex = {
   compile: null as ((path: string) => Promise<{ result: CompileResult; bytes: Uint8Array | null }>) | null,
   cancel: () => {},
   openAt: (_file: string, _line: number): Promise<void> | void => {},
+  /** The host accepted a guest's text: guests may compile again. */
+  resumed: () => {},
 };
-/** Code Together: changes that must not start a compile here (set by collab/latexRemote.svelte.ts). */
-export const autoCompileGate = {
-  /** Changes on disk can't be told apart from such a guest's. */
-  fileChangeBlocked: () => false,
-};
+
+/** Shows whether the current document waits for the host to press Compile, and says so once. */
+function refreshPause() {
+  const by = current ? pausedBy(current.id, current.path, ed.getText(current.id)) : null;
+  if (by !== null && latex.pausedBy === null) ui.toast(t("ai.collab.latex.hostPaused", { name: by }));
+  latex.pausedBy = by;
+}
+onGuestChange(refreshPause);
+
+/** The host's Compile: it accepts the text as it is now, and auto-compile goes on from there. */
+export function compileNow() {
+  if (!current) return;
+  resumeCompiling(current.id, current.path, ed.getText(current.id));
+  latex.guestInRun = false;
+  remoteLatex.resumed();
+  clearTimeout(timer);
+  void run();
+}
 let remotePdf: Uint8Array | null = null;
 /** The PDF of a guest's compile (`latex.pdf` is then only a marker). A copy: pdf.js takes it over. */
 export const remotePdfBytes = () => (latex.pdf === "collab:pdf" && remotePdf ? remotePdf.slice() : null);
@@ -128,7 +149,9 @@ export async function checkAvailable() {
 export function schedule(id: string, path: string | null, delay = 900, compile = true) {
   const switched = current?.id !== id;
   current = { id, path };
+  refreshPause();
   if (switched) {
+    latex.guestInRun = false;
     remoteLatex.cancel();
     latex.pdf = null;
     latex.diagnostics = [];
@@ -146,7 +169,7 @@ export function schedule(id: string, path: string | null, delay = 900, compile =
 // another tab, by git or by an external tool. The active buffer itself is already compiled on edit.
 const DEPENDENCY = /\.(tex|bib|sty|cls|bst|png|jpe?g|pdf|eps|svg)$/i;
 onFilesChanged((files) => {
-  if (!current || !latex.available || autoCompileGate.fileChangeBlocked()) return;
+  if (!current || !latex.available) return;
   if (!files.some((f) => f !== current!.path && DEPENDENCY.test(f))) return;
   clearTimeout(timer);
   timer = window.setTimeout(run, 300);
@@ -165,6 +188,9 @@ async function run() {
   else {
     if (latex.available === null) await checkAvailable();
     if (!latex.available) return;
+    // The one gate for keystrokes, file changes and tab switches. Nothing awaits from here to the
+    // text being read, so an edit can't slip in between.
+    if (!current || pausedBy(current.id, current.path, ed.getText(current.id)) !== null) return refreshPause();
   }
   running = true;
   latex.status = "compiling";
@@ -176,6 +202,8 @@ async function run() {
     if (remote) ({ result: r, bytes } = await remoteLatex.compile!(job.path!));
     else r = await invoke<CompileResult>("latex_compile", { path: job.path, content: ed.getText(job.id) });
     if (current?.id !== job.id) return;
+    // TeX reads included files while it runs, so a guest's change from meanwhile may be in here.
+    if (!remote && pausedBy(job.id, job.path, ed.getText(job.id)) !== null) latex.guestInRun = true;
     latex.millis = r.millis;
     latex.log = r.log;
     latex.diagnostics = r.diagnostics;

@@ -5,7 +5,7 @@
   import { openUrl } from "../lib/native";
   import * as pdfjs from "pdfjs-dist";
   import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
-  import { latex, setDark, reverseSync, forwardSync, installLatex, remoteLatex, remotePdfBytes } from "../lib/latex/controller.svelte";
+  import { latex, setDark, reverseSync, forwardSync, installLatex, remoteLatex, remotePdfBytes, compileNow } from "../lib/latex/controller.svelte";
   import { app, activeTab, openFile } from "../lib/state.svelte";
   import * as ed from "../lib/editor";
   import { t } from "../lib/i18n/index.svelte";
@@ -258,6 +258,12 @@
     </button>
   </div>
 
+  {#if latex.pausedBy !== null}
+    <div class="paused" role="status">
+      <span>{t(latex.guestInRun ? "ai.collab.latex.hostPausedInRun" : "ai.collab.latex.hostPaused", { name: latex.pausedBy })}</span>
+      <button onclick={compileNow}>{t("ai.collab.latex.compile")}</button>
+    </div>
+  {/if}
   {#if latex.progress && latex.pdf}
     <div class="topbar-progress" title={t(`code.pdf.phase.${latex.progress.phase}`)}><div class="fill" style="width: {latex.progress.percent}%"></div></div>
   {/if}
@@ -418,6 +424,9 @@
   .pc-sub { min-height: 16px; display: flex; gap: 5px; font-size: 11.5px; color: var(--label-2); font-variant-numeric: tabular-nums; white-space: nowrap; }
   .pc-file { overflow: hidden; text-overflow: ellipsis; color: var(--label-3); font-family: var(--mono); font-size: 11px; }
   .pc-hint { margin: 10px 0 0; font-size: 11.5px; color: var(--label-3); }
+  .paused { display: flex; align-items: center; gap: 10px; padding: 8px 12px 8px 16px; flex-shrink: 0; font-size: 12px; color: var(--label-2); background: var(--well); border-bottom: 1px solid rgba(var(--fg-rgb), 0.06); }
+  .paused span { flex: 1; min-width: 0; }
+  .paused button { flex-shrink: 0; padding: 5px 12px; border-radius: 999px; background: var(--accent); color: #fff; font-weight: 600; }
   .topbar-progress { height: 2px; flex-shrink: 0; background: transparent; }
   @media (prefers-reduced-motion: reduce) { .bar .fill::after, .topbar-progress .fill::after { animation: none; } }
   .empty h3 { color: var(--label); margin: 0 0 8px; }

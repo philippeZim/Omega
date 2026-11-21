@@ -5,12 +5,11 @@
 //! shared text goes into a separate build dir, so the host's files and its own builds stay as they are.
 use serde::{Deserialize, Serialize};
 use base64::Engine;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
+use std::collections::VecDeque;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -152,9 +151,15 @@ pub struct GuestCompile {
 }
 
 const MAX_TEXT: usize = 16 * 1024 * 1024;
-/// Keeps the answer below the RPC limit (24 MB), with base64 and SyncTeX.
-const MAX_PDF: u64 = 14 * 1024 * 1024;
+/// The PDF, before base64.
+const MAX_PDF: u64 = 16 * 1024 * 1024;
+/// The whole answer as JSON, below the RPC limit (24 MB) with room for its envelope.
+const MAX_RESPONSE: usize = 23 * 1024 * 1024;
 const MAX_SYNC: usize = 40_000;
+const MAX_DIAGNOSTICS: usize = 500;
+const MAX_MESSAGE: usize = 2000;
+/// A job folder older than this was left by a crash.
+const STALE_JOB: Duration = Duration::from_secs(3600);
 const MAX_LOG: usize = 256 * 1024;
 const MAX_OUTPUT: usize = 4 * 1024 * 1024;
 const MAX_TIME: Duration = Duration::from_secs(170);
@@ -270,17 +275,93 @@ fn scrub(text: &str, build: &Path, project: Option<&Path>) -> String {
             dirs.push((real, to));
         }
     }
-    // Longest first: the project usually lies inside the home folder.
-    dirs.sort_by_key(|(d, _)| std::cmp::Reverse(d.as_os_str().len()));
-    let mut out = text.to_string();
+    scrub_dirs(text, dirs.iter().map(|(d, to)| (d.to_string_lossy().to_string(), *to)).collect())
+}
+
+/// Replaces each folder by its short form, as written and with the other kind of slash: TeX and
+/// Tectonic report Windows paths as `C:/Users/…` as well as `C:\\Users\\…`.
+fn scrub_dirs(text: &str, dirs: Vec<(String, &str)>) -> String {
+    let mut all: Vec<(String, &str)> = Vec::new();
     for (d, to) in dirs {
-        let d = d.to_string_lossy();
-        if d.len() > 1 {
-            out = replace_wrapped(&out, &format!("{d}/"), if to == "." { "" } else { "~/" });
-            out = replace_wrapped(&out, &d, to);
+        if d.len() <= 1 {
+            continue;
         }
+        let d = d.trim_end_matches(['/', '\\']).to_string();
+        if d.contains('\\') {
+            all.push((d.replace('\\', "/"), to));
+        } else if d.as_bytes().get(1) == Some(&b':') {
+            all.push((d.replace('/', "\\"), to));
+        }
+        all.push((d, to));
+    }
+    // Longest first: the project usually lies inside the home folder.
+    all.sort_by_key(|(d, _)| std::cmp::Reverse(d.len()));
+    let mut out = text.to_string();
+    for (d, to) in all {
+        let short = if to == "." { "" } else { "~/" };
+        out = replace_wrapped(&out, &format!("{d}/"), short);
+        out = replace_wrapped(&out, &format!("{d}\\"), short);
+        out = replace_wrapped(&out, &d, to);
     }
     out
+}
+
+/// Keeps the JSON of an answer within `limit`: SyncTeX goes first, as it's only a convenience. A
+/// PDF that doesn't fit even then is refused rather than cut.
+fn fit_response(r: &mut GuestCompile, limit: usize) -> Result<(), &'static str> {
+    let size = |r: &GuestCompile| serde_json::to_vec(r).map_or(usize::MAX, |v| v.len());
+    while size(r) > limit && !r.sync.is_empty() {
+        let keep = r.sync.len() / 2;
+        r.sync.truncate(keep);
+    }
+    if size(r) <= limit {
+        return Ok(());
+    }
+    r.log = tail(&r.log, 16 * 1024).to_string();
+    r.diagnostics.truncate(50);
+    if size(r) <= limit {
+        Ok(())
+    } else if r.pdf.is_some() {
+        Err("pdf_too_large")
+    } else {
+        Err("output_too_large")
+    }
+}
+
+fn cut(s: &mut String, max: usize) {
+    if s.len() > max {
+        let mut i = max;
+        while !s.is_char_boundary(i) {
+            i -= 1;
+        }
+        s.truncate(i);
+    }
+}
+
+/// A build folder for one compile: no output of an earlier one can be taken for this one's, and
+/// guests don't share files. Removed however the compile ends.
+struct JobDir(PathBuf);
+impl JobDir {
+    fn new(cache: &Path) -> Result<Self, &'static str> {
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let parent = cache.join("latex").join("guest-jobs");
+        std::fs::create_dir_all(&parent).map_err(|_| "compile_failed")?;
+        // What a crash left behind. Not everything: another instance may be compiling.
+        for e in std::fs::read_dir(&parent).into_iter().flatten().flatten() {
+            let old = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age > STALE_JOB);
+            if old {
+                let _ = std::fs::remove_dir_all(e.path());
+            }
+        }
+        let dir = parent.join(format!("{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::SeqCst)));
+        std::fs::create_dir(&dir).map_err(|_| "compile_failed")?;
+        Ok(JobDir(dir))
+    }
+}
+impl Drop for JobDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
 
 fn tail(s: &str, max: usize) -> &str {
@@ -323,11 +404,9 @@ fn compile_job(tectonic: &Path, cache: &Path, req: &Request, cancel: &AtomicBool
         (None, None) => None,
         _ => return Err("path_refused"),
     };
-    let mut h = DefaultHasher::new();
-    target.as_ref().map(|t| &t.2).hash(&mut h);
     // Its own folder: a host compile of the same document may be running.
-    let build = cache.join("latex").join(format!("guest-{:x}", h.finish()));
-    std::fs::create_dir_all(&build).map_err(|_| "compile_failed")?;
+    let job = JobDir::new(cache)?;
+    let build = job.0.clone();
     let (root_dir, root_name) = match &target {
         Some((project, file, root)) => {
             let dir = root.parent().ok_or("root_outside")?.to_path_buf();
@@ -361,16 +440,20 @@ fn compile_job(tectonic: &Path, cache: &Path, req: &Request, cancel: &AtomicBool
             let mut bytes = Vec::new();
             file.take(MAX_PDF + 1).read_to_end(&mut bytes).map_err(|_| "compile_failed")?;
             if bytes.len() as u64 > MAX_PDF {
-                return Err("output_too_large");
+                return Err("pdf_too_large");
             }
             Some(base64::engine::general_purpose::STANDARD.encode(bytes))
         }
         _ => None,
     };
     let mut diagnostics = r.diagnostics;
+    // Errors first: they're what the panel can't do without.
+    diagnostics.sort_by_key(|d| d.severity != "error");
+    diagnostics.truncate(MAX_DIAGNOSTICS);
     for d in &mut diagnostics {
         d.file = to_project(&d.file, project);
         d.message = scrub(&d.message, &build, project);
+        cut(&mut d.message, MAX_MESSAGE);
     }
     let mut sync = r.sync;
     sync.truncate(MAX_SYNC);
@@ -381,16 +464,56 @@ fn compile_job(tectonic: &Path, cache: &Path, req: &Request, cancel: &AtomicBool
     }
     // A bit more than is kept, so a path cut off by the tail is scrubbed first.
     let log = scrub(tail(&r.log, MAX_LOG + 8192), &build, project);
-    Ok(GuestCompile { ok: r.ok, pdf, diagnostics, log: tail(&log, MAX_LOG).to_string(), sync, millis: r.millis })
+    let mut answer = GuestCompile { ok: r.ok, pdf, diagnostics, log: tail(&log, MAX_LOG).to_string(), sync, millis: r.millis };
+    fit_response(&mut answer, MAX_RESPONSE)?;
+    Ok(answer)
 }
 
-/// The one compile running for guests.
-static ACTIVE: Mutex<Option<(String, Arc<AtomicBool>)>> = Mutex::new(None);
+#[derive(Default)]
+struct Jobs {
+    /// The one compile running for guests.
+    active: Option<(String, Arc<AtomicBool>)>,
+    /// Cancels that came before their job started. Job ids are unique, so old ones do no harm.
+    early: VecDeque<String>,
+}
+
+impl Jobs {
+    fn claim(&mut self, job: &str) -> Result<Arc<AtomicBool>, &'static str> {
+        if let Some(i) = self.early.iter().position(|j| j == job) {
+            self.early.remove(i);
+            return Err("cancelled");
+        }
+        if self.active.is_some() {
+            return Err("busy");
+        }
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.active = Some((job.to_string(), cancel.clone()));
+        Ok(cancel)
+    }
+
+    fn cancel(&mut self, job: &str) {
+        match &self.active {
+            Some((id, cancel)) if id == job => cancel.store(true, Ordering::SeqCst),
+            _ => {
+                if self.early.len() >= MAX_EARLY_CANCELS {
+                    self.early.pop_front();
+                }
+                self.early.push_back(job.to_string());
+            }
+        }
+    }
+}
+
+const MAX_EARLY_CANCELS: usize = 64;
+static JOBS: LazyLock<Mutex<Jobs>> = LazyLock::new(Default::default);
+fn jobs() -> std::sync::MutexGuard<'static, Jobs> {
+    JOBS.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 struct Slot;
 impl Drop for Slot {
     fn drop(&mut self) {
-        *ACTIVE.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        jobs().active = None;
     }
 }
 
@@ -404,14 +527,7 @@ struct JobProgress {
 /// Host: compiles a shared file for a guest. Errors are stable codes without paths.
 #[tauri::command]
 pub async fn latex_guest_compile(app: AppHandle, job: String, root: Option<String>, file: Option<String>, content: String, overlays: Vec<Overlay>) -> Result<GuestCompile, String> {
-    let cancel = Arc::new(AtomicBool::new(false));
-    {
-        let mut active = ACTIVE.lock().unwrap_or_else(|e| e.into_inner());
-        if active.is_some() {
-            return Err("busy".into());
-        }
-        *active = Some((job.clone(), cancel.clone()));
-    }
+    let cancel = jobs().claim(&job)?;
     let slot = Slot;
     let tectonic = crate::env::which("tectonic").ok_or("tectonic_missing")?;
     let cache = app.path().app_cache_dir().map_err(|_| "compile_failed")?;
@@ -429,11 +545,7 @@ pub async fn latex_guest_compile(app: AppHandle, job: String, root: Option<Strin
 
 #[tauri::command]
 pub fn latex_guest_cancel(job: String) {
-    if let Some((id, cancel)) = ACTIVE.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
-        if *id == job {
-            cancel.store(true, Ordering::SeqCst);
-        }
-    }
+    jobs().cancel(&job);
 }
 
 #[cfg(test)]
@@ -565,6 +677,102 @@ mod tests {
         let req = Request { root: Some(&project), file: Some("main.tex"), content: doc, overlays: &[] };
         assert_eq!(compile_job(&exe, &dir.path().join("cache"), &req, &cancel, &no_progress).err(), Some("cancelled"));
         assert!(started.elapsed() < Duration::from_secs(20));
+    }
+
+    #[test]
+    fn a_failed_compile_never_returns_an_older_pdf() {
+        let Some(exe) = tectonic() else { return eprintln!("skipped: needs Tectonic with a cached format") };
+        let dir = tempfile::tempdir().unwrap();
+        let (project, cache) = (dir.path().join("proj"), dir.path().join("cache"));
+        std::fs::create_dir_all(&project).unwrap();
+        let good = format!("\\immediate\\write16{{GOOD}}\n{END}");
+        std::fs::write(project.join("main.tex"), &good).unwrap();
+        let req = Request { root: Some(&project), file: Some("main.tex"), content: &good, overlays: &[] };
+        assert!(compile_job(&exe, &cache, &req, &AtomicBool::new(false), &no_progress).unwrap().pdf.is_some());
+        let broken = "\\csname @@end\\endcsname\\end\n"; // no page, so no new PDF
+        let req = Request { root: Some(&project), file: Some("main.tex"), content: broken, overlays: &[] };
+        let r = compile_job(&exe, &cache, &req, &AtomicBool::new(false), &no_progress).unwrap();
+        assert!(r.pdf.is_none() && r.sync.is_empty() && !r.log.contains("GOOD"), "stale output: {}", r.log);
+    }
+
+    #[test]
+    fn nothing_stays_behind_after_a_compile_or_a_failed_overlay() {
+        let Some(exe) = tectonic() else { return eprintln!("skipped: needs Tectonic with a cached format") };
+        let dir = tempfile::tempdir().unwrap();
+        let (project, cache) = (dir.path().join("proj"), dir.path().join("cache"));
+        std::fs::create_dir_all(&project).unwrap();
+        let doc = format!("{END}");
+        std::fs::write(project.join("main.tex"), &doc).unwrap();
+        // The second needs the first to be a folder, so the list fails halfway.
+        let overlays = [Overlay { rel: "a.tex".into(), text: "SECRET-UNSAVED".into() }, Overlay { rel: "a.tex/b.tex".into(), text: "x".into() }];
+        let req = Request { root: Some(&project), file: Some("main.tex"), content: &doc, overlays: &overlays };
+        assert_eq!(compile_job(&exe, &cache, &req, &AtomicBool::new(false), &no_progress).err(), Some("compile_failed"));
+        let jobs = cache.join("latex/guest-jobs");
+        assert_eq!(std::fs::read_dir(&jobs).unwrap().count(), 0, "overlays stayed behind");
+        let req = Request { root: Some(&project), file: Some("main.tex"), content: &doc, overlays: &[] };
+        compile_job(&exe, &cache, &req, &AtomicBool::new(false), &no_progress).unwrap();
+        assert_eq!(std::fs::read_dir(&jobs).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn two_unsaved_tabs_never_share_a_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b) = (JobDir::new(dir.path()).unwrap(), JobDir::new(dir.path()).unwrap());
+        assert_ne!(a.0, b.0);
+        let path = a.0.clone();
+        drop(a);
+        assert!(!path.exists() && b.0.exists());
+    }
+
+    #[test]
+    fn windows_paths_are_scrubbed_with_either_slash() {
+        let dirs = || vec![("C:\\Users\\me\\proj".to_string(), "."), ("C:\\Users\\me".to_string(), "~")];
+        let log = "(C:/Users/me/proj/main.tex) (C:\\Users\\me\\proj\\ch.tex) C:/Users/me/x.sty C:/Users/me/proj";
+        assert_eq!(scrub_dirs(log, dirs()), "(main.tex) (ch.tex) ~/x.sty .");
+        let wrapped = "(C:/Users/m\ne/proj/main.tex)";
+        assert_eq!(scrub_dirs(wrapped, dirs()), "(main.tex)");
+        // Not a folder of the host's: stays.
+        assert_eq!(scrub_dirs("D:/Users/me/a.tex C:/Users/meta", dirs()), "D:/Users/me/a.tex ~ta");
+    }
+
+    fn answer(pdf: usize, sync: usize) -> GuestCompile {
+        let boxes = (0..sync).map(|_| serde_json::from_value::<SyncBoxForTest>(serde_json::json!({})).unwrap().0).collect();
+        GuestCompile { ok: true, pdf: (pdf > 0).then(|| "x".repeat(pdf)), diagnostics: vec![], log: "l".repeat(1000), sync: boxes, millis: 1 }
+    }
+    struct SyncBoxForTest(SyncBox);
+    impl<'de> Deserialize<'de> for SyncBoxForTest {
+        fn deserialize<D: serde::Deserializer<'de>>(_: D) -> Result<Self, D::Error> {
+            Ok(SyncBoxForTest(SyncBox::for_test("chapters/one.tex")))
+        }
+    }
+
+    #[test]
+    fn an_answer_fits_the_limit_or_says_why_not() {
+        let mut r = answer(1000, 2000);
+        let full = serde_json::to_vec(&r).unwrap().len();
+        let limit = full / 2;
+        fit_response(&mut r, limit).unwrap();
+        assert!(serde_json::to_vec(&r).unwrap().len() <= limit);
+        assert!(!r.sync.is_empty() && r.pdf.is_some(), "only as much SyncTeX as needed goes");
+        let mut r = answer(5000, 10);
+        assert_eq!(fit_response(&mut r, 1000), Err("pdf_too_large"));
+    }
+
+    #[test]
+    fn a_cancel_before_the_job_registers_is_not_lost() {
+        let mut j = Jobs::default();
+        j.cancel("early");
+        assert_eq!(j.claim("early").err(), Some("cancelled"));
+        assert!(j.active.is_none(), "a cancelled job takes no slot");
+        let flag = j.claim("early").unwrap(); // once only
+        assert!(!flag.load(Ordering::SeqCst));
+        assert_eq!(j.claim("other").err(), Some("busy"));
+        j.cancel("early");
+        assert!(flag.load(Ordering::SeqCst));
+        for i in 0..200 {
+            j.cancel(&format!("x{i}"));
+        }
+        assert!(j.early.len() <= MAX_EARLY_CANCELS);
     }
 
     #[test]

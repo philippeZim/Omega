@@ -303,6 +303,13 @@ pub(crate) struct Progress {
     pub(crate) file: Option<String>,
 }
 
+#[cfg(test)]
+impl SyncBox {
+    pub(crate) fn for_test(file: &str) -> Self {
+        SyncBox { page: 1, file: file.into(), line: 1, x: 0.0, y: 0.0, w: 1.0, h: 1.0 }
+    }
+}
+
 /// Stops a run from outside and bounds what it keeps in memory.
 pub(crate) struct RunGuard<'a> {
     pub(crate) cancel: &'a std::sync::atomic::AtomicBool,

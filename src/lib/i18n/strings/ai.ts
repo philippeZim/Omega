@@ -157,6 +157,11 @@ export const en = {
   "ai.collab.latex.timeout": "The compile took too long and was stopped",
   "ai.collab.latex.busy": "The host is compiling for another guest",
   "ai.collab.latex.noDoc": "This document is no longer shared",
+  "ai.collab.latex.hostPaused": "{name} changed this document. Auto-compile is paused until you press Compile, because LaTeX can read and write files on your machine",
+  "ai.collab.latex.paused": "A guest without the Run permission changed this document. The host has to press Compile first",
+  "ai.collab.latex.compile": "Compile",
+  "ai.collab.latex.hostPausedInRun": "{name} changed this document while it was compiling, so this PDF may already contain that change. Auto-compile is paused until you press Compile",
+  "ai.collab.latex.pdfTooLarge": "The PDF is too large to send through the session",
 };
 export const de: Record<keyof typeof en, string> = {
   "ai.noActiveFile": "Keine Datei aktiv",
@@ -315,6 +320,11 @@ export const de: Record<keyof typeof en, string> = {
   "ai.collab.latex.timeout": "Das Kompilieren hat zu lange gedauert und wurde abgebrochen",
   "ai.collab.latex.busy": "Der Host kompiliert gerade für einen anderen Gast",
   "ai.collab.latex.noDoc": "Dieses Dokument wird nicht mehr geteilt",
+  "ai.collab.latex.hostPaused": "{name} hat dieses Dokument geändert. Automatisches Kompilieren pausiert, bis du auf Kompilieren drückst, denn LaTeX kann Dateien auf deinem Rechner lesen und schreiben",
+  "ai.collab.latex.paused": "Ein Gast ohne die Berechtigung Ausführen hat dieses Dokument geändert. Der Host muss zuerst auf Kompilieren drücken",
+  "ai.collab.latex.compile": "Kompilieren",
+  "ai.collab.latex.hostPausedInRun": "{name} hat dieses Dokument während des Kompilierens geändert, dieses PDF kann die Änderung also schon enthalten. Automatisches Kompilieren pausiert, bis du auf Kompilieren drückst",
+  "ai.collab.latex.pdfTooLarge": "Das PDF ist zu groß, um es durch die Sitzung zu schicken",
 };
 export const fr: Record<keyof typeof en, string> = {
   "ai.noActiveFile": "Aucun fichier actif",
@@ -473,4 +483,9 @@ export const fr: Record<keyof typeof en, string> = {
   "ai.collab.latex.timeout": "La compilation a pris trop de temps et a été arrêtée",
   "ai.collab.latex.busy": "L'hôte compile pour un autre invité",
   "ai.collab.latex.noDoc": "Ce document n'est plus partagé",
+  "ai.collab.latex.hostPaused": "{name} a modifié ce document. La compilation automatique est en pause jusqu'à ce que tu appuies sur Compiler, car LaTeX peut lire et écrire des fichiers sur ta machine",
+  "ai.collab.latex.paused": "Un invité sans l'autorisation Exécuter a modifié ce document. L'hôte doit d'abord appuyer sur Compiler",
+  "ai.collab.latex.compile": "Compiler",
+  "ai.collab.latex.hostPausedInRun": "{name} a modifié ce document pendant la compilation, ce PDF peut donc déjà contenir ce changement. La compilation automatique est en pause jusqu'à ce que tu appuies sur Compiler",
+  "ai.collab.latex.pdfTooLarge": "Le PDF est trop volumineux pour passer par la session",
 };

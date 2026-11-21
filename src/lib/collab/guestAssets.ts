@@ -71,7 +71,3 @@ export const imageDataUrl = (mime: unknown, data: unknown) =>
 
 /** A project-relative file from the host as this guest's tab path; "" stays "" (no project file). */
 export const guestFile = (rel: unknown) => (typeof rel === "string" && rel && !rel.startsWith("/") && !rel.split("/").includes("..") ? `collab:${rel}` : "");
-
-/** Whether someone in the session can change the project but may not cause a compile. */
-export const editorWithoutRun = (participants: readonly { role: string; caps?: readonly string[] }[]) =>
-  participants.some((p) => p.role === "guest" && !!p.caps?.includes("edit") && !p.caps.includes("run"));

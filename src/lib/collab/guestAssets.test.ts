@@ -1,5 +1,5 @@
 import { describe, expect, test, vi } from "vitest";
-import { AssetCache, ASSET_PREFIX, editorWithoutRun, guestFile, imageDataUrl, remoteRel } from "./guestAssets";
+import { AssetCache, ASSET_PREFIX, guestFile, imageDataUrl, remoteRel } from "./guestAssets";
 import { ImageWidget, imageHooks } from "../markdown/widgets";
 
 describe("paths in a shared doc", () => {
@@ -51,12 +51,4 @@ describe("guest images", () => {
     c.clear();
     expect(c.get("a")).toBeUndefined();
   });
-});
-
-test("only a guest who can edit but not run blocks compiles from file changes", () => {
-  const host = { role: "host" };
-  expect(editorWithoutRun([host])).toBe(false);
-  expect(editorWithoutRun([host, { role: "guest", caps: ["edit", "run"] }])).toBe(false);
-  expect(editorWithoutRun([host, { role: "guest", caps: ["git"] }])).toBe(false);
-  expect(editorWithoutRun([host, { role: "guest", caps: ["edit", "run"] }, { role: "guest", caps: ["edit"] }])).toBe(true);
 });
