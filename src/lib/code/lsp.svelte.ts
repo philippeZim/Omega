@@ -2,12 +2,12 @@
 import { backendErrorText } from "../backendError";
 import { invoke } from "@tauri-apps/api/core";
 import { onRpc } from "../rpc";
-import { t } from "../i18n/index.svelte";
+import { t, type Key } from "../i18n/index.svelte";
 import { ui } from "../ui.svelte";
 import { fsApi, dirname, joinPath, isRoot } from "../api";
 import { IS_WIN, OS, platform } from "../platform";
 import { ensureTools, withInstallProgress, serverProgressId, type ToolId } from "../tools.svelte";
-import { metalsChangeCount, metalsPausedBy, onGuestChange, resumeMetals } from "../collab/guestChanges";
+import { metalsPausedBy, onGuestChange, resumeTool, toolChangeCount, toolPausedBy, type PausedTool } from "../collab/guestChanges";
 import type { LangInfo } from "./languages";
 
 type Json = any;
@@ -337,9 +337,13 @@ const ROOT_MARKERS: Record<ServerKind, string[]> = {
   typescript: ["tsconfig.json", "jsconfig.json", "package.json", ".git"],
   rust: ["Cargo.toml"],
   scala: ["build.sbt", "project.scala", ".bsp", ".scala-build", ".git"],
+  ocaml: ["dune-project", "dune-workspace"],
 };
 
 const within = (path: string, dir: string) => path === dir || path.startsWith(dir.endsWith("/") ? dir : dir + "/");
+
+/** Build systems whose root is the outermost marker, so a multi-package repo gets one server. */
+const OUTERMOST_ROOT = new Set(["Cargo.toml", "dune-project"]);
 
 /** Walks up from the file to find the project root (stops at the workspace root's parent). */
 export async function findRoot(file: string, markers: string[], workspace: string | null): Promise<string> {
@@ -348,10 +352,10 @@ export async function findRoot(file: string, markers: string[], workspace: strin
   const candidates: string[] = [];
   while (dir && dir !== stop && !isRoot(dir)) {
     for (const m of markers) if (await fsApi.exists(joinPath(dir, m))) candidates.push(dir);
-    if (candidates.length && markers[0] !== "Cargo.toml") break;
+    if (candidates.length && !OUTERMOST_ROOT.has(markers[0])) break;
     dir = dirname(dir);
   }
-  // For Cargo workspaces the outermost Cargo.toml is the root.
+  // For Cargo and dune workspaces the outermost marker is the root.
   return candidates.length ? candidates[candidates.length - 1] : (workspace ?? dirname(file));
 }
 
@@ -462,6 +466,10 @@ async function resolveCommand(kind: ServerKind, root: string): Promise<{ cmd: st
       const cmd = await first(`${tools}/metals/${IS_WIN ? "metals.bat" : "metals"}`, "metals");
       return cmd ? { cmd, args: [] } : null;
     }
+    case "ocaml": {
+      const cmd = await first(`${tools}/ocaml/root/omega/bin/ocamllsp`, "ocamllsp");
+      return cmd ? { cmd, args: [] } : null;
+    }
   }
 }
 
@@ -471,13 +479,15 @@ export const INSTALLABLE: Partial<Record<ServerKind, string>> = {
   typescript: "typescript-language-server (JS/TS)",
   java: "Eclipse JDT Language Server (Java)",
   scala: "Metals (Scala)",
+  // On Windows it can only come from the user's own opam: there is nothing to offer.
+  ocaml: IS_WIN ? undefined : "ocaml-lsp-server (OCaml)",
   get rust() {
     return t("code.lsp.rustAnalyzer");
   },
 };
 
 /** Tools a language server installation builds on. */
-const PREREQ: Partial<Record<ServerKind, ToolId[]>> = { python: ["node"], typescript: ["node"], java: ["jdk"], rust: ["rust"], scala: ["jdk", "scala"] };
+const PREREQ: Partial<Record<ServerKind, ToolId[]>> = { python: ["node"], typescript: ["node"], java: ["jdk"], rust: ["rust"], scala: ["jdk", "scala"], ocaml: ["ocaml"] };
 
 /** `askInstall` for work the host didn't start itself: never prompts, and doesn't count as declining. */
 export const neverInstall = async (_kind: ServerKind, _name: string) => false;
@@ -490,7 +500,7 @@ const guestReserving = new Set<string>();
 
 /** Whether a guest may start this server: it's installed and within the limit. */
 async function guestMayStart(kind: ServerKind, root: string, key: string) {
-  if (kind === "scala") return false; // Metals runs the project's build code (build.sbt, .bsp)
+  if (PAUSABLE[kind]) return false; // they run project code: Metals build.sbt and .bsp, Merlin preprocessors
   for (const k of guestServers) if (!clients.has(k) && !starting.has(k) && !guestReserving.has(k)) guestServers.delete(k);
   if (declined.has(kind) || failed.has(key)) return false;
   if (!guestServers.has(key) && guestServers.size >= MAX_GUEST_SERVERS) return false;
@@ -502,21 +512,31 @@ async function guestMayStart(kind: ServerKind, root: string, key: string) {
   return !!cmd;
 }
 
-/** A guest without `run` changed this project: Metals would execute that text, so it stays off. */
-function metalsHeld(key: string, root: string) {
-  if (metalsPausedBy(root) === null) return false;
+/** Servers that execute project-controlled code, with the texts of their guest pause. */
+const PAUSABLE: Partial<Record<ServerKind, { tool: PausedTool; paused: Key; title: Key; msg: Key; ok: Key }>> = {
+  scala: { tool: "metals", paused: "code.lsp.metalsPaused", title: "code.lsp.metalsResumeTitle", msg: "code.lsp.metalsResumeMsg", ok: "code.lsp.metalsResumeOk" },
+  ocaml: { tool: "ocaml", paused: "code.lsp.ocamlPaused", title: "code.lsp.ocamlResumeTitle", msg: "code.lsp.ocamlResumeMsg", ok: "code.lsp.ocamlResumeOk" },
+};
+
+/** A guest without `run` changed this project: the server would execute that text, so it stays off. */
+function serverHeld(kind: ServerKind, key: string, root: string) {
+  const p = PAUSABLE[kind];
+  if (!p || toolPausedBy(p.tool, root) === null) return false;
   lspState.status[key] = "stopped";
-  lspState.message[key] = t("code.lsp.metalsPaused");
+  lspState.message[key] = t(p.paused);
   return true;
 }
 
 /** Whether Metals is paused for this file's project. */
 export const metalsPausedFor = async (file: string, workspace: string | null) => metalsPausedBy(await findRoot(file, ROOT_MARKERS.scala, workspace)) !== null;
 
+/** The folder ocamllsp's guest pause is checked against for this file. */
+export const ocamlPauseRoot = (file: string, workspace: string | null) => findRoot(file, ROOT_MARKERS.ocaml, workspace);
+
 onGuestChange(() => {
   for (const [key, c] of clients) {
-    if (c.kind !== "scala" || !metalsHeld(key, c.root)) continue;
-    // Killed, not shut down: it must not get to import the change during a graceful stop.
+    if (!serverHeld(c.kind, key, c.root)) continue;
+    // Killed, not shut down: it must not get to act on the change during a graceful stop.
     c.failed = c.stopping = true;
     clients.delete(key);
     invoke("proc_kill", { id: c.id }).catch(() => {});
@@ -561,7 +581,7 @@ export async function clientFor(
   }
   const root = await findRoot(file, ROOT_MARKERS[kind], workspace);
   const key = `${kind}|${root}`;
-  if (kind === "scala" && metalsHeld(key, root)) return null;
+  if (serverHeld(kind, key, root)) return null;
   if (askInstall !== neverInstall) guestServers.delete(key); // the host wants this one itself
   else if (!clients.has(key) && !starting.has(key) && !(await guestMayStart(kind, root, key))) return null;
   const existing = clients.get(key);
@@ -577,6 +597,7 @@ export async function clientFor(
     if (!cmd) {
       lspState.status[key] = "missing";
       const name = INSTALLABLE[kind];
+      if (kind === "ocaml" && !name) lspState.message[key] = t("tools.ocamlWindows");
       if (!name || (declined.has(kind) && !needDebug)) return null;
       if (!(await askInstall(kind, name))) {
         declined.add(kind);
@@ -602,7 +623,7 @@ export async function clientFor(
     }
     const waitInstall = kind === "typescript" && (await tsInstallMissing(root));
     // Last check, with no await before the process starts: the steps above can take minutes.
-    if (kind === "scala" && metalsHeld(key, root)) return null;
+    if (serverHeld(kind, key, root)) return null;
     const c = new LspClient(kind, root, cmd.cmd, cmd.args, cmd.init);
     c.quiet = waitInstall;
     clients.set(key, c);
@@ -704,13 +725,14 @@ export async function restartServer(
   const root = await findRoot(file, ROOT_MARKERS[kind], workspace);
   const key = `${kind}|${root}`;
   if (starting.has(key)) return starting.get(key)!;
-  const by = kind === "scala" ? metalsPausedBy(root) : null;
-  if (by !== null) {
+  const pausable = PAUSABLE[kind];
+  const by = pausable ? toolPausedBy(pausable.tool, root) : null;
+  if (pausable && by !== null) {
     // The host's explicit decision. It covers what it was asked about, not a change during the dialog.
-    const seen = metalsChangeCount();
-    if (!(await ui.confirm(t("code.lsp.metalsResumeTitle"), t("code.lsp.metalsResumeMsg", { name: by }), t("code.lsp.metalsResumeOk")))) return null;
-    if (!resumeMetals(root, seen)) {
-      metalsHeld(key, root);
+    const seen = toolChangeCount(pausable.tool);
+    if (!(await ui.confirm(t(pausable.title), t(pausable.msg, { name: by }), t(pausable.ok)))) return null;
+    if (!resumeTool(pausable.tool, root, seen)) {
+      serverHeld(kind, key, root);
       return null;
     }
   }

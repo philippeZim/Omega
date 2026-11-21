@@ -8,9 +8,10 @@ import { rust } from "@codemirror/lang-rust";
 import { json } from "@codemirror/lang-json";
 import { toml } from "@codemirror/legacy-modes/mode/toml";
 import { scala } from "@codemirror/legacy-modes/mode/clike";
+import { oCaml } from "@codemirror/legacy-modes/mode/mllike";
 import { extname } from "../api";
 
-export type LangId = "python" | "c" | "cpp" | "java" | "javascript" | "typescript" | "rust" | "json" | "toml" | "scala";
+export type LangId = "python" | "c" | "cpp" | "java" | "javascript" | "typescript" | "rust" | "json" | "toml" | "scala" | "ocaml";
 
 export interface LangInfo {
   id: LangId;
@@ -18,7 +19,7 @@ export interface LangInfo {
   /** LSP languageId */
   lspId: string;
   /** Which language server handles it (null = none). */
-  server: "python" | "clangd" | "java" | "typescript" | "rust" | "scala" | null;
+  server: "python" | "clangd" | "java" | "typescript" | "rust" | "scala" | "ocaml" | null;
   ext: () => Extension;
 }
 
@@ -39,6 +40,9 @@ reg(["rs"], L("rust", "Rust", "rust", "rust", () => rust()));
 reg(["json"], L("json", "JSON", "json", null, () => json()));
 reg(["toml"], L("toml", "TOML", "toml", null, () => StreamLanguage.define(toml)));
 reg(["scala", "sc"], L("scala", "Scala", "scala", "scala", () => [StreamLanguage.define(scala), scalaIndent]));
+// ocamllsp parses by languageId: an interface sent as "ocaml" would be full of false errors.
+reg(["ml"], L("ocaml", "OCaml", "ocaml", "ocaml", () => [StreamLanguage.define(oCaml), ocamlIndent]));
+reg(["mli"], L("ocaml", "OCaml", "ocaml.interface", "ocaml", () => [StreamLanguage.define(oCaml), ocamlIndent]));
 
 /** Whether a Scala line opens an indented block without braces (Scala 3 syntax, `def f =`, `case x =>`). */
 export function scalaOpensBlock(line: string): boolean {
@@ -51,6 +55,19 @@ const scalaIndent = indentService.of((cx, pos) => {
   let line = cx.lineAt(pos, -1);
   if (line.from === pos && pos > 0) line = cx.lineAt(pos - 1, -1);
   return scalaOpensBlock(line.text) ? cx.lineIndent(line.from, -1) + cx.unit : undefined;
+});
+
+/** Whether an OCaml line opens an indented block (`let f x =`, `| A ->`, `match x with`, `begin`). */
+export function ocamlOpensBlock(line: string): boolean {
+  const code = line.replace(/"(?:[^"\\]|\\.)*"/g, '""').replace(/'(?:[^'\\]|\\.)'/g, "' '").replace(/\(\*.*?\*\)/g, "").trimEnd();
+  return /(?:(?:^|[^=!<>])=|->|\b(?:then|else|do|begin|struct|sig|object|with|try|function))$/.test(code);
+}
+
+/** The mllike mode has no indentation of its own: keep the line's indent, one step more after an opener. */
+const ocamlIndent = indentService.of((cx, pos) => {
+  let line = cx.lineAt(pos, -1);
+  if (line.from === pos && pos > 0) line = cx.lineAt(pos - 1, -1);
+  return cx.lineIndent(line.from, -1) + (ocamlOpensBlock(line.text) ? cx.unit : 0);
 });
 
 /**
@@ -81,9 +98,9 @@ export function detectIndent(doc: Text | string): string | null {
   return best ? " ".repeat(best) : null;
 }
 
-/** The file's own indentation (detected when it is loaded), else the language's convention (PEP 8, rustfmt, Google Java, Prettier, scalafmt). */
+/** The file's own indentation (detected when it is loaded), else the language's convention (PEP 8, rustfmt, Google Java, Prettier, scalafmt, ocamlformat). */
 export function indentFor(lang: LangInfo | null): Extension {
-  const two = lang && ["javascript", "typescript", "json", "scala"].includes(lang.id);
+  const two = lang && ["javascript", "typescript", "json", "scala", "ocaml"].includes(lang.id);
   const fallback = two ? "  " : "    ";
   const unit = StateField.define<string>({ create: (state) => detectIndent(state.doc) ?? fallback, update: (v) => v });
   return [unit, indentUnit.from(unit)];

@@ -3,7 +3,7 @@
   import { t } from "../lib/i18n/index.svelte";
 
   const items = $derived(Object.entries(toolState.installing));
-  const stage = (s: string) => (s === "extract" ? t("tools.extracting") : s === "install" ? t("tools.installing") : t("tools.downloading"));
+  const stage = (s: string) => (s === "extract" ? t("tools.extracting") : s === "install" ? t("tools.installing") : s === "build" ? t("tools.building") : t("tools.downloading"));
   const mb = (n: number) => (n / 1048576).toFixed(n > 10485760 ? 0 : 1);
 </script>
 
@@ -13,10 +13,10 @@
       <div class="item">
         <div class="row">
           <span class="name">{stage(p.stage)} · {p.label}</span>
-          <span class="size">{p.done ? `${mb(p.done)}${p.total ? ` / ${mb(p.total)}` : ""} MB` : ""}</span>
+          <span class="size">{p.stage === "build" ? (p.total ? `${p.done} / ${p.total}` : "") : p.done ? `${mb(p.done)}${p.total ? ` / ${mb(p.total)}` : ""} MB` : ""}</span>
         </div>
-        <div class="bar" class:indeterminate={!p.total || p.stage !== "download"}>
-          <div class="fill" style="width: {p.total && p.stage === 'download' ? Math.min(100, (p.done / p.total) * 100) : 100}%"></div>
+        <div class="bar" class:indeterminate={!p.total || (p.stage !== "download" && p.stage !== "build")}>
+          <div class="fill" style="width: {p.total && (p.stage === 'download' || p.stage === 'build') ? Math.min(100, (p.done / p.total) * 100) : 100}%"></div>
         </div>
       </div>
     {/each}

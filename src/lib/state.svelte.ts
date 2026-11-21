@@ -14,7 +14,7 @@ import { onFilesChanged, watchRoot } from "./fsWatch.svelte";
 import { detectEol, fromDisk, toDisk, type Eol } from "./eol";
 import { findHeadingLine } from "./headingAnchor";
 import { blockedAsGuest, guestGuard } from "./collab/guard";
-import { metalsBeforeSave } from "./collab/guestChanges";
+import { toolsBeforeSave } from "./collab/guestChanges";
 
 setLspHooks({
   workspace: () => app.root,
@@ -540,12 +540,12 @@ export async function save(id = app.activeId, forceDialog = false, overwrite = f
   const snapshot = ed.getDoc(tab.id);
   // Never write without a live document (e.g. after an editor reset) – that would empty the file.
   if (!snapshot) return false;
-  const undoMetalsPause = metalsBeforeSave(tab.id, tab.path, path);
+  const undoToolPause = toolsBeforeSave(tab.id, tab.path, path);
   writing.add(tab.id);
   try {
     await fsApi.writeFile(path, toDisk(snapshot.toString(), tab.eol));
   } catch (e) {
-    undoMetalsPause();
+    undoToolPause();
     ui.toast(t("app.saveFailed", { error: String(e) }), "error");
     return false;
   } finally {

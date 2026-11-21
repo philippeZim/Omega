@@ -163,36 +163,154 @@ test("without a folder, the pause moves to where the host saves the tab, before 
   expect(mod.metalsPausedBy("/w")).toBeNull();
   const fired = vi.fn();
   mod.onGuestChange(fired);
-  mod.metalsBeforeSave("u1", null, "/w/project/plugins.sbt");
+  mod.toolsBeforeSave("u1", null, "/w/project/plugins.sbt");
   expect(mod.metalsPausedBy("/w")).toBe("name-g"); // the Metals root around that folder
   expect(fired).toHaveBeenCalled();
 });
 
 test("a failed save keeps the tab's pending pause for the next target", () => {
   mod.noteGuestChange("g", null, "tab:u1");
-  mod.metalsBeforeSave("u1", null, "/bad/build.sbt")();
-  mod.metalsBeforeSave("u1", null, "/w/build.sbt");
+  mod.toolsBeforeSave("u1", null, "/bad/build.sbt")();
+  mod.toolsBeforeSave("u1", null, "/w/build.sbt");
   expect(mod.metalsPausedBy("/w")).toBe("name-g");
 });
 
 test("saving a tab without guest text pauses nothing, and an allowed tab isn't paused again", () => {
-  mod.metalsBeforeSave("clean", null, "/w/build.sbt");
+  mod.toolsBeforeSave("clean", null, "/w/build.sbt");
   expect(mod.metalsPausedBy("/w")).toBeNull();
   mod.noteGuestChange("g", null, "tab:u1");
-  mod.metalsBeforeSave("u1", null, "/w/build.sbt");
+  mod.toolsBeforeSave("u1", null, "/w/build.sbt");
   mod.resumeMetals("/w", mod.metalsChangeCount());
-  mod.metalsBeforeSave("u1", "/w/build.sbt", "/w/build.sbt");
+  mod.toolsBeforeSave("u1", "/w/build.sbt", "/w/build.sbt");
   expect(mod.metalsPausedBy("/w")).toBeNull();
 });
 
 test("Save As of a paused project's file pauses the target folder too", () => {
   mod.noteGuestChange("g", "/p", "build.sbt");
-  mod.metalsBeforeSave("t1", "/p/build.sbt", "/other/build.sbt");
+  mod.toolsBeforeSave("t1", "/p/build.sbt", "/other/build.sbt");
   expect(mod.metalsPausedBy("/other")).toBe("name-g");
 });
 
 test("a guest with run doesn't pause Metals through a tab", () => {
   mod.noteGuestChange("trusted", null, "tab:u1");
-  mod.metalsBeforeSave("u1", null, "/w/build.sbt");
+  mod.toolsBeforeSave("u1", null, "/w/build.sbt");
   expect(mod.metalsPausedBy("/w")).toBeNull();
+});
+
+const ocamlBy = (root: string) => mod.toolPausedBy("ocaml", root);
+const resumeOcaml = (root: string) => mod.resumeTool("ocaml", root, mod.toolChangeCount("ocaml"));
+
+test("a guest change pauses ocamllsp, Metals and LaTeX, and each is released on its own", () => {
+  mod.noteGuestChange("g", "/p", "bin/main.ml");
+  expect(ocamlBy("/p")).toBe("name-g");
+  expect(mod.metalsPausedBy("/p")).toBe("name-g");
+  expect(mod.isPaused("/p", null)).toBe(true);
+
+  expect(resumeOcaml("/p")).toBe(true);
+  expect(ocamlBy("/p")).toBeNull();
+  expect(mod.metalsPausedBy("/p")).toBe("name-g");
+  expect(mod.isPaused("/p", null)).toBe(true);
+
+  mod.noteGuestChange("g", "/q", "a.ml");
+  expect(mod.resumeMetals("/q", mod.metalsChangeCount())).toBe(true);
+  expect(ocamlBy("/q")).toBe("name-g");
+  mod.resumeCompiling("t1", "/q/a.tex");
+  expect(ocamlBy("/q")).toBe("name-g");
+});
+
+test("the ocamllsp pause survives a restart and leaves the other stores alone", async () => {
+  mod.noteGuestChange("g", "/p", "a.ml");
+  const latex = localStorage.getItem("latex.guestChanged");
+  const metals = localStorage.getItem("metals.guestChanged");
+  resumeOcaml("/p");
+  mod.noteGuestChange("g", "/o", "a.ml");
+  resumeOcaml("/o");
+  mod.noteGuestChange("g", "/p", "a.ml");
+  expect(JSON.parse(localStorage.getItem("ocaml.guestChanged")!)).toEqual({ "/p": "name-g" });
+  vi.resetModules();
+  const again = await import("./guestChanges");
+  expect(again.toolPausedBy("ocaml", "/p")).toBe("name-g");
+  expect(again.toolPausedBy("ocaml", "/o")).toBeNull();
+  expect(latex).toContain("/p");
+  expect(metals).toContain("/p");
+});
+
+test("the first ocamllsp store starts with what Metals and LaTeX have paused, and is written at once", async () => {
+  localStorage.clear();
+  localStorage.setItem("latex.guestChanged", JSON.stringify({ "/tex": "a" }));
+  localStorage.setItem("metals.guestChanged", JSON.stringify({ "/sbt": "b" }));
+  vi.resetModules();
+  const first = await import("./guestChanges");
+  expect(first.toolPausedBy("ocaml", "/tex")).toBe("a");
+  expect(first.toolPausedBy("ocaml", "/sbt")).toBe("b");
+  expect(JSON.parse(localStorage.getItem("ocaml.guestChanged")!)).toEqual({ "/tex": "a", "/sbt": "b" });
+  expect(JSON.parse(localStorage.getItem("latex.guestChanged")!)).toEqual({ "/tex": "a" });
+  expect(JSON.parse(localStorage.getItem("metals.guestChanged")!)).toEqual({ "/sbt": "b" });
+  // A later Compile can't take a project out of the copy.
+  first.resumeCompiling("t", "/tex/main.tex");
+  vi.resetModules();
+  expect((await import("./guestChanges")).toolPausedBy("ocaml", "/tex")).toBe("a");
+});
+
+test("an unreadable ocamllsp store counts as not there yet", async () => {
+  localStorage.setItem("latex.guestChanged", JSON.stringify({ "/tex": "a" }));
+  localStorage.setItem("metals.guestChanged", "{}");
+  localStorage.setItem("ocaml.guestChanged", "{broken");
+  vi.resetModules();
+  expect((await import("./guestChanges")).toolPausedBy("ocaml", "/tex")).toBe("a");
+});
+
+test("the ocamllsp pause follows a move and covers folders around and inside", async () => {
+  mod.noteGuestChange("g", "/p/sub", "a.ml");
+  expect(ocamlBy("/p")).toBe("name-g");
+  expect(ocamlBy("/p/sub/deep")).toBe("name-g");
+  expect(ocamlBy("/p/other")).toBeNull();
+  mod.moveGuestChange("/p/sub", "/q/sub");
+  expect(ocamlBy("/q/sub")).toBe("name-g");
+  expect(ocamlBy("/p/sub")).toBeNull();
+  vi.resetModules();
+  expect((await import("./guestChanges")).toolPausedBy("ocaml", "/q/sub")).toBe("name-g");
+});
+
+test("allowing ocamllsp doesn't cover a change made during the question", () => {
+  mod.noteGuestChange("g", "/p", "a.ml");
+  const seen = mod.toolChangeCount("ocaml");
+  mod.noteGuestChange("g", "/p", "b.ml");
+  expect(mod.resumeTool("ocaml", "/p", seen)).toBe(false);
+  expect(ocamlBy("/p")).toBe("name-g");
+});
+
+test("a guest with run doesn't pause ocamllsp", () => {
+  mod.noteGuestChange("trusted", "/p", "a.ml");
+  mod.noteGuestChange("trusted", null, "tab:u1");
+  mod.toolsBeforeSave("u1", null, "/w/.merlin");
+  expect(ocamlBy("/p")).toBeNull();
+  expect(ocamlBy("/w")).toBeNull();
+});
+
+test("guest text in an unsaved tab pauses ocamllsp for its project, or for the folder it is saved to", () => {
+  mod.noteGuestChange("g", "/p", "tab:u1");
+  expect(ocamlBy("/p")).toBe("name-g");
+  mod.noteGuestChange("g", null, "tab:u2");
+  expect(ocamlBy("/w")).toBeNull();
+  const seen = mod.toolChangeCount("ocaml");
+  mod.toolsBeforeSave("u2", null, "/w/.merlin");
+  expect(ocamlBy("/w")).toBe("name-g");
+  expect(mod.metalsPausedBy("/w")).toBe("name-g");
+  expect(mod.toolChangeCount("ocaml")).toBeGreaterThan(seen);
+});
+
+test("a failed write keeps the guest's text pending for ocamllsp", () => {
+  mod.noteGuestChange("g", null, "tab:u1");
+  mod.toolsBeforeSave("u1", null, "/bad/.merlin")();
+  mod.toolsBeforeSave("u1", null, "/w/.merlin");
+  expect(ocamlBy("/w")).toBe("name-g");
+});
+
+test("Save As of a file paused for ocamllsp only pauses only ocamllsp at the target", () => {
+  mod.noteGuestChange("g", "/p", "a.ml");
+  mod.resumeMetals("/p", mod.metalsChangeCount());
+  mod.toolsBeforeSave("t1", "/p/.merlin", "/other/.merlin");
+  expect(ocamlBy("/other")).toBe("name-g");
+  expect(mod.metalsPausedBy("/other")).toBeNull();
 });

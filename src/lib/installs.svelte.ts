@@ -19,7 +19,7 @@ export interface Owner { manager: string; package: string }
 export interface Status { id: string; source: "omega" | "system" | "missing"; path: string | null; version: string | null; owner: Owner | null }
 export interface SysUpdate { available: string | null; command: string | null; full_system: boolean }
 
-const TOOL_IDS: ToolId[] = ["uv", "tectonic", "node", "pnpm", "cmake", "ninja", "jdk", "gradle", "rust", "git", "cc", "scala", "sbt"];
+const TOOL_IDS: ToolId[] = ["uv", "tectonic", "node", "pnpm", "cmake", "ninja", "jdk", "gradle", "rust", "git", "cc", "scala", "sbt", "ocaml"];
 
 export function catalog(): Item[] {
   return [
@@ -30,10 +30,12 @@ export function catalog(): Item[] {
     { id: "lsp:rust", group: "lsp", label: "rust-analyzer (Rust)" },
     { id: "lsp:clangd", group: "lsp", label: "clangd (C/C++)" },
     { id: "lsp:scala", group: "lsp", label: "Metals (Scala)" },
+    { id: "lsp:ocaml", group: "lsp", label: "ocaml-lsp-server (OCaml)" },
     { id: "debug:codelldb", group: "debug", label: "CodeLLDB (C/C++/Rust)" },
     { id: "debug:debugpy", group: "debug", label: "debugpy (Python)" },
     { id: "debug:jsdebug", group: "debug", label: "js-debug (JS/TS)" },
     { id: "debug:javadebug", group: "debug", label: "java-debug (Java)" },
+    { id: "debug:earlybird", group: "debug", label: "Earlybird (OCaml)" },
   ];
 }
 
@@ -111,24 +113,33 @@ export function updateAvailable(id: string): string | null {
 export function canInstall(id: string): boolean {
   const [group, name] = id.split(":");
   if (group === "tool") return installs.installable.includes(name);
+  // Both go into Omega's opam switch, which doesn't exist on Windows.
+  if (OS === "windows" && (id === "lsp:ocaml" || id === "debug:earlybird")) return installs.status["tool:ocaml"]?.source === "omega";
   return true;
 }
 
 /** Package-manager hint for things Omega can't install on this OS (Linux compilers, Git). */
 export function manualHint(id: string): string {
+  if (OS === "windows" && id === "tool:ocaml") return t("tools.ocamlWindows");
   if (OS !== "linux") return "";
   if (id === "tool:cc") return "sudo pacman -S base-devel · sudo apt install build-essential";
   if (id === "tool:git") return "sudo pacman -S git · sudo apt install git";
   return "";
 }
 
-const LSP_PREREQ: Partial<Record<string, ToolId[]>> = { python: ["node"], typescript: ["node"], java: ["jdk"], rust: ["rust"], scala: ["jdk", "scala"] };
+const LSP_PREREQ: Partial<Record<string, ToolId[]>> = { python: ["node"], typescript: ["node"], java: ["jdk"], rust: ["rust"], scala: ["jdk", "scala"], ocaml: ["ocaml"] };
+
+/** opam works for a while: an open editor can start ocamllsp again from the files it is replacing. */
+const usesOcamllsp = (id: string) => id === "lsp:ocaml" || id === "tool:ocaml";
 
 async function doInstall(id: string) {
   const [group, name] = id.split(":");
   if (group === "tool" || id === "lsp:clangd") {
     if (id === "lsp:clangd") stopServers("clangd");
-    if (!(await installTool(name as ToolId))) return false;
+    if (usesOcamllsp(id)) stopServers("ocaml");
+    const ok = await installTool(name as ToolId);
+    if (usesOcamllsp(id)) stopServers("ocaml");
+    if (!ok) return false;
     pathChanged();
     return true;
   }
@@ -136,11 +147,16 @@ async function doInstall(id: string) {
     const pre = LSP_PREREQ[name];
     if (pre && !(await ensureTools(pre, t("tools.purpose.lsp")))) return false;
     stopServers(name as ServerKind);
-    await withInstallProgress(serverProgressId(name), labelOf(id), () => invoke("install_server", { kind: name }));
+    try {
+      await withInstallProgress(serverProgressId(name), labelOf(id), () => invoke("install_server", { kind: name }));
+    } finally {
+      if (usesOcamllsp(id)) stopServers("ocaml");
+    }
     return true;
   }
   if (name === "debugpy" && !(await hasTool("uv")) && !(await invoke<string | null>("which_cmd", { cmd: "python3" })) && !(await invoke<string | null>("which_cmd", { cmd: "python" })))
     if (!(await ensureTools(["uv"], t("tools.purpose.debug")))) return false;
+  if (name === "earlybird" && !(await ensureTools(["ocaml"], t("tools.purpose.debug")))) return false;
   await withInstallProgress(name, labelOf(id), () => invoke("install_debugger", { kind: name }));
   return true;
 }
@@ -194,7 +210,12 @@ export async function remove(id: string) {
   await run(id, "remove", async () => {
     const [group, name] = id.split(":");
     if (group === "lsp") stopServers(name as ServerKind);
-    await invoke("installs_remove", { id });
+    if (id === "tool:ocaml") stopServers("ocaml"); // ocamllsp lives in the same switch
+    try {
+      await invoke("installs_remove", { id });
+    } finally {
+      if (usesOcamllsp(id)) stopServers("ocaml");
+    }
     pathChanged();
     return true;
   });

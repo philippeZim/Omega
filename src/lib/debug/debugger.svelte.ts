@@ -22,6 +22,7 @@ let sessions: DapSession[] = [];
 let tcpPort: number | null = null;
 let serverProcId: string | null = null;
 let lastPlan: { file: string; byGuest: boolean } | null = null;
+let sourcePath: Plan["sourcePath"];
 /** Bumped by every start and stop: a start that is no longer the newest ends itself. */
 let startGen = 0;
 /** A start is between its first step and a connected adapter. */
@@ -115,10 +116,11 @@ export function inProject(path: string) {
   return !app.root || inRoot(path, app.root) || path === lastPlan?.file;
 }
 
-async function configure(s: DapSession) {
+async function configure(s: DapSession, type?: string) {
   for (const path of Object.keys(dbg.breakpoints)) if (dbg.breakpoints[path].length && inProject(path)) await sendBreakpoints(s, path);
   const filters = (s.capabilities.exceptionBreakpointFilters ?? []).filter((f: Json) => f.default).map((f: Json) => f.filter);
-  await s.request("setExceptionBreakpoints", { filters }).catch(() => {});
+  // Earlybird never answers this request, which would hold the program back until it times out.
+  if (type !== "ocaml.earlybird") await s.request("setExceptionBreakpoints", { filters }).catch(() => {});
   configured.add(s);
   if (s.capabilities.supportsConfigurationDoneRequest) await s.request("configurationDone").catch(() => {});
 }
@@ -129,7 +131,7 @@ async function launchSession(s: DapSession, request: "launch" | "attach", args: 
   const init = waitInitialized(s);
   const launched = s.request(request, args, 0);
   await Promise.race([init, launched.then(() => init)]);
-  await configure(s);
+  await configure(s, args.type);
   await launched;
 }
 
@@ -198,6 +200,7 @@ async function runStart(gen: number, file: string, actor: string, byGuest: boole
   }
   if (stale()) return;
 
+  sourcePath = plan.sourcePath;
   dbg.label = plan.label;
   log(t("code.dbg.starting", { label: plan.label }));
   const s = newSession(plan.label);
@@ -536,6 +539,12 @@ async function loadStack() {
     frames = (await active.request("stackTrace", { threadId: dbg.threadId, startFrame: 0, levels: 60 })).stackFrames ?? [];
   } catch (e) {
     log(String(e), "error");
+  }
+  if (sourcePath) {
+    const map = sourcePath;
+    await Promise.all(frames.map(async (f) => {
+      if (f.source?.path) f.source.path = await map(f.source.path);
+    }));
   }
   dbg.frames = frames.map(
     (f): Frame => ({
