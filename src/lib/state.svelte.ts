@@ -2,6 +2,7 @@ import { openDialog, saveDialog, openUrl } from "./native";
 import { basename, dirname, extname, fsApi, joinPath, normPath, wellFormed } from "./api";
 import * as ed from "./editor";
 import { modeForExtension, type Mode } from "./modes";
+import { moveLanguageOverrides, overrideFor } from "./code/langOverride.svelte";
 import { ui } from "./ui.svelte";
 import type { SpellLang } from "./spell";
 import { setLinkHandler, resolvePath } from "./markdown/livePreview";
@@ -395,7 +396,7 @@ export async function openFile(path: string) {
   const id = uid();
   ed.createDoc(id, content);
   app.tabs.push({ id, path, name: basename(path), dirty: false, root: inRoot(path, app.root) ? app.root : null, eol: detectEol(content) });
-  const suggested = modeForExtension(extname(path));
+  const suggested = overrideFor(path) ? "code" : modeForExtension(extname(path));
   if (suggested && suggested !== app.mode) {
     app.mode = suggested;
     localStorage.setItem("mode", suggested);
@@ -596,6 +597,7 @@ watchRoot(app.root);
 
 /** Called after a rename/delete in the explorer so open tabs follow the file. */
 export function pathMoved(from: string, to: string | null) {
+  moveLanguageOverrides(from, to);
   for (const t of app.tabs) {
     if (!t.path) continue;
     if (t.path === from || t.path.startsWith(from + "/")) {
