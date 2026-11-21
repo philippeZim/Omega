@@ -107,6 +107,10 @@ export const en = {
   "ai.collab.versionUpdateHost": "The host's Omega is older than yours. Ask the host to update Omega, then join again.",
   "ai.collab.guestPackages": "{name} started “{action}”: {packages}",
   "ai.collab.packageInvalid": "Use registry package names with an optional version. Links, paths and options aren't allowed.",
+  "ai.collab.err.busy": "The host has too many join requests right now. Try again in a moment.",
+  "ai.collab.err.expired": "Your join request timed out. Try joining again.",
+  "ai.collab.joinsRefused": "Too many join attempts: some were refused. Guests already here aren't affected.",
+  "ai.collab.refusedCount": "Join attempts refused: {count}",
 };
 export const de: Record<keyof typeof en, string> = {
   "ai.noActiveFile": "Keine Datei aktiv",
@@ -215,6 +219,10 @@ export const de: Record<keyof typeof en, string> = {
   "ai.collab.versionUpdateHost": "Das Omega des Hosts ist älter als deins. Bitte den Host, Omega zu aktualisieren, und tritt dann erneut bei.",
   "ai.collab.guestPackages": "{name} hat „{action}“ gestartet: {packages}",
   "ai.collab.packageInvalid": "Nutze Paketnamen aus der Registry, optional mit Version. Links, Pfade und Optionen sind nicht erlaubt.",
+  "ai.collab.err.busy": "Beim Host warten gerade zu viele Beitrittsanfragen. Versuch es gleich noch einmal.",
+  "ai.collab.err.expired": "Deine Beitrittsanfrage ist abgelaufen. Versuch es noch einmal.",
+  "ai.collab.joinsRefused": "Zu viele Beitrittsversuche: Einige wurden abgewiesen. Teilnehmende in der Sitzung sind nicht betroffen.",
+  "ai.collab.refusedCount": "Abgewiesene Beitrittsversuche: {count}",
 };
 export const fr: Record<keyof typeof en, string> = {
   "ai.noActiveFile": "Aucun fichier actif",
@@ -323,4 +331,8 @@ export const fr: Record<keyof typeof en, string> = {
   "ai.collab.versionUpdateHost": "L’Omega de l’hôte est plus ancien que le vôtre. Demandez à l’hôte de le mettre à jour, puis rejoignez à nouveau.",
   "ai.collab.guestPackages": "{name} a lancé « {action} » : {packages}",
   "ai.collab.packageInvalid": "Utilisez des noms de paquets du registre, avec une version facultative. Les liens, chemins et options ne sont pas autorisés.",
+  "ai.collab.err.busy": "L’hôte reçoit trop de demandes pour le moment. Réessayez dans un instant.",
+  "ai.collab.err.expired": "Votre demande a expiré. Essayez de rejoindre à nouveau.",
+  "ai.collab.joinsRefused": "Trop de tentatives de connexion : certaines ont été refusées. Les invités déjà présents ne sont pas affectés.",
+  "ai.collab.refusedCount": "Tentatives refusées : {count}",
 };
