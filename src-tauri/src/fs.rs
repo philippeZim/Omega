@@ -177,21 +177,21 @@ pub async fn list_files(root: String) -> Result<Vec<String>, String> {
 
 /// The walk behind `list_files`, stopping after `cap` files. The result is always sorted.
 fn collect_files(root: &str, cap: usize) -> Vec<String> {
-    walk_files(root, cap, &|_, _| true, &|| false).unwrap_or_default().0
+    walk_files(root, cap, &|_, _| true, &|| false, None).unwrap_or_default().0
 }
 
 /// The same walk for a Code Together guest: symlinked folders aren't entered (what they point to
 /// inside the project is listed under its real path), a symlinked file only counts if `keep` allows
-/// it. `None` if `stop` ended the walk. The flag says whether files were left out by the cap.
-pub(crate) fn collect_guest_files(root: &str, cap: usize, keep: &dyn Fn(&Path) -> bool, stop: &dyn Fn() -> bool) -> Option<(Vec<String>, bool)> {
-    let (mut files, _) = walk_files(root, cap.saturating_add(1), &|path, is_dir| !is_dir && keep(path), stop)?;
-    let truncated = files.len() > cap;
+/// it. `None` if `stop` ended the walk. The flag says whether the cap or `deadline` left files out.
+pub(crate) fn collect_guest_files(root: &str, cap: usize, keep: &dyn Fn(&Path) -> bool, stop: &dyn Fn() -> bool, deadline: std::time::Instant) -> Option<(Vec<String>, bool)> {
+    let (mut files, late) = walk_files(root, cap.saturating_add(1), &|path, is_dir| !is_dir && keep(path), stop, Some(deadline))?;
+    let truncated = late && files.len() <= cap || files.len() > cap;
     files.truncate(cap);
     Some((files, truncated))
 }
 
 /// `keep_link(path, is_dir)` decides whether a symlink is followed or listed.
-fn walk_files(root: &str, cap: usize, keep_link: &dyn Fn(&Path, bool) -> bool, stop: &dyn Fn() -> bool) -> Option<(Vec<String>, bool)> {
+fn walk_files(root: &str, cap: usize, keep_link: &dyn Fn(&Path, bool) -> bool, stop: &dyn Fn() -> bool, deadline: Option<std::time::Instant>) -> Option<(Vec<String>, bool)> {
     const SKIP: &[&str] = &[".git", "node_modules", "target", "__pycache__", ".venv", "venv", ".idea", "build", "dist", ".gradle", ".mypy_cache", ".pytest_cache", ".cache"];
     let base = PathBuf::from(root);
     let mut out = Vec::new();
@@ -210,6 +210,10 @@ fn walk_files(root: &str, cap: usize, keep_link: &dyn Fn(&Path, bool) -> bool, s
     'walk: loop {
         if stop() {
             return None;
+        }
+        if deadline.is_some_and(|d| std::time::Instant::now() > d) {
+            capped = true;
+            break;
         }
         let Some((dir, canon)) = stack.pop().or_else(|| deferred.pop_front()) else { break };
         if !visited.insert(canon.clone()) {
@@ -244,7 +248,6 @@ fn walk_files(root: &str, cap: usize, keep_link: &dyn Fn(&Path, bool) -> bool, s
                 }
                 if out.len() >= cap {
                     // Stop the walk, but still sort what was collected.
-                    capped = true;
                     break 'walk;
                 }
             }

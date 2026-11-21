@@ -2384,6 +2384,7 @@ dependencies = [
  "globset",
  "ignore",
  "iroh",
+ "libc",
  "mimalloc",
  "notify",
  "portable-pty",

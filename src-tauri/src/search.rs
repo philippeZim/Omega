@@ -3,7 +3,8 @@
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use regex::RegexBuilder;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -32,6 +33,9 @@ pub struct Hit {
     /// UTF-16 column offsets of every match on the line (start, end).
     ranges: Vec<(usize, usize)>,
     text: String,
+    /// Guest searches: the version of the whole line, as `text` can be cut short.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    version: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -98,7 +102,7 @@ fn match_text(re: &regex::Regex, file: &str, text: &str, total: &mut usize, max_
         }
         *total += ranges.len();
         let shown: String = line.chars().take(400).collect();
-        hits.push(Hit { file: file.to_string(), line: n + 1, ranges, text: shown });
+        hits.push(Hit { file: file.to_string(), line: n + 1, ranges, text: shown, version: None });
         if *total >= max_results {
             return (hits, true);
         }
@@ -125,7 +129,7 @@ pub fn search_text(app: AppHandle, id: u64, root: String, opts: SearchOptions) -
 
     std::thread::spawn(move || {
         let cancelled = || CURRENT.load(Ordering::SeqCst) != id;
-        let Some(paths) = candidates(&root, &opts, &inc, &exc, &cancelled) else { return };
+        let Some(paths) = candidates(&root, &opts, &inc, &exc, &cancelled, None) else { return };
 
         let (mut total, mut files_with_hits, mut truncated) = (0usize, 0usize, false);
         let mut batch: Vec<Hit> = Vec::new();
@@ -157,9 +161,26 @@ pub fn search_text(app: AppHandle, id: u64, root: String, opts: SearchOptions) -
     Ok(id)
 }
 
+/// Where a guest's walk ends early. `hit` tells the guest that the result is incomplete.
+struct WalkLimit {
+    max: usize,
+    deadline: std::time::Instant,
+    hit: std::cell::Cell<bool>,
+}
+
+impl WalkLimit {
+    fn reached(&self, found: usize) -> bool {
+        let over = found >= self.max || std::time::Instant::now() > self.deadline;
+        if over {
+            self.hit.set(true);
+        }
+        over
+    }
+}
+
 /// The files a search looks at: every non-ignored file under `root` (or `opts.files`), filtered by
 /// the mask. `None` if the search was cancelled while walking.
-fn candidates(root: &str, opts: &SearchOptions, inc: &Option<GlobSet>, exc: &Option<GlobSet>, cancelled: &dyn Fn() -> bool) -> Option<Vec<std::path::PathBuf>> {
+fn candidates(root: &str, opts: &SearchOptions, inc: &Option<GlobSet>, exc: &Option<GlobSet>, cancelled: &dyn Fn() -> bool, limit: Option<&WalkLimit>) -> Option<Vec<std::path::PathBuf>> {
     let root_path = std::path::Path::new(root);
     let mut paths: Vec<std::path::PathBuf> = Vec::new();
     if opts.files.is_empty() {
@@ -174,6 +195,9 @@ fn candidates(root: &str, opts: &SearchOptions, inc: &Option<GlobSet>, exc: &Opt
         for entry in walker.flatten() {
             if cancelled() {
                 return None;
+            }
+            if limit.is_some_and(|l| l.reached(paths.len())) {
+                break;
             }
             if entry.file_type().is_some_and(|t| t.is_file()) {
                 paths.push(entry.into_path());
@@ -190,10 +214,41 @@ fn candidates(root: &str, opts: &SearchOptions, inc: &Option<GlobSet>, exc: &Opt
     Some(paths)
 }
 
+const MAX_TEXT: u64 = 8 * 1024 * 1024;
+
+/// Opens a regular file for reading. Anything else (FIFO, device, folder) is refused without
+/// blocking on it, also if the path is swapped for one between the check and the open.
+fn open_regular(path: &Path) -> Option<(std::fs::File, std::fs::Metadata)> {
+    if !std::fs::metadata(path).ok()?.is_file() {
+        return None;
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let file = options.open(path).ok()?;
+    let meta = file.metadata().ok()?;
+    meta.is_file().then_some((file, meta))
+}
+
+/// At most `MAX_TEXT` bytes of an open file; `None` if it holds more.
+fn read_bounded(file: &mut std::fs::File, size: u64) -> Option<Vec<u8>> {
+    if size > MAX_TEXT {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(size as usize);
+    file.take(MAX_TEXT + 1).read_to_end(&mut bytes).ok()?;
+    (bytes.len() as u64 <= MAX_TEXT).then_some(bytes)
+}
+
 /// The file's text, or `None` for unreadable, binary, huge or non-UTF-8 files (never searched).
 fn read_text(path: &std::path::Path) -> Option<String> {
-    let bytes = std::fs::read(path).ok()?;
-    if bytes.len() > 8 * 1024 * 1024 || bytes[..bytes.len().min(8000)].contains(&0) {
+    let (mut file, meta) = open_regular(path)?;
+    let bytes = read_bounded(&mut file, meta.len())?;
+    if bytes[..bytes.len().min(8000)].contains(&0) {
         return None;
     }
     String::from_utf8(bytes).ok()
@@ -207,7 +262,7 @@ fn matching_files(root: &str, opts: &SearchOptions) -> Result<Vec<String>, Strin
     }
     let re = build_regex(&opts.query, opts.case_sensitive, opts.whole_word, opts.regex).map_err(|e| e.to_string())?;
     let (inc, exc) = build_mask(&opts.mask)?;
-    let paths = candidates(root, opts, &inc, &exc, &|| false).unwrap_or_default();
+    let paths = candidates(root, opts, &inc, &exc, &|| false, None).unwrap_or_default();
     Ok(paths.iter().filter(|p| read_text(p).is_some_and(|t| re.find_iter(&t).any(|m| m.end() > m.start()))).map(|p| crate::env::norm(p)).collect())
 }
 
@@ -239,6 +294,8 @@ const GUEST_REGEX_LIMIT: usize = 1024 * 1024;
 const GUEST_MAX_EDITS: usize = 200_000;
 /// New text per file: it travels to every guest as one update.
 const GUEST_MAX_INSERT: usize = 8 * 1024 * 1024;
+/// Files a guest's walk looks at.
+const GUEST_MAX_CANDIDATES: usize = 200_000;
 
 static GUEST_RUNS: std::sync::LazyLock<Mutex<HashMap<u64, Arc<AtomicBool>>>> = std::sync::LazyLock::new(Default::default);
 
@@ -295,6 +352,9 @@ pub struct GuestQuery {
     /// Relative path -> live text of files open in the session, which may be ahead of the disk.
     #[serde(default)]
     overlay: HashMap<String, String>,
+    /// Open files whose live text didn't fit `overlay`: skipped, as the disk may be behind them.
+    #[serde(default)]
+    omit: HashSet<String>,
 }
 
 #[derive(Serialize)]
@@ -304,12 +364,23 @@ pub struct GuestHits {
     files: usize,
     total: usize,
     truncated: bool,
+    /// Relative path -> version of the text the hits came from.
+    versions: HashMap<String, String>,
 }
 
 #[derive(Serialize)]
 pub struct GuestFiles {
     files: Vec<String>,
     truncated: bool,
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    versions: HashMap<String, String>,
+}
+
+/// Identifies a text across machines (FNV-1a and length), so a Replace can tell that it still works
+/// on what the guest saw. Not a defence against a crafted text: a guest with `edit` can write anyway.
+fn text_version(text: &str) -> String {
+    let hash = text.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x0100_0000_01b3));
+    format!("{:x}-{hash:016x}", text.len())
 }
 
 fn guest_regex(q: &GuestQuery) -> Result<regex::Regex, String> {
@@ -321,7 +392,7 @@ fn guest_ok(root: &str, path: &Path) -> bool {
 }
 
 /// The files of a guest's search, each with its relative path. Only what the guest may read.
-fn guest_candidates(root: &str, q: &GuestQuery, run: &GuestRun) -> Result<Vec<(String, PathBuf)>, String> {
+fn guest_candidates(root: &str, q: &GuestQuery, run: &GuestRun, started: std::time::Instant) -> Result<(Vec<(String, PathBuf)>, bool), String> {
     let base = Path::new(root);
     let (inc, exc) = build_mask(&q.mask).map_err(|_| "bad_pattern".to_string())?;
     let folder = if q.folder.is_empty() { base.to_path_buf() } else { base.join(&q.folder) };
@@ -330,14 +401,15 @@ fn guest_candidates(root: &str, q: &GuestQuery, run: &GuestRun) -> Result<Vec<(S
     }
     let files: Vec<String> = q.files.iter().map(|f| crate::env::norm(base.join(f))).collect();
     let opts = SearchOptions { query: String::new(), case_sensitive: false, whole_word: false, regex: false, mask: String::new(), files, max_results: 0 };
-    let paths = candidates(&crate::env::norm(&folder), &opts, &inc, &exc, &|| run.stopped()).ok_or("cancelled")?;
-    Ok(paths.into_iter().filter_map(|p| Some((crate::env::norm(p.strip_prefix(base).ok()?), p))).collect())
+    let limit = WalkLimit { max: GUEST_MAX_CANDIDATES, deadline: started + GUEST_DEADLINE, hit: Default::default() };
+    let paths = candidates(&crate::env::norm(&folder), &opts, &inc, &exc, &|| run.stopped(), Some(&limit)).ok_or("cancelled")?;
+    Ok((paths.into_iter().filter_map(|p| Some((crate::env::norm(p.strip_prefix(base).ok()?), p))).collect(), limit.hit.get()))
 }
 
 /// The text a guest's search sees: the live copy of an open file, else the disk. The check sits
 /// right before the read, so a file swapped for a symlink during the walk isn't followed.
 fn guest_text(root: &str, q: &GuestQuery, rel: &str, path: &Path) -> Option<String> {
-    if !guest_ok(root, path) {
+    if q.omit.contains(rel) || !guest_ok(root, path) {
         return None;
     }
     match q.overlay.get(rel) {
@@ -350,8 +422,10 @@ fn run_guest_search(root: &str, q: &GuestQuery, run: &GuestRun) -> Result<GuestH
     let re = guest_regex(q)?;
     let max = q.max_results.clamp(1, GUEST_MAX_HITS);
     let started = std::time::Instant::now();
-    let (mut out, mut total, mut files, mut bytes, mut truncated) = (Vec::new(), 0usize, 0usize, 0usize, false);
-    for (rel, path) in guest_candidates(root, q, run)? {
+    let (mut out, mut total, mut files, mut bytes) = (Vec::new(), 0usize, 0usize, 0usize);
+    let mut versions = HashMap::new();
+    let (paths, mut truncated) = guest_candidates(root, q, run, started)?;
+    for (rel, path) in paths {
         if run.stopped() {
             return Err("cancelled".into());
         }
@@ -363,6 +437,11 @@ fn run_guest_search(root: &str, q: &GuestQuery, run: &GuestRun) -> Result<GuestH
         let (mut hits, capped) = match_text(&re, &rel, &text, &mut total, max);
         if !hits.is_empty() {
             files += 1;
+            versions.insert(rel.clone(), text_version(&text));
+            let lines: Vec<&str> = text.lines().collect();
+            for hit in &mut hits {
+                hit.version = lines.get(hit.line - 1).map(|l| text_version(l));
+            }
         }
         for hit in &mut hits {
             hit.ranges.truncate(GUEST_MAX_RANGES);
@@ -374,15 +453,17 @@ fn run_guest_search(root: &str, q: &GuestQuery, run: &GuestRun) -> Result<GuestH
             break;
         }
     }
-    Ok(GuestHits { hits: out, files, total, truncated })
+    Ok(GuestHits { hits: out, files, total, truncated, versions })
 }
 
 /// Every file with a match (Replace All), up to `GUEST_MAX_FILES`. Lines, like the search itself.
 fn run_guest_matching(root: &str, q: &GuestQuery, run: &GuestRun) -> Result<GuestFiles, String> {
     let re = guest_regex(q)?;
     let started = std::time::Instant::now();
-    let (mut files, mut truncated) = (Vec::new(), false);
-    for (rel, path) in guest_candidates(root, q, run)? {
+    let mut files = Vec::new();
+    let mut versions = HashMap::new();
+    let (paths, mut truncated) = guest_candidates(root, q, run, started)?;
+    for (rel, path) in paths {
         if run.stopped() {
             return Err("cancelled".into());
         }
@@ -392,10 +473,11 @@ fn run_guest_matching(root: &str, q: &GuestQuery, run: &GuestRun) -> Result<Gues
         }
         let Some(text) = guest_text(root, q, &rel, &path) else { continue };
         if text.lines().any(|l| re.find_iter(l).any(|m| m.end() > m.start())) {
+            versions.insert(rel.clone(), text_version(&text));
             files.push(rel);
         }
     }
-    Ok(GuestFiles { files, truncated })
+    Ok(GuestFiles { files, truncated, versions })
 }
 
 /// Blocking work of a guest's call, on its own thread with its cancel flag.
@@ -415,9 +497,10 @@ pub async fn guest_search_matching(token: u64, root: String, query: GuestQuery) 
 
 /// The project's files by the rules of the host's own list, without what a guest may not see.
 fn run_guest_list(root: &str, run: &GuestRun) -> Result<GuestFiles, String> {
-    let (files, truncated) = crate::fs::collect_guest_files(root, GUEST_MAX_LISTED, &|p| guest_ok(root, p), &|| run.stopped()).ok_or("cancelled")?;
+    let deadline = std::time::Instant::now() + GUEST_DEADLINE;
+    let (files, truncated) = crate::fs::collect_guest_files(root, GUEST_MAX_LISTED, &|p| guest_ok(root, p), &|| run.stopped(), deadline).ok_or("cancelled")?;
     let base = Path::new(root);
-    Ok(GuestFiles { files: files.into_iter().filter(|f| guest_ok(root, &base.join(f))).collect(), truncated })
+    Ok(GuestFiles { files: files.into_iter().filter(|f| guest_ok(root, &base.join(f))).collect(), truncated, versions: HashMap::new() })
 }
 
 #[tauri::command]
@@ -425,16 +508,94 @@ pub async fn guest_list_files(token: u64, root: String) -> Result<GuestFiles, St
     guest_blocking(token, move |run| run_guest_list(&root, run)).await
 }
 
-/// A project file's text for a guest; `None` for what search skips (binary, huge, not UTF-8) or may
-/// not be read.
+/// A file a guest names, for preview or Replace. Like `doc.open`, naming a file may reach hidden and
+/// ignored ones, which only the walk leaves out; `.git` and escapes stay refused. `None` also for what
+/// search skips (binary, huge, not UTF-8).
+fn read_guest_file(root: &str, rel: &str) -> Option<String> {
+    let path = Path::new(root).join(rel);
+    if guest_ok(root, &path) { read_text(&path) } else { None }
+}
+
 #[tauri::command]
 pub async fn guest_read_text(root: String, rel: String) -> Result<Option<String>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let path = Path::new(&root).join(&rel);
-        Ok(if guest_ok(&root, &path) { read_text(&path) } else { None })
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || Ok(read_guest_file(&root, &rel))).await.map_err(|e| e.to_string())?
+}
+
+/// Whether a guest's change may reach this file. A second hard link may alias a file outside the
+/// project, which no path check can see. A missing file is fine: only its open copy is left.
+fn check_guest_write(root: &str, rel: &str) -> Result<(), String> {
+    let path = Path::new(root).join(rel);
+    if !guest_ok(root, &path) {
+        return Err("unavailable".into());
+    }
+    match std::fs::metadata(&path) {
+        Err(_) => Ok(()),
+        Ok(meta) if !meta.is_file() => Err("unreadable".into()),
+        Ok(meta) => check_links(&meta),
+    }
+}
+
+fn check_links(_meta: &std::fs::Metadata) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if _meta.nlink() > 1 {
+            return Err("hardlinked".into());
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn guest_write_check(root: String, rel: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || check_guest_write(&root, &rel)).await.map_err(|e| e.to_string())?
+}
+
+/// Writes a guest's Replace into a file nobody has open, if it still holds the `expected` version.
+/// In place through one handle: the inode keeps its mode, owner and links, a symlink keeps pointing
+/// at it, and the check and the write are about the same file. A writer outside Omega can still
+/// slip in between them; only it could prevent that.
+fn write_guest_file(root: &str, rel: &str, expected: &str, content: &str) -> Result<(), String> {
+    let path = Path::new(root).join(rel);
+    if !guest_ok(root, &path) {
+        return Err("unavailable".into());
+    }
+    let real = path.canonicalize().map_err(|_| "unavailable")?;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW);
+    }
+    let mut file = options.open(&real).map_err(|_| "unavailable")?;
+    let meta = file.metadata().map_err(|_| "unavailable")?;
+    if !meta.is_file() {
+        return Err("unreadable".into());
+    }
+    check_links(&meta)?;
+    // A folder on the way may have been swapped while this was opened.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let now = std::fs::metadata(&path).map_err(|_| "unavailable")?;
+        if (now.dev(), now.ino()) != (meta.dev(), meta.ino()) || !guest_ok(root, &path) {
+            return Err("unavailable".into());
+        }
+    }
+    let bytes = read_bounded(&mut file, meta.len()).ok_or("too_large")?;
+    if std::str::from_utf8(&bytes).map(text_version).ok().as_deref() != Some(expected) {
+        return Err("changed".into());
+    }
+    file.seek(std::io::SeekFrom::Start(0)).map_err(|_| "write_failed")?;
+    file.write_all(content.as_bytes()).map_err(|_| "write_failed")?;
+    file.set_len(content.len() as u64).map_err(|_| "write_failed")?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn guest_write_text(root: String, rel: String, expected: String, content: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || write_guest_file(&root, &rel, &expected, &content)).await.map_err(|e| e.to_string())?
 }
 
 #[derive(Deserialize)]
@@ -447,6 +608,12 @@ pub struct GuestReplace {
     replacement: String,
     /// Only this line (1-based), for "Replace" on one hit.
     line: Option<usize>,
+    /// The text version the guest saw (Replace All).
+    #[serde(default)]
+    expect_version: Option<String>,
+    /// The version of `line` the guest saw (Replace on one hit).
+    #[serde(default)]
+    expect_line: Option<String>,
 }
 
 #[derive(Serialize, Debug, PartialEq)]
@@ -454,6 +621,18 @@ pub struct ReplacePlan {
     /// (from, to, text) in UTF-16 offsets of the whole text, in ascending order.
     edits: Vec<(usize, usize, String)>,
     count: usize,
+    /// Version of the text this plan is for.
+    version: String,
+}
+
+/// Whether the text is still what the guest saw. Without an expectation nothing is replaced.
+fn check_expected(text: &str, r: &GuestReplace) -> Result<(), String> {
+    let same = match (&r.expect_version, r.line, &r.expect_line) {
+        (Some(version), _, _) => *version == text_version(text),
+        (None, Some(line), Some(expected)) => line >= 1 && text.lines().nth(line - 1).is_some_and(|l| text_version(l) == *expected),
+        _ => false,
+    };
+    if same { Ok(()) } else { Err("changed".into()) }
 }
 
 /// Expands a replacement like JS `String.replace` does, the syntax the host's Replace uses:
@@ -534,7 +713,7 @@ fn plan_replace(text: &str, re: &regex::Regex, r: &GuestReplace) -> Result<Repla
         offset += raw.encode_utf16().count();
     }
     let count = edits.len();
-    Ok(ReplacePlan { edits, count })
+    Ok(ReplacePlan { edits, count, version: text_version(text) })
 }
 
 #[tauri::command]
@@ -544,6 +723,7 @@ pub async fn guest_replace_plan(text: String, replace: GuestReplace) -> Result<R
             return Err("too_large".to_string());
         }
         let re = regex_builder(&replace.query, replace.case_sensitive, replace.whole_word, replace.regex).size_limit(GUEST_REGEX_LIMIT).dfa_size_limit(GUEST_REGEX_LIMIT).build().map_err(|_| "bad_pattern".to_string())?;
+        check_expected(&text, &replace)?;
         plan_replace(&text, &re, &replace)
     })
     .await
@@ -579,7 +759,7 @@ mod tests {
     }
 
     fn guest_query(query: &str) -> GuestQuery {
-        GuestQuery { query: query.into(), case_sensitive: false, whole_word: false, regex: false, mask: String::new(), folder: String::new(), files: vec![], max_results: 100, overlay: HashMap::new() }
+        GuestQuery { query: query.into(), case_sensitive: false, whole_word: false, regex: false, mask: String::new(), folder: String::new(), files: vec![], max_results: 100, overlay: HashMap::new(), omit: HashSet::new() }
     }
 
     fn guest_project() -> (tempfile::TempDir, tempfile::TempDir, String) {
@@ -672,7 +852,7 @@ mod tests {
     }
 
     fn plan(query: &str, is_regex: bool, replacement: &str, line: Option<usize>, text: &str) -> ReplacePlan {
-        let r = GuestReplace { query: query.into(), case_sensitive: true, whole_word: false, regex: is_regex, replacement: replacement.into(), line };
+        let r = GuestReplace { query: query.into(), case_sensitive: true, whole_word: false, regex: is_regex, replacement: replacement.into(), line, expect_version: None, expect_line: None };
         let re = build_regex(query, true, false, is_regex).unwrap();
         plan_replace(text, &re, &r).unwrap()
     }
@@ -702,9 +882,111 @@ mod tests {
 
     #[test]
     fn replace_plan_refuses_output_that_would_not_fit_one_update() {
-        let r = GuestReplace { query: "a".into(), case_sensitive: true, whole_word: false, regex: false, replacement: "x".repeat(1024 * 1024), line: None };
+        let r = GuestReplace { query: "a".into(), case_sensitive: true, whole_word: false, regex: false, replacement: "x".repeat(1024 * 1024), line: None, expect_version: None, expect_line: None };
         let re = build_regex("a", true, false, false).unwrap();
         assert_eq!(plan_replace(&"a".repeat(9), &re, &r).err().as_deref(), Some("too_large"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_text_refuses_fifos_without_blocking() {
+        let dir = tempfile::tempdir().unwrap();
+        let fifo = dir.path().join("pipe");
+        let c = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || tx.send(read_text(&fifo)).unwrap());
+        assert_eq!(rx.recv_timeout(std::time::Duration::from_secs(3)).unwrap(), None);
+    }
+
+    #[test]
+    fn read_text_skips_a_file_over_the_limit_and_reads_one_at_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (big, fits) = (dir.path().join("big"), dir.path().join("fits"));
+        std::fs::File::create(&big).unwrap().set_len(MAX_TEXT + 1).unwrap();
+        std::fs::write(&fits, "a".repeat(MAX_TEXT as usize)).unwrap();
+        assert_eq!(read_text(&big), None);
+        assert_eq!(read_text(&fits).map(|t| t.len()), Some(MAX_TEXT as usize));
+    }
+
+    #[test]
+    fn a_named_hidden_or_ignored_file_can_be_read_but_the_walk_leaves_it_out() {
+        let (d, _o, root) = guest_project();
+        std::fs::write(d.path().join(".gitignore"), "ignored.txt\n").unwrap();
+        std::fs::write(d.path().join("ignored.txt"), "needle ignored\n").unwrap();
+        std::fs::write(d.path().join(".env"), "needle=hidden\n").unwrap();
+        let run = GuestRun::new(9007);
+        let found = run_guest_search(&root, &guest_query("needle"), &run).unwrap();
+        assert_eq!(found.hits.iter().map(|h| h.file.as_str()).collect::<Vec<_>>(), ["src/a.txt"]);
+        assert!(read_guest_file(&root, ".env").is_some());
+        assert!(read_guest_file(&root, "ignored.txt").is_some());
+        assert_eq!(read_guest_file(&root, ".git/config"), None);
+        assert_eq!(read_guest_file(&root, "../secret.txt"), None);
+        #[cfg(unix)]
+        assert_eq!(read_guest_file(&root, "leak.txt"), None);
+    }
+
+    #[test]
+    fn a_walk_over_its_limit_reports_truncation() {
+        let (_d, _o, root) = guest_project();
+        let (inc, exc) = build_mask("").unwrap();
+        let opts = SearchOptions { query: String::new(), case_sensitive: false, whole_word: false, regex: false, mask: String::new(), files: vec![], max_results: 0 };
+        let limit = WalkLimit { max: 0, deadline: std::time::Instant::now() + GUEST_DEADLINE, hit: Default::default() };
+        assert!(candidates(&root, &opts, &inc, &exc, &|| false, Some(&limit)).unwrap().is_empty());
+        assert!(limit.hit.get());
+    }
+
+    #[test]
+    fn replace_refuses_text_the_guest_did_not_see() {
+        let replace = |version: Option<String>, line: Option<usize>, expect_line: Option<String>| GuestReplace { query: "a".into(), case_sensitive: true, whole_word: false, regex: false, replacement: "b".into(), line, expect_version: version, expect_line };
+        let text = "a one\na two\n";
+        assert!(check_expected(text, &replace(Some(text_version(text)), None, None)).is_ok());
+        assert_eq!(check_expected("a one\nchanged a\n", &replace(Some(text_version(text)), None, None)).err().as_deref(), Some("changed"));
+        assert!(check_expected(text, &replace(None, Some(2), Some(text_version("a two")))).is_ok());
+        assert_eq!(check_expected(text, &replace(None, Some(2), Some(text_version("a one")))).err().as_deref(), Some("changed"));
+        assert_eq!(check_expected(text, &replace(None, Some(9), Some(text_version("a two")))).err().as_deref(), Some("changed"));
+        assert_eq!(check_expected(text, &replace(None, None, None)).err().as_deref(), Some("changed"));
+    }
+
+    #[test]
+    fn guest_hits_carry_versions_of_their_file_and_full_line() {
+        let (d, _o, root) = guest_project();
+        let long = format!("needle{}", "x".repeat(500));
+        std::fs::write(d.path().join("src/a.txt"), format!("{long}\n")).unwrap();
+        let run = GuestRun::new(9008);
+        let r = run_guest_search(&root, &guest_query("needle"), &run).unwrap();
+        assert_eq!(r.hits[0].version.as_deref(), Some(text_version(&long).as_str()));
+        assert_eq!(r.versions["src/a.txt"], text_version(&format!("{long}\n")));
+    }
+
+    #[test]
+    fn guest_write_needs_the_version_it_was_planned_for() {
+        let (d, _o, root) = guest_project();
+        let file = d.path().join("src/a.txt");
+        assert_eq!(write_guest_file(&root, "src/a.txt", &text_version("other"), "new").err().as_deref(), Some("changed"));
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "needle here\n");
+        write_guest_file(&root, "src/a.txt", &text_version("needle here\n"), "n\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "n\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn guest_write_keeps_mode_and_symlink_and_refuses_hard_links_and_escapes() {
+        use std::os::unix::fs::PermissionsExt;
+        let (d, o, root) = guest_project();
+        let file = d.path().join("src/a.txt");
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o750)).unwrap();
+        write_guest_file(&root, "inner.txt", &text_version("needle here\n"), "via link\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "via link\n");
+        assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o750);
+        assert!(std::fs::symlink_metadata(d.path().join("inner.txt")).unwrap().file_type().is_symlink());
+
+        let secret = o.path().join("secret.txt");
+        std::fs::hard_link(&secret, d.path().join("alias.txt")).unwrap();
+        assert_eq!(check_guest_write(&root, "alias.txt").err().as_deref(), Some("hardlinked"));
+        assert_eq!(write_guest_file(&root, "alias.txt", &text_version("needle outside\n"), "x").err().as_deref(), Some("hardlinked"));
+        assert_eq!(write_guest_file(&root, "leak.txt", &text_version("needle outside\n"), "x").err().as_deref(), Some("unavailable"));
+        assert_eq!(std::fs::read_to_string(&secret).unwrap(), "needle outside\n");
     }
 
     #[test]

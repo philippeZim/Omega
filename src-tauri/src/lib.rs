@@ -78,6 +78,8 @@ pub fn run() {
             search::guest_list_files,
             search::guest_read_text,
             search::guest_replace_plan,
+            search::guest_write_check,
+            search::guest_write_text,
             search::guest_search_cancel,
             git::git,
             git::git_status,
