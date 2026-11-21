@@ -147,13 +147,15 @@ async function current(a: Action, p: Project): Promise<[Action | null | undefine
   return fresh?.root === p.root ? [fresh[slot], fresh] : [a, p];
 }
 
-export async function runAction(action: Action | null | undefined) {
+/** `checkedArg`: the ready, shell-safe argument of an `ask` action (Code Together guest); no prompt then. */
+export async function runAction(action: Action | null | undefined, checkedArg?: string) {
   if (!action?.cmd || !runner.project) return;
   if (runnerRemote.run) return runnerRemote.run(action);
   const [a, p] = await current(action, runner.project);
   if (!a?.cmd || !p) return;
   let cmd = a.cmd;
-  if (a.ask) {
+  if (a.ask && checkedArg !== undefined) cmd = cmd.replace("{}", () => checkedArg);
+  else if (a.ask) {
     const v = await ui.prompt(a.label.replace("…", ""), "", a.ask, undefined, a.suggest);
     if (!v) return;
     cmd = cmd.replace("{}", a.arg ? await a.arg(v) : v);

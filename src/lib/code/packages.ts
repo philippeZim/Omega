@@ -237,10 +237,25 @@ export async function pythonRemoveArg(root: string, input: string): Promise<stri
   const deps = await pythonDeps(root);
   const parts = input.split(/\s+/).filter(Boolean);
   if (parts.some((p) => p.startsWith("-"))) return input; // user passed flags themselves
-  const groups = new Set(parts.map((p) => deps.find((d) => norm(d.name) === norm(p))?.group ?? ""));
-  if (groups.size !== 1) return input;
-  const g = [...groups][0];
-  return g === "" ? input : g === "dev" ? `--dev ${input}` : `--group ${g} ${input}`;
+  const g = removeGroup(deps, parts);
+  return !g ? input : g === "dev" ? `--dev ${input}` : `--group ${g} ${input}`;
+}
+
+/** The one group all these packages are in; null when they're in the main list or in several. */
+function removeGroup(deps: { name: string; group: string }[], names: string[]): string | null {
+  const groups = new Set(names.map((p) => deps.find((d) => norm(d.name) === norm(p))?.group ?? ""));
+  return groups.size === 1 ? [...groups][0] || null : null;
+}
+
+/**
+ * `uv remove` flags as separate words, for names from a Code Together guest. Null when the group
+ * name isn't a plain one: anybody who can edit pyproject.toml chooses it.
+ */
+export async function pythonRemoveFlags(root: string, names: string[]): Promise<string[] | null> {
+  const g = removeGroup(await pythonDeps(root), names);
+  if (!g) return [];
+  if (g === "dev") return ["--dev"];
+  return /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/.test(g) ? ["--group", g] : null;
 }
 
 // ------------------------------------------------------------------ npm

@@ -167,3 +167,29 @@ test("a template isn't created inside a bare repository, because it would run gi
     TEMPLATES.pop();
   }
 });
+
+describe("runAction with an argument checked for a Code Together guest", () => {
+  const add = (over: Partial<Action> = {}): Action => ({ id: "add", label: "Add…", cmd: "uv add {}", ask: "Package", arg: async () => "--wrong", ...over });
+
+  test("it goes in as it is, without a prompt on the host and without arg()", async () => {
+    await refreshProject();
+    vi.mocked(ui.prompt).mockClear();
+    await runAction(add(), "'numpy>=1'");
+    expect(ui.prompt).not.toHaveBeenCalled();
+    expect(h.runCommand.mock.calls[0][0]).toBe("uv add 'numpy>=1'");
+  });
+
+  test("replacement patterns in it stay literal", async () => {
+    await refreshProject();
+    await runAction(add(), "$&$`$'");
+    expect(h.runCommand.mock.calls[0][0]).toBe("uv add $&$`$'");
+  });
+
+  test("the host's own flow still prompts", async () => {
+    await refreshProject();
+    vi.mocked(ui.prompt).mockResolvedValueOnce("requests");
+    await runAction(add({ arg: undefined }));
+    expect(ui.prompt).toHaveBeenCalled();
+    expect(h.runCommand.mock.calls[0][0]).toBe("uv add requests");
+  });
+});
