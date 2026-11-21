@@ -49,6 +49,12 @@ export function q(s: string): string {
   return /^[\w@%+=:,./-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
+/**
+ * Whether a file name from another machine can go into a command through `q`. Control characters
+ * would act on the terminal, and cmd.exe expands `%` even inside quotes.
+ */
+export const quotablePath = (s: string, windows = IS_WIN) => !/[\x00-\x1f\x7f-\x9f]/.test(s) && !(windows && /[%"]/.test(s));
+
 /** Changes into `dir` (also switching drives on Windows). */
 export const cd = (dir: string) => (IS_WIN ? `cd /d ${q(dir)}` : `cd ${q(dir)}`);
 

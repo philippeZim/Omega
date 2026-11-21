@@ -162,6 +162,11 @@ export const en = {
   "ai.collab.latex.compile": "Compile",
   "ai.collab.latex.hostPausedInRun": "{name} changed this document while it was compiling, so this PDF may already contain that change. Auto-compile is paused until you press Compile",
   "ai.collab.latex.pdfTooLarge": "The PDF is too large to send through the session",
+  "ai.collab.run.pathRefused": "This file can't be run for you: it isn't shared, or its name isn't safe to use in a command",
+  "ai.collab.run.needsFile": "Open a shared file to run this",
+  "ai.collab.run.notSaved": "The host couldn't save this file, so it wasn't run",
+  "ai.collab.run.noAction": "This action isn't available for the file you have open",
+  "ai.collab.run.notStarted": "“{action}” from {name} didn't start: the guest, its rights or the file changed",
 };
 export const de: Record<keyof typeof en, string> = {
   "ai.noActiveFile": "Keine Datei aktiv",
@@ -325,6 +330,11 @@ export const de: Record<keyof typeof en, string> = {
   "ai.collab.latex.compile": "Kompilieren",
   "ai.collab.latex.hostPausedInRun": "{name} hat dieses Dokument während des Kompilierens geändert, dieses PDF kann die Änderung also schon enthalten. Automatisches Kompilieren pausiert, bis du auf Kompilieren drückst",
   "ai.collab.latex.pdfTooLarge": "Das PDF ist zu groß, um es durch die Sitzung zu schicken",
+  "ai.collab.run.pathRefused": "Diese Datei kann für dich nicht ausgeführt werden: Sie ist nicht geteilt, oder ihr Name ist in einem Befehl nicht sicher",
+  "ai.collab.run.needsFile": "Öffne eine geteilte Datei, um das auszuführen",
+  "ai.collab.run.notSaved": "Der Host konnte diese Datei nicht speichern, daher wurde sie nicht ausgeführt",
+  "ai.collab.run.noAction": "Diese Aktion gibt es für die geöffnete Datei nicht",
+  "ai.collab.run.notStarted": "„{action}“ von {name} wurde nicht gestartet: Gast, Rechte oder Datei haben sich geändert",
 };
 export const fr: Record<keyof typeof en, string> = {
   "ai.noActiveFile": "Aucun fichier actif",
@@ -488,4 +498,9 @@ export const fr: Record<keyof typeof en, string> = {
   "ai.collab.latex.compile": "Compiler",
   "ai.collab.latex.hostPausedInRun": "{name} a modifié ce document pendant la compilation, ce PDF peut donc déjà contenir ce changement. La compilation automatique est en pause jusqu'à ce que tu appuies sur Compiler",
   "ai.collab.latex.pdfTooLarge": "Le PDF est trop volumineux pour passer par la session",
+  "ai.collab.run.pathRefused": "Ce fichier ne peut pas être exécuté pour vous : il n’est pas partagé ou son nom n’est pas sûr dans une commande",
+  "ai.collab.run.needsFile": "Ouvrez un fichier partagé pour exécuter ceci",
+  "ai.collab.run.notSaved": "L’hôte n’a pas pu enregistrer ce fichier, il n’a donc pas été exécuté",
+  "ai.collab.run.noAction": "Cette action n’est pas disponible pour le fichier ouvert",
+  "ai.collab.run.notStarted": "« {action} » de {name} n’a pas démarré : l’invité, ses droits ou le fichier ont changé",
 };

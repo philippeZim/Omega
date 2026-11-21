@@ -196,7 +196,7 @@ export function setTerminalFontSize(px: number) {
 /** Shells left over from a previous page load are ended before the first new one starts. */
 const leftoversKilled = invoke("pty_kill_all").catch(() => {});
 
-export function newTerminal(cwd: string | null, kind: TermKind = "shell", title?: string, shell?: ShellInfo): string {
+export function newTerminal(cwd: string | null, kind: TermKind = "shell", title?: string, shell?: ShellInfo, background = false): string {
   const id = `t${Date.now().toString(36)}${counter}`;
   const term = new Terminal({
     fontFamily: '"JetBrains Mono Variable", "JetBrainsMono Nerd Font", monospace',
@@ -256,8 +256,9 @@ export function newTerminal(cwd: string | null, kind: TermKind = "shell", title?
   // A guest opening a shell must not take over the host's view or focus, or become the terminal
   // that tools read by default: only the host's View button selects it.
   if (kind !== "guest-shell") {
-    terms.active = id;
-    showView("terminal");
+    // In the background it only becomes active if there is no tab to keep: the panel needs one.
+    if (!background || !terms.active) terms.active = id;
+    if (!background) showView("terminal");
   }
   return id;
 }
@@ -378,10 +379,10 @@ function dropTask(inst: Instance) {
  * duration; its status (running / ✓ / ✗ / stopped) is shown in the tab bar. `onExit` gets the exit
  * code (null = stopped). Programs stay interactive: it's a real PTY.
  */
-export function runTask(kind: "build" | "run", cmd: string, cwd: string | null, title: string, opts: { focus?: boolean; onExit?: (code: number | null) => void; packageTask?: boolean } = {}) {
+export function runTask(kind: "build" | "run", cmd: string, cwd: string | null, title: string, opts: { focus?: boolean; onExit?: (code: number | null) => void; packageTask?: boolean; background?: boolean } = {}) {
   let tab = terms.tabs.find((x) => x.kind === kind);
   if (!tab) {
-    const id = newTerminal(cwd, kind, title);
+    const id = newTerminal(cwd, kind, title, undefined, opts.background);
     tab = terms.tabs.find((x) => x.id === id)!;
     // Build stays left of Run.
     const run = terms.tabs.findIndex((x) => x.kind === "run");
@@ -398,8 +399,11 @@ export function runTask(kind: "build" | "run", cmd: string, cwd: string | null, 
   delete inst.el.dataset.guestText;
   inst.term.reset();
   echo(inst, `${DIM}$ ${cmd.replace(/\r?\n/g, " ")}${RESET}\r\n`);
-  terms.active = tab.id;
-  showView("terminal");
+  // Started for a Code Together guest: the host's panel and terminal tab stay as they are.
+  if (!opts.background) {
+    terms.active = tab.id;
+    showView("terminal");
+  }
   inst.spawned = true;
   const taskId = counter++;
   tab.taskId = taskId;
@@ -421,7 +425,7 @@ export function runTask(kind: "build" | "run", cmd: string, cwd: string | null, 
 }
 
 /** Runs a single command in the Run tab (installs, debuggee, new projects, AI …). */
-export function runCommand(cmd: string, cwd: string | null, title = t("common.run"), focus = true, opts: { packageTask?: boolean } = {}) {
+export function runCommand(cmd: string, cwd: string | null, title = t("common.run"), focus = true, opts: { packageTask?: boolean; background?: boolean } = {}) {
   runTask("run", cmd, cwd, title, { focus, ...opts });
 }
 

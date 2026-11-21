@@ -1745,3 +1745,36 @@ test("concurrent guests relayed through the host are not refused", async () => {
   expect(doc.ytext.toString()).toBe("Abase");
   expect(sent.filter((s) => s.msg.t === "doc.state")).toEqual([]);
 });
+
+test("hostDocKeyFor: only a project file this guest has open, also after a rename", async () => {
+  hostFs({ "/p/a.py": "a\n", "/p/b.py": "b\n" });
+  await receive("g1", { t: "doc.open", path: "a.py" });
+  await vi.waitFor(() => expect(share.hostDocKeyFor("a.py", "g1")).toBe("a.py"));
+  expect(share.hostDocKeyFor("a.py", "g2")).toBeNull();
+  for (const rel of ["b.py", "../a.py", "./a.py", "x/../a.py", ".git/config", "/p/a.py"]) expect(share.hostDocKeyFor(rel, "g1")).toBeNull();
+  app.root = "/other";
+  expect(share.hostDocKeyFor("a.py", "g1")).toBeNull();
+});
+
+test("guestPathOk refuses what a guest's Run could name", async () => {
+  hostFs({ "/p/a.py": "a\n", "/p/ext/x.py": "x\n" });
+  expect(await share.guestPathOk("a.py")).toBe(true);
+  for (const rel of ["../a.py", "x/../../a.py", ".git/config", "sub/.GIT/config", "/etc/passwd", "C:/x", "ext/x.py", "a\0.py"]) expect(await share.guestPathOk(rel)).toBe(false);
+});
+
+test("a guest's unsaved text is in the file after the flush a guest Run does", async () => {
+  const fs = hostFs({ "/p/a.py": "old\n" });
+  await receive("g1", { t: "doc.open", path: "a.py" });
+  await vi.waitFor(() => expect(share.hostDocKeyFor("a.py", "g1")).toBe("a.py"));
+  const doc = new Y.Doc();
+  guestCopy("a.py", doc);
+  let update: Uint8Array | null = null;
+  doc.on("update", (u: Uint8Array) => (update = u));
+  doc.getText("content").insert(0, "new ");
+  await receive("g1", { t: "doc.update", path: "a.py", update: b64(update!) });
+  expect(share.sharedDocUnsaved("a.py")).toBe(true);
+  expect(fs.files.get("/p/a.py")).toBe("old\n");
+  await share.flushSharedDocs();
+  expect(fs.files.get("/p/a.py")).toBe("new old\n");
+  expect(share.sharedDocUnsaved("a.py")).toBe(false);
+});

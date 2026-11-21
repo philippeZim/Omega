@@ -30,6 +30,8 @@ export const runnerRemote = {
   project: null as (() => Project | null) | null,
   run: null as ((a: Action) => void) | null,
   stop: null as (() => void) | null,
+  /** Asks the host what the guest's active file can run, after `project` showed what's known. */
+  refresh: null as (() => void) | null,
 };
 
 /** Opens the New Project dialog (not during a guest session: it would replace the shared project). */
@@ -49,6 +51,7 @@ export async function refreshProject() {
   if (runnerRemote.project) {
     runner.project = runnerRemote.project();
     runner.versions = [];
+    runnerRemote.refresh?.();
     return;
   }
   const p = await detectProject(activeTab()?.path ?? null, app.root);
@@ -75,7 +78,7 @@ function withCustomRun(p: Project): Project {
   const cmd = customRunCmd(p.root);
   if (!cmd) return p;
   // The build step stays: a custom command usually starts the same program with other arguments.
-  return { ...p, defaultRun: p.run, run: { id: "run", label: t("common.run"), cmd, pre: p.run?.pre, setup: p.run?.setup, shortcut: p.run?.shortcut ?? "Shift+F10" } };
+  return { ...p, defaultRun: p.run, run: { id: "run", label: t("common.run"), cmd, pre: p.run?.pre, setup: p.run?.setup, shortcut: p.run?.shortcut ?? "Shift+F10", usesFile: cmd.includes("{file}") || (!!p.run?.pre && p.run.usesFile) } };
 }
 
 export async function editRunCommand() {
@@ -156,7 +159,34 @@ export async function runAction(action: Action | null | undefined, checkedArg?: 
   if (runnerRemote.run) return runnerRemote.run(action);
   const [a, p] = await current(action, runner.project);
   if (!a?.cmd || !p) return;
-  let cmd = a.cmd;
+  await launch(a, p, () => activeTab()?.path, checkedArg);
+}
+
+/** Whether the action's command changes with the file it's started for. */
+export const fileDependent = (a: Action) => !!a.usesFile || !!a.cmd?.includes("{file}");
+
+/** Code Together host: the project as seen from `file`, without looking at the host's active tab. */
+export async function projectFor(file: string | null, workspace: string | null) {
+  const p = await detectProject(file, workspace);
+  return p && withCustomRun(p);
+}
+
+/** Code Together host: saves like Run does. False if the text of `file` didn't reach the disk. */
+export async function saveForGuestRun(file: string | null) {
+  await saveAll();
+  const tab = file ? app.tabs.find((x) => x.path === file) : undefined;
+  return !tab || (!tab.dirty && !tab.deleted);
+}
+
+/**
+ * Code Together host: runs an action resolved for a guest. The host keeps its tab, panel and focus.
+ * `allowed` is asked right before the start, since installing a missing tool can take a while.
+ */
+export const runGuestAction = (a: Action, p: Project, file: string | null, guest: { arg?: string; allowed: () => Promise<boolean> }) =>
+  launch(a, p, () => file, guest.arg, guest.allowed);
+
+async function launch(a: Action, p: Project, activeFile: () => string | null | undefined, checkedArg?: string, allowed?: () => Promise<boolean>) {
+  let cmd = a.cmd!;
   if (a.ask && checkedArg !== undefined) cmd = cmd.replace("{}", () => checkedArg);
   else if (a.ask) {
     const v = await ui.prompt(a.label.replace("…", ""), "", a.ask, undefined, a.suggest);
@@ -171,9 +201,10 @@ export async function runAction(action: Action | null | undefined, checkedArg?: 
   }
   // `{file}` in a (custom) command = the file open in the editor.
   if (cmd.includes("{file}")) {
-    const file = activeTab()?.path;
+    const file = activeFile();
     if (!file) return ui.toast(t("code.rb.noFileOpen"), "error");
-    cmd = cmd.replaceAll("{file}", q(file));
+    // A function: `$&` or `$'` in a file name must not count as a replacement pattern.
+    cmd = cmd.replaceAll("{file}", () => q(file));
   }
   if (!(await ensureTools([...p.needs, ...(a.needs ?? [])], t("tools.purpose.run")))) return;
   await saveAll();
@@ -183,13 +214,16 @@ export async function runAction(action: Action | null | undefined, checkedArg?: 
     if (pre) pre = `${a.setup.cmd} && ${pre}`;
     else cmd = `${a.setup.cmd} && ${cmd}`;
   }
+  if (allowed && !(await allowed())) return;
   const title = `${p.label}: ${a.label.replace("…", "")}`;
+  const view = allowed ? { focus: false, background: true } : {};
   if (pre) {
     // Build in the Build tab; the program only starts (in the Run tab) when that succeeded.
     cancelTask("run");
-    runTask("build", pre, p.root, t("code.act.build"), { onExit: (code) => code === 0 && runTask("run", cmd, p.root, title) });
-  } else if (BUILD_ACTIONS.has(a.id)) runTask("build", cmd, p.root, a.id === "build" ? t("code.act.build") : title);
-  else if (packageAction(p.kind, a.id)) runCommand(cmd, p.root, title, true, { packageTask: true });
+    runTask("build", pre, p.root, t("code.act.build"), { ...view, onExit: (code) => code === 0 && runTask("run", cmd, p.root, title, view) });
+  } else if (BUILD_ACTIONS.has(a.id)) runTask("build", cmd, p.root, a.id === "build" ? t("code.act.build") : title, view);
+  else if (packageAction(p.kind, a.id)) runCommand(cmd, p.root, title, !allowed, { packageTask: true, ...(allowed ? { background: true } : {}) });
+  else if (allowed) runCommand(cmd, p.root, title, false, { background: true });
   else runCommand(cmd, p.root, title);
   // Dependency changes may alter the project (e.g. new scripts).
   if (a.ask) setTimeout(refreshProject, 3000);
