@@ -1,4 +1,4 @@
-/** Project detection and the recommended tool per language: cargo, uv, pnpm, CMake, Gradle. */
+/** Project detection and the recommended tool per language: cargo, uv, pnpm, CMake, Gradle, scala-cli, sbt. */
 import { invoke } from "@tauri-apps/api/core";
 import { fsApi, basename, dirname, joinPath, isRoot } from "../api";
 import { q, cd, exe, IS_WIN, OS, runRel, rmrf, tmpPath } from "../platform";
@@ -8,7 +8,7 @@ import { suggestPythonAdd, suggestPythonRemove, pythonRemoveArg, suggestNodeAdd,
 import { validScriptName } from "./packageInput";
 import { t, i18n, type Key } from "../i18n/index.svelte";
 
-export type ProjectKind = "cargo" | "uv" | "pnpm" | "cmake" | "gradle" | "file";
+export type ProjectKind = "cargo" | "uv" | "pnpm" | "cmake" | "gradle" | "sbt" | "scala-cli" | "file";
 
 export interface Action {
   id: string;
@@ -57,6 +57,9 @@ const MARKERS: [string, ProjectKind][] = [
   ["build.gradle.kts", "gradle"],
   ["build.gradle", "gradle"],
   ["package.json", "pnpm"],
+  // build.sbt first: an sbt project stays on sbt even if it also has a project.scala.
+  ["build.sbt", "sbt"],
+  ["project.scala", "scala-cli"],
 ];
 
 async function findProject(file: string | null, workspace: string | null): Promise<{ kind: ProjectKind; root: string } | null> {
@@ -339,6 +342,37 @@ export async function detectProject(file: string | null, workspace: string | nul
     };
   }
 
+  if (p?.kind === "sbt")
+    return {
+      ...p,
+      label: "sbt",
+      needs: ["jdk", "sbt"],
+      run: act("run", "common.run", "sbt -batch run", { shortcut: RUN }),
+      build: act("build", "code.act.build", "sbt -batch compile", { shortcut: BUILD }),
+      test: act("test", "code.act.test", "sbt -batch test"),
+      more: [
+        { id: "clean", label: "sbt clean", cmd: "sbt -batch clean" },
+        act("jar", "code.act.jar", "sbt -batch package"),
+      ],
+    };
+
+  if (p?.kind === "scala-cli") {
+    const script = file?.endsWith(".sc") && file.startsWith(p.root + "/") ? rel(file, p.root) : null;
+    return {
+      ...p,
+      label: "scala-cli",
+      needs: ["scala"],
+      run: act("run", "common.run", scalaCliRun(script), { shortcut: RUN }),
+      build: act("build", "code.act.build", "scala-cli compile .", { shortcut: BUILD }),
+      test: act("test", "code.act.test", "scala-cli test ."),
+      more: [
+        { id: "fmt", label: "scala-cli fmt", cmd: "scala-cli fmt ." },
+        { id: "setup-ide", label: "scala-cli setup-ide", cmd: "scala-cli setup-ide ." },
+        { id: "clean", label: "scala-cli clean", cmd: "scala-cli clean ." },
+      ],
+    };
+  }
+
   // No project: run the single file with the language's default tool.
   if (!file) return null;
   const lang = langFor(file)?.id;
@@ -357,6 +391,19 @@ export async function detectProject(file: string | null, workspace: string | nul
   };
 }
 
+/** Main class scala-cli gives a script: `sub/my.sc` → `sub.my_sc`. Null if the name needs encoding. */
+export function scalaScriptMain(relPath: string): string | null {
+  const parts = relPath.replace(/\.sc$/, "_sc").split("/");
+  return parts.every((s) => /^[A-Za-z_]\w*$/.test(s)) ? parts.join(".") : null;
+}
+
+/** Run in a scala-cli project: the open script (with the project's other sources), else the project. */
+export function scalaCliRun(script: string | null): string {
+  if (!script) return "scala-cli run .";
+  const main = scalaScriptMain(script);
+  return main ? `scala-cli run . --main-class ${main}` : `scala-cli run ${q(script)}`;
+}
+
 /** Compiler commands per OS: GCC on Linux, Apple clang on macOS, LLVM-MinGW clang on Windows. */
 const C_COMPILER = OS === "linux" ? "gcc" : "clang";
 const CXX_COMPILER = OS === "linux" ? "g++" : "clang++";
@@ -373,6 +420,7 @@ async function singleFileRun(lang: LangId | undefined, file: string): Promise<[s
     case "javascript": return [`node ${f}`, ["node"]];
     case "typescript": return [`${TSX_DLX} ${f}`, ["node", "pnpm"]];
     case "rust": return [out, ["rust"], `rustc -g ${f} -o ${out}`];
+    case "scala": return [`scala-cli run ${f}`, ["scala"]];
     default: return null;
   }
 }
@@ -505,6 +553,23 @@ export const TEMPLATES: Template[] = [
     open: ["app/src/main/java/app/App.java"],
     create: async (n) => ({
       cmds: [`gradle init --type java-application --dsl kotlin --test-framework junit-jupiter --package app --project-name ${q(n)} --no-split-project --java-version 21 --use-defaults --no-incubating`],
+    }),
+  },
+  {
+    id: "scala",
+    label: "Scala",
+    tool: "scala-cli",
+    needs: ["scala"],
+    marker: "project.scala",
+    open: ["Main.scala"],
+    create: async () => ({
+      files: {
+        // The marker comes first: the dialog opens the project as soon as it exists.
+        "project.scala": "//> using scala lts\n",
+        "Main.scala": `@main def hello(): Unit =\n  println("${t("code.tpl.hello")}")\n`,
+        ".gitignore": ".bsp/\n.bloop/\n.metals/\n.scala-build/\n",
+      },
+      cmds: [...(await gitInit()), "scala-cli setup-ide ."],
     }),
   },
   {
