@@ -756,6 +756,8 @@ export const hostDebug = {
   canRestart: () => !!lastPlan?.file,
   /** A start is on its way (not yet connected to its adapter). */
   starting: () => starting,
+  /** The sessions are being closed: a start now would undo the Stop that is under way. */
+  closing: () => !!closing,
   /** The file a restart would launch. */
   planFile: () => lastPlan?.file ?? null,
   /** The session or folder a guest's start belonged to is gone: restart can't launch it any more. */

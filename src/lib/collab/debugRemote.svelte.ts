@@ -97,6 +97,8 @@ declare module "./rpc.svelte" {
 const CONTROL_OPS: readonly unknown[] = ["continue", "next", "stepIn", "stepOut", "pause", "stop", "restart"] satisfies ControlOp[];
 const EVAL_CONTEXTS: readonly unknown[] = ["watch", "repl", "hover"] satisfies EvalContext[];
 const isLive = () => dbg.status === "running" || dbg.status === "stopped" || dbg.status === "starting";
+/** A start is on its way or the session is being closed: a guest's Start or Restart has to wait. */
+const startBlocked = () => hostDebug.starting() || hostDebug.closing() || dbg.status === "starting";
 
 // ------------------------------------------------------------------ host
 
@@ -403,7 +405,7 @@ registerMethod({
     const abs = scope.abs(path);
     if (!(await fsApi.exists(abs).catch(() => false)) || !scope.live()) throw new RpcFail("unavailable");
     stillAllowed(peer, signal);
-    if (hostDebug.starting() || dbg.status === "starting") throw new RpcFail("busy");
+    if (startBlocked()) throw new RpcFail("busy");
     const name = guestName(peer);
     ui.toast(t("ai.collab.dbg.started", { name, file: path }));
     // Not awaited: it can wait for the host (a missing adapter), and the guest sees the state anyway.
@@ -426,13 +428,13 @@ registerMethod({
     } else if (op === "restart") {
       // Only a running session, and only a file this guest could have named itself.
       if (!isLive()) throw new RpcFail("no_session");
-      if (hostDebug.starting() || dbg.status === "starting") throw new RpcFail("busy");
+      if (startBlocked()) throw new RpcFail("busy");
       const file = hostDebug.planFile();
       const scope = guestScope();
       const rel = file && scope ? scope.rel(file) : null;
       if (!file || !scope || !rel || !(await scope.check(rel)) || !scope.live()) throw new RpcFail("unavailable");
       stillAllowed(peer, signal);
-      if (hostDebug.starting() || hostDebug.planFile() !== file || !isLive()) throw new RpcFail("busy");
+      if (startBlocked() || hostDebug.planFile() !== file || !isLive()) throw new RpcFail("busy");
       ui.toast(t("ai.collab.dbg.restarted", { name }));
       trackStart(peer, hostDebug.restart(file, name));
     } else if (op === "pause") {
