@@ -1,13 +1,14 @@
 <script lang="ts">
   import { app, activeTab } from "../lib/state.svelte";
   import { ui } from "../lib/ui.svelte";
-  import { runner, runnerRemote, refreshProject, runAction, editRunCommand, resetRunCommand, chooseVersion } from "../lib/code/runner.svelte";
+  import { runner, runnerRemote, refreshProject, runAction, stopRun, editRunCommand, resetRunCommand, chooseVersion } from "../lib/code/runner.svelte";
   import { startDebugging, stopDebugging } from "../lib/debug/debugger.svelte";
   import { dbg } from "../lib/debug/store.svelte";
   import { langFor } from "../lib/code/languages";
   import { focusTerm } from "../lib/terminal.svelte";
   import { toggleView, isShown } from "../lib/layout.svelte";
   import { t } from "../lib/i18n/index.svelte";
+  import { guestCan } from "../lib/collab/guard";
 
   /** Width of the tab bar: below ~640px labels collapse to icons, below ~460px build/test/version move into the "more" menu. */
   let { width = 1000 }: { width?: number } = $props();
@@ -71,6 +72,11 @@
           <svg class="ico" width="11" height="12" viewBox="0 0 11 12"><path d="M1.5 1.2v9.6a.6.6 0 0 0 .9.5l7.8-4.8a.6.6 0 0 0 0-1L2.4.7a.6.6 0 0 0-.9.5z" fill="currentColor"/></svg>
         </button>
       {/if}
+      {#if runner.remoteTask?.running}
+        <button class="gbtn icon stop hoststop" disabled={!guestCan("run")} title={guestCan("run") ? t("ai.collab.stopOnHost") : t("ai.collab.capMissing", { cap: t("ai.collab.cap.run") })} onclick={stopRun} aria-label={t("ai.collab.stopOnHost")}>
+          <svg class="ico" width="10" height="10" viewBox="0 0 10 10"><rect width="10" height="10" rx="2.4" fill="currentColor"/></svg>
+        </button>
+      {/if}
       {#if canDebug}
         <button class="gbtn icon debug" class:live={debugging} title={debugging ? t("code.rb.debugging") : `${t("code.debug")} (⇧F9)`} onclick={startDebugging} aria-label={t("code.debug")}>
           <svg class="ico" width="14" height="14" viewBox="0 0 16 16"><path d="M8 3.2c-1.6 0-2.8 1.3-2.8 2.9v.4h5.6v-.4C10.8 4.5 9.6 3.2 8 3.2zM4.6 7.5v2.8a3.4 3.4 0 0 0 6.8 0V7.5z" fill="currentColor"/><path d="M2.5 8.5h2M11.5 8.5h2M3 5l1.8 1.3M13 5l-1.8 1.3M3 12.5l1.8-1M13 12.5l-1.8-1" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
@@ -130,4 +136,7 @@
   .runbar { display: flex; align-items: center; gap: 8px; margin-left: auto; padding-left: 8px; flex-shrink: 0; }
   .ver span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .ver.compact { max-width: 110px; }
+  /* Sits on glass: no transform or opacity animation (WebKitGTK flashes). */
+  .gbtn.stop.hoststop, .gbtn.stop.hoststop::before, .gbtn.stop.hoststop svg { transition: none; }
+  .gbtn.stop.hoststop:active:not(:disabled), .gbtn.stop.hoststop:hover:not(:disabled) svg { transform: none; }
 </style>

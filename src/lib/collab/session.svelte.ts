@@ -8,13 +8,16 @@
  *    guests read-only. (Forwarding guest keystrokes would land in the host's shell whenever no
  *    program runs – that would hand out a remote shell, so it isn't done.)
  */
+import { untrack } from "svelte";
 import { listen } from "@tauri-apps/api/event";
-import { collab, send, broadcast, onCollabMessage, sessionEndHooks } from "./collab.svelte";
+import { collab, broadcast, onCollabMessage, sessionEndHooks } from "./collab.svelte";
 import { share, hostKeyChecked, syncSharedTabs, openRemote, isRemote } from "./share.svelte";
+import { blockedByCapability } from "./guard";
+import { call, isObj, publish, registerMethod, registerTopic, rpcErrorText, RpcFail, subscribe } from "./rpc.svelte";
 import { app, activeTab, activate, closeTab, flushAutosave, newFile, openFile, setMode, setRoot } from "../state.svelte";
 import { runner, runAction, refreshProject, runnerRemote } from "../code/runner.svelte";
 import type { Action, Project } from "../code/projects";
-import { remoteTerminal, writeTerminal, closeTerminal, terms, isTaskPty, setRunEcho } from "../terminal.svelte";
+import { remoteTerminal, writeTerminal, closeTerminal, terms, isTaskPty, setRunEcho, interruptTask, taskState, type TaskState } from "../terminal.svelte";
 import { showView } from "../layout.svelte";
 import * as ed from "../editor";
 import { fsApi, basename } from "../api";
@@ -107,6 +110,49 @@ function findAction(id: string): Action | null {
   if (!p) return null;
   return [p.run, p.build, p.test, ...p.more].find((a) => a?.id === id && !a.ask) ?? null;
 }
+
+declare module "./rpc.svelte" {
+  interface RpcMethods {
+    "run.start": { params: { action: string }; result: null };
+    "run.stop": { params: { taskId: number }; result: { stopped: boolean } };
+  }
+  interface RpcTopics {
+    "run.state": TaskState;
+  }
+}
+
+registerMethod({
+  name: "run.start",
+  capability: "run",
+  validate: (raw) => (isObj(raw) && typeof raw.action === "string" ? { action: raw.action } : null),
+  handle: ({ action }, { peer }) => {
+    const a = findAction(action);
+    if (!a) throw new RpcFail("unavailable");
+    const who = collab.participants.find((p) => p.peer === peer)?.name ?? t("ai.collab.guest");
+    ui.toast(t("ai.collab.guestRuns", { name: who, action: a.label }));
+    // Not awaited: it can wait for the host (missing tools), and the guest sees the run state anyway.
+    void Promise.resolve(runAction(a)).catch((e) => console.error("guest run", e));
+    return null;
+  },
+});
+
+registerMethod({
+  name: "run.stop",
+  capability: "run",
+  validate: (raw) => (isObj(raw) && Number.isSafeInteger(raw.taskId) ? { taskId: raw.taskId as number } : null),
+  handle: ({ taskId }) => ({ stopped: interruptTask(taskId) }),
+});
+
+registerTopic({ name: "run.state", capability: null, snapshot: taskState });
+
+// Everybody sees whether something runs, also guests who may not start or stop it.
+$effect.root(() => {
+  $effect(() => {
+    if (collab.role !== "host") return;
+    const state = taskState();
+    untrack(() => publish("run.state", state));
+  });
+});
 
 // Host's Run terminal → guests. Output is batched a little to keep message counts low.
 let outBuf = "";
@@ -216,7 +262,35 @@ function ensureRemoteTerminal() {
     if (!hinted) ui.toast(t("ai.collab.termReadOnly"));
     hinted = true;
   });
+  showRemoteStatus();
   return remoteTermId;
+}
+
+/** Guest: the mirror tab shows the host's run state like a local Run tab. */
+function showRemoteStatus() {
+  const tab = terms.tabs.find((x) => x.id === remoteTermId);
+  if (tab) tab.status = runner.remoteTask?.status ?? undefined;
+}
+
+subscribe("run.state", (state) => {
+  runner.remoteTask = state;
+  showRemoteStatus();
+});
+
+async function stopOnHost() {
+  const task = runner.remoteTask;
+  if (blockedByCapability("run") || !task?.running || task.taskId === null) return;
+  const r = await call("run.stop", { taskId: task.taskId });
+  if (!r.ok) ui.toast(rpcErrorText(r.error.code), "error");
+}
+
+async function runOnHost(a: Action) {
+  if (blockedByCapability("run")) return;
+  ensureRemoteTerminal();
+  showView("terminal");
+  terms.active = remoteTermId;
+  const r = await call("run.start", { action: a.id });
+  if (!r.ok) ui.toast(rpcErrorText(r.error.code), "error");
 }
 
 const decoder = new TextDecoder();
@@ -231,12 +305,8 @@ async function applySession(s: SessionInfo) {
     joined = true;
     await stashOwnWorkspace();
     runnerRemote.project = guestProject;
-    runnerRemote.run = (a) => {
-      ensureRemoteTerminal();
-      showView("terminal");
-      terms.active = remoteTermId;
-      send(collab.hostPeer!, { t: "run", action: a.id });
-    };
+    runnerRemote.run = runOnHost;
+    runnerRemote.stop = stopOnHost;
     setMode(s.mode);
     for (const tab of s.tabs) if (tab.key !== s.active) await openRemote(tab.key);
     if (s.active) await openRemote(s.active);
@@ -248,18 +318,12 @@ async function applySession(s: SessionInfo) {
 
 // ------------------------------------------------------------------ messages
 
-onCollabMessage((peer, msg) => {
+onCollabMessage((_peer, msg) => {
   if (collab.role === "host") {
     if (msg.t === "hello-ready") {
       lastSent = "";
       // Send the full session to everybody (cheap) so the new guest gets it.
       announce(true);
-    } else if (msg.t === "run") {
-      const a = findAction(String(msg.action));
-      const who = collab.participants.find((p) => p.peer === peer)?.name ?? t("ai.collab.guest");
-      if (!a) return;
-      ui.toast(t("ai.collab.guestRuns", { name: who, action: a.label }));
-      runAction(a);
     }
     return;
   }
@@ -278,6 +342,8 @@ sessionEndHooks.push(async (wasGuest) => {
   hostProject = null;
   runnerRemote.project = null;
   runnerRemote.run = null;
+  runnerRemote.stop = null;
+  runner.remoteTask = null;
   if (remoteTermId) closeTerminal(remoteTermId);
   remoteTermId = null;
   await restoreOwnWorkspace();

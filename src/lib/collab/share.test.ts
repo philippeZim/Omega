@@ -14,6 +14,7 @@ vi.mock("./collab.svelte", () => ({
   send: (peer: string, msg: Msg) => void sent.push({ peer, msg }),
   broadcast: (msg: Msg) => void sent.push({ peer: "*", msg }),
   onCollabMessage: (fn: (peer: string, msg: Msg) => unknown) => void handlers.push(fn),
+  sessionEndHooks: [],
 }));
 
 const app = { root: "/p" as string | null, tabs: [] as { id: string; path: string | null; name: string; dirty?: boolean }[], activeId: null as string | null, mode: "code" };
@@ -77,6 +78,11 @@ function hostFs(initial: Record<string, string> = {}) {
 async function receive(peer: string, msg: Msg) {
   for (const h of handlers) await h(peer, msg);
 }
+/** A guest's RPC calls and the host's answers, as they go over the wire. */
+const fsList = (peer: string, path: unknown, id: number) => receive(peer, { t: "rpc.req", id, method: "fs.list", params: { path } });
+const fsOp = (peer: string, id: number, params: Msg) => receive(peer, { t: "rpc.req", id, method: "fs.op", params });
+const listed = (id: number, result: unknown[] = []) => ({ t: "rpc.res", id, ok: true, result });
+const refused = (id: number, code: string) => ({ t: "rpc.res", id, ok: false, error: { code } });
 const b64 = (u: Uint8Array) => btoa(String.fromCharCode(...u));
 const unb64 = (s: string) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
 
@@ -99,7 +105,12 @@ beforeEach(async () => {
   bindings.clear();
   closeTab.mockClear();
   ui.reset();
-  Object.assign(collab, { role: "host", status: "connected" });
+  for (const peer of ["g1", "g2"]) share.forgetPeer(peer);
+  Object.assign(collab, {
+    role: "host",
+    status: "connected",
+    participants: ["g1", "g2"].map((peer) => ({ peer, name: "Gast", color: "#333333", role: "guest", caps: ["edit", "run"] })),
+  });
   Object.assign(app, { root: "/p", tabs: [], activeId: null });
 });
 
@@ -314,8 +325,8 @@ test("host refuses guest requests that leave the shared folder through a symlink
   const fs = hostFs({ "/p/ext/passwd": "root:x:0:0" , "/p/a.txt": "a\n" });
   await receive("g1", { t: "doc.open", path: "ext/passwd" });
   expect(sent.at(-1)!.msg).toEqual({ t: "doc.error", path: "ext/passwd", error: "unavailable" });
-  await receive("g1", { t: "fs.list", path: "ext", req: 3 });
-  expect(sent.at(-1)!.msg).toEqual({ t: "fs.list.res", req: 3, entries: [] });
+  await fsList("g1", "ext", 3);
+  expect(sent.at(-1)!.msg).toEqual(listed(3));
   for (const path of ["../etc/passwd", "/etc/passwd", "src/../../x"]) {
     await receive("g1", { t: "doc.open", path });
     expect(sent.at(-1)!.msg.t).toBe("doc.error");
@@ -338,24 +349,24 @@ test("host carries out a guest's create, rename and delete in its project (#133)
     } else if (cmd === "delete_path") fs.files.delete(args.path);
     return null;
   };
-  collab.participants = [{ peer: "g1", name: "Gast", color: "#333333", role: "guest" }];
+  collab.participants = [{ peer: "g1", name: "Gast", color: "#333333", role: "guest", caps: ["edit"] }];
   const op = async (msg: Msg) => {
     sent.length = 0;
-    await receive("g1", { t: "fs.op", req: 7, ...msg });
-    return sent.find((s) => s.msg.t === "fs.op.res")!;
+    await fsOp("g1", 7, msg);
+    return sent.find((s) => s.msg.t === "rpc.res")!;
   };
 
-  expect(await op({ op: "create", path: "src/new.rs" })).toEqual({ peer: "g1", msg: { t: "fs.op.res", req: 7, error: null } });
+  expect(await op({ op: "create", path: "src/new.rs" })).toEqual({ peer: "g1", msg: { t: "rpc.res", id: 7, ok: true, result: null } });
   expect(fs.files.get("/p/src/new.rs")).toBe("");
-  expect((await op({ op: "create", path: "src/a.rs" })).msg.error).toBe("exists");
+  expect((await op({ op: "create", path: "src/a.rs" })).msg.error).toEqual({ code: "exists" });
 
   // A guest that has the file open follows the rename.
   await receive("g1", { t: "doc.open", path: "src/a.rs" });
-  expect((await op({ op: "rename", path: "src/a.rs", to: "src/b.rs" })).msg.error).toBeNull();
+  expect((await op({ op: "rename", path: "src/a.rs", to: "src/b.rs" })).msg.ok).toBe(true);
   expect(fs.files.get("/p/src/b.rs")).toBe("a\n");
   expect(sent.some((s) => s.msg.t === "doc.moved" && s.msg.to === "src/b.rs")).toBe(true);
 
-  expect((await op({ op: "delete", path: "src/b.rs" })).msg.error).toBeNull();
+  expect((await op({ op: "delete", path: "src/b.rs" })).msg.ok).toBe(true);
   expect(fs.files.has("/p/src/b.rs")).toBe(false);
   expect(ui.toasts.map((x) => x.text)).toEqual(["Gast renamed src/a.rs to src/b.rs", "Gast deleted src/b.rs"]);
   collab.participants = [];
@@ -373,8 +384,8 @@ test("host refuses guest file operations outside the project (#133)", async () =
     { op: "rename", path: "a.txt", to: "ext/a.txt" },
   ]) {
     sent.length = 0;
-    await receive("g1", { t: "fs.op", req: 1, ...msg });
-    expect(sent[0].msg).toEqual({ t: "fs.op.res", req: 1, error: "invalid" });
+    await fsOp("g1", 1, msg);
+    expect(sent[0].msg).toEqual(refused(1, "invalid"));
   }
   expect(fs.calls.filter((c) => c.cmd !== "path_exists" && c.cmd !== "collab_path_inside" && c.cmd !== "collab_tree_has_git")).toEqual([]);
 });
@@ -383,10 +394,10 @@ test("guest: New File in the shared tree creates it on the host and opens it (#1
   collab.role = "guest";
   ui.prompt.mockResolvedValueOnce("x.rs");
   const done = share.remoteCreate("src", false);
-  await vi.waitFor(() => expect(sent.find((s) => s.msg.t === "fs.op")).toBeTruthy());
-  const req = sent.find((s) => s.msg.t === "fs.op")!;
-  expect(req).toMatchObject({ peer: "host-peer", msg: { op: "create", path: "src/x.rs" } });
-  await receive("host-peer", { t: "fs.op.res", req: req.msg.req, error: null });
+  await vi.waitFor(() => expect(sent.find((s) => s.msg.t === "rpc.req")).toBeTruthy());
+  const req = sent.find((s) => s.msg.t === "rpc.req")!;
+  expect(req).toMatchObject({ peer: "host-peer", msg: { method: "fs.op", params: { op: "create", path: "src/x.rs" } } });
+  await receive("host-peer", { t: "rpc.res", id: req.msg.id, ok: true, result: null });
   await done;
   expect(sent.some((s) => s.msg.t === "doc.open" && s.msg.path === "src/x.rs")).toBe(true);
 
@@ -394,8 +405,8 @@ test("guest: New File in the shared tree creates it on the host and opens it (#1
   ui.prompt.mockResolvedValueOnce("x.rs");
   sent.length = 0;
   const again = share.remoteCreate("src", false);
-  await vi.waitFor(() => expect(sent.find((s) => s.msg.t === "fs.op")).toBeTruthy());
-  await receive("host-peer", { t: "fs.op.res", req: sent.find((s) => s.msg.t === "fs.op")!.msg.req, error: "exists" });
+  await vi.waitFor(() => expect(sent.find((s) => s.msg.t === "rpc.req")).toBeTruthy());
+  await receive("host-peer", refused(sent.find((s) => s.msg.t === "rpc.req")!.msg.id, "exists"));
   await again;
   expect(ui.toasts.at(-1)).toEqual({ text: '"x.rs" already exists there', kind: "error" });
 });
@@ -407,11 +418,11 @@ test("guests can't read or write a git folder, in any spelling", async () => {
   for (const path of GIT_PATHS) {
     await receive("g1", { t: "doc.open", path });
     expect(sent.at(-1)!.msg).toEqual({ t: "doc.error", path, error: "unavailable" });
-    await receive("g1", { t: "fs.list", path, req: 2 });
-    expect(sent.at(-1)!.msg).toEqual({ t: "fs.list.res", req: 2, entries: [] });
+    await fsList("g1", path, 2);
+    expect(sent.at(-1)!.msg).toEqual(listed(2));
     for (const op of [{ op: "create", path }, { op: "delete", path }, { op: "rename", path, to: "b.txt" }, { op: "rename", path: "a.txt", to: path }]) {
-      await receive("g1", { t: "fs.op", req: 1, ...op });
-      expect(sent.at(-1)!.msg).toEqual({ t: "fs.op.res", req: 1, error: "invalid" });
+      await fsOp("g1", 1, op);
+      expect(sent.at(-1)!.msg).toEqual(refused(1, "invalid"));
     }
   }
   expect(fs.calls.filter((c) => !["collab_path_inside", "path_exists"].includes(c.cmd))).toEqual([]);
@@ -424,11 +435,11 @@ test("guests can't read or write a git folder, in any spelling", async () => {
 
 test("the file tree doesn't list .git, and a folder holding a nested repository can't be moved or deleted", async () => {
   const fs = hostFs({ "/p/.git/config": "", "/p/a.txt": "a\n", "/p/vendor/lib/.git/config": "" });
-  await receive("g1", { t: "fs.list", path: "", req: 4 });
-  expect(sent.at(-1)!.msg.entries.map((e: { name: string }) => e.name)).not.toContain(".git");
+  await fsList("g1", "", 4);
+  expect(sent.at(-1)!.msg.result.map((e: { name: string }) => e.name)).not.toContain(".git");
   for (const op of [{ op: "delete", path: "vendor" }, { op: "rename", path: "vendor", to: "v2" }]) {
-    await receive("g1", { t: "fs.op", req: 5, ...op });
-    expect(sent.at(-1)!.msg).toEqual({ t: "fs.op.res", req: 5, error: "invalid" });
+    await fsOp("g1", 5, op);
+    expect(sent.at(-1)!.msg).toEqual(refused(5, "invalid"));
   }
   expect(fs.calls.filter((c) => c.cmd === "delete_path" || c.cmd === "rename_path")).toEqual([]);
 });
@@ -532,8 +543,8 @@ test("host rejects an unknown file operation instead of deleting", async () => {
   const fs = hostFs({ "/p/a.txt": "a\n" });
   for (const op of ["remove", "DELETE", "", "__proto__", "constructor", null, undefined, 7, ["delete"], { op: "delete" }]) {
     sent.length = 0;
-    await receive("g1", { t: "fs.op", req: 9, op, path: "a.txt" });
-    expect(sent[0].msg).toEqual({ t: "fs.op.res", req: 9, error: "invalid" });
+    await fsOp("g1", 9, { op, path: "a.txt" });
+    expect(sent[0].msg).toEqual(refused(9, "invalid_params"));
   }
   expect(fs.files.get("/p/a.txt")).toBe("a\n");
   expect(fs.calls.filter((c) => c.cmd !== "collab_path_inside")).toEqual([]);
@@ -646,8 +657,8 @@ test("a folder switch during a guest's file operation doesn't apply it to the ne
     const fs = hostFs({ "/p/a.txt": "p\n", "/q/a.txt": "q\n" });
     switchFolderDuring(fs, during);
     sent.length = 0;
-    await receive("g1", { t: "fs.op", req: 11, ...op });
-    expect(sent.find((s) => s.msg.t === "fs.op.res")!.msg, `${op.op} during ${during}`).toEqual({ t: "fs.op.res", req: 11, error: "unavailable" });
+    await fsOp("g1", 11, op);
+    expect(sent.find((s) => s.msg.t === "rpc.res")!.msg, `${op.op} during ${during}`).toEqual(refused(11, "unavailable"));
     expect(effects(fs), `${op.op} during ${during}`).toEqual([]);
     expect([fs.files.get("/p/a.txt"), fs.files.get("/q/a.txt")]).toEqual(["p\n", "q\n"]);
   }
@@ -656,8 +667,8 @@ test("a folder switch during a guest's file operation doesn't apply it to the ne
 test("a folder switch during a guest's folder listing doesn't list the new folder", async () => {
   const fs = hostFs({ "/p/a.txt": "p\n", "/q/private.txt": "q\n" });
   switchFolderDuring(fs, "collab_path_inside");
-  await receive("g1", { t: "fs.list", path: "", req: 12 });
-  expect(sent.at(-1)!.msg).toEqual({ t: "fs.list.res", req: 12, entries: [] });
+  await fsList("g1", "", 12);
+  expect(sent.at(-1)!.msg).toEqual(listed(12));
   expect(fs.calls.filter((c) => c.cmd === "list_dir")).toEqual([]);
 });
 
@@ -671,4 +682,83 @@ test("a presence message still being checked when its guest leaves is dropped", 
   await receive("g1", { t: "presence", file: "a.txt", line: 2 });
   expect(share.share.presence.g1).toBeUndefined();
   expect(sent.filter((s) => s.msg.t === "presence")).toEqual([]);
+});
+
+test("a guest that leaves loses its presence, also for a later join", async () => {
+  hostFs({ "/p/a.txt": "a\n" });
+  await receive("g1", { t: "presence", file: "a.txt", line: 2 });
+  expect(share.share.presence.g1).toBeTruthy();
+  share.follow("g1");
+  share.forgetPeer("g1");
+  expect(share.share.presence.g1).toBeUndefined();
+  expect(share.share.following).toBeNull();
+});
+
+test("guest: someone leaving drops their presence, the host's stays", async () => {
+  collab.role = "guest";
+  await receive("host-peer", { t: "presence", peer: "host", file: null, line: 1, name: "H", color: "#111111" });
+  await receive("host-peer", { t: "presence", peer: "g2", file: null, line: 1, name: "G", color: "#222222" });
+  await receive("host-peer", { t: "participants", participants: [{ peer: "host" }, { peer: "g1" }] });
+  expect(Object.keys(share.share.presence)).toEqual(["host"]);
+});
+
+test("without edit a guest's document changes are dropped; it can still read and list", async () => {
+  const fs = hostFs({ "/p/a.txt": "a\n" });
+  await receive("g1", { t: "doc.open", path: "a.txt" });
+  (collab.participants as { caps: string[] }[])[0].caps = [];
+  await guestInsert("a.txt", 0, "refused ");
+  expect(guestCopy("a.txt")).toBe("a\n");
+
+  sent.length = 0;
+  await fsOp("g1", 21, { op: "delete", path: "a.txt" });
+  expect(sent[0].msg).toEqual(refused(21, "forbidden"));
+  expect(fs.files.has("/p/a.txt")).toBe(true);
+  await fsList("g1", "", 22);
+  expect(sent.at(-1)!.msg.result.map((e: { name: string }) => e.name)).toContain("a.txt");
+});
+
+test("a file system error reaches the guest as a code, without the host's path", async () => {
+  hostFs({});
+  const { fsApi } = await import("../api");
+  const create = vi.spyOn(fsApi, "createFile").mockRejectedValueOnce(new Error("EACCES: /home/secret/p/new.txt"));
+  const log = vi.spyOn(console, "error").mockImplementation(() => {});
+  await fsOp("g1", 23, { op: "create", path: "new.txt" });
+  const errors = sent.filter((s) => s.msg.t === "rpc.res");
+  expect(errors.at(-1)!.msg).toEqual(refused(23, "failed"));
+  expect(JSON.stringify(errors)).not.toContain("/home/secret");
+  create.mockRestore();
+  log.mockRestore();
+});
+
+test("guest without edit: the editor refuses local changes, also direct ones, and takes the host's", async () => {
+  const { guestGuard } = await import("./guard");
+  const { ySyncAnnotation } = await import("y-codemirror.next");
+  collab.role = "guest";
+  guestGuard.can = () => false;
+  try {
+    const h = new Y.Doc();
+    h.getText("content").insert(0, "text");
+    await receive("host-peer", { t: "doc.state", path: "ro.txt", name: "ro.txt", update: b64(Y.encodeStateAsUpdate(h)) });
+    const tab = await vi.waitFor(() => {
+      const x = app.tabs.find((y) => y.path === "collab:ro.txt");
+      if (!x || !bindings.has(x.id)) throw new Error("not open yet");
+      return x;
+    });
+    const state = EditorState.create({ doc: "text", extensions: bindings.get(tab.id) as any });
+    expect(state.readOnly).toBe(true);
+    expect(state.update({ changes: { from: 0, insert: "local " } }).state.doc.toString()).toBe("text");
+    const fromHost = state.update({ changes: { from: 0, insert: "host " }, annotations: ySyncAnnotation.of({} as never) });
+    expect(fromHost.state.doc.toString()).toBe("host text");
+
+    // A host edit while this tab is in the background goes through the same filter.
+    texts.set(tab.id, "text");
+    const { applyChanges } = await import("../editor");
+    vi.mocked(applyChanges).mockClear();
+    h.getText("content").insert(0, "bg ");
+    await receive("host-peer", { t: "doc.update", path: "ro.txt", update: b64(Y.encodeStateAsUpdate(h)) });
+    const spec = vi.mocked(applyChanges).mock.calls[0][1];
+    expect(state.update(spec).state.doc.toString()).toBe("bg text");
+  } finally {
+    guestGuard.can = () => true;
+  }
 });

@@ -7,7 +7,7 @@ import { listen } from "@tauri-apps/api/event";
 import { ui } from "../ui.svelte";
 import { t } from "../i18n/index.svelte";
 import { collabErrorText } from "./collabError";
-import { guestGuard } from "./guard";
+import { guestGuard, DEFAULT_CAPABILITIES, type Capability } from "./guard";
 import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
 
 export const PEER_COLORS = ["#6b9be0", "#7bbf8e", "#d6a35f", "#cf8fb4", "#86b9cc", "#a996cf", "#df7067", "#c8b77e"];
@@ -21,6 +21,10 @@ export interface Participant {
   direct?: boolean;
   rtt?: number;
   addr?: string;
+  /** Host only, never sent to other guests: what this guest may do. */
+  caps?: Capability[];
+  /** Host: being removed; nothing from this peer counts any more. */
+  removing?: boolean;
 }
 
 export interface JoinRequest {
@@ -42,11 +46,15 @@ export const collab = $state({
   hostPeer: null as string | null,
   /** Guest: my peer id as the host knows it (from "welcome"), to find myself in the list. */
   myPeer: null as string | null,
+  /** Guest: what the host allows me. */
+  myCaps: [] as Capability[],
   open: false,
 });
 
 /** Whether a participant row is me (host: "self"; guest: the id the host gave me). */
 guestGuard.status = () => (collab.role !== "guest" ? "none" : collab.status === "connected" ? "connected" : "pending");
+guestGuard.hosting = () => collab.role === "host";
+guestGuard.can = (cap) => collab.role !== "guest" || collab.myCaps.includes(cap);
 
 export const isMe = (p: { peer: string; name: string; color: string }) =>
   collab.role === "host" ? p.peer === "self" : collab.myPeer ? p.peer === collab.myPeer : p.name === collab.me.name && p.color === collab.me.color;
@@ -111,9 +119,9 @@ function nextColor() {
 
 export function approve(req: JoinRequest) {
   collab.requests = collab.requests.filter((r) => r.peer !== req.peer);
-  const p: Participant = { peer: req.peer, name: req.name, color: nextColor(), role: "guest" };
+  const p: Participant = { peer: req.peer, name: req.name, color: nextColor(), role: "guest", caps: [...DEFAULT_CAPABILITIES] };
   collab.participants.push(p);
-  send(req.peer, { t: "welcome", you: { peer: p.peer, name: p.name, color: p.color }, participants: collab.participants.map(publicInfo) });
+  send(req.peer, { t: "welcome", you: { peer: p.peer, name: p.name, color: p.color }, caps: p.caps, participants: collab.participants.map(publicInfo) });
   broadcast({ t: "participants", participants: collab.participants.map(publicInfo) });
   ui.toast(t("ai.collab.joined", { name: req.name }));
 }
@@ -147,6 +155,10 @@ export function deny(req: JoinRequest) {
 }
 
 export function kick(peer: string) {
+  // Refused from now on, not only once the connection is closed below.
+  const p = collab.participants.find((x) => x.peer === peer);
+  if (p) p.removing = true;
+  void import("./share.svelte").then((m) => m.forgetPeer(peer));
   send(peer, { t: "kicked" });
   setTimeout(() => invoke("collab_kick", { peer }), 200);
 }
@@ -188,7 +200,7 @@ export async function leave() {
   await invoke("collab_stop");
   const { teardownShare } = await import("./share.svelte");
   await teardownShare();
-  Object.assign(collab, { role: null, status: "idle", ticket: "", participants: [], requests: [], hostPeer: null, myPeer: null, error: "" });
+  Object.assign(collab, { role: null, status: "idle", ticket: "", participants: [], requests: [], hostPeer: null, myPeer: null, myCaps: [], error: "" });
   for (const h of sessionEndHooks) {
     try {
       await h(wasGuest);
@@ -219,12 +231,13 @@ listen<{ peer: string; msg: string }>("collab-msg", (e) => {
       return;
     }
     // Ignore everything from guests that weren't approved.
-    if (!collab.participants.some((p) => p.peer === peer)) return;
+    if (!collab.participants.some((p) => p.peer === peer && !p.removing)) return;
   } else if (collab.role === "guest") {
     if (msg.t === "welcome") {
       collab.status = "connected";
       collab.me.color = msg.you.color;
       collab.myPeer = msg.you.peer ?? null;
+      collab.myCaps = Array.isArray(msg.caps) ? msg.caps : [];
       collab.participants = msg.participants;
       ui.toast(t("ai.collab.connected"));
     } else if (msg.t === "participants") collab.participants = msg.participants;

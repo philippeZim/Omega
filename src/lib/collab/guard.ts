@@ -5,10 +5,36 @@
 import { ui } from "../ui.svelte";
 import { t } from "../i18n/index.svelte";
 
+/** What the host can allow per guest. Enforced on the host (rpc.svelte.ts); guests only mirror it. */
+export const CAPABILITIES = ["edit", "run", "packages", "git", "git-remote", "debug", "terminal"] as const;
+export type Capability = (typeof CAPABILITIES)[number];
+/** `terminal` is a full shell on the host's machine, so it needs an explicit grant. */
+export const DEFAULT_CAPABILITIES: Capability[] = CAPABILITIES.filter((c) => c !== "terminal");
+
 export const guestGuard = {
   /** "pending": joining or waiting for approval. */
   status: (): "none" | "pending" | "connected" => "none",
+  /** Whether this instance is hosting (or starting to host) a session. */
+  hosting: (): boolean => false,
+  /** Whether the host allows this (always true when not a guest). */
+  can: (_cap: Capability): boolean => true,
 };
+
+export const guestCan = (cap: Capability) => guestGuard.can(cap);
+
+/** Stops an action the host turned off for this guest. Returns true (after saying so) to stop. */
+export function blockedByCapability(cap: Capability): boolean {
+  if (guestGuard.can(cap)) return false;
+  ui.toast(t("ai.collab.capMissing", { cap: t(`ai.collab.cap.${cap}`) }), "error");
+  return true;
+}
+
+/** Hosting already: starting or joining a session would replace the running one. */
+export function blockedWhileHosting(): boolean {
+  if (!guestGuard.hosting()) return false;
+  ui.toast(t("ai.collab.alreadyHosting"), "error");
+  return true;
+}
 
 /**
  * Opening another project or session would mix it into the guest's view of the host's project.

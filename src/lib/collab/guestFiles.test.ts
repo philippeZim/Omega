@@ -9,7 +9,7 @@ const h = vi.hoisted(() => ({
   toast: vi.fn(),
   replaceDocText: vi.fn(),
 }));
-vi.mock("./share.svelte", () => ({ REMOTE: "collab:", share: h.share, remoteFsOp: h.remoteFsOp, openRemote: h.openRemote }));
+vi.mock("./share.svelte", () => ({ REMOTE: "collab:", share: h.share, remoteFsOp: h.remoteFsOp, openRemote: h.openRemote, opErrorText: (e: string) => (e === "exists" ? "code.existsAlready" : e) }));
 vi.mock("../state.svelte", () => ({ app: h.app }));
 vi.mock("../editor", () => ({ getText: () => "hello", replaceDocText: h.replaceDocText }));
 vi.mock("../ui.svelte", () => ({ ui: { prompt: h.prompt, toast: h.toast } }));

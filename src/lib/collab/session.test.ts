@@ -8,10 +8,11 @@ const handlers: ((peer: string, msg: Msg) => unknown)[] = [];
 const endHooks: ((wasGuest: boolean) => unknown)[] = [];
 const collab = { role: "guest" as "host" | "guest" | null, status: "connected", hostPeer: "host-peer", participants: [] as unknown[] };
 const broadcast = vi.fn();
+const send = vi.fn(async (_peer: string, _msg: Msg) => {});
 vi.mock("@tauri-apps/api/event", () => ({ listen: async () => () => {} }));
 vi.mock("./collab.svelte", () => ({
   collab,
-  send: vi.fn(),
+  send,
   broadcast,
   onCollabMessage: (fn: (peer: string, msg: Msg) => unknown) => void handlers.push(fn),
   sessionEndHooks: endHooks,
@@ -55,7 +56,17 @@ vi.mock("../state.svelte", () => ({
   setRoot: (r: string | null) => void (app.root = r),
 }));
 vi.mock("../code/runner.svelte", () => ({ runner: { project: null }, runAction: vi.fn(), refreshProject: vi.fn(), runnerRemote: { project: null, run: null } }));
-vi.mock("../terminal.svelte", () => ({ remoteTerminal: vi.fn(), writeTerminal: vi.fn(), closeTerminal: vi.fn(), terms: { tabs: [] }, isTaskPty: () => false, setRunEcho: vi.fn() }));
+const task = { state: { running: false, kind: null, taskId: null, status: null } as Record<string, unknown>, interrupt: vi.fn((_id: number) => true) };
+vi.mock("../terminal.svelte", () => ({
+  remoteTerminal: vi.fn(() => "remote"),
+  writeTerminal: vi.fn(),
+  closeTerminal: vi.fn(),
+  terms: { tabs: [] },
+  isTaskPty: () => false,
+  setRunEcho: vi.fn(),
+  taskState: () => task.state,
+  interruptTask: (id: number) => task.interrupt(id),
+}));
 vi.mock("../layout.svelte", () => ({ showView: vi.fn() }));
 vi.mock("../editor", () => ({
   getText: (id: string) => texts.get(id) ?? "",
@@ -65,6 +76,7 @@ const ui = fakeUi();
 vi.mock("../ui.svelte", () => ({ ui }));
 
 await import("./session.svelte");
+const { runner, runAction, runnerRemote } = await import("../code/runner.svelte");
 
 async function receive(peer: string, msg: Msg) {
   for (const h of handlers) await h(peer, msg);
@@ -127,4 +139,77 @@ test("host announces project files and Untitled tabs, not files outside the proj
   // The outside file is the active tab: neither its name nor a key goes out.
   expect(s.active).toBeNull();
   expect(JSON.stringify(s)).not.toContain("secret");
+});
+
+const RUN = { id: "run", label: "Run", cmd: "cargo run" };
+const replyTo = (peer: string, id: number) => send.mock.calls.map((c) => ({ peer: c[0], msg: c[1] })).find((x) => x.peer === peer && x.msg.t === "rpc.res" && x.msg.id === id)?.msg;
+
+function hostWith(caps: string[]) {
+  collab.role = "host";
+  collab.participants = [{ peer: "g1", name: "Gast", color: "#333333", role: "guest", caps }];
+  (runner as { project: unknown }).project = { kind: "rust", label: "Rust", run: RUN, build: null, test: null, more: [], needs: [], root: "/home/g" };
+  send.mockClear();
+  vi.mocked(runAction).mockClear();
+  task.interrupt.mockClear();
+}
+
+test("host: a guest with `run` starts an action; without it, or with an unknown one, nothing runs", async () => {
+  hostWith(["run"]);
+  await receive("g1", { t: "rpc.req", id: 1, method: "run.start", params: { action: "run" } });
+  expect(runAction).toHaveBeenCalledWith(RUN);
+  expect(replyTo("g1", 1)).toMatchObject({ ok: true });
+
+  vi.mocked(runAction).mockClear();
+  await receive("g1", { t: "rpc.req", id: 2, method: "run.start", params: { action: "rm -rf" } });
+  expect(replyTo("g1", 2)).toMatchObject({ ok: false, error: { code: "unavailable" } });
+
+  hostWith([]);
+  await receive("g1", { t: "rpc.req", id: 3, method: "run.start", params: { action: "run" } });
+  expect(replyTo("g1", 3)).toMatchObject({ ok: false, error: { code: "forbidden" } });
+  expect(runAction).not.toHaveBeenCalled();
+});
+
+test("host: the old unchecked run message does nothing", async () => {
+  hostWith([]);
+  await receive("g1", { t: "run", action: "run" });
+  expect(runAction).not.toHaveBeenCalled();
+});
+
+test("host: Stop needs `run` and names the task it means", async () => {
+  hostWith(["run"]);
+  await receive("g1", { t: "rpc.req", id: 4, method: "run.stop", params: { taskId: 7 } });
+  expect(task.interrupt).toHaveBeenCalledWith(7);
+  expect(replyTo("g1", 4)).toMatchObject({ ok: true, result: { stopped: true } });
+
+  hostWith([]);
+  await receive("g1", { t: "rpc.req", id: 5, method: "run.stop", params: { taskId: 7 } });
+  expect(replyTo("g1", 5)).toMatchObject({ ok: false, error: { code: "forbidden" } });
+  expect(task.interrupt).not.toHaveBeenCalled();
+});
+
+test("a guest joining mid-run gets the run state, also without `run`", async () => {
+  hostWith([]);
+  task.state = { running: true, kind: "run", taskId: 9, status: "running" };
+  await receive("g1", { t: "rpc.sub", topic: "run.state" });
+  expect(send).toHaveBeenCalledWith("g1", { t: "rpc.pub", topic: "run.state", payload: task.state });
+  task.state = { running: false, kind: null, taskId: null, status: null };
+});
+
+test("guest: pushed run state reaches the Run bar, Stop calls the host, leaving clears it", async () => {
+  collab.role = "guest";
+  (collab as { myCaps?: string[] }).myCaps = ["run"];
+  await join();
+  await receive("host-peer", { t: "rpc.pub", topic: "run.state", payload: { running: true, kind: "run", taskId: 12, status: "running" } });
+  expect(runner.remoteTask).toMatchObject({ running: true, taskId: 12 });
+  send.mockClear();
+  runnerRemote.stop!();
+  await vi.waitFor(() => expect(send).toHaveBeenCalledWith("host-peer", expect.objectContaining({ t: "rpc.req", method: "run.stop", params: { taskId: 12 } })));
+  const id = send.mock.calls.find((c) => c[1].t === "rpc.req")![1].id;
+  await receive("host-peer", { t: "rpc.res", id, ok: true, result: { stopped: true } });
+  await receive("host-peer", { t: "rpc.pub", topic: "run.state", payload: { running: false, kind: "run", taskId: 12, status: "stopped" } });
+  expect(runner.remoteTask).toMatchObject({ running: false, status: "stopped" });
+
+  for (const h of endHooks) await h(true);
+  expect(runner.remoteTask).toBeNull();
+  expect(runnerRemote.stop).toBeNull();
 });

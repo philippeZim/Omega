@@ -223,7 +223,7 @@ export function getView() {
  * Applies changes to a document from outside the main view (find/replace, search preview).
  * Open tabs keep undo history; the dirty flag (and with it autosave) updates as usual.
  */
-export function applyChanges(id: string, spec: { changes: import("@codemirror/state").ChangeSpec }) {
+export function applyChanges(id: string, spec: Pick<import("@codemirror/state").TransactionSpec, "changes" | "annotations">) {
   const d = docs.get(id);
   if (!d) return;
   if (id === activeId && view) {

@@ -1,5 +1,6 @@
 /** Guest: Save As for a shared tab, which creates a copy in the host's project. */
-import { REMOTE, openRemote, remoteFsOp, share } from "./share.svelte";
+import { REMOTE, openRemote, opErrorText, remoteFsOp, share } from "./share.svelte";
+import { blockedByCapability } from "./guard";
 import { app, type Tab } from "../state.svelte";
 import * as ed from "../editor";
 import { ui } from "../ui.svelte";
@@ -17,11 +18,9 @@ async function waitForTab(path: string): Promise<Tab | null> {
   }
 }
 
-const errorText = (e: string, name: string) =>
-  e === "invalid" ? t("app.invalidEntryName", { name }) : e === "exists" ? t("code.existsAlready", { name }) : e === "unavailable" ? t("ai.collab.fileUnavailable") : e;
-
 /** Asks for a path in the host's project and writes the tab's text there as a new shared file. */
 export async function saveCopyToHost(tab: Tab): Promise<boolean> {
+  if (blockedByCapability("edit")) return false;
   if (!share.hostHasRoot) {
     ui.toast(t("ai.collab.saveCopyNoFolder"), "error");
     return false;
@@ -34,7 +33,7 @@ export async function saveCopyToHost(tab: Tab): Promise<boolean> {
   const text = ed.getText(tab.id);
   const err = await remoteFsOp("create", rel);
   if (err) {
-    ui.toast(errorText(err, rel), "error");
+    ui.toast(opErrorText(err, rel), "error");
     return false;
   }
   share.treeGen++;

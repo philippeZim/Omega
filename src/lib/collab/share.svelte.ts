@@ -7,11 +7,13 @@
  */
 import * as Y from "yjs";
 import { Awareness, encodeAwarenessUpdate, applyAwarenessUpdate, removeAwarenessStates } from "y-protocols/awareness";
-import { yCollab } from "y-codemirror.next";
+import { yCollab, ySyncAnnotation } from "y-codemirror.next";
 import { invoke } from "@tauri-apps/api/core";
-import { ChangeSet, type ChangeSpec } from "@codemirror/state";
+import { ChangeSet, EditorState, type ChangeSpec } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { collab, send, broadcast, onCollabMessage } from "./collab.svelte";
+import { blockedByCapability, guestCan } from "./guard";
+import { call, forgetRpcPeer, hasCapability, isObj, onCapabilitiesChanged, registerMethod, rpcErrorText, RpcFail } from "./rpc.svelte";
 import { app, openFile, activeTab, activate, collabHooks, setMode, pathMoved, type Tab } from "../state.svelte";
 import type { Mode } from "../modes";
 import { MODES } from "../modeList";
@@ -118,7 +120,8 @@ function makeDoc(rel: string, isHost: boolean): SharedDoc {
         pos += op.delete;
       }
     }
-    if (changes.length) ed.applyChanges(d.tabId, { changes: ChangeSet.of(changes, ed.getText(d.tabId).length) });
+    // Marked as sync, so it also reaches the tab of a guest without `edit` (see `binding`).
+    if (changes.length) ed.applyChanges(d.tabId, { changes: ChangeSet.of(changes, ed.getText(d.tabId).length), annotations: ySyncAnnotation.of(null as never) });
   };
   ytext.observe(onText);
 
@@ -148,9 +151,13 @@ function binding(d: SharedDoc) {
   return [
     yCollab(d.ytext, d.awareness, { undoManager: d.undo }),
     viewActions.of({
-      "collab.undo": () => (d.undo.undo(), true),
-      "collab.redo": () => (d.undo.redo(), true),
+      // Without `edit` the host would drop the step and this copy would drift.
+      "collab.undo": () => (guestCan("edit") && d.undo.undo(), true),
+      "collab.redo": () => (guestCan("edit") && d.undo.redo(), true),
     }),
+    // The host drops edits without the capability. Read-only stops typing; the filter also stops
+    // commands that change the text directly, so the guest's copy can't drift. Host changes pass.
+    ...(collab.role === "guest" && !guestCan("edit") ? [EditorState.readOnly.of(true), EditorState.changeFilter.of((tr) => tr.annotation(ySyncAnnotation) !== undefined)] : []),
   ];
 }
 
@@ -195,6 +202,36 @@ export async function hostKeyChecked(tab: Tab): Promise<string | null> {
 export async function guestPathOk(rel: string, root: string | null = app.root): Promise<boolean> {
   if (!root || !relAllowed(rel)) return false;
   return invoke<boolean>("collab_path_inside", { root, path: rel ? joinPath(root, rel) : root }).catch(() => false);
+}
+
+/** What a host-side handler uses for guest paths: one project folder, captured when it starts. */
+export interface GuestScope {
+  readonly root: string;
+  /** False once the host opened another folder: stop before changing anything. */
+  live(): boolean;
+  /** `guestPathOk` against the captured folder. */
+  check(rel: string): Promise<boolean>;
+  /** Absolute path for the host's own calls. Never send it to a guest. */
+  abs(rel: string): string;
+  /** Relative path for a result, or null if guests may not see it. */
+  rel(abs: string): string | null;
+}
+
+/** The scope for one request, or null if the host has no folder open. */
+export function guestScope(): GuestScope | null {
+  const root = app.root;
+  if (!root) return null;
+  return {
+    root,
+    live: () => app.root === root,
+    check: (rel) => guestPathOk(rel, root),
+    abs: (rel) => (rel ? joinPath(root, rel) : root),
+    rel: (abs) => {
+      if (abs === root) return "";
+      const rel = abs.startsWith(root + "/") ? abs.slice(root.length + 1) : null;
+      return rel && relAllowed(rel) ? rel : null;
+    },
+  };
 }
 
 function scheduleHostWrite(d: SharedDoc) {
@@ -438,11 +475,24 @@ function scrollToLine(line: number) {
 
 async function guestReceiveState(rel: string, update: Uint8Array, name?: string) {
   const old = docs.get(rel);
-  if (old) dispose(old);
+  // A fresh copy for a tab that's already open (capability change): same tab, host's text.
+  const kept = old?.tabId ? app.tabs.find((x) => x.id === old.tabId) : undefined;
+  if (old) {
+    if (kept) ed.setCollab(kept.id, null);
+    dispose(old);
+  }
   const d = makeDoc(rel, false);
   Y.applyUpdate(d.ydoc, update, "remote");
-  const { openVirtual } = await import("../state.svelte");
-  const tabId = openVirtual(REMOTE + rel, name || basename(rel), d.ytext.toString());
+  let tabId: string;
+  if (kept) {
+    const dirty = kept.dirty;
+    ed.replaceDocText(kept.id, d.ytext.toString());
+    kept.dirty = dirty;
+    tabId = kept.id;
+  } else {
+    const { openVirtual } = await import("../state.svelte");
+    tabId = openVirtual(REMOTE + rel, name || basename(rel), d.ytext.toString());
+  }
   d.tabId = tabId;
   ed.setCollab(tabId, binding(d));
   const p = pendingOpens.get(rel);
@@ -463,21 +513,32 @@ export function onTabClosed(path: string | null) {
 
 // ------------------------------------------------------------------ remote file tree (guest)
 
-let reqSeq = 0;
-const listWaiters = new Map<number, (e: { name: string; rel: string; is_dir: boolean }[]) => void>();
+interface FsEntry {
+  name: string;
+  rel: string;
+  is_dir: boolean;
+}
 
-export function listRemote(rel: string): Promise<{ name: string; rel: string; is_dir: boolean }[]> {
-  const req = ++reqSeq;
-  return new Promise((resolve) => {
-    listWaiters.set(req, resolve);
-    send(collab.hostPeer!, { t: "fs.list", path: rel, req });
-    setTimeout(() => listWaiters.delete(req) && resolve([]), 8000);
-  });
+export async function listRemote(rel: string): Promise<FsEntry[]> {
+  const r = await call("fs.list", { path: rel }, { timeoutMs: 8000 });
+  return r.ok ? r.value : [];
 }
 
 // ------------------------------------------------------------------ file operations (guest → host)
 
+declare module "./rpc.svelte" {
+  interface RpcMethods {
+    "fs.list": { params: { path: string }; result: FsEntry[] };
+    "fs.op": { params: FsOpParams; result: null };
+  }
+}
+
 type FsOp = "create" | "mkdir" | "rename" | "delete";
+interface FsOpParams {
+  op: FsOp;
+  path: string;
+  to?: string;
+}
 const FS_OPS: readonly unknown[] = ["create", "mkdir", "rename", "delete"] satisfies FsOp[];
 const isFsOp = (op: unknown): op is FsOp => FS_OPS.includes(op);
 
@@ -486,25 +547,26 @@ const safeRel = (rel: unknown): rel is string =>
   typeof rel === "string" && rel !== "" && !rel.includes("\\") && !rel.split("/").some((seg) => seg === "" || seg === "." || seg === "..");
 
 /**
- * Host: creates, renames or deletes a file for a guest (#133). Returns null, or an error: "invalid",
- * "exists", "unavailable" (codes the guest translates) or the file system's message.
+ * Host: creates, renames or deletes a file for a guest (#133). Returns null, or a code the guest
+ * translates: "invalid", "exists", "unavailable" or "failed" (the file system's message can hold
+ * absolute paths, so it stays on the host).
  */
-async function hostFsOp(peer: string, op: unknown, rel: unknown, toRel: unknown): Promise<string | null> {
-  if (!isFsOp(op)) return "invalid";
+async function hostFsOp(peer: string, { op, path: rel, to: toRel }: FsOpParams, signal: AbortSignal): Promise<string | null> {
   // Checked and used against one folder: the host can open another during any await below.
-  const root = app.root;
-  if (!root) return "unavailable";
+  const scope = guestScope();
+  if (!scope) return "unavailable";
+  const live = () => scope.live() && !signal.aborted;
   if (!safeRel(rel) || (op === "rename" && !safeRel(toRel))) return "invalid";
   // Also through symlinks, nothing outside the shared folder (#138).
-  if (!(await guestPathOk(rel, root)) || (op === "rename" && !(await guestPathOk(toRel as string, root)))) return "invalid";
-  const abs = joinPath(root, rel);
-  const to = op === "rename" ? joinPath(root, toRel as string) : null;
+  if (!(await scope.check(rel)) || (op === "rename" && !(await scope.check(toRel as string)))) return "invalid";
+  const abs = scope.abs(rel);
+  const to = op === "rename" ? scope.abs(toRel as string) : null;
   // Moving or deleting a folder would take a nested repository's git folder with it.
   if ((op === "rename" || op === "delete") && (await invoke<boolean>("collab_tree_has_git", { path: abs }).catch(() => true))) return "invalid";
   const who = collab.participants.find((p) => p.peer === peer)?.name ?? t("ai.collab.guest");
   try {
-    if ((op === "create" || op === "mkdir" || op === "rename") && (await fsApi.exists(to ?? abs))) return app.root === root ? "exists" : "unavailable";
-    if (app.root !== root) return "unavailable";
+    if ((op === "create" || op === "mkdir" || op === "rename") && (await fsApi.exists(to ?? abs))) return live() ? "exists" : "unavailable";
+    if (!live()) return "unavailable";
     if (op === "create") await fsApi.createFile(abs);
     else if (op === "mkdir") await fsApi.createDir(abs);
     else if (op === "rename") {
@@ -517,28 +579,57 @@ async function hostFsOp(peer: string, op: unknown, rel: unknown, toRel: unknown)
       ui.toast(t("ai.collab.guestDeleted", { name: who, file: rel }));
     }
   } catch (e) {
-    return String(e);
+    console.error("guest file operation", e);
+    return "failed";
   }
   return null;
 }
 
-const opWaiters = new Map<number, (error: string | null) => void>();
+registerMethod({
+  name: "fs.op",
+  capability: "edit",
+  // Only the known operations: anything else must not fall through to one of them.
+  validate: (raw) =>
+    isObj(raw) && isFsOp(raw.op) && typeof raw.path === "string" && (raw.to === undefined || typeof raw.to === "string")
+      ? { op: raw.op, path: raw.path, ...(raw.to === undefined ? {} : { to: raw.to }) }
+      : null,
+  handle: async (params, { peer, signal }) => {
+    const error = await hostFsOp(peer, params, signal);
+    if (error) throw new RpcFail(error);
+    return null;
+  },
+});
 
-/** Guest: asks the host to change its project files; resolves to null or an error text. */
-export function remoteFsOp(op: FsOp, rel: string, to?: string): Promise<string | null> {
-  const req = ++reqSeq;
-  return new Promise((resolve) => {
-    opWaiters.set(req, resolve);
-    send(collab.hostPeer!, { t: "fs.op", op, path: rel, to, req });
-    setTimeout(() => opWaiters.delete(req) && resolve(t("ai.collab.fileOpTimeout")), 10000);
-  });
+registerMethod({
+  name: "fs.list",
+  capability: null, // every guest can browse, also without `edit`
+  validate: (raw) => (isObj(raw) && typeof raw.path === "string" ? { path: raw.path } : null),
+  handle: async ({ path: rel }) => {
+    const scope = guestScope();
+    if (!scope || !(await scope.check(rel)) || !scope.live()) return [];
+    try {
+      const listed = await fsApi.listDir(scope.abs(rel));
+      if (!scope.live()) return [];
+      return listed.filter((e) => !isGitName(e.name)).map((e) => ({ name: e.name, rel: rel ? `${rel}/${e.name}` : e.name, is_dir: e.is_dir }));
+    } catch {
+      return [];
+    }
+  },
+});
+
+/** Guest: asks the host to change its project files; resolves to null or an error code. */
+export async function remoteFsOp(op: FsOp, rel: string, to?: string): Promise<string | null> {
+  const r = await call("fs.op", { op, path: rel, ...(to === undefined ? {} : { to }) }, { timeoutMs: 10000 });
+  return r.ok ? null : r.error.code;
 }
 
-const opErrorText = (e: string, name: string) =>
-  e === "invalid" ? t("app.invalidEntryName", { name }) : e === "exists" ? t("code.existsAlready", { name }) : e === "unavailable" ? t("ai.collab.fileUnavailable") : e;
+/** Text for an error code of `remoteFsOp`. */
+export const opErrorText = (e: string, name: string) =>
+  e === "invalid" || e === "invalid_params" ? t("app.invalidEntryName", { name }) : e === "exists" ? t("code.existsAlready", { name }) : e === "unavailable" ? t("ai.collab.fileUnavailable") : rpcErrorText(e);
 
 /** Guest: new file or folder in the host's project (`dir`: relative folder, "" = project root). */
 export async function remoteCreate(dir: string, isDir: boolean) {
+  if (blockedByCapability("edit")) return;
   const name = await ui.prompt(isDir ? t("app.newFolder") : t("app.newFile"), "", isDir ? t("app.folderNamePlaceholder") : t("app.fileNamePlaceholder"));
   if (!name) return;
   const rel = dir ? `${dir}/${name}` : name;
@@ -550,6 +641,7 @@ export async function remoteCreate(dir: string, isDir: boolean) {
 
 /** Guest: renames a file or folder of the host's project. */
 export async function remoteRename(rel: string) {
+  if (blockedByCapability("edit")) return;
   const name = basename(rel);
   const dot = name.lastIndexOf(".");
   const next = await ui.prompt(t("common.rename"), name, "", dot > 0 ? dot : undefined);
@@ -563,6 +655,7 @@ export async function remoteRename(rel: string) {
 
 /** Guest: deletes a file or folder of the host's project (after asking). */
 export async function remoteDelete(rel: string) {
+  if (blockedByCapability("edit")) return;
   if (!(await ui.confirm(t("app.deleteConfirm", { name: basename(rel) }), t("app.cannotUndo"), t("common.delete"), true))) return;
   const err = await remoteFsOp("delete", rel);
   if (err) return ui.toast(opErrorText(err, basename(rel)), "error");
@@ -617,6 +710,10 @@ const presenceOrder = new Map<string, number>();
 /** Host: a guest left. A presence message of theirs still being checked is dropped too. */
 export function forgetPeer(peer: string) {
   presenceOrder.delete(peer);
+  delete share.presence[peer];
+  if (share.following === peer) share.following = null;
+  for (const d of docs.values()) d.subscribers.delete(peer);
+  forgetRpcPeer(peer);
 }
 
 /**
@@ -661,28 +758,12 @@ onCollabMessage(async (peer, msg) => {
       // Only from guests that have this doc open: a late edit to a same-named file of the previous
       // folder must not land in this one.
       const d = hostDocAt(msg.path);
-      if (d?.subscribers.has(peer)) Y.applyUpdate(d.ydoc, unb64(msg.update), peer);
+      if (d?.subscribers.has(peer) && hasCapability(peer, "edit")) Y.applyUpdate(d.ydoc, unb64(msg.update), peer);
     } else if (msg.t === "aw") {
       const d = hostDocAt(msg.path);
       if (d?.subscribers.has(peer)) applyAwarenessUpdate(d.awareness, unb64(msg.update), peer);
     } else if (msg.t === "doc.close") {
       hostDocAt(msg.path)?.subscribers.delete(peer);
-    } else if (msg.t === "fs.op") {
-      const error = await hostFsOp(peer, msg.op, msg.path, msg.to);
-      send(peer, { t: "fs.op.res", req: msg.req, error });
-    } else if (msg.t === "fs.list") {
-      const rel = String(msg.path || "");
-      let entries: { name: string; rel: string; is_dir: boolean }[] = [];
-      const root = app.root;
-      if (root && (await guestPathOk(rel, root)) && app.root === root) {
-        try {
-          const listed = await fsApi.listDir(rel ? joinPath(root, rel) : root);
-          if (app.root === root) entries = listed.filter((e) => !isGitName(e.name)).map((e) => ({ name: e.name, rel: rel ? `${rel}/${e.name}` : e.name, is_dir: e.is_dir }));
-        } catch {
-          /* ignore */
-        }
-      }
-      send(peer, { t: "fs.list.res", req: msg.req, entries });
     } else if (msg.t === "presence") {
       const info = await cleanPresence(peer, msg);
       if (!info) return;
@@ -743,17 +824,23 @@ onCollabMessage(async (peer, msg) => {
     if (d) applyAwarenessUpdate(d.awareness, unb64(msg.update), "remote");
   } else if (msg.t === "doc.error") {
     ui.toast(`${msg.path}: ${msg.error === "unavailable" ? t("ai.collab.fileUnavailable") : msg.error}`, "error");
-  } else if (msg.t === "fs.op.res") {
-    opWaiters.get(msg.req)?.(msg.error ?? null);
-    opWaiters.delete(msg.req);
-  } else if (msg.t === "fs.list.res") {
-    listWaiters.get(msg.req)?.(msg.entries);
-    listWaiters.delete(msg.req);
+  } else if (msg.t === "participants") {
+    // Someone left: their cursor label and follow target go too.
+    const here = new Set((msg.participants as { peer: string }[]).map((p) => p.peer));
+    for (const id of Object.keys(share.presence)) if (id !== "host" && !here.has(id)) delete share.presence[id];
+    if (share.following && share.following !== "host" && !here.has(share.following)) share.following = null;
   } else if (msg.t === "presence") {
     const id = msg.peer ?? peer;
     share.presence[id] = { file: msg.file, line: msg.line, name: msg.name, color: msg.color, mode: msg.mode };
     if (share.following === id) applyFollow();
   }
+});
+
+// Guest: the host changed `edit`. Fresh copies drop edits it refused and switch the tabs read-only
+// (or back), so nothing diverges.
+onCapabilitiesChanged((before, now) => {
+  if (before.includes("edit") === now.includes("edit")) return;
+  for (const rel of docs.keys()) send(collab.hostPeer!, { t: "doc.open", path: rel });
 });
 
 /** Session ended: unbind host tabs, close guest tabs, drop all shared docs. */

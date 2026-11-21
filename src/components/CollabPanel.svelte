@@ -15,6 +15,8 @@
   import { ui } from "../lib/ui.svelte";
   import { app } from "../lib/state.svelte";
   import { share, follow } from "../lib/collab/share.svelte";
+  import { setCapability, capabilityLabel } from "../lib/collab/rpc.svelte";
+  import { CAPABILITIES } from "../lib/collab/guard";
   import { t } from "../lib/i18n/index.svelte";
 
   /** Presence key of a participant ("host" for the host as seen by guests). */
@@ -107,6 +109,20 @@
             <button class="x" onclick={() => kick(p.peer)} title={t("ai.collab.remove")} aria-label={t("ai.collab.remove")}><Glyph name="x" size={8} /></button>
           {/if}
         </div>
+        {#if collab.role === "host" && p.role === "guest"}
+          <div class="caps" role="group" aria-label={t("ai.collab.capabilities")}>
+            {#each CAPABILITIES as cap (cap)}
+              {@const on = !!p.caps?.includes(cap)}
+              <button class="followbtn cap" class:on role="switch" aria-checked={on} title={t(`ai.collab.capHint.${cap}`)} onclick={() => setCapability(p.peer, cap, !on)}>{capabilityLabel(cap)}</button>
+            {/each}
+          </div>
+        {:else if collab.role === "guest" && isMe}
+          <div class="caps" role="list" aria-label={t("ai.collab.yourCapabilities")}>
+            {#each collab.myCaps as cap (cap)}
+              <span class="tag" role="listitem" title={t(`ai.collab.capHint.${cap}`)}>{capabilityLabel(cap)}</span>
+            {/each}
+          </div>
+        {/if}
       {/each}
     </div>
 
@@ -162,6 +178,7 @@
   .followbtn { flex-shrink: 0; white-space: nowrap; height: 22px; padding: 0 9px; border-radius: 999px; font-size: 11px; color: var(--label-2); background: rgba(var(--fg-rgb), 0.06); }
   .followbtn:hover { background: rgba(var(--fg-rgb), 0.12); color: var(--label); }
   .followbtn.on { background: var(--accent); color: #fff; }
+  .caps { display: flex; flex-wrap: wrap; gap: 4px; padding: 0 8px 8px 41px; }
   .avatar { flex-shrink: 0; width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; font-size: 11px; font-weight: 700; color: #111; }
   .tag { flex-shrink: 0; white-space: nowrap; font-size: 10px; padding: 1px 7px; border-radius: 999px; background: rgba(var(--fg-rgb), 0.1); color: var(--label-2); }
   .spacer { flex: 1; }
