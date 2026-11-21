@@ -116,8 +116,8 @@ function fromStore(state: EditorState, path: string) {
 }
 
 /**
- * Where a breakpoint at a line start goes, or null if it's gone. It stays with the line's code: a line
- * break inserted right before the code pushes it down, and removing that break again brings it back.
+ * Where a breakpoint at a line start goes, or null if it's gone. It stays with the line's code: blank
+ * lines inserted right before the code push it down, and removing them again brings it back.
  */
 function mapBreakpoint(tr: Transaction, from: number): number | null {
   const before = tr.startState.doc;
@@ -127,7 +127,7 @@ function mapBreakpoint(tr: Transaction, from: number): number | null {
     if (fromA === from && toA === from && before.lineAt(from).to > from) {
       const inserted = after.sliceString(fromB, toB);
       const lastBreak = inserted.lastIndexOf("\n");
-      if (lastBreak >= 0 && !inserted.slice(lastBreak + 1).trim()) moved = fromB + lastBreak + 1;
+      if (lastBreak >= 0 && !inserted.trim()) moved = fromB + lastBreak + 1;
     } else if (fromA < from && from <= toA && fromB === toB && after.lineAt(fromB).from === fromB) {
       const removed = before.sliceString(fromA, toA);
       if (removed.includes("\n") && !removed.trim()) moved = fromB;
@@ -140,7 +140,8 @@ function mapBreakpoints(set: RangeSet<BpMarker>, tr: Transaction) {
   const mapped = new Map<number, BpMarker>();
   for (const it = set.iter(); it.value; it.next()) {
     const at = mapBreakpoint(tr, it.from);
-    if (at !== null && !mapped.has(at)) mapped.set(at, it.value);
+    // Markers that meet on one line become one; a condition is worth more than a plain marker.
+    if (at !== null && (!mapped.has(at) || (!mapped.get(at)!.condition && it.value.condition))) mapped.set(at, it.value);
   }
   return RangeSet.of([...mapped].map(([at, marker]) => marker.range(at)), true);
 }

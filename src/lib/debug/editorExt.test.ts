@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { history, insertNewlineAndIndent, undo, redo } from "@codemirror/commands";
+import { deleteCharBackward, deleteCharForward, history, insertNewlineAndIndent, undo, redo } from "@codemirror/commands";
 import { ySyncAnnotation } from "y-codemirror.next";
 import { debugExtension } from "./editorExt";
 import { dbg, SHARED_BP } from "./store.svelte";
@@ -88,10 +88,33 @@ describe("breakpoints follow the code", () => {
     expect(lines()).toEqual([2]);
   });
 
-  test("deleting the breakpoint's code still removes it when lines are joined", () => {
+  test("joining a breakpoint's line into the previous one removes it, as it always did", () => {
+    for (const [pos, command] of [[4, deleteCharBackward], [3, deleteCharForward]] as const) {
+      open("one\ntwo\nthree", 2);
+      view.dispatch({ selection: { anchor: pos } });
+      command(view);
+      expect(view.state.doc.line(1).text).toBe("onetwo");
+      expect(lines()).toEqual([]);
+      view.destroy();
+    }
+    open("one", 1);
+  });
+
+  test("undo of a deleted line puts the marker back on that line", () => {
     open("one\ntwo\nthree", 2);
-    view.dispatch({ changes: { from: 3, to: 4 } });
-    expect(lines()).toEqual([]);
+    view.dispatch({ changes: { from: 4, to: 8 } });
+    expect(lines()).toEqual([2]);
+    undo(view);
+    expect(view.state.doc.toString()).toBe("one\ntwo\nthree");
+    expect(lines()).toEqual([2]);
+  });
+
+  test("a conditional marker wins over a plain one on the same line", () => {
+    dbg.breakpoints[PATH] = [{ line: 2 }, { line: 3, condition: "x > 1" }];
+    view = new EditorView({ state: EditorState.create({ doc: "one\n\nthree", extensions: [history(), debugExtension(PATH)] }), parent: document.body });
+    view.dispatch({ changes: { from: 4, to: 5 } });
+    vi.advanceTimersByTime(500);
+    expect(dbg.breakpoints[PATH].map((b) => [b.line, b.condition])).toEqual([[2, "x > 1"]]);
   });
 
   test("two markers that end up on one line stay one", () => {
