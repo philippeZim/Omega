@@ -317,13 +317,6 @@ fn forward(dir: &Path, key: &str, req: &Request) -> std::io::Result<()> {
 
 // ------------------------------------------------------------------ detaching
 
-/// Removes a dying AppImage mount from a PATH-like value. `None`: nothing is left of it.
-fn strip_appdir(value: &str, appdir: &str) -> Option<String> {
-    let kept: Vec<&str> = value.split(':').filter(|e| !e.starts_with(appdir)).collect();
-    let joined = kept.join(":");
-    (!joined.is_empty()).then_some(joined)
-}
-
 #[cfg(unix)]
 fn from_terminal() -> bool {
     [0, 1, 2].iter().any(|fd| unsafe { libc::isatty(*fd) } == 1)
@@ -360,23 +353,12 @@ fn detached_command(req: &Request) -> std::io::Result<std::process::Command> {
     let paths = req.dirs.iter().chain(&req.files);
     let mut c;
     if let (true, Some(bundle)) = (cfg!(target_os = "macos"), app_bundle(&exe)) {
-        c = std::process::Command::new("/usr/bin/open");
+        c = crate::env::process("/usr/bin/open");
         c.arg("-a").arg(bundle).arg("--args").arg("--").args(paths);
     } else {
         // Inside an AppImage the binary lives in a mount that ends with this process.
-        c = std::process::Command::new(std::env::var_os("APPIMAGE").unwrap_or_else(|| exe.into_os_string()));
+        c = crate::env::process(std::env::var_os("APPIMAGE").unwrap_or_else(|| exe.into_os_string()));
         c.arg("--").args(paths);
-    }
-    if let Ok(appdir) = std::env::var("APPDIR") {
-        for (k, v) in std::env::vars() {
-            if k != "APPIMAGE" && v.contains(&appdir) {
-                match strip_appdir(&v, &appdir) {
-                    Some(clean) => c.env(&k, clean),
-                    None => c.env_remove(&k),
-                };
-            }
-        }
-        c.env_remove("APPDIR");
     }
     c.env(DETACHED_ENV, "1").current_dir(crate::env::home()).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
     #[cfg(unix)]
@@ -767,8 +749,6 @@ mod tests {
 
     #[test]
     fn a_dying_appimage_mount_leaves_the_environment() {
-        assert_eq!(strip_appdir("/tmp/.mount_x/usr/bin:/usr/bin", "/tmp/.mount_x").as_deref(), Some("/usr/bin"));
-        assert_eq!(strip_appdir("/tmp/.mount_x/usr/lib", "/tmp/.mount_x"), None);
     }
 
     #[test]

@@ -214,7 +214,7 @@ mod platform {
     pub fn acquire(_: Option<&Path>) -> (Handle, bool, Option<String>) {
         // `tail --pid` ends together with Omega, so a crash can't leave the inhibitor behind.
         let me = std::process::id().to_string();
-        let child = std::process::Command::new("systemd-inhibit")
+        let child = crate::env::process("systemd-inhibit")
             .args(["--what=handle-lid-switch:sleep:idle", "--who=Omega", "--why=AI agent running in a terminal", "--mode=block"])
             .args(["tail", "--pid", &me, "-f", "/dev/null"])
             .stdin(Stdio::null())
@@ -255,7 +255,7 @@ mod platform {
     /// `pmset` needs root: ask for the admin password with the system dialog.
     fn pmset(value: u8) -> Result<(), String> {
         let script = format!("do shell script \"/usr/bin/pmset -a disablesleep {value}\" with administrator privileges with prompt \"Omega: keep the Mac awake with the lid closed while an AI agent is running\"");
-        let out = std::process::Command::new("osascript").args(["-e", &script]).output().map_err(|e| e.to_string())?;
+        let out = crate::env::process("osascript").args(["-e", &script]).output().map_err(|e| e.to_string())?;
         if out.status.success() { Ok(()) } else { Err(String::from_utf8_lossy(&out.stderr).trim().to_string()) }
     }
 
@@ -269,7 +269,7 @@ mod platform {
     }
 
     pub fn processes() -> Vec<Proc> {
-        let Ok(out) = std::process::Command::new("ps").args(["-Ao", "pid=,ppid=,comm=,args="]).output() else { return vec![] };
+        let Ok(out) = crate::env::process("ps").args(["-Ao", "pid=,ppid=,comm=,args="]).output() else { return vec![] };
         String::from_utf8_lossy(&out.stdout)
             .lines()
             .filter_map(|l| {
@@ -285,7 +285,7 @@ mod platform {
 
     pub fn acquire(dir: Option<&Path>) -> (Handle, bool, Option<String>) {
         let me = std::process::id().to_string();
-        let caffeinate = std::process::Command::new("caffeinate")
+        let caffeinate = crate::env::process("caffeinate")
             .args(["-ims", "-w", &me])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
