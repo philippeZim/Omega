@@ -101,6 +101,17 @@ describe("the document's lifetime", () => {
     expect(L.allClients()).toHaveLength(0);
   });
 
+  test("an editor left mounted after its last tab closed doesn't restart the server", async () => {
+    exists.add("/w/pyproject.toml");
+    mount("/w/prog", "c");
+    await vi.waitFor(() => expect(opened()).toHaveLength(1));
+    const id = spawned()[0].id;
+    L.closeLspDoc("/w/prog");
+    await emit("proc-exit", id);
+    await new Promise((r) => setTimeout(r, 1100));
+    expect(spawned()).toHaveLength(1);
+  });
+
   test("a save refreshes the copy and reaches the server under its name", async () => {
     const { copy } = await running();
     await L.saveLspDoc("/w/prog", "new");

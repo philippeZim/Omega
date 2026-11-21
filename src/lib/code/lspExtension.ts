@@ -6,7 +6,7 @@ import { autocompletion, insertCompletionText, snippet, type Completion, type Co
 import { setDiagnostics, forEachDiagnostic, type Diagnostic, type Action } from "@codemirror/lint";
 import { ui } from "../ui.svelte";
 import { t } from "../i18n/index.svelte";
-import { clientFor, fileUri, realPathOf, registerShadow, restartListeners, restartServer, setLspRoute, setLspWorkspace, uriPath, type LspClient, type ServerKind } from "./lsp.svelte";
+import { clientFor, fileUri, lspState, realPathOf, registerShadow, restartListeners, restartServer, setLspRoute, setLspWorkspace, uriPath, type LspClient, type ServerKind } from "./lsp.svelte";
 import type { LangInfo } from "./languages";
 import { isForeignLang } from "./langOverride.svelte";
 import { clangdCommand, shadowForLsp } from "./langRun";
@@ -254,6 +254,11 @@ export function lspExtension(path: string, lang: LangInfo): Extension {
   let client: LspClient | null = null;
   let viewRef: EditorView | null = null;
   let changeTimer: number | undefined;
+  /**
+   * The tab was closed. With no other tab the editor keeps this state, so without this check a
+   * stopped private server would be started again for a file nobody has open.
+   */
+  const closed = () => isForeignLang(path) && !(path in lspState.routes);
   /** Counts connection attempts: a slower older one must not attach after a newer one. */
   let connects = 0;
 
@@ -313,12 +318,12 @@ export function lspExtension(path: string, lang: LangInfo): Extension {
         if (!view) return;
         // The dead server's diagnostics are stale.
         view.dispatch(setDiagnostics(view.state, []));
-        if (this.retries-- > 0) setTimeout(() => viewRef === view && !client && this.connect(view), RECONNECT_MS);
+        if (this.retries-- > 0) setTimeout(() => viewRef === view && !client && !closed() && this.connect(view), RECONNECT_MS);
       };
       /** After a manual restart: editors without a client (failed or missing server) try again. */
       onRestart = () => {
         this.retries = 3;
-        if (!client && viewRef) this.connect(viewRef);
+        if (!client && viewRef && !closed()) this.connect(viewRef);
       };
       constructor(view: EditorView) {
         viewRef = view;
