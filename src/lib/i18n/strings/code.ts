@@ -263,6 +263,10 @@ export const en = {
   "code.ad.noScalaLsp": "Scala language server (Metals) not available",
   "code.ad.scalaWaitBuild": "Waiting for Metals to import and compile the build…",
   "code.ad.scalaNoSession": "Metals did not return a debug session",
+  "code.lsp.metalsPaused": "Metals is paused: a guest without Run changed this project. Restart the server to allow it again.",
+  "code.lsp.metalsResumeTitle": "Start Metals for this project?",
+  "code.lsp.metalsResumeMsg": "{name} changed this project without the Run permission. Metals executes the project's build files (build.sbt, .bsp), so check them first.",
+  "code.lsp.metalsResumeOk": "Start Metals",
 };
 export const de: Record<keyof typeof en, string> = {
   "code.key.ctrl": "Strg",
@@ -518,6 +522,10 @@ export const de: Record<keyof typeof en, string> = {
   "code.ad.noScalaLsp": "Scala Language Server (Metals) nicht verfügbar",
   "code.ad.scalaWaitBuild": "Warte, bis Metals den Build importiert und kompiliert hat …",
   "code.ad.scalaNoSession": "Metals hat keine Debug-Sitzung geliefert",
+  "code.lsp.metalsPaused": "Metals ist pausiert: Ein Gast ohne Ausführen-Recht hat dieses Projekt geändert. Starte den Server neu, um es wieder zu erlauben.",
+  "code.lsp.metalsResumeTitle": "Metals für dieses Projekt starten?",
+  "code.lsp.metalsResumeMsg": "{name} hat dieses Projekt ohne Ausführen-Recht geändert. Metals führt die Build-Dateien des Projekts aus (build.sbt, .bsp), prüfe sie also vorher.",
+  "code.lsp.metalsResumeOk": "Metals starten",
 };
 export const fr: Record<keyof typeof en, string> = {
   "code.key.ctrl": "Ctrl",
@@ -773,4 +781,8 @@ export const fr: Record<keyof typeof en, string> = {
   "code.ad.noScalaLsp": "Serveur de langage Scala (Metals) indisponible",
   "code.ad.scalaWaitBuild": "En attente de l’import et de la compilation du build par Metals…",
   "code.ad.scalaNoSession": "Metals n’a renvoyé aucune session de débogage",
+  "code.lsp.metalsPaused": "Metals est en pause : un invité sans droit d’exécution a modifié ce projet. Redémarrez le serveur pour l’autoriser à nouveau.",
+  "code.lsp.metalsResumeTitle": "Démarrer Metals pour ce projet ?",
+  "code.lsp.metalsResumeMsg": "{name} a modifié ce projet sans le droit d’exécution. Metals exécute les fichiers de build du projet (build.sbt, .bsp) : vérifiez-les d’abord.",
+  "code.lsp.metalsResumeOk": "Démarrer Metals",
 };

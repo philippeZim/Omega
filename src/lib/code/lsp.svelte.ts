@@ -7,6 +7,7 @@ import { ui } from "../ui.svelte";
 import { fsApi, dirname, joinPath, isRoot } from "../api";
 import { IS_WIN, OS, platform } from "../platform";
 import { ensureTools, withInstallProgress, serverProgressId, type ToolId } from "../tools.svelte";
+import { onGuestChange, pausedBy, resumeCompiling } from "../collab/guestChanges";
 import type { LangInfo } from "./languages";
 
 type Json = any;
@@ -489,6 +490,7 @@ const guestReserving = new Set<string>();
 
 /** Whether a guest may start this server: it's installed and within the limit. */
 async function guestMayStart(kind: ServerKind, root: string, key: string) {
+  if (kind === "scala") return false; // Metals runs the project's build code (build.sbt, .bsp)
   for (const k of guestServers) if (!clients.has(k) && !starting.has(k) && !guestReserving.has(k)) guestServers.delete(k);
   if (declined.has(kind) || failed.has(key)) return false;
   if (!guestServers.has(key) && guestServers.size >= MAX_GUEST_SERVERS) return false;
@@ -499,6 +501,19 @@ async function guestMayStart(kind: ServerKind, root: string, key: string) {
   if (!cmd) guestServers.delete(key);
   return !!cmd;
 }
+
+/** Who changed this project without `run`: Metals would execute that text, so it stays off. */
+const metalsPausedBy = (root: string) => pausedBy("", root);
+
+onGuestChange(() => {
+  for (const [key, c] of clients) {
+    if (c.kind !== "scala" || metalsPausedBy(c.root) === null) continue;
+    c.stop();
+    clients.delete(key);
+    lspState.status[key] = "stopped";
+    lspState.message[key] = t("code.lsp.metalsPaused");
+  }
+});
 
 /** The session ended: servers that only guests needed and that have no documents left stop. */
 export function stopGuestServers() {
@@ -538,6 +553,11 @@ export async function clientFor(
   }
   const root = await findRoot(file, ROOT_MARKERS[kind], workspace);
   const key = `${kind}|${root}`;
+  if (kind === "scala" && metalsPausedBy(root) !== null) {
+    lspState.status[key] = "stopped";
+    lspState.message[key] = t("code.lsp.metalsPaused");
+    return null;
+  }
   if (askInstall !== neverInstall) guestServers.delete(key); // the host wants this one itself
   else if (!clients.has(key) && !starting.has(key) && !(await guestMayStart(kind, root, key))) return null;
   const existing = clients.get(key);
@@ -674,8 +694,15 @@ export async function restartServer(
 ): Promise<LspClient | null> {
   const kind = lang.server;
   if (!kind) return null;
-  const key = `${kind}|${await findRoot(file, ROOT_MARKERS[kind], workspace)}`;
+  const root = await findRoot(file, ROOT_MARKERS[kind], workspace);
+  const key = `${kind}|${root}`;
   if (starting.has(key)) return starting.get(key)!;
+  const by = kind === "scala" ? metalsPausedBy(root) : null;
+  if (by !== null) {
+    // The host's explicit decision, like Compile for LaTeX.
+    if (!(await ui.confirm(t("code.lsp.metalsResumeTitle"), t("code.lsp.metalsResumeMsg", { name: by }), t("code.lsp.metalsResumeOk")))) return null;
+    resumeCompiling("", root);
+  }
   declined.delete(kind);
   failed.delete(key);
   const old = clients.get(key);

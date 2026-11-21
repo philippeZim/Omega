@@ -1,9 +1,16 @@
-import { describe, expect, test, vi, beforeEach } from "vitest";
+import { afterEach, describe, expect, test, vi, beforeEach } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { getIndentation, indentUnit } from "@codemirror/language";
 
 vi.mock("@tauri-apps/api/event", () => ({ listen: async () => () => {}, emit: async () => {} }));
-vi.mock("@tauri-apps/api/core", async (orig) => ({ ...(await orig<typeof import("@tauri-apps/api/core")>()), invoke: async () => null }));
+const ipc = vi.hoisted(() => ({ calls: [] as string[], metals: false }));
+vi.mock("@tauri-apps/api/core", async (orig) => ({
+  ...(await orig<typeof import("@tauri-apps/api/core")>()),
+  invoke: async (cmd: string, a?: { cmd?: string }) => {
+    ipc.calls.push(cmd);
+    return cmd === "tools_dir" ? "/tools" : cmd === "which_cmd" && ipc.metals && a?.cmd?.endsWith("metals") ? "/tools/metals/metals" : null;
+  },
+}));
 vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ onCloseRequested: async () => () => {}, listen: async () => () => {}, onFocusChanged: async () => () => {} }) }));
 vi.mock("../tools.svelte", async (orig) => ({ ...(await orig<typeof import("../tools.svelte")>()), ensureTools: async () => true }));
 vi.mock("../platform", async (orig) => ({ ...(await orig<typeof import("../platform")>()), tmpPath: async (n: string) => `/tmp/${n}` }));
@@ -18,11 +25,16 @@ import "../state.svelte"; // first: the app's modules import each other in a cyc
 import { modeForExtension } from "../modes";
 import { langFor, scalaOpensBlock, indentFor } from "./languages";
 import { detectProject, scalaCliRun, scalaScriptMain, TEMPLATES } from "./projects";
-import { metalsAnswer } from "./lsp.svelte";
+import { allClients, clientFor, metalsAnswer, neverInstall, stopServers } from "./lsp.svelte";
+import { noteGuestChange, resumeCompiling } from "../collab/guestChanges";
 import { metalsDebugPort, planFor, startScalaSession } from "../debug/adapters";
 import { t } from "../i18n/index.svelte";
 
-beforeEach(() => files.clear());
+beforeEach(() => {
+  files.clear();
+  ipc.calls.length = 0;
+  ipc.metals = false;
+});
 
 describe("Scala files", () => {
   test.each(["a.scala", "b.sc"])("%s opens in Code mode with Metals", (f) => {
@@ -136,5 +148,41 @@ describe("Metals", () => {
     const start = vi.fn(async () => { throw new Error("boom"); });
     await expect(startScalaSession(start, { log() {} }, wait)).rejects.toThrow("boom");
     expect(start).toHaveBeenCalledTimes(1);
+  });
+});
+
+// Metals executes build.sbt and the argv in .bsp/*.json, so text from a guest without `run` must not reach it.
+describe("Metals in Code Together", () => {
+  const lang = langFor("/g/Main.scala")!;
+  const spawned = () => ipc.calls.includes("proc_spawn");
+  const running = () => allClients().filter((c) => c.kind === "scala" && !c.stopping);
+
+  beforeEach(() => {
+    ipc.metals = true;
+    files.add("/g/project.scala");
+  });
+  afterEach(() => {
+    resumeCompiling("", "/g");
+    stopServers("scala");
+  });
+
+  test("a guest can't start it", async () => {
+    expect(await clientFor(lang, "/g/Main.scala", "/g", neverInstall)).toBeNull();
+    expect(spawned()).toBe(false);
+  });
+
+  test("the host can't start it by accident in a project a guest changed", async () => {
+    noteGuestChange("peer", "/g");
+    const ask = vi.fn(async () => true);
+    expect(await clientFor(lang, "/g/Main.scala", "/g", ask)).toBeNull();
+    expect(spawned()).toBe(false);
+    expect(ask).not.toHaveBeenCalled();
+  });
+
+  test("a running server stops when a guest changes the project", async () => {
+    void clientFor(lang, "/g/Main.scala", "/g", async () => true);
+    await vi.waitFor(() => expect(running()).toHaveLength(1));
+    noteGuestChange("peer", "/g");
+    expect(running()).toHaveLength(0);
   });
 });
