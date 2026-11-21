@@ -9,10 +9,11 @@ const h = vi.hoisted(() => ({
   listeners: [] as ((files: string[]) => void)[],
   runTask: vi.fn(),
   runCommand: vi.fn(),
+  ensure: vi.fn(async () => true),
 }));
 
 vi.mock("../ui.svelte", () => ({ ui: { toast: vi.fn(), prompt: vi.fn() } }));
-vi.mock("../tools.svelte", () => ({ ensureTools: async () => true }));
+vi.mock("../tools.svelte", () => ({ ensureTools: () => h.ensure() }));
 vi.mock("./versions", () => ({ versionSettings: async () => [] }));
 vi.mock("../fsWatch.svelte", () => ({ onFilesChanged: (fn: (files: string[]) => void) => h.listeners.push(fn) }));
 vi.mock("../terminal.svelte", () => ({ runCommand: h.runCommand, runTask: h.runTask, cancelTask: vi.fn(), interruptRun: vi.fn() }));
@@ -94,20 +95,59 @@ describe("Code Together: an action run for a guest's file", () => {
       ["/p/$'x.py", `'/p/$'\\''x.py'`],
     ]) {
       h.runCommand.mockClear();
-      await runGuestAction({ id: "run", label: "Run", cmd: "python {file} --flag" }, project, file);
+      await runGuestAction({ id: "run", label: "Run", cmd: "python {file} --flag" }, project, file, { allowed: async () => true });
       expect(h.runCommand.mock.calls[0][0]).toBe(`python ${quoted} --flag`);
     }
   });
 
-  test("the host keeps its focus, through the build step too", async () => {
+  test("the host keeps its focus and panel, through the build step too", async () => {
     const { runGuestAction } = await import("./runner.svelte");
-    await runGuestAction({ id: "run", label: "Run", cmd: "./a" }, project, "/p/a.c");
-    expect(h.runCommand.mock.calls[0][3]).toBe(false);
-    await runGuestAction({ id: "run", label: "Run", cmd: "./a", pre: "cc a.c" }, project, "/p/a.c");
+    const allowed = async () => true;
+    await runGuestAction({ id: "run", label: "Run", cmd: "./a" }, project, "/p/a.c", { allowed });
+    expect(h.runCommand.mock.calls[0].slice(3)).toEqual([false, { background: true }]);
+    await runGuestAction({ id: "run", label: "Run", cmd: "./a", pre: "cc a.c" }, project, "/p/a.c", { allowed });
     const [, , , , opts] = h.runTask.mock.calls[0];
-    expect(opts.focus).toBe(false);
+    expect(opts).toMatchObject({ focus: false, background: true });
     opts.onExit(0);
-    expect(h.runTask.mock.calls[1][4]).toEqual({ focus: false });
+    expect(h.runTask.mock.calls[1][4]).toEqual({ focus: false, background: true });
+    h.runTask.mockClear();
+    await runGuestAction({ id: "build", label: "Build", cmd: "make" }, project, null, { allowed });
+    expect(h.runTask.mock.calls[0][4]).toEqual({ focus: false, background: true });
+  });
+
+  test("a package action for a guest stays in the background and is marked as a package task", async () => {
+    const { runGuestAction } = await import("./runner.svelte");
+    await runGuestAction({ id: "add", label: "Add", cmd: "uv add {}", ask: "x" }, { ...project, kind: "uv" }, null, { arg: "requests", allowed: async () => true });
+    expect(h.runCommand.mock.calls[0][0]).toBe("uv add requests");
+    expect(h.runCommand.mock.calls[0].slice(3)).toEqual([false, { packageTask: true, background: true }]);
+  });
+
+  test("the guest is checked after the tool prompt, and nothing starts if it's no longer allowed", async () => {
+    const { runGuestAction } = await import("./runner.svelte");
+    const order: string[] = [];
+    h.ensure.mockImplementationOnce(async () => (order.push("tools"), true));
+    await runGuestAction({ id: "run", label: "Run", cmd: "./a", pre: "cc a.c" }, project, "/p/a.c", { allowed: async () => (order.push("allowed"), false) });
+    expect(order).toEqual(["tools", "allowed"]);
+    expect(h.runTask).not.toHaveBeenCalled();
+    expect(h.runCommand).not.toHaveBeenCalled();
+  });
+
+  test("the host's own Run still takes the terminal and focus", async () => {
+    await refreshProject();
+    await runAction({ id: "x", label: "x", cmd: "echo x" });
+    expect(h.runCommand.mock.calls[0]).toHaveLength(3);
+  });
+
+  test("a guest's refresh shows what's known and asks the host about its file", async () => {
+    const { runnerRemote } = await import("./runner.svelte");
+    const refresh = vi.fn();
+    runnerRemote.project = () => project;
+    runnerRemote.refresh = refresh;
+    await refreshProject();
+    runnerRemote.project = null;
+    runnerRemote.refresh = null;
+    expect(runner.project).toEqual(project);
+    expect(refresh).toHaveBeenCalledTimes(1);
   });
 
   test("saving reports a tab of that file that stayed unsaved or was deleted", async () => {

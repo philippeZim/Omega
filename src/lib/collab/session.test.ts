@@ -78,7 +78,6 @@ vi.mock("../state.svelte", () => ({
 }));
 vi.mock("../code/runner.svelte", () => ({
   runner: { project: null },
-  runAction: vi.fn(),
   refreshProject: vi.fn(),
   runnerRemote: { project: null, run: null },
   fileDependent: (a: { usesFile?: boolean; cmd?: string }) => !!a.usesFile || !!a.cmd?.includes("{file}"),
@@ -111,7 +110,7 @@ await import("./session.svelte");
 // Registered once on load; later tests clear the mock's call list.
 const { setRunEcho: registerEcho } = await import("../terminal.svelte");
 const runEcho = vi.mocked(registerEcho).mock.calls[0][0]!;
-const { runner, runAction, runnerRemote, projectFor, saveForGuestRun, runGuestAction } = await import("../code/runner.svelte");
+const { runner, runnerRemote, projectFor, saveForGuestRun, runGuestAction } = await import("../code/runner.svelte");
 const { guestGuard } = await import("./guard");
 
 async function receive(peer: string, msg: Msg) {
@@ -178,6 +177,12 @@ test("host announces project files and Untitled tabs, not files outside the proj
 });
 
 const RUN = { id: "run", label: "Run", cmd: "cargo run" };
+/** The last action the host started for a guest, with the checked package argument if any. */
+const expectStarted = (a: unknown, arg?: string) => {
+  const call = vi.mocked(runGuestAction).mock.calls.at(-1)!;
+  expect(call[0]).toEqual(a);
+  expect(call[3].arg).toBe(arg);
+};
 const replyTo = (peer: string, id: number) => send.mock.calls.map((c) => ({ peer: c[0], msg: c[1] })).find((x) => x.peer === peer && x.msg.t === "rpc.res" && x.msg.id === id)?.msg;
 
 function hostWith(caps: string[]) {
@@ -185,30 +190,32 @@ function hostWith(caps: string[]) {
   collab.participants = [{ peer: "g1", name: "Gast", color: "#333333", role: "guest", caps }];
   (runner as { project: unknown }).project = { kind: "rust", label: "Rust", run: RUN, build: null, test: null, more: [], needs: [], root: "/home/g" };
   send.mockClear();
-  vi.mocked(runAction).mockClear();
+  vi.mocked(runGuestAction).mockReset();
+  vi.mocked(projectFor).mockReset().mockResolvedValue(null);
+  vi.mocked(saveForGuestRun).mockReset().mockResolvedValue(true);
   task.interrupt.mockClear();
 }
 
 test("host: a guest with `run` starts an action; without it, or with an unknown one, nothing runs", async () => {
   hostWith(["run"]);
   await receive("g1", { t: "rpc.req", id: 1, method: "run.start", params: { action: "run" } });
-  expect(runAction).toHaveBeenCalledWith(RUN);
+  expectStarted(RUN);
   expect(replyTo("g1", 1)).toMatchObject({ ok: true });
 
-  vi.mocked(runAction).mockClear();
+  vi.mocked(runGuestAction).mockClear();
   await receive("g1", { t: "rpc.req", id: 2, method: "run.start", params: { action: "rm -rf" } });
   expect(replyTo("g1", 2)).toMatchObject({ ok: false, error: { code: "unavailable" } });
 
   hostWith([]);
   await receive("g1", { t: "rpc.req", id: 3, method: "run.start", params: { action: "run" } });
   expect(replyTo("g1", 3)).toMatchObject({ ok: false, error: { code: "forbidden" } });
-  expect(runAction).not.toHaveBeenCalled();
+  expect(runGuestAction).not.toHaveBeenCalled();
 });
 
 test("host: the old unchecked run message does nothing", async () => {
   hostWith([]);
   await receive("g1", { t: "run", action: "run" });
-  expect(runAction).not.toHaveBeenCalled();
+  expect(runGuestAction).not.toHaveBeenCalled();
 });
 
 test("host: Stop needs `run` and names the task it means", async () => {
@@ -278,7 +285,7 @@ test.each([
   hostWithPackages(kind, ["packages"], [a]);
   await pkgReq(10, id, packages);
   expect(replyTo("g1", 10)).toMatchObject({ ok: true });
-  expect(runAction).toHaveBeenCalledWith(a, arg);
+  expectStarted(a, arg);
   expect(ui.toast.mock.calls[0][0]).toContain("Gast");
   expect(ui.toast.mock.calls[0][0]).toContain(packages[0]);
 });
@@ -302,7 +309,7 @@ test.each([
   hostWithPackages(kind, ["packages"], [pkgAct("add", `${kind} add {}`)]);
   await pkgReq(11, "add", packages);
   expect(replyTo("g1", 11)).toMatchObject({ ok: false, error: { code: "invalid_package" } });
-  expect(runAction).not.toHaveBeenCalled();
+  expect(runGuestAction).not.toHaveBeenCalled();
 });
 
 test("host: a package action pauses LaTeX auto-compile for a guest without run, before it starts", async () => {
@@ -314,7 +321,7 @@ test("host: a package action pauses LaTeX auto-compile for a guest without run, 
   const where = (await import("../state.svelte")).app.root ?? root;
   changes.resumeCompiling("t", `${where}/x`);
   let pausedAtStart = false;
-  vi.mocked(runAction).mockImplementationOnce(async () => void (pausedAtStart = changes.isPaused(where, null)));
+  vi.mocked(runGuestAction).mockImplementationOnce(async () => void (pausedAtStart = changes.isPaused(where, null)));
   await pkgReq(70, "add", ["requests"]);
   expect(replyTo("g1", 70)).toMatchObject({ ok: true });
   expect(pausedAtStart).toBe(true);
@@ -340,7 +347,7 @@ test("host: packages.run needs `packages`, `run` is not enough", async () => {
   hostWithPackages("uv", ["run"], [pkgAct("add", "uv add {}")]);
   await pkgReq(12, "add", ["requests"]);
   expect(replyTo("g1", 12)).toMatchObject({ ok: false, error: { code: "forbidden" } });
-  expect(runAction).not.toHaveBeenCalled();
+  expect(runGuestAction).not.toHaveBeenCalled();
 });
 
 test.each([
@@ -353,19 +360,19 @@ test.each([
   hostWithPackages(kind, ["run"], [a]);
   await receive("g1", { t: "rpc.req", id: 13, method: "run.start", params: { action: id } });
   expect(replyTo("g1", 13)).toMatchObject({ ok: false, error: { code: "forbidden" } });
-  expect(runAction).not.toHaveBeenCalled();
+  expect(runGuestAction).not.toHaveBeenCalled();
 
   hostWithPackages(kind, ["packages"], [a]);
   await pkgReq(14, id, []);
   expect(replyTo("g1", 14)).toMatchObject({ ok: true });
-  expect(runAction).toHaveBeenCalledWith(a, undefined);
+  expectStarted(a);
 });
 
 test("host: run.start can't start an action that asks for input, even with `packages`", async () => {
   hostWithPackages("uv", ["run", "packages"], [pkgAct("add", "uv add {}")]);
   await receive("g1", { t: "rpc.req", id: 15, method: "run.start", params: { action: "add" } });
   expect(replyTo("g1", 15)).toMatchObject({ ok: false, error: { code: "unavailable" } });
-  expect(runAction).not.toHaveBeenCalled();
+  expect(runGuestAction).not.toHaveBeenCalled();
 });
 
 test("host: packages.run only reaches package actions", async () => {
@@ -374,14 +381,14 @@ test("host: packages.run only reaches package actions", async () => {
     await pkgReq(20 + i, id, []);
     expect(replyTo("g1", 20 + i)).toMatchObject({ ok: false, error: { code: "unavailable" } });
   }
-  expect(runAction).not.toHaveBeenCalled();
+  expect(runGuestAction).not.toHaveBeenCalled();
 });
 
 test("host: an action without input takes no packages", async () => {
   hostWithPackages("uv", ["packages"], [pkgAct("sync", "uv sync", false)]);
   await pkgReq(25, "sync", ["requests"]);
   expect(replyTo("g1", 25)).toMatchObject({ ok: false, error: { code: "invalid_package" } });
-  expect(runAction).not.toHaveBeenCalled();
+  expect(runGuestAction).not.toHaveBeenCalled();
 });
 
 test("host: malformed package params are refused", async () => {
@@ -390,7 +397,7 @@ test("host: malformed package params are refused", async () => {
     await pkgReq(30 + i, "add", packages);
     expect(replyTo("g1", 30 + i)).toMatchObject({ ok: false, error: { code: "invalid_params" } });
   }
-  expect(runAction).not.toHaveBeenCalled();
+  expect(runGuestAction).not.toHaveBeenCalled();
 });
 
 test("host: uv remove finds the group, and refuses a group name that would inject", async () => {
@@ -398,15 +405,15 @@ test("host: uv remove finds the group, and refuses a group name that would injec
   hostWithPackages("uv", ["packages"], [a]);
   fs.files.set("/home/g/pyproject.toml", '[project]\nname = "x"\ndependencies = ["requests"]\n\n[dependency-groups]\ndev = ["pytest"]\ndocs = ["mkdocs"]\n"x; touch /tmp/pwned #" = ["evil"]\n');
   await pkgReq(40, "remove", ["pytest"]);
-  expect(runAction).toHaveBeenLastCalledWith(a, "--dev pytest");
+  expectStarted(a, "--dev pytest");
   await pkgReq(41, "remove", ["mkdocs"]);
-  expect(runAction).toHaveBeenLastCalledWith(a, "--group docs mkdocs");
+  expectStarted(a, "--group docs mkdocs");
   await pkgReq(42, "remove", ["requests"]);
-  expect(runAction).toHaveBeenLastCalledWith(a, "requests");
-  vi.mocked(runAction).mockClear();
+  expectStarted(a, "requests");
+  vi.mocked(runGuestAction).mockClear();
   await pkgReq(43, "remove", ["evil"]);
   expect(replyTo("g1", 43)).toMatchObject({ ok: false, error: { code: "invalid_group" } });
-  expect(runAction).not.toHaveBeenCalled();
+  expect(runGuestAction).not.toHaveBeenCalled();
 });
 
 test("host: guests see package actions, suggestions need `packages`", async () => {
@@ -579,10 +586,7 @@ function hostOnLongPy(...open: string[]) {
 }
 const runReq = (id: number, params: Msg) => receive("g1", { t: "rpc.req", id, method: "run.start", params: { action: "run", ...params } });
 const answered = (id: number) => vi.waitFor(() => { const r = replyTo("g1", id); expect(r).toBeDefined(); return r!; });
-const nothingRan = () => {
-  expect(runGuestAction).not.toHaveBeenCalled();
-  expect(runAction).not.toHaveBeenCalled();
-};
+const nothingRan = () => expect(runGuestAction).not.toHaveBeenCalled();
 
 test("host: Run acts on the guest's file, not the host's, and the host's tab stays active", async () => {
   hostOnLongPy("app.py");
@@ -593,7 +597,6 @@ test("host: Run acts on the guest's file, not the host's, and the host's tab sta
   const [a, , file] = vi.mocked(runGuestAction).mock.calls[0];
   expect(a.cmd).toBe("uv run app.py");
   expect(file).toBe("/home/g/app.py");
-  expect(runAction).not.toHaveBeenCalled();
   expect(app.activeId).toBe(active);
   expect((runner as unknown as { project: { run: { cmd: string } } }).project.run.cmd).toBe("uv run long.py");
 });
@@ -733,8 +736,10 @@ test("host: an action that doesn't follow a file runs as before without a guest 
   hostOnLongPy();
   await receive("g1", { t: "rpc.req", id: 116, method: "run.start", params: { action: "build" } });
   expect(await answered(116)).toMatchObject({ ok: true });
-  expect(runAction).toHaveBeenCalledTimes(1);
-  expect(projectFor).not.toHaveBeenCalled();
+  expect(runGuestAction).toHaveBeenCalledTimes(1);
+  expect(vi.mocked(runGuestAction).mock.calls[0][0].cmd).toBe("uv build");
+  expect(vi.mocked(runGuestAction).mock.calls[0][2]).toBeNull();
+  expect(projectFor).toHaveBeenCalledWith(null, "/home/g");
 });
 
 test("host: the package check uses the project of the guest's file", async () => {
@@ -789,5 +794,323 @@ test.each([
   const id = send.mock.calls.find((c) => c[1].method === "run.start")![1].id;
   await receive("host-peer", { t: "rpc.res", id, ok: false, error: { code } });
   await vi.waitFor(() => expect(ui.toast).toHaveBeenCalledWith(expect.stringContaining(text), "error"));
+  for (const h of endHooks) await h(true);
+});
+
+// ------------------------------------------------------------------ between the click and the start
+
+const rpc = await import("./rpc.svelte");
+const participants = () => collab.participants as { peer: string; name: string; caps: string[] }[];
+/** The check the host makes right before it starts the run it was asked for. */
+const lastAllowed = () => vi.mocked(runGuestAction).mock.calls.at(-1)![3].allowed;
+
+test("host: a tab switch while saving can't turn a project action into a run of the host's file", async () => {
+  hostOnLongPy();
+  (runner as { project: { run: unknown } }).project.run = { id: "run", label: "Run", cmd: "pnpm run dev" };
+  vi.mocked(saveForGuestRun).mockImplementation(async () => {
+    (runner as { project: { run: unknown } }).project.run = fileRun("host-switched-to.py");
+    return true;
+  });
+  vi.mocked(projectFor).mockResolvedValue({ ...uvProject(null), run: { id: "run", label: "Run", cmd: "pnpm run dev" } } as never);
+  await runReq(200, {});
+  expect(await answered(200)).toMatchObject({ ok: true });
+  expect(vi.mocked(runGuestAction).mock.calls[0][0].cmd).toBe("pnpm run dev");
+  expect(projectFor).toHaveBeenCalledWith(null, "/home/g");
+});
+
+test("host: the `packages` check is about what actually launches", async () => {
+  hostOnLongPy();
+  (runner as { project: { kind: string; more: unknown[] } }).project.kind = "cmake";
+  (runner as { project: { kind: string; more: unknown[] } }).project.more = [{ id: "sync", label: "sync", cmd: "echo harmless" }];
+  vi.mocked(projectFor).mockResolvedValue({ ...uvProject(null), more: [{ id: "sync", label: "sync", cmd: "uv sync" }] } as never);
+  await receive("g1", { t: "rpc.req", id: 201, method: "run.start", params: { action: "sync" } });
+  expect(await answered(201)).toMatchObject({ ok: false, error: { code: "forbidden" } });
+  nothingRan();
+});
+
+test("host: losing `run` during the wait for the last edit stops the run", async () => {
+  hostOnLongPy("app.py");
+  shared.arrived = false;
+  const run = runReq(202, { file: "app.py", client: 7, clock: 3 });
+  await new Promise((r) => setTimeout(r, 40));
+  rpc.setCapability("g1", "run", false);
+  await run;
+  expect(await answered(202)).toMatchObject({ ok: false, error: { code: "forbidden" } });
+  expect(saveForGuestRun).not.toHaveBeenCalled();
+  nothingRan();
+});
+
+test("host: leaving during the wait for the last edit stops the run, without an answer", async () => {
+  hostOnLongPy("app.py");
+  shared.arrived = false;
+  const run = runReq(203, { file: "app.py", client: 7, clock: 3 });
+  await new Promise((r) => setTimeout(r, 40));
+  collab.participants = [];
+  rpc.forgetRpcPeer("g1");
+  await run;
+  expect(replyTo("g1", 203)).toBeUndefined();
+  expect(saveForGuestRun).not.toHaveBeenCalled();
+  nothingRan();
+});
+
+test("host: another folder opened while resolving refuses the run", async () => {
+  hostOnLongPy("app.py");
+  vi.mocked(saveForGuestRun).mockImplementation(async () => {
+    app.root = "/other";
+    return true;
+  });
+  await runReq(204, { file: "app.py" });
+  expect(await answered(204)).toMatchObject({ ok: false, error: { code: "run_path_refused" } });
+  expect(projectFor).not.toHaveBeenCalled();
+  nothingRan();
+
+  hostOnLongPy("app.py");
+  app.root = "/home/g";
+  vi.mocked(projectFor).mockImplementation(async () => {
+    app.root = "/other";
+    return uvProject("app.py") as never;
+  });
+  await runReq(205, { file: "app.py" });
+  expect(await answered(205)).toMatchObject({ ok: false, error: { code: "run_path_refused" } });
+  nothingRan();
+  app.root = "/home/g";
+});
+
+test("host: concurrent starts from two guests each run their own file", async () => {
+  hostOnLongPy("a.py", "b.py");
+  collab.participants = [...collab.participants, { peer: "g2", name: "Zwei", color: "#444444", role: "guest", caps: ["run", "edit"] }];
+  shared.open.get("b.py")!.add("g2");
+  shared.open.get("b.py")!.delete("g1");
+  shared.open.get("a.py")!.delete("g2");
+  const slow = new Map<string, () => void>();
+  vi.mocked(projectFor).mockImplementation(async (file) => {
+    await new Promise<void>((r) => slow.set(file!, r));
+    return uvProject(file!.slice("/home/g/".length)) as never;
+  });
+  const one = receive("g1", { t: "rpc.req", id: 206, method: "run.start", params: { action: "run", file: "a.py" } });
+  const two = receive("g2", { t: "rpc.req", id: 207, method: "run.start", params: { action: "run", file: "b.py" } });
+  await vi.waitFor(() => expect(slow.size).toBe(2));
+  slow.get("/home/g/b.py")!();
+  slow.get("/home/g/a.py")!();
+  await Promise.all([one, two]);
+  const started = vi.mocked(runGuestAction).mock.calls.map((c) => [c[0].cmd, c[2]]);
+  expect(started).toHaveLength(2);
+  expect(started).toEqual(expect.arrayContaining([["uv run a.py", "/home/g/a.py"], ["uv run b.py", "/home/g/b.py"]]));
+});
+
+test("host: right before the start the guest, its rights, folder, file and text are checked again", async () => {
+  const startedRun = async (id: number) => {
+    hostOnLongPy("app.py");
+    await runReq(id, { file: "app.py" });
+    expect(await answered(id)).toMatchObject({ ok: true });
+    ui.toast.mockClear();
+    return lastAllowed();
+  };
+  expect(await (await startedRun(210))()).toBe(true);
+  expect(ui.toast).not.toHaveBeenCalled();
+
+  let allowed = await startedRun(211);
+  rpc.setCapability("g1", "run", false);
+  expect(await allowed()).toBe(false);
+  expect(ui.toast).toHaveBeenCalledWith(expect.stringContaining("Gast"));
+
+  // Left and came back under the same peer id: this run is not the new connection's.
+  allowed = await startedRun(212);
+  collab.participants = participants().map((p) => ({ ...p }));
+  expect(await allowed()).toBe(false);
+
+  allowed = await startedRun(213);
+  shared.refused.add("app.py");
+  expect(await allowed()).toBe(false);
+
+  allowed = await startedRun(214);
+  shared.open.clear();
+  expect(await allowed()).toBe(false);
+
+  allowed = await startedRun(215);
+  shared.unsaved.add("app.py");
+  expect(await allowed()).toBe(false);
+
+  allowed = await startedRun(216);
+  app.root = "/other";
+  expect(await allowed()).toBe(false);
+  app.root = "/home/g";
+});
+
+// ------------------------------------------------------------------ the guest's Run bar
+
+const projReq = (id: number, params: unknown) => receive("g1", { t: "rpc.req", id, method: "run.project", params });
+
+test("host: run.project answers for the guest's file with ids and labels only", async () => {
+  hostOnLongPy("app.py");
+  vi.mocked(projectFor).mockResolvedValue({ ...uvProject("app.py"), more: [{ id: "add", label: "Add…", cmd: "uv add {}", ask: "x" }, { id: "secret", label: "Ask", cmd: "x {}", ask: "y" }] } as never);
+  await projReq(220, { file: "app.py" });
+  const r = await answered(220);
+  expect(projectFor).toHaveBeenCalledWith("/home/g/app.py", "/home/g");
+  expect(r.result).toEqual({ kind: "uv", label: "uv", run: { id: "run", label: "Run" }, build: { id: "build", label: "Build" }, test: null, more: [{ id: "add", label: "Add…" }] });
+  expect(JSON.stringify(r.result)).not.toContain("/home/g");
+  expect(JSON.stringify(r.result)).not.toContain("uv run");
+  expect(saveForGuestRun).not.toHaveBeenCalled();
+  nothingRan();
+
+  vi.mocked(projectFor).mockResolvedValue(null);
+  await projReq(221, { file: "app.py" });
+  expect(await answered(221)).toMatchObject({ ok: true, result: null });
+});
+
+test.each([["../x.py"], [".git/config"], ["not-open.py"], ["tab:t1"], ["a\nb.py"]])("host: run.project refuses %j", async (file) => {
+  hostOnLongPy("app.py");
+  if (file.includes("..") || file.includes(".git") || file.includes("\n")) shared.open.set(file, new Set(["g1"]));
+  await projReq(222, { file });
+  expect(await answered(222)).toMatchObject({ ok: false, error: { code: "run_path_refused" } });
+  expect(projectFor).not.toHaveBeenCalled();
+});
+
+test.each([[{}], [{ file: 5 }], [{ file: "x".repeat(4097) }], ["app.py"]])("host: run.project rejects malformed params %j", async (params) => {
+  hostOnLongPy("app.py");
+  await projReq(223, params);
+  expect(await answered(223)).toMatchObject({ ok: false, error: { code: "invalid_params" } });
+});
+
+const projectReqs = () => send.mock.calls.map((c) => c[1]).filter((m) => m.t === "rpc.req" && m.method === "run.project");
+const guestProjectNow = () => runnerRemote.project!();
+const INFO = (label: string, run = true) => ({ kind: "uv", label, run: run ? { id: "run", label: "Run" } : null, build: null, test: null, more: [] });
+
+async function guestOnHostWithoutRun() {
+  collab.role = "guest";
+  guestGuard.can = () => true;
+  await join();
+  await receive("host-peer", { t: "session", root: "proj", mode: "code", tabs: [], active: null, project: INFO("host", false) });
+  send.mockClear();
+}
+const answerProject = async (req: Msg, result: unknown) => receive("host-peer", { t: "rpc.res", id: req.id, ok: true, result });
+const refreshed = async (count: number) => {
+  (runnerRemote as unknown as { refresh: () => void }).refresh();
+  await vi.waitFor(() => expect(projectReqs().length).toBe(count));
+  return projectReqs().at(-1)!;
+};
+
+test("guest: a runnable file gets its Run button although the host's active file has none", async () => {
+  await guestOnHostWithoutRun();
+  expect(guestProjectNow()?.run).toBeNull();
+  addTab("collab:app.py", "app.py", "x\n");
+  const req = await refreshed(1);
+  expect(req.params).toEqual({ file: "app.py" });
+  await answerProject(req, INFO("for app.py"));
+  await vi.waitFor(() => expect((runner as unknown as { project: { label: string } }).project.label).toBe("for app.py"));
+  expect(guestProjectNow()?.run?.id).toBe("run");
+  for (const h of endHooks) await h(true);
+});
+
+test("guest: answers are cached per file and refreshed on a tab change; a late answer can't land on another file", async () => {
+  await guestOnHostWithoutRun();
+  const a = addTab("collab:a.py", "a.py", "");
+  await answerProject(await refreshed(1), INFO("a"));
+  await vi.waitFor(() => expect(guestProjectNow()?.label).toBe("a"));
+
+  addTab("collab:b.py", "b.py", "");
+  const slow = await refreshed(2);
+  app.activeId = a;
+  expect(guestProjectNow()?.label).toBe("a"); // from the cache, at once
+  const again = await refreshed(3);
+  expect(again.params).toEqual({ file: "a.py" });
+  await answerProject(slow, INFO("b, too late"));
+  expect(guestProjectNow()?.label).toBe("a");
+  await answerProject(again, INFO("a, updated"));
+  await vi.waitFor(() => expect(guestProjectNow()?.label).toBe("a, updated"));
+  for (const h of endHooks) await h(true);
+});
+
+test("guest: a file without actions hides them, a malformed answer changes nothing, leaving forgets it", async () => {
+  await guestOnHostWithoutRun();
+  addTab("collab:notes.md", "notes.md", "");
+  await answerProject(await refreshed(1), { kind: "uv", label: "bad", run: "rm -rf", build: null, test: null, more: [] });
+  await new Promise((r) => setTimeout(r, 10));
+  expect(guestProjectNow()?.label).toBe("host");
+  await answerProject(await refreshed(2), null);
+  await vi.waitFor(() => expect(guestProjectNow()).toBeNull());
+  for (const h of endHooks) await h(true);
+
+  await guestOnHostWithoutRun();
+  addTab("collab:notes.md", "notes.md", "");
+  expect(guestProjectNow()?.label).toBe("host");
+  for (const h of endHooks) await h(true);
+});
+
+// ------------------------------------------------------------------ packages for the guest's file
+
+const subProject = (more: unknown[]) => ({ ...uvProject("sub/x.py"), root: "/home/g/sub", more });
+
+test("host: a package action goes to the project of the guest's file, with its checks", async () => {
+  hostOnLongPy("sub/x.py");
+  participants()[0].caps = ["packages"];
+  const hostAdd = pkgAct("add", "pnpm add {}");
+  (runner as { project: { kind: string; more: unknown[] } }).project.kind = "pnpm";
+  (runner as { project: { kind: string; more: unknown[] } }).project.more = [hostAdd];
+  const add = pkgAct("add", "uv add {}");
+  vi.mocked(projectFor).mockResolvedValue(subProject([add]) as never);
+  const changes = await import("./guestChanges");
+  changes.guestChangeHooks.mayRun = () => false;
+  changes.resumeCompiling("t", "/home/g/x");
+
+  await receive("g1", { t: "rpc.req", id: 230, method: "packages.run", params: { action: "add", packages: ["requests"], file: "sub/x.py" } });
+  expect(await answered(230)).toMatchObject({ ok: true });
+  expect(projectFor).toHaveBeenCalledWith("/home/g/sub/x.py", "/home/g");
+  const call = vi.mocked(runGuestAction).mock.calls[0];
+  expect(call[0]).toBe(add);
+  expect(call[1].root).toBe("/home/g/sub");
+  expect(call[3].arg).toBe("requests");
+  expect(changes.isPaused("/home/g", null)).toBe(true); // noted before the task can change files
+  changes.resumeCompiling("t", "/home/g/x");
+  expect(await call[3].allowed()).toBe(true);
+  participants()[0].caps = [];
+  expect(await call[3].allowed()).toBe(false);
+  participants()[0].caps = ["packages"];
+
+  // The input is checked for the subproject's tool (a pnpm spec isn't a uv one).
+  vi.mocked(runGuestAction).mockClear();
+  await receive("g1", { t: "rpc.req", id: 231, method: "packages.run", params: { action: "add", packages: ["--index-url=https://evil.test"], file: "sub/x.py" } });
+  expect(await answered(231)).toMatchObject({ ok: false, error: { code: "invalid_package" } });
+  nothingRan();
+});
+
+test.each([["../x.py"], [".git/config"], ["not-open.py"]])("host: packages.run refuses the file %s without using the host's project", async (file) => {
+  hostOnLongPy("sub/x.py");
+  participants()[0].caps = ["packages"];
+  (runner as { project: { more: unknown[] } }).project.more = [pkgAct("add", "uv add {}")];
+  if (file !== "not-open.py") shared.open.set(file, new Set(["g1"]));
+  await receive("g1", { t: "rpc.req", id: 232, method: "packages.run", params: { action: "add", packages: ["requests"], file } });
+  expect(await answered(232)).toMatchObject({ ok: false, error: { code: "run_path_refused" } });
+  nothingRan();
+});
+
+test("host: a subproject without that package action is refused; suggestions come from the file's project", async () => {
+  hostOnLongPy("sub/x.py");
+  participants()[0].caps = ["packages"];
+  (runner as { project: { more: unknown[] } }).project.more = [pkgAct("add", "uv add {}")];
+  vi.mocked(projectFor).mockResolvedValue(subProject([]) as never);
+  await receive("g1", { t: "rpc.req", id: 233, method: "packages.run", params: { action: "add", packages: ["requests"], file: "sub/x.py" } });
+  expect(await answered(233)).toMatchObject({ ok: false, error: { code: "run_no_action" } });
+  nothingRan();
+
+  const add = pkgAct("add", "uv add {}");
+  vi.mocked(projectFor).mockResolvedValue(subProject([add]) as never);
+  await receive("g1", { t: "rpc.req", id: 234, method: "packages.suggest", params: { action: "add", query: "req", file: "sub/x.py" } });
+  expect(await answered(234)).toMatchObject({ ok: true, result: [{ value: "requests" }] });
+  expect(add.suggest).toHaveBeenCalledWith("req");
+});
+
+test("guest: a package action names the file from when it was clicked, also after a tab switch in the prompt", async () => {
+  await guestWithPackages(["packages"]);
+  addTab("collab:sub/x.py", "x.py", "");
+  ui.prompt = vi.fn(async () => {
+    addTab("collab:other.py", "other.py", "");
+    return "requests";
+  }) as never;
+  void runnerRemote.run!({ id: "add", label: "Add…", cmd: "x" });
+  await vi.waitFor(() => expect(guestReqs().filter((r) => r.method === "packages.run")).toHaveLength(1));
+  const req = guestReqs().find((r) => r.method === "packages.run")!;
+  expect(req.params).toEqual({ action: "add", packages: ["requests"], file: "sub/x.py" });
+  await receive("host-peer", { t: "rpc.res", id: req.id, ok: true, result: null });
   for (const h of endHooks) await h(true);
 });

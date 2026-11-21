@@ -166,6 +166,7 @@ export const en = {
   "ai.collab.run.needsFile": "Open a shared file to run this",
   "ai.collab.run.notSaved": "The host couldn't save this file, so it wasn't run",
   "ai.collab.run.noAction": "This action isn't available for the file you have open",
+  "ai.collab.run.notStarted": "“{action}” from {name} didn't start: the guest, its rights or the file changed",
 };
 export const de: Record<keyof typeof en, string> = {
   "ai.noActiveFile": "Keine Datei aktiv",
@@ -333,6 +334,7 @@ export const de: Record<keyof typeof en, string> = {
   "ai.collab.run.needsFile": "Öffne eine geteilte Datei, um das auszuführen",
   "ai.collab.run.notSaved": "Der Host konnte diese Datei nicht speichern, daher wurde sie nicht ausgeführt",
   "ai.collab.run.noAction": "Diese Aktion gibt es für die geöffnete Datei nicht",
+  "ai.collab.run.notStarted": "„{action}“ von {name} wurde nicht gestartet: Gast, Rechte oder Datei haben sich geändert",
 };
 export const fr: Record<keyof typeof en, string> = {
   "ai.noActiveFile": "Aucun fichier actif",
@@ -500,4 +502,5 @@ export const fr: Record<keyof typeof en, string> = {
   "ai.collab.run.needsFile": "Ouvrez un fichier partagé pour exécuter ceci",
   "ai.collab.run.notSaved": "L’hôte n’a pas pu enregistrer ce fichier, il n’a donc pas été exécuté",
   "ai.collab.run.noAction": "Cette action n’est pas disponible pour le fichier ouvert",
+  "ai.collab.run.notStarted": "« {action} » de {name} n’a pas démarré : l’invité, ses droits ou le fichier ont changé",
 };
