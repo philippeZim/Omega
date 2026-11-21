@@ -237,3 +237,20 @@ test("guest: a busy answer from the host ends the attempt with a clear message",
   await vi.waitFor(() => expect(s.collab.role).toBe(null));
   expect(s.toast.mock.calls.some(([m]) => String(m).includes("too many join requests"))).toBe(true);
 });
+
+test("host: a refusal notice arriving outside a running session counts for nothing", async () => {
+  const s = await freshSession((cmd) => (cmd === "collab_host" ? "omega-t" : null));
+  await s.startHosting();
+  await emit("collab-refused", { count: 0 });
+  expect(s.collab.refused).toBe(0);
+  s.collab.status = "idle"; // what leave() sets first, while the backend is still stopping
+  s.toast.mockClear();
+  await emit("collab-refused", { count: 7 });
+  expect(s.collab.refused).toBe(0);
+  expect(s.toast).not.toHaveBeenCalled();
+  s.collab.status = "hosting";
+  await s.leave();
+  await s.startHosting();
+  expect(s.collab.refused).toBe(0);
+  await s.leave();
+});

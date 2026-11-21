@@ -40,6 +40,10 @@ const MAX_JOIN_MSG: usize = 4 * 1024;
 /// Messages a connection may send before its join message (a presence update can overtake it).
 const MAX_FRAMES_BEFORE_HELLO: usize = 8;
 /// New connections at once: a whole large session reconnecting after a network drop fits.
+///
+/// Accepted limit: the rate is global, so during a sustained flood a new or returning guest can be
+/// refused too (and told to retry). Exempting recently approved ids wouldn't help, because guests
+/// get a new key per join. Guests already connected are never affected.
 const JOIN_RATE_BURST: f64 = 32.0;
 /// New connections per second, sustained.
 const JOIN_RATE_PER_SEC: f64 = 4.0;
@@ -56,17 +60,58 @@ const SENDABLE_BEFORE_APPROVAL: [&str; 4] = ["welcome", "denied", "version", "bu
 struct Peer {
     conn: Connection,
     send: Mutex<SendStream>,
-    /// The request's slot while it waits for approval; empty once approved.
-    pending: std::sync::Mutex<Option<OwnedSemaphorePermit>>,
+    admission: Admission,
 }
 
 impl Peer {
+    /// Not approved (waiting, or expired and about to be closed).
     fn is_pending(&self) -> bool {
-        self.pending.lock().unwrap().is_some()
+        !self.admission.is_approved()
     }
 
-    fn approve(&self) {
-        self.pending.lock().unwrap().take();
+    fn approve(&self) -> bool {
+        self.admission.approve()
+    }
+}
+
+enum AdmissionState {
+    /// Waiting for the host, holding a request slot.
+    Pending(#[allow(dead_code)] OwnedSemaphorePermit),
+    Approved,
+    Expired,
+}
+
+/// Where a peer stands. Approval and expiry are one decision under one lock: whichever comes first
+/// wins, so a "welcome" at the deadline either approves the guest or is refused, never both.
+struct Admission(std::sync::Mutex<AdmissionState>);
+
+impl Admission {
+    fn new(slot: Option<OwnedSemaphorePermit>) -> Self {
+        Self(std::sync::Mutex::new(slot.map_or(AdmissionState::Approved, AdmissionState::Pending)))
+    }
+
+    fn is_approved(&self) -> bool {
+        matches!(*self.0.lock().unwrap(), AdmissionState::Approved)
+    }
+
+    /// Approves a waiting peer and frees its slot; false if it has already expired.
+    fn approve(&self) -> bool {
+        let mut state = self.0.lock().unwrap();
+        if matches!(*state, AdmissionState::Expired) {
+            return false;
+        }
+        *state = AdmissionState::Approved;
+        true
+    }
+
+    /// Expires a waiting peer and frees its slot; false if it was approved in time.
+    fn expire(&self) -> bool {
+        let mut state = self.0.lock().unwrap();
+        if !matches!(*state, AdmissionState::Pending(_)) {
+            return false;
+        }
+        *state = AdmissionState::Expired;
+        true
     }
 }
 
@@ -77,6 +122,8 @@ pub struct CollabState {
     endpoint: Mutex<Option<Endpoint>>,
     peers: SharedPeers,
     hosting: Mutex<bool>,
+    /// The limits of the running hosting session.
+    limits: Mutex<Option<Arc<JoinLimits>>>,
 }
 
 /// Refills continuously up to `burst`; each connection takes one token.
@@ -111,6 +158,8 @@ struct JoinLimits {
     pending: Arc<Semaphore>,
     refused: AtomicU64,
     notice_armed: AtomicBool,
+    /// Set when this hosting session stops. A lock, so a notice is either out before that or never.
+    ended: std::sync::Mutex<bool>,
 }
 
 impl JoinLimits {
@@ -121,6 +170,24 @@ impl JoinLimits {
             pending: Arc::new(Semaphore::new(MAX_PENDING)),
             refused: AtomicU64::new(0),
             notice_armed: AtomicBool::new(false),
+            ended: std::sync::Mutex::new(false),
+        }
+    }
+
+    fn end(&self) {
+        *self.ended.lock().unwrap() = true;
+    }
+
+    fn is_ended(&self) -> bool {
+        *self.ended.lock().unwrap()
+    }
+
+    /// Reports the refusals since the last notice, unless there are none or the session is over.
+    fn deliver_notice(&self, notify: impl Fn(u64)) {
+        let ended = self.ended.lock().unwrap();
+        let count = self.take_refused();
+        if !*ended && count > 0 {
+            notify(count);
         }
     }
 
@@ -148,7 +215,7 @@ fn report_refusal<N: Fn(u64) + Send + Sync + 'static>(limits: &Arc<JoinLimits>, 
         let (limits, notify) = (limits.clone(), notify.clone());
         tokio::spawn(async move {
             tokio::time::sleep(REFUSAL_NOTICE_WINDOW).await;
-            notify(limits.take_refused());
+            limits.deliver_notice(|count| notify(count));
         });
     }
 }
@@ -211,7 +278,7 @@ fn new_handle() -> Result<String, String> {
 async fn admit(peers: &Mutex<PeerTable<Arc<Peer>>>, conn: &Connection, send: SendStream, pending: Option<OwnedSemaphorePermit>) -> Result<String, String> {
     let handle = new_handle()?;
     let id = conn.remote_id().to_string();
-    let peer = Arc::new(Peer { conn: conn.clone(), send: Mutex::new(send), pending: std::sync::Mutex::new(pending) });
+    let peer = Arc::new(Peer { conn: conn.clone(), send: Mutex::new(send), admission: Admission::new(pending) });
     let claimed = peers.lock().await.claim(&id, handle.clone(), peer, |p| p.conn.close_reason().is_none());
     claimed.map_err(|_| "collab:already_connected".to_string())?;
     Ok(handle)
@@ -297,8 +364,8 @@ fn allow_outgoing(peer: &Peer, msg: &str) -> Result<(), String> {
     if !kind.as_deref().is_some_and(|k| SENDABLE_BEFORE_APPROVAL.contains(&k)) {
         return Err("collab:not_approved".into());
     }
-    if kind.as_deref() == Some("welcome") {
-        peer.approve();
+    if kind.as_deref() == Some("welcome") && !peer.approve() {
+        return Err("collab:not_approved".into());
     }
     Ok(())
 }
@@ -347,10 +414,20 @@ async fn receive_join<N: Fn(u64) + Send + Sync + 'static>(incoming: Incoming, sl
         return None;
     };
     drop(slot);
+    if limits.is_ended() {
+        conn.close(0u32.into(), b"session ended");
+        return None;
+    }
     let Ok(handle) = admit(peers, &conn, send, Some(pending)).await else {
         conn.close(CLOSE_ALREADY_CONNECTED.into(), b"already connected");
         return None;
     };
+    // `end_session` marks the end before it empties the table, so an entry it missed is caught here.
+    if limits.is_ended() {
+        peers.lock().await.remove(&handle);
+        conn.close(0u32.into(), b"session ended");
+        return None;
+    }
     let peer = peers.lock().await.get(&handle).cloned()?;
     tokio::spawn(expire_pending(peer.clone(), PENDING_TTL));
     Some(Joined { handle, peer, recv, hello })
@@ -361,10 +438,20 @@ async fn expire_pending(peer: Arc<Peer>, ttl: Duration) {
     tokio::select! {
         _ = peer.conn.closed() => {}
         _ = tokio::time::sleep(ttl) => {
-            if peer.is_pending() {
+            if peer.admission.expire() {
                 peer.conn.close(CLOSE_EXPIRED.into(), b"expired");
             }
         }
+    }
+}
+
+/// Ends a hosting session: nothing still in flight can join it or report to the next one.
+async fn end_session(limits: Option<Arc<JoinLimits>>, peers: &Mutex<PeerTable<Arc<Peer>>>) {
+    if let Some(limits) = limits {
+        limits.end();
+    }
+    for p in peers.lock().await.drain() {
+        p.conn.close(0u32.into(), b"session ended");
     }
 }
 
@@ -450,9 +537,11 @@ pub async fn collab_host(app: AppHandle) -> Result<String, String> {
         *hosting = true;
         let (app2, app3) = (app.clone(), app.clone());
         let peers = state.peers.clone();
+        let limits = Arc::new(JoinLimits::new());
+        *state.limits.lock().await = Some(limits.clone());
         tauri::async_runtime::spawn(accept_joins(
             ep,
-            Arc::new(JoinLimits::new()),
+            limits,
             peers,
             move |j: Joined| {
                 tauri::async_runtime::spawn(pump(app2.clone(), j.handle, j.peer, j.recv, Some(j.hello)));
@@ -519,9 +608,8 @@ pub async fn collab_kick(app: AppHandle, peer: String) {
 #[tauri::command]
 pub async fn collab_stop(app: AppHandle) {
     let state = app.state::<CollabState>();
-    for p in state.peers.lock().await.drain() {
-        p.conn.close(0u32.into(), b"session ended");
-    }
+    let limits = state.limits.lock().await.take();
+    end_session(limits, &state.peers).await;
     *state.hosting.lock().await = false;
     if let Some(ep) = state.endpoint.lock().await.take() {
         ep.close().await;
@@ -858,9 +946,12 @@ mod tests {
 
     /// A host running the real accept loop; joins arrive on the channel.
     async fn test_host() -> (Endpoint, Arc<JoinLimits>, SharedPeers, tokio::sync::mpsc::UnboundedReceiver<Joined>) {
+        test_host_on(Default::default()).await
+    }
+
+    async fn test_host_on(peers: SharedPeers) -> (Endpoint, Arc<JoinLimits>, SharedPeers, tokio::sync::mpsc::UnboundedReceiver<Joined>) {
         let host = test_endpoint().await;
         let limits = Arc::new(JoinLimits::new());
-        let peers: SharedPeers = Default::default();
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         tokio::spawn(accept_joins(host.clone(), limits.clone(), peers.clone(), move |j| drop(tx.send(j)), |_| {}));
         (host, limits, peers, rx)
@@ -1085,6 +1176,135 @@ mod tests {
         expire_pending(j.peer.clone(), Duration::from_millis(10)).await;
         timeout(Duration::from_secs(5), conn.closed()).await.unwrap();
         assert_eq!(close_code(&conn).as_deref(), Some("collab:expired"));
+        // The slot is back even while something still holds the peer.
+        assert_eq!(limits.pending.available_permits(), MAX_PENDING);
+        assert_eq!(allow_outgoing(&j.peer, r#"{"t":"welcome"}"#).unwrap_err(), "collab:not_approved");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_welcome_just_before_the_deadline_keeps_the_guest() {
+        let (host, limits, _peers, mut joins) = test_host().await;
+        let (_g, conn, _s, _r) = join_as_guest(&host).await;
+        let j = timeout(Duration::from_secs(5), joins.recv()).await.unwrap().unwrap();
+        allow_outgoing(&j.peer, r#"{"t":"welcome"}"#).unwrap();
+        expire_pending(j.peer.clone(), Duration::from_millis(10)).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(conn.close_reason().is_none());
+        assert!(j.peer.conn.close_reason().is_none());
+        assert!(!j.peer.is_pending());
+        assert_eq!(limits.pending.available_permits(), MAX_PENDING);
+    }
+
+    #[test]
+    fn approval_and_expiry_racing_have_exactly_one_winner() {
+        for _ in 0..2000 {
+            let slots = Arc::new(Semaphore::new(1));
+            let a = Arc::new(Admission::new(Some(slots.clone().try_acquire_owned().unwrap())));
+            let start = Arc::new(std::sync::Barrier::new(2));
+            let (a2, start2) = (a.clone(), start.clone());
+            let expirer = std::thread::spawn(move || {
+                start2.wait();
+                a2.expire()
+            });
+            start.wait();
+            let approved = a.approve();
+            let expired = expirer.join().unwrap();
+            assert_ne!(approved, expired, "exactly one decision wins");
+            assert_eq!(a.is_approved(), approved);
+            assert_eq!(slots.available_permits(), 1);
+        }
+    }
+
+    #[test]
+    fn a_notice_is_not_delivered_when_empty_or_after_the_session_ended() {
+        let calls = std::sync::Mutex::new(Vec::new());
+        let l = JoinLimits::new();
+        l.deliver_notice(|n| calls.lock().unwrap().push(n));
+        assert!(calls.lock().unwrap().is_empty(), "a zero count is not emitted");
+        l.note_refused();
+        l.note_refused();
+        l.deliver_notice(|n| calls.lock().unwrap().push(n));
+        assert_eq!(*calls.lock().unwrap(), vec![2]);
+        l.note_refused();
+        l.end();
+        l.deliver_notice(|n| calls.lock().unwrap().push(n));
+        assert_eq!(*calls.lock().unwrap(), vec![2], "nothing after the session ended");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_notice_waiting_when_the_session_stops_never_arrives() {
+        let limits = Arc::new(JoinLimits::new());
+        let seen = Arc::new(AtomicU64::new(0));
+        let seen2 = seen.clone();
+        let notify = Arc::new(move |n: u64| {
+            seen2.fetch_add(n, Ordering::Relaxed);
+        });
+        report_refusal(&limits, &notify);
+        end_session(Some(limits.clone()), &Mutex::new(PeerTable::default())).await;
+        tokio::time::sleep(REFUSAL_NOTICE_WINDOW + Duration::from_millis(300)).await;
+        assert_eq!(seen.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_denied_guest_can_reconnect_at_once_with_the_same_key() {
+        let (host, limits, peers, mut joins) = test_host().await;
+        let key = iroh::SecretKey::generate();
+        let bind = |k: iroh::SecretKey| async move { Endpoint::builder(presets::Minimal).alpns(vec![ALPN.to_vec()]).secret_key(k).bind().await.unwrap() };
+
+        let first = bind(key.clone()).await;
+        let conn = first.connect(host.addr(), ALPN).await.unwrap();
+        let (mut s, _r) = conn.open_bi().await.unwrap();
+        s.write_all(&frame(HELLO)).await.unwrap();
+        let j = timeout(Duration::from_secs(5), joins.recv()).await.unwrap().unwrap();
+
+        // What deny does: answer, then kick.
+        allow_outgoing(&j.peer, r#"{"t":"denied"}"#).unwrap();
+        peers.lock().await.remove(&j.handle).unwrap().conn.close(1u32.into(), b"removed");
+        let old_handle = j.handle.clone();
+        drop(j);
+        timeout(Duration::from_secs(5), conn.closed()).await.unwrap();
+
+        let second = bind(key).await;
+        let again = second.connect(host.addr(), ALPN).await.unwrap();
+        let (mut s2, _r2) = again.open_bi().await.unwrap();
+        s2.write_all(&frame(HELLO)).await.unwrap();
+        let j2 = timeout(Duration::from_secs(5), joins.recv()).await.unwrap().unwrap();
+        assert_ne!(j2.handle, old_handle);
+        assert!(j2.peer.is_pending(), "it has to be approved again");
+        assert_eq!(limits.pending.available_permits(), MAX_PENDING - 1, "the denied request's slot came back");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stopping_with_connections_in_flight_leaves_nothing_for_the_next_session() {
+        let (host, limits, peers, mut joins) = test_host().await;
+
+        // One request is waiting, another connection is still before its join message.
+        let (_g1, waiting, _s1, _r1) = join_as_guest(&host).await;
+        timeout(Duration::from_secs(5), joins.recv()).await.unwrap().unwrap();
+        let late = test_endpoint().await;
+        let in_flight = late.connect(host.addr(), ALPN).await.unwrap();
+        let (mut late_send, _late_recv) = in_flight.open_bi().await.unwrap();
+        late_send.write_all(&(HELLO.len() as u32).to_be_bytes()).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(150)).await;
+
+        end_session(Some(limits.clone()), &peers).await;
+        assert!(peers.lock().await.by_handle.is_empty());
+        timeout(Duration::from_secs(5), waiting.closed()).await.unwrap();
+
+        // The rest of its join message arrives after the stop: it joins nothing.
+        late_send.write_all(HELLO).await.unwrap();
+        timeout(Duration::from_secs(5), in_flight.closed()).await.unwrap();
+        assert!(joins.try_recv().is_err());
+        assert!(peers.lock().await.by_handle.is_empty());
+        host.close().await;
+
+        // A new session on the same table starts clean and works.
+        let (host2, limits2, peers2, mut joins2) = test_host_on(peers.clone()).await;
+        assert_eq!(limits2.pending.available_permits(), MAX_PENDING);
+        let (_g3, _c3, _s3, _r3) = join_as_guest(&host2).await;
+        let j = timeout(Duration::from_secs(5), joins2.recv()).await.unwrap().unwrap();
+        assert_eq!(peers2.lock().await.by_handle.len(), 1);
+        assert!(peers2.lock().await.get(&j.handle).is_some());
     }
 
     #[test]

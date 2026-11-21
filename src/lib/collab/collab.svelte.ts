@@ -332,7 +332,7 @@ listen<{ peer: string; reason: string }>("collab-closed", (e) => {
 
 /** Host: counts refused join attempts; only the first of a session raises a toast. */
 function noteRefused(count: number) {
-  if (collab.role !== "host" || count <= 0) return;
+  if (collab.role !== "host" || collab.status !== "hosting" || count <= 0) return;
   if (!collab.refused) ui.toast(t("ai.collab.joinsRefused"), "error");
   collab.refused += count;
 }
