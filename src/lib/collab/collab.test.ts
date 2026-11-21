@@ -265,6 +265,40 @@ test("host: kicking a guest and ending the session run the peer-gone hooks at on
   s.peerGoneHooks.length = 0;
 });
 
+test("host: a failed kick is logged instead of becoming an unhandled rejection (#157)", async () => {
+  const s = await freshSession((cmd) => (cmd === "collab_host" ? "omega-t" : cmd === "collab_kick" ? new Error("kick failed") : null));
+  await s.startHosting();
+  s.approve({ peer: "g1", name: "Eins" });
+  const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+  vi.useFakeTimers();
+  try {
+    s.kick("g1");
+    await vi.advanceTimersByTimeAsync(200);
+  } finally {
+    vi.useRealTimers();
+  }
+  await vi.waitFor(() => expect(logged).toHaveBeenCalledWith("collab kick", expect.anything()));
+  await s.leave();
+});
+
+test("host: leaving settles pending kicks, so no timer outlives the session (#157)", async () => {
+  const s = await freshSession((cmd) => (cmd === "collab_host" ? "omega-t" : null));
+  await s.startHosting();
+  s.approve({ peer: "g1", name: "Eins" });
+  vi.useFakeTimers();
+  try {
+    s.kick("g1"); // waiting on its timer: closed right away by leave
+    s.deny({ peer: "g2", name: "Zwei" }); // still sending: its session is over when that returns
+    await s.leave();
+    const kicked = () => s.calls.filter((c) => c.cmd === "collab_kick").map((c) => c.args.peer);
+    expect(kicked()).toEqual(["g1"]);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(kicked()).toEqual(["g1"]);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 test("host: join requests are bounded, the excess is told it's busy, and the host hears once", async () => {
   const s = await freshSession((cmd) => (cmd === "collab_host" ? "omega-t" : null));
   await s.startHosting();

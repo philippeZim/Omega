@@ -204,7 +204,7 @@ export async function joinFromClipboard() {
 
 export function deny(req: JoinRequest) {
   collab.requests = collab.requests.filter((r) => r.peer !== req.peer);
-  send(req.peer, { t: "denied" }).then(() => setTimeout(() => invoke("collab_kick", { peer: req.peer }), 300));
+  sendThenKick(req.peer, { t: "denied" });
 }
 
 export function kick(peer: string) {
@@ -214,7 +214,40 @@ export function kick(peer: string) {
   peerGone(peer);
   void import("./share.svelte").then((m) => m.forgetPeer(peer));
   send(peer, { t: "kicked" });
-  setTimeout(() => invoke("collab_kick", { peer }), 200);
+  kickAfter(peer, 200);
+}
+
+/** Closes a connection; a failure stays visible in the log (the app's console capture). */
+const closePeer = (peer: string) => invoke("collab_kick", { peer }).catch((e) => console.error("collab kick", e));
+
+// Delayed kicks give the last message time to arrive. They belong to one session: leave() settles them.
+const pendingKicks = new Map<ReturnType<typeof setTimeout>, string>();
+let kickSession = 0;
+
+function kickAfter(peer: string, ms: number) {
+  const timer = setTimeout(() => {
+    pendingKicks.delete(timer);
+    void closePeer(peer);
+  }, ms);
+  pendingKicks.set(timer, peer);
+}
+
+function sendThenKick(peer: string, msg: Msg) {
+  const session = kickSession;
+  void send(peer, msg).then(() => {
+    // The session ended meanwhile: its connections are closed, and this id may be back in a new one.
+    if (session === kickSession) kickAfter(peer, 300);
+  });
+}
+
+/** Session ends: nothing may fire later, and a removed guest is disconnected even if stopping fails. */
+function settleKicks() {
+  kickSession++;
+  for (const [timer, peer] of pendingKicks) {
+    clearTimeout(timer);
+    void closePeer(peer);
+  }
+  pendingKicks.clear();
 }
 
 const publicInfo = (p: Participant) => ({ peer: p.peer === "self" ? "host" : p.peer, name: p.name, color: p.color, role: p.role });
@@ -261,6 +294,7 @@ let leaving = false;
 export async function leave() {
   if (leaving) return;
   leaving = true;
+  settleKicks();
   const wasGuest = collab.role === "guest";
   if (collab.role === "host") {
     for (const p of [...collab.participants]) if (p.role === "guest") peerGone(p.peer);
@@ -305,14 +339,14 @@ listen<{ peer: string; msg: string }>("collab-msg", (e) => {
   if (collab.role === "host") {
     if (msg.t === "hello") {
       if (msg.version !== PROTOCOL_VERSION) {
-        void send(peer, { t: "version", version: PROTOCOL_VERSION }).then(() => setTimeout(() => invoke("collab_kick", { peer }).catch(() => {}), 300));
+        sendThenKick(peer, { t: "version", version: PROTOCOL_VERSION });
         return;
       }
       // Unknown peers must be approved first (the code alone is not enough).
       if (!collab.requests.some((r) => r.peer === peer) && !collab.participants.some((p) => p.peer === peer)) {
         if (collab.requests.length >= MAX_VISIBLE_REQUESTS) {
           noteRefused(1);
-          void send(peer, { t: "busy" }).then(() => setTimeout(() => invoke("collab_kick", { peer }).catch(() => {}), 300));
+          sendThenKick(peer, { t: "busy" });
           return;
         }
         collab.requests.push({ peer, name: String(msg.name || t("ai.collab.guest")).slice(0, MAX_NAME) });
