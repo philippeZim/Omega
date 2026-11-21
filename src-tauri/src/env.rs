@@ -310,6 +310,17 @@ pub fn pid_alive(pid: u32) -> bool {
     command("kill").args(["-0", &pid.to_string()]).output().is_ok_and(|o| o.status.success())
 }
 
+/// Writes an executable script for a test. A child process writes it: if this multi-threaded
+/// test binary held the write handle, a `fork` on another thread could inherit it for a moment,
+/// and running the script then fails with ETXTBSY ("Text file busy").
+#[cfg(all(test, unix))]
+pub(crate) fn write_test_script(path: &Path, text: &str) {
+    use std::io::Write;
+    let mut c = Command::new("sh").arg("-c").arg(r#"cat > "$1" && chmod 755 "$1""#).arg("sh").arg(path).stdin(std::process::Stdio::piped()).spawn().unwrap();
+    c.stdin.take().unwrap().write_all(text.as_bytes()).unwrap();
+    assert!(c.wait().unwrap().success());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

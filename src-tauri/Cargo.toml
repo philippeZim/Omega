@@ -33,6 +33,7 @@ base64 = "0.23.1"
 zip = { version = "9.7.3", default-features = false, features = ["deflate"] }
 ignore = "0.4.34"
 regex = "1.13.2"
+sha2 = "0.10"
 globset = "0.4.21"
 iroh = "1.5.0"
 tokio = { version = "1.54.1", features = ["sync", "time", "rt", "net", "io-util", "signal"] }

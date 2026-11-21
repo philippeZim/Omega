@@ -277,6 +277,7 @@ export const en = {
   "code.ad.ocamlNoExe": "No executable found in this project's dune files.",
   "code.ad.ocamlNoByte": "{name} has no bytecode target, which debugging needs. Add (modes byte exe) to its stanza in {file}.",
   "code.ad.ocamlMismatch": "Earlybird ({adapter}) and the OCaml compiler ({compiler}) come from different installations. Install Earlybird in the same opam switch.",
+  "code.ad.mojoFireExt": "Mojo no longer compiles .🔥 files. Rename this file to .mojo to run or debug it.",
 };
 export const de: Record<keyof typeof en, string> = {
   "code.key.ctrl": "Strg",
@@ -546,6 +547,7 @@ export const de: Record<keyof typeof en, string> = {
   "code.ad.ocamlNoExe": "In den dune-Dateien dieses Projekts wurde keine ausführbare Datei gefunden.",
   "code.ad.ocamlNoByte": "{name} hat kein Bytecode-Ziel, das zum Debuggen nötig ist. Ergänze (modes byte exe) in seiner Stanza in {file}.",
   "code.ad.ocamlMismatch": "Earlybird ({adapter}) und der OCaml-Compiler ({compiler}) stammen aus verschiedenen Installationen. Installiere Earlybird im selben opam-Switch.",
+  "code.ad.mojoFireExt": "Mojo kompiliert keine .🔥-Dateien mehr. Benenne die Datei in .mojo um, um sie auszuführen oder zu debuggen.",
 };
 export const fr: Record<keyof typeof en, string> = {
   "code.key.ctrl": "Ctrl",
@@ -815,4 +817,5 @@ export const fr: Record<keyof typeof en, string> = {
   "code.ad.ocamlNoExe": "Aucun exécutable trouvé dans les fichiers dune de ce projet.",
   "code.ad.ocamlNoByte": "{name} n’a pas de cible bytecode, nécessaire au débogage. Ajoutez (modes byte exe) à sa stanza dans {file}.",
   "code.ad.ocamlMismatch": "Earlybird ({adapter}) et le compilateur OCaml ({compiler}) proviennent d’installations différentes. Installez Earlybird dans le même switch opam.",
+  "code.ad.mojoFireExt": "Mojo ne compile plus les fichiers .🔥. Renommez ce fichier en .mojo pour l’exécuter ou le déboguer.",
 };

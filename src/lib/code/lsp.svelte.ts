@@ -6,7 +6,7 @@ import { t, type Key } from "../i18n/index.svelte";
 import { ui } from "../ui.svelte";
 import { fsApi, dirname, joinPath, isRoot } from "../api";
 import { IS_WIN, OS, platform } from "../platform";
-import { ensureTools, withInstallProgress, serverProgressId, type ToolId } from "../tools.svelte";
+import { ensureTools, mojoInstallHint, withInstallProgress, serverProgressId, type ToolId } from "../tools.svelte";
 import { metalsPausedBy, onGuestChange, resumeTool, toolChangeCount, toolPausedBy, type PausedTool } from "../collab/guestChanges";
 import type { LangInfo } from "./languages";
 
@@ -338,6 +338,7 @@ const ROOT_MARKERS: Record<ServerKind, string[]> = {
   rust: ["Cargo.toml"],
   scala: ["build.sbt", "project.scala", ".bsp", ".scala-build", ".git"],
   ocaml: ["dune-project", "dune-workspace"],
+  mojo: ["mojoproject.toml", "pixi.toml", ".git"],
 };
 
 const within = (path: string, dir: string) => path === dir || path.startsWith(dir.endsWith("/") ? dir : dir + "/");
@@ -470,6 +471,10 @@ async function resolveCommand(kind: ServerKind, root: string): Promise<{ cmd: st
       const cmd = await first(`${tools}/ocaml/root/omega/bin/ocamllsp`, "ocamllsp");
       return cmd ? { cmd, args: [] } : null;
     }
+    case "mojo": {
+      const cmd = await first(`${tools}/mojo/bin/mojo-lsp-server`, "mojo-lsp-server");
+      return cmd ? { cmd, args: [] } : null;
+    }
   }
 }
 
@@ -481,6 +486,7 @@ export const INSTALLABLE: Partial<Record<ServerKind, string>> = {
   scala: "Metals (Scala)",
   // On Windows it can only come from the user's own opam: there is nothing to offer.
   ocaml: IS_WIN ? undefined : "ocaml-lsp-server (OCaml)",
+  mojo: "Mojo (compiler, LSP, LLDB)",
   get rust() {
     return t("code.lsp.rustAnalyzer");
   },
@@ -512,7 +518,12 @@ async function guestMayStart(kind: ServerKind, root: string, key: string) {
   return !!cmd;
 }
 
-/** Servers that execute project-controlled code, with the texts of their guest pause. */
+/**
+ * Servers that execute project-controlled code, with the texts of their guest pause.
+ * mojo-lsp-server is deliberately not here: under strace it ran no project code (no `comptime`
+ * evaluation, child processes, project libraries or writes). The remaining risk, its closed-source
+ * parser reading a guest's `.mojoc` file, is accepted.
+ */
 const PAUSABLE: Partial<Record<ServerKind, { tool: PausedTool; paused: Key; title: Key; msg: Key; ok: Key }>> = {
   scala: { tool: "metals", paused: "code.lsp.metalsPaused", title: "code.lsp.metalsResumeTitle", msg: "code.lsp.metalsResumeMsg", ok: "code.lsp.metalsResumeOk" },
   ocaml: { tool: "ocaml", paused: "code.lsp.ocamlPaused", title: "code.lsp.ocamlResumeTitle", msg: "code.lsp.ocamlResumeMsg", ok: "code.lsp.ocamlResumeOk" },
@@ -598,6 +609,14 @@ export async function clientFor(
       lspState.status[key] = "missing";
       const name = INSTALLABLE[kind];
       if (kind === "ocaml" && !name) lspState.message[key] = t("tools.ocamlWindows");
+      if (kind === "mojo") {
+        // Windows, an old glibc, an Intel Mac: an install could only fail, so there is no prompt.
+        const hint = await mojoInstallHint();
+        if (hint) {
+          lspState.message[key] = hint;
+          return null;
+        }
+      }
       if (!name || (declined.has(kind) && !needDebug)) return null;
       if (!(await askInstall(kind, name))) {
         declined.add(kind);

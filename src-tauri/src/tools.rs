@@ -1,6 +1,6 @@
 //! Tools Omega can install by itself into its app-data folder (`tools/`), per OS and CPU:
 //! uv (Python), tectonic (LaTeX), Node.js, pnpm, CMake, Ninja, clangd, a JDK, Gradle, Rust (rustup),
-//! Scala CLI with Coursier, sbt, OCaml through its own opam root, a C/C++ compiler (llvm-mingw on Windows, Xcode Command Line Tools
+//! Scala CLI with Coursier, sbt, OCaml through its own opam root, Mojo in its own Conda environment, a C/C++ compiler (llvm-mingw on Windows, Xcode Command Line Tools
 //! on macOS) and Git on Windows.
 //! Installed tools are recorded in `tools/managed.json` (tool id → folder with its executables);
 //! those folders are appended to the PATH of everything Omega starts (see `env.rs`).
@@ -72,7 +72,11 @@ fn get_json(url: &str) -> Result<Value, String> {
 
 /// Streams `url` into `out`, emitting `tool-progress`; returns the final URL (after redirects).
 pub fn download(app: &AppHandle, id: &str, url: &str, out: &Path) -> Result<String, String> {
-    let resp = agent().get(url).call().map_err(|e| format!("tools:download_failed:{url}: {e}"))?;
+    download_with(&agent(), app, id, url, out)
+}
+
+fn download_with(agent: &ureq::Agent, app: &AppHandle, id: &str, url: &str, out: &Path) -> Result<String, String> {
+    let resp = agent.get(url).call().map_err(|e| format!("tools:download_failed:{url}: {e}"))?;
     let final_url = resp.get_url().to_string();
     let total: u64 = resp.header("Content-Length").and_then(|v| v.parse().ok()).unwrap_or(0);
     let mut reader = resp.into_reader();
@@ -295,6 +299,9 @@ pub fn tool_installable() -> Vec<&'static str> {
     } else {
         v.push("ocaml"); // opam on Windows needs a Cygwin setup of its own
     }
+    if mojo_unsupported(OS, std::env::consts::ARCH, glibc_version()).is_none() {
+        v.push("mojo");
+    }
     if cfg!(target_os = "macos") {
         v.extend(["git", "cc"]); // Xcode Command Line Tools
     }
@@ -320,6 +327,9 @@ fn install(app: &AppHandle, id: &str) -> Result<String, String> {
     }
     if id == "ocaml" {
         return install_ocaml(app);
+    }
+    if id == "mojo" {
+        return install_mojo(app, "mojo", true);
     }
     if cfg!(target_os = "macos") && (id == "cc" || id == "git") {
         // Apple's installer dialog; the tools appear in /usr/bin once the user finished it.
@@ -503,6 +513,269 @@ pub fn install_metals(app: &AppHandle) -> Result<String, String> {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::rename(&staging, &dir).map_err(|e| e.to_string())?;
     Ok(env::norm(dir.join(file)))
+}
+
+// ------------------------------------------------------------------ Mojo
+
+/// Installs Mojo's Conda package. The PyPI wheels aren't enough: their `lldb-dap` needs
+/// libncurses.so.6 and libpanel.so.6, which they don't bundle and many systems don't have.
+const PIXI_VERSION: &str = "0.84.2";
+
+/// Release target and SHA-256 of the pinned pixi for the platforms Mojo supports.
+fn pixi_asset(os: &str, arm: bool) -> Option<(&'static str, &'static str)> {
+    match (os, arm) {
+        ("linux", false) => Some(("x86_64-unknown-linux-musl", "6d2a576bde0a7b26533a068fec0aea6e4ee21c36668efc1dc73fce90110906ae")),
+        ("linux", true) => Some(("aarch64-unknown-linux-musl", "0957b6352d077bb3ffcce913f90b1e6cfbc6b98888a45d59ee2910e8c4811110")),
+        ("macos", true) => Some(("aarch64-apple-darwin", "039d4b48c7e17bc62a36faa2af1b13d0d187f5dd6e8fea17e0587302438df6e6")),
+        _ => None,
+    }
+}
+
+/// glibc of the running system; None on anything else.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn glibc_version() -> Option<(u32, u32)> {
+    // SAFETY: returns a pointer to a static, NUL-terminated version string.
+    let v = unsafe { std::ffi::CStr::from_ptr(libc::gnu_get_libc_version()) }.to_string_lossy().to_string();
+    parse_glibc(&v)
+}
+
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+fn glibc_version() -> Option<(u32, u32)> {
+    None
+}
+
+#[cfg_attr(not(all(target_os = "linux", target_env = "gnu")), allow(dead_code))]
+fn parse_glibc(v: &str) -> Option<(u32, u32)> {
+    let mut parts = v.trim().split('.');
+    Some((parts.next()?.parse().ok()?, parts.next()?.parse().ok()?))
+}
+
+/// Why Mojo can't run here (shown in the error), None on a supported system.
+fn mojo_unsupported(os: &str, arch: &str, glibc: Option<(u32, u32)>) -> Option<String> {
+    match (os, arch) {
+        ("macos", "aarch64") => None,
+        ("macos", _) => Some("Intel Mac".into()),
+        ("linux", "x86_64" | "aarch64") => match glibc {
+            Some(v) if v >= (2, 34) => None,
+            Some((major, minor)) => Some(format!("glibc {major}.{minor}")),
+            None => Some("Linux without glibc".into()),
+        },
+        ("linux", other) => Some(format!("Linux {other}")),
+        _ => Some("Windows".into()),
+    }
+}
+
+fn mojo_dir() -> PathBuf {
+    env::tools_dir().join("mojo")
+}
+
+fn mojo_env_dir() -> PathBuf {
+    mojo_dir().join("env")
+}
+
+fn mojo_prefix() -> PathBuf {
+    mojo_env_dir().join(".pixi").join("envs").join("default")
+}
+
+fn pixi_exe() -> PathBuf {
+    mojo_dir().join("pixi").join("pixi")
+}
+
+/// Only the launchers go on the PATH: the environment's own bin folder also holds a Python.
+fn mojo_bin() -> PathBuf {
+    mojo_dir().join("bin")
+}
+
+/// The upper bound keeps the channel's old CalVer builds (25.x) from counting as newest.
+fn mojo_manifest(platform: &str) -> String {
+    format!("[workspace]\nname = \"omega-mojo\"\nchannels = [\"https://conda.modular.com/max\", \"conda-forge\"]\nplatforms = [\"{platform}\"]\n\n[dependencies]\nmojo = \">=1.2,<25\"\n")
+}
+
+fn sh_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// A launcher for one program of the environment. It sets what Conda's activation would, without
+/// running that script (it reports the first activation to Modular), and turns telemetry off.
+fn mojo_launcher(prefix: &Path, command: &str) -> String {
+    format!(
+        "#!/bin/sh\n# Generated by Omega.\nP={}\nfor v in $(env | sed -n 's/^\\(MODULAR_[A-Za-z0-9_]*\\)=.*/\\1/p'); do unset \"$v\"; done\nexport MODULAR_HOME=\"$P/share/max\" MODULAR_TELEMETRY_ENABLED=0 MODULAR_CRASH_REPORTING_ENABLED=0\nexec {command} \"$@\"\n",
+        sh_quote(&prefix.to_string_lossy())
+    )
+}
+
+fn write_mojo_launchers() -> Result<(), String> {
+    let bin = mojo_bin();
+    std::fs::create_dir_all(&bin).map_err(|e| e.to_string())?;
+    let prefix = mojo_prefix();
+    // The SDK's mojo-lldb-dap script doesn't load the Mojo plugin, so variables would stay empty.
+    let dap = "\"$P/bin/_mojo-lldb-dap\" --pre-init-command \"?!plugin load \\\"$P/lib/libMojoLLDB.so\\\"\"";
+    for (name, command) in [("mojo", "\"$P/bin/mojo\""), ("mojo-lsp-server", "\"$P/bin/mojo-lsp-server\""), ("omega-mojo-dap", dap)] {
+        let file = bin.join(name);
+        std::fs::write(&file, mojo_launcher(&prefix, command)).map_err(|e| e.to_string())?;
+        make_executable(&file);
+    }
+    Ok(())
+}
+
+fn sha256_hex(path: &Path) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut hash = Sha256::new();
+    std::io::copy(&mut file, &mut hash).map_err(|e| e.to_string())?;
+    Ok(format!("{:x}", hash.finalize()))
+}
+
+fn fetch_pixi(app: &AppHandle, progress: &str) -> Result<(), String> {
+    let (target, sum) = pixi_asset(OS, ARM).ok_or_else(|| "tools:mojo_unsupported:pixi".to_string())?;
+    let url = format!("https://github.com/prefix-dev/pixi/releases/download/v{PIXI_VERSION}/pixi-{target}.tar.gz");
+    let tmp = mojo_dir().join(".pixi.download");
+    // Runs under the install lock: a stalled connection must not hold it.
+    let stalls = ureq::AgentBuilder::new().user_agent("omega-ide").timeout_connect(std::time::Duration::from_secs(20)).timeout_read(std::time::Duration::from_secs(60)).build();
+    let result = download_with(&stalls, app, progress, &url, &tmp).and_then(|_| {
+        if sha256_hex(&tmp)? != sum {
+            return Err("tools:mojo_failed:pixi checksum mismatch".to_string());
+        }
+        unpack(&tmp, "pixi.tar.gz", &mojo_dir().join("pixi"), "pixi")
+    });
+    let _ = std::fs::remove_file(&tmp);
+    result?;
+    make_executable(&pixi_exe());
+    Ok(())
+}
+
+/// pixi for Omega's environment only: its home and caches stay inside `tools/mojo`.
+fn run_pixi(args: &[&str]) -> Result<(), String> {
+    let dir = mojo_dir();
+    let mut c = env::command(pixi_exe());
+    for (name, _) in std::env::vars_os() {
+        let text = name.to_string_lossy();
+        if text.starts_with("PIXI_") || text.starts_with("CONDA_") {
+            c.env_remove(&name);
+        }
+    }
+    c.env("PIXI_HOME", dir.join("pixi-home")).env("PIXI_CACHE_DIR", dir.join("cache")).env("RATTLER_CACHE_DIR", dir.join("cache")).env("PIXI_NO_PATH_UPDATE", "1").env("NO_COLOR", "1");
+    c.args(args).arg("--manifest-path").arg(mojo_env_dir().join("pixi.toml")).current_dir(mojo_env_dir()).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut c, 0);
+    let mut child = c.spawn().map_err(|e| format!("tools:mojo_failed:{e}"))?;
+    let read = |pipe: Option<Box<dyn Read + Send>>| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut bytes);
+            }
+            let _ = tx.send(String::from_utf8_lossy(&bytes).to_string());
+        });
+        rx
+    };
+    let stdout = read(child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
+    let stderr = read(child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
+    let status = wait_or_kill(&mut child, || MOJO_CANCEL.load(std::sync::atomic::Ordering::SeqCst), MOJO_PIXI_LIMIT).map_err(|why| format!("tools:mojo_failed:{why}"))?;
+    if status.success() {
+        return Ok(());
+    }
+    let wait = std::time::Duration::from_secs(2);
+    let said = format!("{}\n{}", stdout.recv_timeout(wait).unwrap_or_default(), stderr.recv_timeout(wait).unwrap_or_default());
+    Err(format!("tools:mojo_failed:{}", tail_chars(&said, 600).replace('\n', " ")))
+}
+
+/// Upper limit for one pixi run. Generous, for the roughly 300 MB download on a slow connection;
+/// a removal doesn't wait for it, it cancels the run.
+const MOJO_PIXI_LIMIT: std::time::Duration = std::time::Duration::from_secs(2 * 60 * 60);
+
+/// Waits for `child`. If `cancelled` turns true or `limit` passes, ends it with its process group.
+fn wait_or_kill(child: &mut std::process::Child, cancelled: impl Fn() -> bool, limit: std::time::Duration) -> Result<std::process::ExitStatus, &'static str> {
+    let start = std::time::Instant::now();
+    loop {
+        if let Some(status) = child.try_wait().map_err(|_| "wait failed")? {
+            return Ok(status);
+        }
+        let why = if cancelled() { "cancelled" } else if start.elapsed() >= limit { "timed out" } else { "" };
+        if !why.is_empty() {
+            #[cfg(unix)]
+            // SAFETY: the child is unreaped and leads its own process group (set at spawn).
+            unsafe {
+                libc::killpg(child.id() as i32, libc::SIGKILL);
+            }
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(why);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+/// One install or removal of Omega's Mojo at a time.
+static MOJO_WORK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// A removal is waiting: the running install stops.
+static MOJO_CANCEL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Installs that finished, so one that waited for another can tell.
+static MOJO_FINISHED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub(crate) fn mojo_install_lock() -> std::sync::MutexGuard<'static, ()> {
+    MOJO_WORK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// The lock for removing Mojo: cancels a running install instead of waiting for it to end.
+pub(crate) fn mojo_removal_lock() -> std::sync::MutexGuard<'static, ()> {
+    MOJO_CANCEL.store(true, std::sync::atomic::Ordering::SeqCst);
+    let guard = mojo_install_lock();
+    MOJO_CANCEL.store(false, std::sync::atomic::Ordering::SeqCst);
+    guard
+}
+
+/// Whether an install request has anything to do. The language server and the debugger only need
+/// Mojo to exist; only an explicit update moves the version, and not right after another install.
+fn mojo_needs_work(installed: bool, update: bool, finished_while_waiting: bool) -> bool {
+    !installed || (update && !finished_while_waiting)
+}
+
+/// Compiler, language server and debugger: one Conda package in `tools/mojo`. With `update` it
+/// moves to the newest version; without, it only makes sure Mojo is there.
+pub fn install_mojo(app: &AppHandle, progress: &str, update: bool) -> Result<String, String> {
+    use std::sync::atomic::Ordering;
+    if let Some(why) = mojo_unsupported(OS, std::env::consts::ARCH, glibc_version()) {
+        return Err(format!("tools:mojo_unsupported:{why}"));
+    }
+    let seen = MOJO_FINISHED.load(Ordering::SeqCst);
+    let _work = mojo_install_lock();
+    let fresh = !mojo_prefix().join("bin").join("mojo").is_file();
+    let installed = !fresh && mojo_bin().join("omega-mojo-dap").is_file();
+    if !mojo_needs_work(installed, update, MOJO_FINISHED.load(Ordering::SeqCst) != seen) {
+        return Ok(env::norm(mojo_bin()));
+    }
+    let result = install_mojo_locked(app, progress, update);
+    if result.is_ok() {
+        MOJO_FINISHED.fetch_add(1, Ordering::SeqCst);
+    } else if fresh {
+        let _ = std::fs::remove_dir_all(mojo_dir());
+    }
+    result
+}
+
+fn install_mojo_locked(app: &AppHandle, progress: &str, update: bool) -> Result<String, String> {
+    std::fs::create_dir_all(mojo_env_dir()).map_err(|e| e.to_string())?;
+    if !pixi_exe().is_file() {
+        fetch_pixi(app, progress)?;
+    }
+    let platform = if OS == "macos" { "osx-arm64" } else if ARM { "linux-aarch64" } else { "linux-64" };
+    std::fs::write(mojo_env_dir().join("pixi.toml"), mojo_manifest(platform)).map_err(|e| e.to_string())?;
+    let _ = app.emit("tool-progress", Progress { id: progress, done: 0, total: 0, stage: "install" });
+    if update && mojo_env_dir().join("pixi.lock").is_file() {
+        run_pixi(&["update"])?;
+    }
+    run_pixi(&["install"])?;
+    write_mojo_launchers()?;
+    let _ = std::fs::remove_dir_all(mojo_dir().join("cache"));
+    record("mojo", &mojo_bin())?;
+    Ok(env::norm(mojo_bin()))
+}
+
+/// Newest stable Mojo release.
+pub fn mojo_latest() -> Result<String, String> {
+    get_json("https://pypi.org/pypi/mojo/json")?["info"]["version"].as_str().map(String::from).ok_or_else(|| "tools:no_version:Mojo".to_string())
 }
 
 // ------------------------------------------------------------------ OCaml
@@ -811,6 +1084,100 @@ mod tests {
     use super::*;
 
     #[test]
+    fn mojo_runs_only_on_the_systems_modular_builds_for() {
+        assert_eq!(mojo_unsupported("linux", "x86_64", Some((2, 34))), None);
+        assert_eq!(mojo_unsupported("linux", "aarch64", Some((2, 44))), None);
+        assert_eq!(mojo_unsupported("macos", "aarch64", None), None);
+        assert_eq!(mojo_unsupported("linux", "x86_64", Some((2, 33))).as_deref(), Some("glibc 2.33"));
+        assert_eq!(mojo_unsupported("linux", "x86_64", None).as_deref(), Some("Linux without glibc"));
+        assert_eq!(mojo_unsupported("linux", "riscv64", Some((2, 40))).as_deref(), Some("Linux riscv64"));
+        assert_eq!(mojo_unsupported("macos", "x86_64", None).as_deref(), Some("Intel Mac"));
+        assert_eq!(mojo_unsupported("windows", "x86_64", None).as_deref(), Some("Windows"));
+        assert_eq!(parse_glibc("2.34\n"), Some((2, 34)));
+        assert_eq!(parse_glibc("stable"), None);
+    }
+
+    #[test]
+    fn every_supported_mojo_platform_has_a_pinned_pixi() {
+        for (os, arm) in [("linux", false), ("linux", true), ("macos", true)] {
+            let (target, sum) = pixi_asset(os, arm).unwrap();
+            assert!(!target.is_empty() && sum.len() == 64 && sum.bytes().all(|b| b.is_ascii_hexdigit()), "{os} {arm}");
+        }
+        assert_eq!(pixi_asset("macos", false), None);
+        assert_eq!(pixi_asset("windows", false), None);
+    }
+
+    #[test]
+    fn only_an_explicit_update_moves_an_installed_mojo() {
+        assert!(mojo_needs_work(false, false, false), "missing: install");
+        assert!(mojo_needs_work(false, true, true), "still missing after the other install failed");
+        assert!(!mojo_needs_work(true, false, false), "language server or debugger: already there");
+        assert!(mojo_needs_work(true, true, false), "Settings' update");
+        assert!(!mojo_needs_work(true, true, true), "a second request right after another install");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_cancelled_pixi_run_ends_at_once_with_what_it_started() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("pid");
+        let mut c = Command::new("sh");
+        c.arg("-c").arg("sleep 60 & echo $! > \"$1\"; wait").arg("sh").arg(&pid_file);
+        std::os::unix::process::CommandExt::process_group(&mut c, 0);
+        let mut child = c.spawn().unwrap();
+        while !std::fs::read_to_string(&pid_file).is_ok_and(|s| s.ends_with('\n')) {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let grandchild: i32 = std::fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
+        let start = std::time::Instant::now();
+        assert_eq!(wait_or_kill(&mut child, || start.elapsed().as_millis() > 150, std::time::Duration::from_secs(30)).unwrap_err(), "cancelled");
+        assert!(start.elapsed() < std::time::Duration::from_secs(5));
+        let gone = (0..100).any(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            // SAFETY: signal 0 only checks that the process exists.
+            (unsafe { libc::kill(grandchild, 0) != 0 }) || std::fs::read_to_string(format!("/proc/{grandchild}/stat")).is_ok_and(|s| s.rsplit(')').next().is_some_and(|r| r.trim_start().starts_with('Z')))
+        });
+        assert!(gone, "the process group survived");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_hung_pixi_run_ends_at_the_limit() {
+        let mut child = Command::new("sleep").arg("60").spawn().unwrap();
+        assert_eq!(wait_or_kill(&mut child, || false, std::time::Duration::from_millis(150)).unwrap_err(), "timed out");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_finished_pixi_run_reports_its_status() {
+        let mut child = Command::new("sh").args(["-c", "exit 3"]).spawn().unwrap();
+        assert_eq!(wait_or_kill(&mut child, || false, std::time::Duration::from_secs(5)).unwrap().code(), Some(3));
+    }
+
+    #[test]
+    fn the_mojo_manifest_excludes_the_old_calver_builds() {
+        let m = mojo_manifest("linux-64");
+        assert!(m.contains("mojo = \">=1.2,<25\""), "{m}");
+        assert!(m.contains("platforms = [\"linux-64\"]"), "{m}");
+        assert!(m.contains("https://conda.modular.com/max"), "{m}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_mojo_launcher_handles_spaces_and_replaces_the_callers_modular_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let prefix = dir.path().join("it's a prefix");
+        std::fs::create_dir_all(prefix.join("bin")).unwrap();
+        let tool = prefix.join("bin").join("tool");
+        crate::env::write_test_script(&tool, "#!/bin/sh\nprintf '%s|%s|%s|%s|%s' \"$MODULAR_HOME\" \"$MODULAR_TELEMETRY_ENABLED\" \"$MODULAR_CRASH_REPORTING_ENABLED\" \"${MODULAR_MOJO_MAX_IMPORT_PATH-unset}\" \"$1\"\n");
+        let launcher = dir.path().join("launcher");
+        crate::env::write_test_script(&launcher, &mojo_launcher(&prefix, "\"$P/bin/tool\""));
+        let out = Command::new(&launcher).arg("a b").env("MODULAR_MOJO_MAX_IMPORT_PATH", "/other").env("MODULAR_TELEMETRY_ENABLED", "1").output().unwrap();
+        let expected = format!("{}/share/max|0|0|unset|a b", prefix.display());
+        assert_eq!(String::from_utf8_lossy(&out.stdout), expected);
+    }
+
+    #[test]
     fn a_version_check_is_skipped_while_an_install_runs_and_never_blocks_it() {
         let _one = OPAM_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         assert!(opam_query_lock().is_some());
@@ -925,10 +1292,8 @@ mod tests {
     fn a_cs_that_is_something_else_is_refused() {
         let t = tempfile::tempdir().unwrap();
         let (real, other) = (t.path().join("real"), t.path().join("other"));
-        std::fs::write(&real, "#!/bin/sh\necho 'Coursier is the Scala application and artifact manager.'\n").unwrap();
-        std::fs::write(&other, "#!/bin/sh\necho 'not it'\n").unwrap();
-        make_executable(&real);
-        make_executable(&other);
+        crate::env::write_test_script(&real, "#!/bin/sh\necho 'Coursier is the Scala application and artifact manager.'\n");
+        crate::env::write_test_script(&other, "#!/bin/sh\necho 'not it'\n");
         assert!(is_coursier(&real));
         assert!(!is_coursier(&other));
     }

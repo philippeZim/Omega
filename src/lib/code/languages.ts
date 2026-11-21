@@ -10,8 +10,9 @@ import { toml } from "@codemirror/legacy-modes/mode/toml";
 import { scala } from "@codemirror/legacy-modes/mode/clike";
 import { oCaml } from "@codemirror/legacy-modes/mode/mllike";
 import { extname } from "../api";
+import { mojoIndentStep, mojoParser } from "./mojoMode";
 
-export type LangId = "python" | "c" | "cpp" | "java" | "javascript" | "typescript" | "rust" | "json" | "toml" | "scala" | "ocaml";
+export type LangId = "python" | "c" | "cpp" | "java" | "javascript" | "typescript" | "rust" | "json" | "toml" | "scala" | "ocaml" | "mojo";
 
 export interface LangInfo {
   id: LangId;
@@ -19,7 +20,7 @@ export interface LangInfo {
   /** LSP languageId */
   lspId: string;
   /** Which language server handles it (null = none). */
-  server: "python" | "clangd" | "java" | "typescript" | "rust" | "scala" | "ocaml" | null;
+  server: "python" | "clangd" | "java" | "typescript" | "rust" | "scala" | "ocaml" | "mojo" | null;
   ext: () => Extension;
 }
 
@@ -43,6 +44,7 @@ reg(["scala", "sc"], L("scala", "Scala", "scala", "scala", () => [StreamLanguage
 // ocamllsp parses by languageId: an interface sent as "ocaml" would be full of false errors.
 reg(["ml"], L("ocaml", "OCaml", "ocaml", "ocaml", () => [StreamLanguage.define(oCaml), ocamlIndent]));
 reg(["mli"], L("ocaml", "OCaml", "ocaml.interface", "ocaml", () => [StreamLanguage.define(oCaml), ocamlIndent]));
+reg(["mojo", "🔥"], L("mojo", "Mojo", "mojo", "mojo", () => [StreamLanguage.define(mojoParser), mojoIndent]));
 
 /** Whether a Scala line opens an indented block without braces (Scala 3 syntax, `def f =`, `case x =>`). */
 export function scalaOpensBlock(line: string): boolean {
@@ -68,6 +70,13 @@ const ocamlIndent = indentService.of((cx, pos) => {
   let line = cx.lineAt(pos, -1);
   if (line.from === pos && pos > 0) line = cx.lineAt(pos - 1, -1);
   return cx.lineIndent(line.from, -1) + (ocamlOpensBlock(line.text) ? cx.unit : 0);
+});
+
+/** Python-style blocks: one step in after a `:`, one step out after `return`, `pass` and the like. */
+const mojoIndent = indentService.of((cx, pos) => {
+  let line = cx.lineAt(pos, -1);
+  if (line.from === pos && pos > 0) line = cx.lineAt(pos - 1, -1);
+  return Math.max(0, cx.lineIndent(line.from, -1) + mojoIndentStep(line.text) * cx.unit);
 });
 
 /**

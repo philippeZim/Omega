@@ -209,37 +209,54 @@ fn kill_registered(children: &Mutex<HashMap<String, Child>>, trees: &Mutex<HashS
     }
 }
 
-/// The process groups of everything below `root` in `ps -o pid=,ppid=,pgid=` output, without
-/// `own` (Omega's group) and the system's.
+/// (pid, ppid, pgid) rows of `ps -o pid=,ppid=,pgid=` output.
 #[cfg(unix)]
-fn descendant_groups(ps: &str, root: i32, own: i32) -> Vec<i32> {
-    let rows: Vec<(i32, i32, i32)> = ps
-        .lines()
+fn ps_rows(ps: &str) -> Vec<(i32, i32, i32)> {
+    ps.lines()
         .filter_map(|l| {
             let mut f = l.split_whitespace().map(str::parse::<i32>);
             Some((f.next()?.ok()?, f.next()?.ok()?, f.next()?.ok()?))
         })
-        .collect();
+        .collect()
+}
+
+/// `root` and every process below it.
+#[cfg(unix)]
+fn descendants(rows: &[(i32, i32, i32)], root: i32) -> HashSet<i32> {
     let mut found = HashSet::from([root]);
     loop {
         let before = found.len();
-        for (pid, ppid, _) in &rows {
+        for (pid, ppid, _) in rows {
             if found.contains(ppid) {
                 found.insert(*pid);
             }
         }
         if found.len() == before {
-            break;
+            return found;
         }
     }
+}
+
+/// The process groups of everything below `root` in `ps -o pid=,ppid=,pgid=` output, without
+/// `own` (Omega's group) and the system's.
+#[cfg(unix)]
+fn descendant_groups(ps: &str, root: i32, own: i32) -> Vec<i32> {
+    let rows = ps_rows(ps);
+    let found = descendants(&rows, root);
     let mut groups: Vec<i32> = rows.iter().filter(|(pid, _, _)| found.contains(pid)).map(|r| r.2).filter(|g| *g > 1 && *g != own).collect();
     groups.sort_unstable();
     groups.dedup();
     groups
 }
 
+/// Rounds of looking for new processes before the kill goes ahead regardless.
+#[cfg(unix)]
+const KILL_TREE_ROUNDS: usize = 16;
+
 /// Ends a build and the actions it started. Dune gives every action a process group of its own,
-/// so killing dune's group isn't enough. It is stopped first, so it can't start another one.
+/// so killing dune's group isn't enough. The whole tree is stopped first, round by round until no
+/// new process shows up: a running action could otherwise start a job in a new group after the
+/// list was read. Nothing is killed before that, because an orphan can't be found through its parent.
 #[cfg(unix)]
 fn kill_tree(child: &Child) {
     let pid = child.id() as i32;
@@ -248,11 +265,32 @@ fn kill_tree(child: &Child) {
         libc::kill(pid, libc::SIGSTOP);
         libc::getpgrp()
     };
-    let ps = Command::new("/bin/ps").args(["-A", "-o", "pid=,ppid=,pgid="]).stdin(Stdio::null()).stderr(Stdio::null()).output();
-    let text = ps.map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
-    for group in descendant_groups(&text, pid, own).into_iter().chain([pid]) {
-        // SAFETY: as above; the groups were just read and never include Omega's own.
+    let mut stopped = HashSet::from([pid]);
+    let mut groups = HashSet::new();
+    let mut alive = HashSet::new();
+    for _ in 0..KILL_TREE_ROUNDS {
+        let ps = Command::new("/bin/ps").args(["-A", "-o", "pid=,ppid=,pgid="]).stdin(Stdio::null()).stderr(Stdio::null()).output();
+        let text = ps.map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
+        groups.extend(descendant_groups(&text, pid, own));
+        alive = descendants(&ps_rows(&text), pid);
+        let new: Vec<i32> = alive.difference(&stopped).copied().collect();
+        if new.is_empty() && !text.is_empty() {
+            break;
+        }
+        for p in new {
+            // SAFETY: `p` was just listed below our unreaped child.
+            unsafe { libc::kill(p, libc::SIGSTOP) };
+            stopped.insert(p);
+        }
+    }
+    for group in groups.into_iter().chain([pid]) {
+        // SAFETY: as above; the groups were read from the tree and never include Omega's own.
         unsafe { libc::killpg(group, libc::SIGKILL) };
+    }
+    // One that hasn't left Omega's group yet isn't reached through a group.
+    for p in alive {
+        // SAFETY: as above.
+        unsafe { libc::kill(p, libc::SIGKILL) };
     }
 }
 
@@ -370,6 +408,7 @@ pub async fn install_server(app: AppHandle, kind: String) -> Result<String, Stri
             "clangd" => crate::tools::tool_install_blocking(&app, "clangd"),
             "scala" => crate::tools::install_metals(&app),
             "ocaml" => crate::tools::install_ocaml_package(&app, "lsp-ocaml", "ocaml-lsp-server", "ocamllsp"),
+            "mojo" => crate::tools::install_mojo(&app, "lsp-mojo", false),
             _ => Err(format!("proc:no_auto_install:{kind}")),
         }
     })
@@ -477,6 +516,7 @@ pub async fn install_debugger(app: AppHandle, kind: String) -> Result<String, St
             Ok(crate::env::norm(jar))
         }
         "earlybird" => crate::tools::install_ocaml_package(&app, "earlybird", "earlybird", "ocamlearlybird"),
+        "mojo" => crate::tools::install_mojo(&app, "mojo", false),
         _ => Err(format!("proc:unknown_debugger:{kind}")),
     })
     .await
@@ -487,7 +527,7 @@ pub async fn install_debugger(app: AppHandle, kind: String) -> Result<String, St
 mod tests {
     use super::{npm_packages, read_message, run_registered};
     #[cfg(unix)]
-    use super::{descendant_groups, kill_registered};
+    use super::{descendant_groups, descendants, kill_registered, ps_rows};
     use std::collections::{HashMap, HashSet};
     use std::process::Command;
     use std::sync::Mutex;
@@ -507,8 +547,14 @@ mod tests {
     #[cfg(unix)]
     fn running(pid: i32) -> bool {
         // SAFETY: signal 0 only checks that the process exists.
-        let exists = unsafe { libc::kill(pid, 0) } == 0;
-        exists && !std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|s| s.rsplit(')').next().is_some_and(|r| r.trim_start().starts_with('Z')))
+        if unsafe { libc::kill(pid, 0) } != 0 {
+            return false;
+        }
+        if !std::path::Path::new("/proc/self/stat").exists() {
+            return true; // no procfs (macOS)
+        }
+        // A zombie can be reaped between the two checks: then its stat is gone, and so is it.
+        std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|s| s.rsplit(')').next().is_some_and(|r| !r.trim_start().starts_with(['Z', 'X'])))
     }
 
     /// Runs `script` (which writes the pids to end up dead into $1) and kills it through the registry.
@@ -526,18 +572,18 @@ mod tests {
             run_registered(&c2, &t2, "b", &mut c).unwrap().code
         });
         let start = std::time::Instant::now();
-        let pids = loop {
-            let p: Vec<i32> = std::fs::read_to_string(&file).unwrap_or_default().split_whitespace().filter_map(|x| x.parse().ok()).collect();
-            if p.len() >= wanted {
-                break p;
-            }
-            assert!(start.elapsed().as_secs() < 5, "script didn't start");
+        let read = || -> Vec<i32> { std::fs::read_to_string(&file).unwrap_or_default().split_whitespace().filter_map(|x| x.parse().ok()).collect() };
+        // The script can write its pids before the run is registered, and a kill before that finds nothing.
+        while read().len() < wanted || !children.lock().unwrap().contains_key("b") {
+            assert!(start.elapsed().as_secs() < 20, "script didn't start");
             std::thread::sleep(std::time::Duration::from_millis(5));
-        };
-        assert!(pids.iter().all(|p| running(*p)));
+        }
+        let killed_at = std::time::Instant::now();
         kill_registered(&children, &trees, "b");
         assert_eq!(run.join().unwrap(), -1);
-        assert!(start.elapsed().as_secs() < 5);
+        assert!(killed_at.elapsed().as_secs() < 5);
+        // Read after the kill: this also counts what was started while it ran.
+        let pids = read();
         let until = std::time::Instant::now() + std::time::Duration::from_secs(2);
         while pids.iter().any(|p| running(*p)) && std::time::Instant::now() < until {
             std::thread::sleep(std::time::Duration::from_millis(10));
@@ -557,6 +603,24 @@ mod tests {
     fn a_kill_ends_an_action_in_its_own_process_group() {
         let script = r#"set -m; sh -c 'sleep 30 & echo $! >> "$0"; echo $$ >> "$0"; wait' "$1" & wait"#;
         assert_eq!(pids_after_kill(script, 2), Vec::<i32>::new());
+    }
+
+    /// One snapshot of the tree missed these: each job gets a new group after the list was read.
+    #[cfg(unix)]
+    #[test]
+    fn a_kill_ends_jobs_an_action_starts_while_it_runs() {
+        let script = r#"set -m; sh -c 'set -m; while :; do sleep 8 & echo $! >> "$0"; done' "$1" & wait"#;
+        for _ in 0..5 {
+            assert_eq!(pids_after_kill(script, 5), Vec::<i32>::new());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn descendants_are_the_whole_subtree() {
+        let rows = ps_rows("1 0 1\n50 1 50\n100 50 50\n200 100 200\n201 200 200\n300 201 300\n400 50 50\n");
+        assert_eq!(descendants(&rows, 100), HashSet::from([100, 200, 201, 300]));
+        assert_eq!(descendants(&rows, 999), HashSet::from([999]));
     }
 
     #[cfg(unix)]

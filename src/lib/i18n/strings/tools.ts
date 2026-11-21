@@ -80,6 +80,10 @@ export const en = {
   "tools.err.tools.ocaml_not_managed": "{detail} can only be installed in Omega's own OCaml. You use a system OCaml: run opam install {detail} in your own switch.",
   "tools.err.tools.ocaml_failed": "OCaml setup failed: {detail}",
   "tools.ocamlWindows": "On Windows, Omega can't set up OCaml by itself. Install OCaml with opam, including dune, ocaml-lsp-server and earlybird, and put them on the PATH. Omega then uses them.",
+  "tools.err.tools.mojo_unsupported": "Mojo can't run on this system ({detail}). It needs Linux with glibc 2.34 or newer (x86-64 or ARM64) or an Apple Silicon Mac.",
+  "tools.err.tools.mojo_failed": "Mojo setup failed: {detail}",
+  "tools.mojoWindows": "Mojo has no Windows build. Highlighting works here; Run, the language server and Debug need WSL.",
+  "tools.mojoUnsupported": "Mojo can't run on this system. It needs Linux with glibc 2.34 or newer (x86-64 or ARM64) or an Apple Silicon Mac.",
 };
 
 export const de: typeof en = {
@@ -163,6 +167,10 @@ export const de: typeof en = {
   "tools.err.tools.ocaml_not_managed": "{detail} lässt sich nur in Omegas eigenem OCaml installieren. Du nutzt ein System-OCaml: Führe opam install {detail} in deinem eigenen Switch aus.",
   "tools.err.tools.ocaml_failed": "OCaml-Einrichtung fehlgeschlagen: {detail}",
   "tools.ocamlWindows": "Unter Windows kann Omega OCaml nicht selbst einrichten. Installiere OCaml mit opam, samt dune, ocaml-lsp-server und earlybird, und lege sie in den PATH. Omega nutzt sie dann.",
+  "tools.err.tools.mojo_unsupported": "Mojo läuft auf diesem System nicht ({detail}). Es braucht Linux mit glibc 2.34 oder neuer (x86-64 oder ARM64) oder einen Mac mit Apple Silicon.",
+  "tools.err.tools.mojo_failed": "Mojo-Einrichtung fehlgeschlagen: {detail}",
+  "tools.mojoWindows": "Für Windows gibt es keinen Mojo-Build. Die Syntaxhervorhebung funktioniert hier; Ausführen, Sprachserver und Debuggen brauchen WSL.",
+  "tools.mojoUnsupported": "Mojo läuft auf diesem System nicht. Es braucht Linux mit glibc 2.34 oder neuer (x86-64 oder ARM64) oder einen Mac mit Apple Silicon.",
 };
 
 export const fr: typeof en = {
@@ -246,4 +254,8 @@ export const fr: typeof en = {
   "tools.err.tools.ocaml_not_managed": "{detail} ne peut être installé que dans l’OCaml d’Omega. Vous utilisez un OCaml système : lancez opam install {detail} dans votre propre switch.",
   "tools.err.tools.ocaml_failed": "Échec de l’installation d’OCaml : {detail}",
   "tools.ocamlWindows": "Sous Windows, Omega ne peut pas installer OCaml lui-même. Installez OCaml avec opam, avec dune, ocaml-lsp-server et earlybird, et ajoutez-les au PATH. Omega les utilisera ensuite.",
+  "tools.err.tools.mojo_unsupported": "Mojo ne peut pas fonctionner sur ce système ({detail}). Il nécessite Linux avec glibc 2.34 ou plus récent (x86-64 ou ARM64) ou un Mac Apple Silicon.",
+  "tools.err.tools.mojo_failed": "Échec de l’installation de Mojo : {detail}",
+  "tools.mojoWindows": "Mojo n’a pas de version Windows. La coloration syntaxique fonctionne ici ; l’exécution, le serveur de langage et le débogage nécessitent WSL.",
+  "tools.mojoUnsupported": "Mojo ne peut pas fonctionner sur ce système. Il nécessite Linux avec glibc 2.34 ou plus récent (x86-64 ou ARM64) ou un Mac Apple Silicon.",
 };

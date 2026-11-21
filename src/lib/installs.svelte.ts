@@ -19,7 +19,7 @@ export interface Owner { manager: string; package: string }
 export interface Status { id: string; source: "omega" | "system" | "missing"; path: string | null; version: string | null; owner: Owner | null }
 export interface SysUpdate { available: string | null; command: string | null; full_system: boolean }
 
-const TOOL_IDS: ToolId[] = ["uv", "tectonic", "node", "pnpm", "cmake", "ninja", "jdk", "gradle", "rust", "git", "cc", "scala", "sbt", "ocaml"];
+const TOOL_IDS: ToolId[] = ["uv", "tectonic", "node", "pnpm", "cmake", "ninja", "jdk", "gradle", "rust", "git", "cc", "scala", "sbt", "ocaml", "mojo"];
 
 export function catalog(): Item[] {
   return [
@@ -121,6 +121,7 @@ export function canInstall(id: string): boolean {
 /** Package-manager hint for things Omega can't install on this OS (Linux compilers, Git). */
 export function manualHint(id: string): string {
   if (OS === "windows" && id === "tool:ocaml") return t("tools.ocamlWindows");
+  if (id === "tool:mojo" && !installs.installable.includes("mojo")) return t(OS === "windows" ? "tools.mojoWindows" : "tools.mojoUnsupported");
   if (OS !== "linux") return "";
   if (id === "tool:cc") return "sudo pacman -S base-devel · sudo apt install build-essential";
   if (id === "tool:git") return "sudo pacman -S git · sudo apt install git";
@@ -137,8 +138,10 @@ async function doInstall(id: string) {
   if (group === "tool" || id === "lsp:clangd") {
     if (id === "lsp:clangd") stopServers("clangd");
     if (usesOcamllsp(id)) stopServers("ocaml");
+    if (id === "tool:mojo") stopServers("mojo"); // the update replaces the server's files
     const ok = await installTool(name as ToolId);
     if (usesOcamllsp(id)) stopServers("ocaml");
+    if (id === "tool:mojo") stopServers("mojo");
     if (!ok) return false;
     pathChanged();
     return true;
@@ -211,6 +214,7 @@ export async function remove(id: string) {
     const [group, name] = id.split(":");
     if (group === "lsp") stopServers(name as ServerKind);
     if (id === "tool:ocaml") stopServers("ocaml"); // ocamllsp lives in the same switch
+    if (id === "tool:mojo") stopServers("mojo"); // so does mojo-lsp-server in Mojo's environment
     try {
       await invoke("installs_remove", { id });
     } finally {

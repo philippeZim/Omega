@@ -26,7 +26,7 @@ pub struct Owner {
     package: String,
 }
 
-const TOOLS: &[&str] = &["uv", "tectonic", "node", "pnpm", "cmake", "ninja", "jdk", "gradle", "rust", "git", "cc", "scala", "sbt", "ocaml"];
+const TOOLS: &[&str] = &["uv", "tectonic", "node", "pnpm", "cmake", "ninja", "jdk", "gradle", "rust", "git", "cc", "scala", "sbt", "ocaml", "mojo"];
 const LSPS: &[&str] = &["python", "typescript", "java", "rust", "clangd", "scala", "ocaml"];
 const DEBUGGERS: &[&str] = &["codelldb", "debugpy", "jsdebug", "javadebug", "earlybird"];
 
@@ -58,6 +58,7 @@ fn tool_cmds(id: &str) -> &'static [&'static str] {
         "sbt" if cfg!(windows) => &["sbt.bat"],
         "sbt" => &["sbt"],
         "ocaml" => &["dune"],
+        "mojo" => &["mojo"],
         _ => &[],
     }
 }
@@ -520,6 +521,7 @@ fn latest(id: &str) -> Result<Option<String>, String> {
         "tool:sbt" => gh_latest("sbt/sbt")?,
         "lsp:scala" => crate::tools::metals_latest()?,
         "tool:ocaml" => crate::tools::ocaml_latest("dune")?,
+        "tool:mojo" => crate::tools::mojo_latest()?,
         "lsp:ocaml" => crate::tools::ocaml_latest("ocaml-lsp-server")?,
         "debug:earlybird" => crate::tools::ocaml_latest("earlybird")?,
         "tool:gradle" => json("https://services.gradle.org/versions/current")?["version"].as_str().map(String::from).ok_or("installs:no_version:Gradle")?,
@@ -604,6 +606,15 @@ fn uninstall(id: &str) -> Result<(), String> {
             }
             remove_dir(&t.join("ocaml"))?;
             crate::tools::forget("ocaml")
+        }
+        ("tool", "mojo") => {
+            // Ends a running install, then decides on what that install has left.
+            let _work = crate::tools::mojo_removal_lock();
+            if !crate::tools::manifest().contains_key("mojo") {
+                return Err("installs:not_ours:mojo".into());
+            }
+            remove_dir(&t.join("mojo"))?;
+            crate::tools::forget("mojo")
         }
         ("tool", name) | ("lsp", name @ "clangd") => {
             if !manifest.contains_key(name) {
@@ -696,6 +707,17 @@ mod tests {
         drop(install);
         // Nothing is installed in the test's tools folder, so it stops before deleting anything.
         assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), Err("installs:not_ours:ocaml".to_string()));
+        removal.join().unwrap();
+    }
+
+    #[test]
+    fn removing_mojo_never_deletes_during_a_running_install() {
+        let install = crate::tools::mojo_install_lock();
+        let (tx, rx) = mpsc::channel();
+        let removal = std::thread::spawn(move || tx.send(uninstall("tool:mojo")).unwrap());
+        assert!(rx.recv_timeout(Duration::from_millis(150)).is_err(), "removal ran during the install");
+        drop(install);
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), Err("installs:not_ours:mojo".to_string()));
         removal.join().unwrap();
     }
 
