@@ -1052,6 +1052,26 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// A default APFS volume opens all of these as `läter/hooks/pre-commit`, also before it exists.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_hooks_folder_is_found_in_every_macos_spelling() {
+        let dir = std::env::temp_dir().join(format!("omega-hooks-spelling-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = dir.canonicalize().unwrap();
+        let git = |args: &[&str]| assert!(std::process::Command::new("git").args(args).current_dir(&dir).status().unwrap().success());
+        git(&["init", "-q"]);
+        git(&["config", "core.hooksPath", "l\u{e4}ter/hooks"]);
+        let root = dir.to_str().unwrap();
+        let spellings = ["L\u{c4}TER/hooks/pre-commit", "l\u{e4}ter/HOOKS/pre-commit", "la\u{308}ter/hooks/pre-commit", "LA\u{308}TER/hooks/pre-commit"];
+        let paths: Vec<String> = spellings.iter().map(|s| format!("{root}/{s}")).collect();
+        assert_eq!(hooks_check(root, &paths).locked, [true; 4], "{spellings:?}");
+        assert_eq!(hooks_check(root, &[format!("{root}/LA\u{308}TER")]).structural, [true]);
+        assert_eq!(hooks_check(root, &[format!("{root}/other/pre-commit")]).locked, [false]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[cfg(unix)]
     #[test]
     fn hook_paths_are_found_by_resolved_path() {
