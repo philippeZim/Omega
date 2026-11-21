@@ -341,9 +341,9 @@ export function lspExtension(path: string, lang: LangInfo): Extension {
             setLspRoute(path, "project");
             return this.attach(view, path);
           }
-          const copy = await shadowForLsp(path, lang);
+          const { copy, root } = await shadowForLsp(path, lang);
           if (!live()) return; // the language changed or the tab closed meanwhile
-          registerShadow(path, copy);
+          registerShadow(path, copy, root);
           uri = fileUri(copy);
           this.attach(view, copy);
         })().catch(() => {

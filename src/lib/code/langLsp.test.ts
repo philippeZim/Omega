@@ -112,6 +112,16 @@ describe("the document's lifetime", () => {
     expect(spawned()).toHaveLength(1);
   });
 
+  test("a copy in a package path keeps the server at the top of its folder", async () => {
+    const copy = "/private/h/lsp/demo/app/Hello.java";
+    L.registerShadow("/w/prog", copy, "/private/h/lsp");
+    void L.clientFor(lang("java"), copy, "/w", async () => true);
+    await vi.waitFor(() => expect(spawned()).toHaveLength(1));
+    expect(spawned()[0].cwd).toBe("/private/h/lsp");
+    await L.saveLspDoc("/w/prog", "x");
+    expect(calls.find(([c]) => c === "lang_copy")![1].name).toBe("demo/app/Hello.java");
+  });
+
   test("a save refreshes the copy and reaches the server under its name", async () => {
     const { copy } = await running();
     await L.saveLspDoc("/w/prog", "new");
