@@ -72,6 +72,52 @@ describe("applyItem", () => {
     expect(v.state.doc.toString()).toBe("x.abc");
   });
 
+  test("a quoted insertText takes the place of the typed quote", () => {
+    const v = view('route("');
+    applyItem(v, { label: '"/api"', insertText: '"/api"' }, 7, 7);
+    expect(v.state.doc.toString()).toBe('route("/api"');
+  });
+
+  test("a quoted insertText also takes the place of the auto-closed quote", () => {
+    const v = view('route("")');
+    applyItem(v, { label: '"/api"', insertText: '"/api"' }, 7, 7);
+    expect(v.state.doc.toString()).toBe('route("/api")');
+    expect(v.state.selection.main.head).toBe(12);
+  });
+
+  test("a textEdit up to the cursor doesn't leave the auto-closed quote behind", () => {
+    const v = view('route("")');
+    applyItem(v, { label: '"/api"', textEdit: { range: range(0, 6, 0, 7), newText: '"/api"' } }, 7, 7);
+    expect(v.state.doc.toString()).toBe('route("/api")');
+  });
+
+  test("a textEdit range past the cursor is replaced", () => {
+    const v = view('route("")');
+    applyItem(v, { label: '"/api"', textEdit: { range: range(0, 6, 0, 8), newText: '"/api"' } }, 7, 7);
+    expect(v.state.doc.toString()).toBe('route("/api")');
+  });
+
+  test("a textEdit range end moves with what was typed after the request", () => {
+    const v = view('route("/a")');
+    applyItem(v, { label: '"/api"', textEdit: { range: range(0, 6, 0, 8), newText: '"/api"' } }, 7, 9, 7);
+    expect(v.state.doc.toString()).toBe('route("/api")');
+  });
+
+  test("a quote that closes an earlier string or starts the next one stays", () => {
+    const after = view('"abc"');
+    applyItem(after, { label: '"d"', insertText: '"d"' }, 5, 5);
+    expect(after.state.doc.toString()).toBe('"abc""d"');
+    const before = view('f("bar")');
+    applyItem(before, { label: '"d"', insertText: '"d"' }, 2, 2);
+    expect(before.state.doc.toString()).toBe('f("d""bar")');
+  });
+
+  test("a completion without quotes inside a string keeps the quotes", () => {
+    const v = view('"fo"');
+    applyItem(v, { label: "foo", insertText: "foo" }, 1, 3);
+    expect(v.state.doc.toString()).toBe('"foo"');
+  });
+
   test("snippet (insertTextFormat 2) expands placeholders", () => {
     const v = view("ma");
     applyItem(v, { label: "max", insertText: "max(${1:a}, $2)$0", insertTextFormat: 2 }, 0, 2);
