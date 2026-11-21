@@ -41,15 +41,17 @@ vi.mock("./share.svelte", () => ({
   }),
 }));
 vi.mock("../state.svelte", () => ({ app: h.app }));
-vi.mock("../api", () => ({ joinPath: (a: string, b: string) => `${a}/${b}` }));
+vi.mock("../api", () => ({ joinPath: (a: string, b: string) => `${a}/${b}`, fsApi: { homeDir: async () => "/home/me" } }));
 vi.mock("../code/languages", () => ({ langFor: (p: string) => (p.endsWith(".py") ? { server: "python", lspId: "python" } : null) }));
 vi.mock("../code/lsp.svelte", () => ({
   clientFor: h.clientFor,
   fileUri: (p: string) => `file://${p}`,
   neverInstall: async () => false,
   restartListeners: h.restart,
+  stopGuestServers: vi.fn(),
   uriPath: (u: string) => decodeURIComponent(u.replace(/^file:\/\//, "")),
   workspaceSymbols: h.symbols,
+  toolsDir: async () => "/home/me/.tools",
 }));
 vi.mock("../code/lspExtension", () => ({
   MAX_FIXES: 30,
@@ -63,10 +65,12 @@ const { LSP_LIMITS, textHash } = await import("./lspProtocol");
 function fakeClient() {
   const c = {
     alive: true,
-    capabilities: { hoverProvider: true, documentFormattingProvider: true, codeActionProvider: true, completionProvider: { triggerCharacters: ["."], resolveProvider: true } },
+    capabilities: { hoverProvider: true, definitionProvider: true, documentFormattingProvider: true, codeActionProvider: true, completionProvider: { triggerCharacters: ["."], resolveProvider: true } },
     docs: new Map<string, { version: number; text: string }>(),
     diagnostics: new Map<string, any[]>(),
     diagnosticVersions: new Map<string, number | undefined>(),
+    textChangedAt: new Map<string, number>(),
+    resend: vi.fn(),
     feeds: new Map<string, () => string>(),
     change: vi.fn(),
     request: vi.fn(async (_m: string, _p: unknown, _t?: number): Promise<any> => null),
@@ -330,7 +334,8 @@ test.each(["lsp.completion", "lsp.hover", "lsp.definition"])("%s refuses bad par
 test("only read features are open to every guest; edits need the edit right", () => {
   expect(h.methods.get("lsp.format").capability).toBe("edit");
   expect(h.methods.get("lsp.fixes").capability).toBe("edit");
-  for (const m of ["lsp.completion", "lsp.resolve", "lsp.hover", "lsp.definition", "lsp.symbols"]) expect(h.methods.get(m).capability).toBeNull();
+  for (const m of ["lsp.completion", "lsp.resolve"]) expect(h.methods.get(m).capability).toBe("edit");
+  for (const m of ["lsp.hover", "lsp.definition", "lsp.symbols"]) expect(h.methods.get(m).capability).toBeNull();
 });
 
 test("no method can run a server command", () => {
@@ -351,7 +356,11 @@ test("a path the scope refuses never reaches the server", async () => {
 
 test("hover: the server's text comes back without host paths", async () => {
   await ready();
-  h.client.request.mockResolvedValue({ contents: { kind: "markdown", value: "from /p/src/b.py and /home/me/x/y.py" }, range: { start: P, end: P } });
+  h.client.request.mockImplementation(async (m: string) =>
+    m === "textDocument/hover"
+      ? { contents: { kind: "markdown", value: "from /p/src/b.py and /home/me/x/y.py" }, range: { start: P, end: P } }
+      : { uri: "file:///p/src/b.py", range: { start: P, end: P } },
+  );
   const r = await run("lsp.hover", { path: "a.py", at: at("x = 1\n"), pos: P });
   expect(r.contents.value).toBe("from src/b.py and …/y.py");
   expect(h.client.request.mock.calls[0][1].textDocument.uri).toBe(URI);
@@ -432,11 +441,11 @@ test("resolve sends the server's own item, and only of the guest's last list", a
   h.client.request.mockResolvedValueOnce([item]);
   const r = await run("lsp.completion", { path: "a.py", at: at("x = 1\n"), pos: P, explicit: true });
   h.client.request.mockResolvedValueOnce({ ...item, detail: "def foo()", documentation: "see /p/b.py" });
-  const full = await run("lsp.resolve", { path: "a.py", list: r.list, id: 0 });
+  const full = await run("lsp.resolve", { path: "a.py", list: r.list, id: 0, at: at("x = 1\n") });
   expect(h.client.request.mock.calls[1][1]).toBe(item);
   expect(full).toMatchObject({ detail: "def foo()", documentation: "see b.py" });
-  expect(await run("lsp.resolve", { path: "a.py", list: r.list + 1, id: 0 })).toBeNull();
-  expect(await run("lsp.resolve", { path: "a.py", list: r.list, id: 5 })).toBeNull();
+  expect(await run("lsp.resolve", { path: "a.py", list: r.list + 1, id: 0, at: at("x = 1\n") })).toBeNull();
+  expect(await run("lsp.resolve", { path: "a.py", list: r.list, id: 5, at: at("x = 1\n") })).toBeNull();
 });
 
 test("format: edits are tied to the text they were computed for", async () => {
@@ -492,4 +501,143 @@ test("symbols: project files as relative paths, the rest left out", async () => 
     { name: "d", kind: 12, path: "/p/ext/link.py", line: 1, character: 0 },
   ]);
   expect(await run("lsp.symbols", { query: "a" })).toEqual([{ name: "a", kind: 12, path: "src/b.py", line: 1, character: 0, containerName: "src/b.py" }]);
+});
+
+// ---------------------------------------------------------------- review regressions
+
+const hoverText = (v: string) => ({ contents: { kind: "markdown", value: v } });
+function byMethod(map: Record<string, unknown>) {
+  h.client.request.mockImplementation(async (m: string) => {
+    const r = map[m];
+    if (r instanceof Error) throw r;
+    return r ?? null;
+  });
+}
+const HP = { path: "a.py", at: at("x = 1\n"), pos: P };
+
+test("hover on a symbol defined in a private place outside the project shows nothing", async () => {
+  await ready();
+  byMethod({ "textDocument/hover": hoverText("SECRET_TOKEN = 1"), "textDocument/definition": { uri: "file:///srv/private/keys.py", range: { start: P, end: P } } });
+  expect(await run("lsp.hover", HP)).toBeNull();
+});
+
+test("hover on a stdlib symbol stays useful", async () => {
+  await ready();
+  byMethod({ "textDocument/hover": hoverText("def print() from /usr/lib/python3.13/builtins.pyi"), "textDocument/definition": { uri: "file:///usr/lib/python3.13/builtins.pyi", range: { start: P, end: P } } });
+  expect((await run("lsp.hover", HP)).contents.value).toBe("def print() from …/builtins.pyi");
+});
+
+test("hover in the project stays useful", async () => {
+  await ready();
+  byMethod({ "textDocument/hover": hoverText("def f()"), "textDocument/definition": [{ targetUri: "file:///p/b.py", targetSelectionRange: { start: P, end: P } }] });
+  expect((await run("lsp.hover", HP)).contents.value).toBe("def f()");
+});
+
+test("hover without a known definition: ordinary text shows, text from a private path doesn't", async () => {
+  await ready();
+  byMethod({ "textDocument/hover": hoverText("(variable) x: int") });
+  expect((await run("lsp.hover", HP)).contents.value).toBe("(variable) x: int");
+  byMethod({ "textDocument/hover": hoverText("from /srv/private/keys.py: TOKEN"), "textDocument/definition": new Error("nope") });
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  expect(await run("lsp.hover", HP)).toBeNull();
+  warn.mockRestore();
+});
+
+test("a hover keeps working when the definition lookup hangs", async () => {
+  await ready();
+  h.client.request.mockImplementation((m: string) => (m === "textDocument/hover" ? Promise.resolve(hoverText("(variable) x: int")) : new Promise(() => {})));
+  expect((await run("lsp.hover", HP)).contents.value).toBe("(variable) x: int");
+});
+
+test("a server without version: a result right after an edit isn't tagged with the new text", async () => {
+  vi.useFakeTimers();
+  try {
+    const d = doc("a.py", "one\n");
+    reconcileLspSessions();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(2000);
+    h.publish.mockClear();
+    d.ytext.insert(0, "# ");
+    h.client.docs.set(URI, { version: 2, text: "# one\n" });
+    h.client.textChangedAt.set(URI, Date.now());
+    diagnose([err(0)]); // computed for the old text, arrives after the change
+    expect(h.publish).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(h.client.resend).toHaveBeenCalledWith(URI); // asks again, the text has been quiet
+    diagnose([err(0, "fresh")]);
+    expect(lastDocs()["a.py"].diagnostics[0].message).toBe("fresh");
+    expect(lastDocs()["a.py"].hash).toBe(textHash("# one\n"));
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("waiting for the guest's text doesn't re-hash an unchanged document", async () => {
+  const big = "x".repeat(200_000);
+  const d = await ready(big);
+  const spy = vi.spyOn(d.ytext as any, "toString");
+  await run("lsp.hover", { path: "a.py", at: { len: big.length, hash: "nope" }, pos: P });
+  const hashes = spy.mock.calls.length;
+  spy.mockRestore();
+  expect(hashes).toBeLessThanOrEqual(2); // one hash, one sync to the server
+});
+
+test("completion and resolve need the edit right on the host", () => {
+  expect(h.methods.get("lsp.completion").capability).toBe("edit");
+  expect(h.methods.get("lsp.resolve").capability).toBe("edit");
+});
+
+test("resolve: edits carry their text, and are withheld once the text changed", async () => {
+  const d = await ready();
+  const edit = { range: { start: P, end: P }, newText: "import os\n" };
+  byMethod({ "textDocument/completion": [{ label: "os" }], "completionItem/resolve": { label: "os", additionalTextEdits: [edit] } });
+  const r = await run("lsp.completion", { path: "a.py", at: at("x = 1\n"), pos: P, explicit: true });
+  const ok = await run("lsp.resolve", { path: "a.py", list: r.list, id: 0, at: at("x = 1\n") });
+  expect(ok.additionalTextEdits).toEqual([edit]);
+  expect(ok.base).toEqual(at("x = 1\n"));
+  d.ytext.insert(0, "#");
+  const late = await run("lsp.resolve", { path: "a.py", list: r.list, id: 0, at: at("x = 1\n") });
+  expect(late?.additionalTextEdits).toBeUndefined();
+});
+
+test("a guest's completion list goes when it leaves", async () => {
+  const d = await ready();
+  byMethod({ "textDocument/completion": [{ label: "os" }], "completionItem/resolve": { label: "os", detail: "d" } });
+  const r = await run("lsp.completion", { path: "a.py", at: at("x = 1\n"), pos: P, explicit: true });
+  d.subscribers.clear();
+  for (const l of h.listeners) l();
+  await settle();
+  d.subscribers.add("g1");
+  reconcileLspSessions();
+  await settle();
+  expect(await run("lsp.resolve", { path: "a.py", list: r.list, id: 0, at: at("x = 1\n") })).toBeNull();
+});
+
+test("lsp.docs stays far below the transport limit, and says when it was cut", async () => {
+  await ready();
+  diagnose(Array.from({ length: 500 }, (_, i) => err(i, "é".repeat(2000))), 1);
+  const e = lastDocs()["a.py"];
+  expect(new TextEncoder().encode(JSON.stringify(e)).length).toBeLessThanOrEqual(LSP_LIMITS.entryBytes + 2048);
+  expect(e.truncated).toBeGreaterThan(0);
+  expect(e.diagnostics.length + e.truncated).toBe(500);
+  expect(LSP_LIMITS.entryBytes * LSP_LIMITS.sessions).toBeLessThan(24 * 1024 * 1024);
+});
+
+test("guests can't open more language documents than the cap, and hear why", async () => {
+  for (let i = 0; i < LSP_LIMITS.sessions + 3; i++) doc(`f${i}.py`);
+  reconcileLspSessions();
+  await settle();
+  expect(h.client.feed).toHaveBeenCalledTimes(LSP_LIMITS.sessions);
+  const snap = h.topics.get("lsp.docs").snapshot();
+  expect(snap.docs[`f${LSP_LIMITS.sessions}.py`].unavailable).toBe("limit");
+  h.docs.splice(0, 1);
+  reconcileLspSessions();
+  await settle();
+  expect(h.client.feed).toHaveBeenCalledTimes(LSP_LIMITS.sessions + 1);
+});
+
+test("the guest hears when the host has no server for a file", async () => {
+  h.clientFor.mockResolvedValue(null);
+  await ready();
+  expect(lastDocs()["a.py"].unavailable).toBe("no_server");
 });

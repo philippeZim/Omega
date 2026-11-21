@@ -204,8 +204,11 @@ export const en = {
   "code.lsp.restart": "Click to restart the language server",
   "code.lsp.install": "Click to install the language server",
   "code.lsp.guestStale": "The text changed in the meantime. Please try again.",
-  "code.lsp.guestNoServer": "The host has no language server running for this file.",
+  "code.lsp.guestNoServer": "The host has no language server for this file, so there are no hints or completions here.",
   "code.lsp.guestOutside": "Defined outside the shared project ({name}).",
+  "code.lsp.guestHostPath": "Not applied: the change would write a path from the host's computer into the file.",
+  "code.lsp.guestTruncated": "{n} more problems aren't shown.",
+  "code.lsp.guestLimit": "Too many files are open in this session for language support on this one.",
 
   // Editor pane
   "code.ed.noSuggestions": "No suggestions",
@@ -454,8 +457,11 @@ export const de: Record<keyof typeof en, string> = {
   "code.lsp.restart": "Klicken, um den Language Server neu zu starten",
   "code.lsp.install": "Klicken, um den Language Server zu installieren",
   "code.lsp.guestStale": "Der Text hat sich inzwischen geändert. Bitte noch einmal versuchen.",
-  "code.lsp.guestNoServer": "Beim Host läuft für diese Datei kein Language Server.",
+  "code.lsp.guestNoServer": "Der Host hat für diese Datei keinen Language Server, daher gibt es hier keine Hinweise oder Vervollständigung.",
   "code.lsp.guestOutside": "Außerhalb des geteilten Projekts definiert ({name}).",
+  "code.lsp.guestHostPath": "Nicht angewendet: Die Änderung würde einen Pfad vom Rechner des Hosts in die Datei schreiben.",
+  "code.lsp.guestTruncated": "{n} weitere Probleme werden nicht angezeigt.",
+  "code.lsp.guestLimit": "In dieser Sitzung sind zu viele Dateien offen, um diese hier mit Sprachfunktionen zu unterstützen.",
 
   "code.ed.noSuggestions": "Keine Vorschläge",
   "code.ed.addToDict": "„{word}“ zum Wörterbuch hinzufügen",
@@ -702,8 +708,11 @@ export const fr: Record<keyof typeof en, string> = {
   "code.lsp.restart": "Cliquer pour redémarrer le serveur de langage",
   "code.lsp.install": "Cliquer pour installer le serveur de langage",
   "code.lsp.guestStale": "Le texte a changé entre-temps. Veuillez réessayer.",
-  "code.lsp.guestNoServer": "L’hôte n’a aucun serveur de langage actif pour ce fichier.",
+  "code.lsp.guestNoServer": "L’hôte n’a pas de serveur de langage pour ce fichier : ni indications ni complétion ici.",
   "code.lsp.guestOutside": "Défini en dehors du projet partagé ({name}).",
+  "code.lsp.guestHostPath": "Non appliqué : la modification écrirait dans le fichier un chemin de l’ordinateur de l’hôte.",
+  "code.lsp.guestTruncated": "{n} autres problèmes ne sont pas affichés.",
+  "code.lsp.guestLimit": "Trop de fichiers sont ouverts dans cette session pour activer les fonctions de langage sur celui-ci.",
 
   "code.ed.noSuggestions": "Aucune suggestion",
   "code.ed.addToDict": "Ajouter « {word} » au dictionnaire",

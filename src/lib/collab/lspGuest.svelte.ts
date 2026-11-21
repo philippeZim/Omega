@@ -7,9 +7,9 @@ import { collab } from "./collab.svelte";
 import { blockedByCapability, guestCan } from "./guard";
 import { call, isObj, rpcErrorText, subscribe } from "./rpc.svelte";
 import { REMOTE, openRemote, sharedText } from "./share.svelte";
-import { isDocEntry, stampOf, textHash, type LspDocEntry, type LspDocsPayload, type TextStamp, type WireDiagnostic, type WireEdit, type WireFix } from "./lspProtocol";
+import { isDocEntry, stampOf, textHash, type LspDocEntry, type LspDocsPayload, type TextStamp, type WireEdit, type WireFix, type WireItem } from "./lspProtocol";
 import type { LspTarget } from "./lspHost.svelte";
-import { completionOptions, lspTheme, quickFixAtCursor, renderDoc, severityName, toOffset, toPos } from "../code/lspExtension";
+import { applyItem, completionOptions, lspTheme, quickFixAtCursor, renderDoc, severityName, toOffset, toPos } from "../code/lspExtension";
 import { remoteLsp } from "../code/remoteLsp";
 import * as ed from "../editor";
 import { viewActions } from "../editorActions";
@@ -23,7 +23,7 @@ declare module "./rpc.svelte" {
 }
 
 const errorText = (code: string) =>
-  code === "stale" ? t("code.lsp.guestStale") : code === "no_server" ? t("code.lsp.guestNoServer") : code === "not_open" || code === "unavailable" ? t("ai.collab.fileUnavailable") : rpcErrorText(code);
+  code === "stale" ? t("code.lsp.guestStale") : code === "no_server" ? t("code.lsp.guestNoServer") : code === "host_path" ? t("code.lsp.guestHostPath") : code === "not_open" || code === "unavailable" ? t("ai.collab.fileUnavailable") : rpcErrorText(code);
 
 const entries = new Map<string, LspDocEntry>();
 const refreshers = new Set<() => void>();
@@ -47,15 +47,26 @@ function applyEdits(rel: string, view: EditorView, base: TextStamp, edits: WireE
   view.dispatch({ changes: edits.map((e) => ({ from: toOffset(doc, e.range.start), to: toOffset(doc, e.range.end), insert: e.newText })), userEvent });
 }
 
-export function toDiagnostics(view: EditorView, list: WireDiagnostic[], rel = "", base?: TextStamp, fixes?: WireFix[][]): Diagnostic[] {
+export function toDiagnostics(view: EditorView, e: Pick<LspDocEntry, "diagnostics" | "truncated">, rel = "", base?: TextStamp, fixes?: WireFix[][]): Diagnostic[] {
   const doc = view.state.doc;
-  return list.map((d, i) => {
+  const out: Diagnostic[] = e.diagnostics.map((d, i) => {
     const from = toOffset(doc, d.range.start);
     let to = toOffset(doc, d.range.end);
     if (from === to) to = Math.min(doc.length, from + 1);
     const actions: Action[] = base ? (fixes?.[i] ?? []).map((f) => ({ name: f.title, apply: (v: EditorView) => applyEdits(rel, v, base, f.edits, "input.quickfix") })) : [];
     return { from, to: Math.max(from, to), severity: severityName(d.severity), message: d.message, source: d.source, ...(actions.length ? { actions } : {}) };
   });
+  if (e.truncated) out.push({ from: 0, to: Math.min(1, doc.length), severity: "info", message: t("code.lsp.guestTruncated", { n: String(e.truncated) }) });
+  return out;
+}
+
+/** Said once per document and reason, not on every update. */
+const told = new Set<string>();
+function tellUnavailable(rel: string, why: "no_server" | "limit") {
+  const key = `${why}:${rel}`;
+  if (told.has(key)) return;
+  told.add(key);
+  ui.toast(t(why === "limit" ? "code.lsp.guestLimit" : "code.lsp.guestNoServer"));
 }
 
 function guestPlugin(rel: string) {
@@ -82,11 +93,19 @@ function guestPlugin(rel: string) {
           this.shown = 0;
           return;
         }
+        if (e.unavailable) {
+          if (this.shown) this.view.dispatch(setDiagnostics(this.view.state, []));
+          this.shown = e.rev;
+          tellUnavailable(rel, e.unavailable);
+          return;
+        }
+        told.delete(`no_server:${rel}`);
+        told.delete(`limit:${rel}`);
         // For another version of the text its positions would be wrong: keep what's shown (it
         // moves along with edits) until the entry for this text arrives.
         if (e.rev === this.shown || !matches(rel, this.view, e)) return;
         this.shown = e.rev;
-        this.view.dispatch(setDiagnostics(this.view.state, toDiagnostics(this.view, e.diagnostics)));
+        this.view.dispatch(setDiagnostics(this.view.state, toDiagnostics(this.view, e)));
         void this.addFixes(e);
       }
       /** Like on the host: the marks come right away, their quick fixes when they arrive. */
@@ -97,7 +116,7 @@ function guestPlugin(rel: string) {
         if (!r.ok || !r.value || !isFixes(r.value.fixes) || this.shown !== e.rev || this.gone || this.view.state.doc !== docAt) return;
         const { base, fixes } = r.value;
         if (!fixes.some((f) => f.length)) return;
-        this.view.dispatch(setDiagnostics(this.view.state, toDiagnostics(this.view, e.diagnostics, rel, base, fixes)));
+        this.view.dispatch(setDiagnostics(this.view.state, toDiagnostics(this.view, e, rel, base, fixes)));
       }
       update(u: ViewUpdate) {
         if (u.docChanged) this.schedule();
@@ -117,7 +136,7 @@ const isFixes = (v: unknown): v is WireFix[][] => Array.isArray(v) && v.every((l
 function completionSource(rel: string) {
   return async (ctx: CompletionContext): Promise<CompletionResult | null> => {
     // Nothing could be inserted without `edit`.
-    if (!guestCan("edit")) return null;
+    if (!guestCan("edit") || entries.get(rel)?.unavailable) return null;
     const word = ctx.matchBefore(/[\w$]*/);
     const triggers = entries.get(rel)?.features.triggers ?? [".", ":", ">"];
     const charBefore = ctx.state.sliceDoc(ctx.pos - 1, ctx.pos);
@@ -133,15 +152,39 @@ function completionSource(rel: string) {
     );
     if (ctx.aborted || !r.ok || !Array.isArray(r.value?.items)) return null;
     const { list, total, incomplete, items } = r.value;
+    for (const item of items) if (item.additionalTextEdits) item.editsBase = at;
     const options = completionOptions(items, total, async (item) => {
       if (item.documentation || !entries.get(rel)?.features.resolve) return item;
-      const full = await call("lsp.resolve", { path: rel, list, id: item.id }, { timeoutMs: 5000 });
+      const now = stampOf(sharedText(rel)?.toString() ?? ctx.view?.state.doc.toString() ?? "");
+      const full = await call("lsp.resolve", { path: rel, list, id: item.id, at: now }, { timeoutMs: 5000 });
       if (!full.ok || !full.value) return item;
-      if (full.value.additionalTextEdits) item.additionalTextEdits = full.value.additionalTextEdits;
-      return { ...item, ...full.value };
+      const { base, additionalTextEdits, ...info } = full.value;
+      if (base && additionalTextEdits?.every(isEdit)) Object.assign(item, { additionalTextEdits, editsBase: base });
+      return { ...item, ...info };
     });
+    options.forEach((o, i) => (o.apply = (view, _c, from, to) => void applyGuestItem(rel, list, view, items[i], from, to)));
     return { from: word ? word.from : ctx.pos, options, validFor: incomplete ? undefined : /^[\w$]*$/, filter: true };
   };
+}
+
+/**
+ * Inserts a completion. Its extra edits (an import, usually) are only valid for the text they were
+ * computed on: if that moved on they're asked for again, and left out if that doesn't work.
+ */
+async function applyGuestItem(rel: string, list: number, view: EditorView, item: WireItem, from: number, to: number) {
+  if (item.additionalTextEdits?.length && item.editsBase && !matches(rel, view, item.editsBase)) {
+    const doc = view.state.doc;
+    const r = await call("lsp.resolve", { path: rel, list, id: item.id, at: stamp(rel, view) }, { timeoutMs: 3000 });
+    if (view.state.doc !== doc) return ui.toast(t("code.lsp.guestStale"), "error");
+    if (r.ok && r.value?.base && r.value.additionalTextEdits?.every(isEdit) && matches(rel, view, r.value.base)) {
+      item.additionalTextEdits = r.value.additionalTextEdits;
+      item.editsBase = r.value.base;
+    } else {
+      delete item.additionalTextEdits;
+      ui.toast(t("code.lsp.guestStale"), "error");
+    }
+  }
+  applyItem(view, item, from, to);
 }
 
 /** Opens a shared file at a position; a tab that's already open also gets the cursor there. */
@@ -222,8 +265,10 @@ remoteLsp.symbols = async (query) => {
 
 /** Applies a message of the `lsp.docs` topic. Anything malformed is ignored. */
 export function applyDocs(payload: unknown) {
-  if (payload === null) entries.clear();
-  else if (isObj(payload) && isObj(payload.docs)) {
+  if (payload === null) {
+    entries.clear();
+    told.clear();
+  } else if (isObj(payload) && isObj(payload.docs)) {
     if (payload.full === true) entries.clear();
     for (const [rel, e] of Object.entries(payload.docs)) {
       if (e === null) entries.delete(rel);
