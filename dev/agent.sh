@@ -70,15 +70,39 @@ cmd_list() {
     done
 }
 
+# Really merged: dev contains the branch, and a merge on dev's own line took the branch's tip (now or
+# earlier, the reflog covers a branch fast-forwarded afterwards) and names the branch in its subject.
+# Ancestry alone can't tell: a fresh branch is an ancestor of dev too as soon as dev moves. Unknown → keep.
+is_merged() {
+  local branch=$1 ref="refs/heads/$1" dev="refs/heads/$base"
+  git -C "$main_root" merge-base --is-ancestor "$ref" "$dev" || return 1
+  awk -F'\t' -v b="$branch" '
+    NR == FNR { tip[$1] = 1; next }
+    $2 == "Merge " b || index($2, "Merge " b ":") == 1 || index($2, "Merge branch \047" b "\047") == 1 {
+      n = split($1, parents, " ")
+      for (i = 2; i <= n; i++) if (parents[i] in tip) { found = 1; exit }
+    }
+    END { exit !found }
+  ' <(git -C "$main_root" rev-parse "$ref"; git -C "$main_root" log -g --format=%H "$ref" --) \
+    <(git -C "$main_root" log "$dev" --first-parent --merges --format=$'%P\t%s' --)
+}
+
+is_locked() {
+  git -C "$main_root" worktree list --porcelain |
+    awk -v d="$1" '/^worktree /{ w = substr($0, 10) } w == d && /^locked/{ found = 1 } END { exit !found }'
+}
+
 cmd_clean() {
   local dry=${1:-}
   git -C "$main_root" worktree list --porcelain | awk '/^worktree /{w=$2} /^branch /{sub("refs/heads/","",$2); print w, $2}' |
     while read -r dir branch; do
       [[ $dir == "$main_root" || $branch == "$base" || $branch == main ]] && continue
-      # Merged = no commits that dev lacks (also true for a fresh, empty branch → keep those).
-      [[ $(git -C "$main_root" rev-list --count "$base..$branch") == 0 ]] || continue
-      [[ $(git -C "$main_root" rev-list --count "$(git -C "$main_root" merge-base "$base" "$branch")..$base") -gt 0 ]] || continue
-      if [[ -n $(git -C "$dir" status --porcelain 2>/dev/null) ]]; then echo "übersprungen (ungespeicherte Änderungen): $dir"; continue; fi
+      is_merged "$branch" || continue
+      # Everything that would make the removal fail is checked first: instances of a worktree we keep stay up.
+      if is_locked "$dir"; then echo "übersprungen (gesperrt): $dir"; continue; fi
+      local changes
+      if ! changes=$(git -C "$dir" status --porcelain 2>/dev/null); then echo "übersprungen (Status nicht lesbar): $dir"; continue; fi
+      if [[ -n $changes ]]; then echo "übersprungen (ungespeicherte Änderungen): $dir"; continue; fi
       if [[ $dry == --dry-run ]]; then echo "würde entfernen: $dir ($branch)"; continue; fi
       (cd "$dir" && node dev/omega-mcp.mjs stop all >/dev/null 2>&1 || true)
       git -C "$main_root" worktree remove "$dir" && git -C "$main_root" branch -d "$branch" >/dev/null && echo "entfernt: $dir ($branch)"
