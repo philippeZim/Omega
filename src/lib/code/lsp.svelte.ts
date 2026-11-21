@@ -467,7 +467,7 @@ async function resolveCommand(kind: ServerKind, root: string): Promise<{ cmd: st
       return cmd ? { cmd, args: [] } : null;
     }
     case "ocaml": {
-      const cmd = await first("ocamllsp");
+      const cmd = await first(`${tools}/ocaml/root/omega/bin/ocamllsp`, "ocamllsp");
       return cmd ? { cmd, args: [] } : null;
     }
   }

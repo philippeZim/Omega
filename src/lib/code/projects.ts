@@ -7,6 +7,7 @@ import { langFor, type LangId } from "./languages";
 import { suggestPythonAdd, suggestPythonRemove, pythonRemoveArg, suggestNodeAdd, suggestNodeRemove, type Suggest } from "./packages";
 import { validScriptName } from "./packageInput";
 import { duneTarget, findDuneExecutables, pickExecutable } from "./dune";
+import { ocamlShellPrefix } from "./ocamlTools";
 import { t, i18n, type Key } from "../i18n/index.svelte";
 
 export type ProjectKind = "cargo" | "uv" | "pnpm" | "cmake" | "gradle" | "sbt" | "scala-cli" | "dune" | "file";
@@ -379,14 +380,15 @@ export async function detectProject(file: string | null, workspace: string | nul
 
   if (p?.kind === "dune") {
     const target = pickExecutable(await findDuneExecutables(p.root), file, p.root);
+    const dune = `${await ocamlShellPrefix()}dune`;
     return {
       ...p,
       label: "dune",
       needs: ["ocaml"],
-      run: target ? act("run", "common.run", `dune exec ${q(duneTarget(target, "exe"))}`, { shortcut: RUN, usesFile: true }) : null,
-      build: act("build", "code.act.build", "dune build", { shortcut: BUILD }),
-      test: act("test", "code.act.test", "dune test"),
-      more: [{ id: "clean", label: "dune clean", cmd: "dune clean" }],
+      run: target ? act("run", "common.run", `${dune} exec ${q(duneTarget(target, "exe"))}`, { shortcut: RUN, usesFile: true }) : null,
+      build: act("build", "code.act.build", `${dune} build`, { shortcut: BUILD }),
+      test: act("test", "code.act.test", `${dune} test`),
+      more: [{ id: "clean", label: "dune clean", cmd: `${dune} clean` }],
     };
   }
 
@@ -438,7 +440,7 @@ async function singleFileRun(lang: LangId | undefined, file: string): Promise<[s
     case "typescript": return [`${TSX_DLX} ${f}`, ["node", "pnpm"]];
     case "rust": return [out, ["rust"], `rustc -g ${f} -o ${out}`];
     case "scala": return [`scala-cli run ${f}`, ["scala"]];
-    case "ocaml": return file.endsWith(".ml") ? [`ocaml ${f}`, ["ocaml"]] : null; // an interface doesn't run
+    case "ocaml": return file.endsWith(".ml") ? [`${await ocamlShellPrefix()}ocaml ${f}`, ["ocaml"]] : null; // an interface doesn't run
     default: return null;
   }
 }
@@ -607,7 +609,7 @@ export const TEMPLATES: Template[] = [
         ".gitignore": "_build/\n",
       },
       // The first build writes the config ocamllsp reads.
-      cmds: [...(await gitInit()), "dune build"],
+      cmds: [...(await gitInit()), `${await ocamlShellPrefix()}dune build`],
     }),
   },
   {

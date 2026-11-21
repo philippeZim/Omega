@@ -14,6 +14,7 @@ const ipc = vi.hoisted(() => ({
   buildId: "",
   buildCode: 0,
   killed: [] as string[],
+  spawned: [] as string[],
 }));
 vi.mock("@tauri-apps/api/core", async (orig) => ({
   ...(await orig<typeof import("@tauri-apps/api/core")>()),
@@ -22,6 +23,7 @@ vi.mock("@tauri-apps/api/core", async (orig) => ({
     if (cmd === "proc_send") ipc.sent.push(a!.msg!);
     if (cmd === "tools_dir") return "/tools";
     if (cmd === "install_debugger" && a?.kind === "earlybird") ipc.which.ocamlearlybird = "/sw/bin/ocamlearlybird";
+    if (cmd === "proc_spawn") ipc.spawned.push(a!.cmd!);
     if (cmd === "proc_kill") ipc.killed.push((a as { id: string }).id);
     if (cmd === "run_killable") {
       ipc.builds.push([a!.cmd!, ...a!.args!]);
@@ -239,6 +241,65 @@ describe("dune projects", () => {
     expect(duneProjectIssue(plan.files!["dune-project"])).toBeNull();
     expect(duneExecutables(plan.files!["bin/dune"], "bin")).toEqual([{ dir: "bin", name: "main", byte: true }]);
     expect(plan.cmds.at(-1)).toBe("dune build");
+  });
+});
+
+describe("Omega's own OCaml comes first", () => {
+  const BIN = "/tools/ocaml/root/omega/bin";
+  const ctx = { file: "/d/bin/main.ml", workspace: "/d", log() {}, askInstall: async () => true };
+
+  beforeEach(() => {
+    disk.set("/d/dune-project", GOOD_PROJECT);
+    disk.set("/d/bin/dune", BYTE_EXE);
+    disk.set("/d/bin/main.ml", "");
+    // A system OCaml is found first on the PATH.
+    ipc.which = { dune: "/usr/bin/dune", ocamlc: "/usr/bin/ocamlc", ocamlearlybird: "/usr/bin/ocamlearlybird", ocamllsp: "/usr/bin/ocamllsp" };
+  });
+  const managed = () => {
+    Object.assign(ipc.which, { "/tools/ocaml/run": "/tools/ocaml/run", [`${BIN}/dune`]: `${BIN}/dune`, [`${BIN}/ocamlc`]: `${BIN}/ocamlc`, [`${BIN}/ocamlearlybird`]: `${BIN}/ocamlearlybird`, [`${BIN}/ocamllsp`]: `${BIN}/ocamllsp` });
+  };
+
+  test("Run, Build and Test go through its launcher", async () => {
+    managed();
+    const p = (await detectProject("/d/bin/main.ml", "/d"))!;
+    expect(p.run!.cmd).toBe("/tools/ocaml/run dune exec ./bin/main.exe");
+    expect(p.build!.cmd).toBe("/tools/ocaml/run dune build");
+    expect(p.test!.cmd).toBe("/tools/ocaml/run dune test");
+  });
+
+  test("a system OCaml stays usable without a managed one", async () => {
+    const p = (await detectProject("/d/bin/main.ml", "/d"))!;
+    expect(p.run!.cmd).toBe("dune exec ./bin/main.exe");
+    const plan = await planFor(ctx);
+    expect(ipc.builds).toEqual([["dune", "build", "./bin/main.bc"]]);
+    expect(plan.adapter).toMatchObject({ cmd: "/usr/bin/ocamlearlybird" });
+    expect(plan.launch.env).toBeUndefined();
+  });
+
+  test("debugging uses its dune and Earlybird and clears another switch for the program", async () => {
+    managed();
+    const plan = await planFor(ctx);
+    expect(ipc.builds).toEqual([[`${BIN}/dune`, "build", "./bin/main.bc"]]);
+    expect(plan.adapter).toMatchObject({ cmd: `${BIN}/ocamlearlybird` });
+    expect(plan.launch.env).toMatchObject({ CAML_LD_LIBRARY_PATH: null, OCAMLPATH: null });
+  });
+
+  test("a system Earlybird doesn't stand in for a missing managed one", async () => {
+    managed();
+    delete ipc.which[`${BIN}/ocamlearlybird`];
+    const ask = vi.fn(async () => false);
+    await expect(planFor({ ...ctx, askInstall: ask })).rejects.toThrow();
+    expect(ask).toHaveBeenCalledWith("Earlybird");
+    expect(ipc.builds).toEqual([]);
+  });
+
+  test("the language server is its ocamllsp", async () => {
+    managed();
+    const c = clientFor(langFor("/d/bin/main.ml")!, "/d/bin/main.ml", "/d", async () => true);
+    await vi.waitFor(() => expect(allClients().some((x) => x.kind === "ocaml")).toBe(true));
+    expect(ipc.spawned.at(-1)).toBe(`${BIN}/ocamllsp`);
+    stopServers("ocaml");
+    void c.catch(() => {});
   });
 });
 

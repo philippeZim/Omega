@@ -46,7 +46,8 @@ pub fn tools_dir() -> Result<String, String> {
 
 fn command(cmd: &str, args: &[String], cwd: Option<String>, env: Option<HashMap<String, String>>) -> Result<Command, String> {
     let exe = which(cmd).ok_or_else(|| format!("proc:not_found:{cmd}"))?;
-    let mut c = crate::env::command(exe);
+    let mut c = crate::env::command(&exe);
+    crate::tools::managed_ocaml_env(&mut c, &exe);
     c.args(args).current_dir(cwd.map(PathBuf::from).filter(|d| d.is_dir()).unwrap_or_else(crate::env::home));
     if let Some(env) = env {
         c.envs(env);

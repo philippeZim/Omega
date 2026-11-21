@@ -551,15 +551,58 @@ fn opam_asset_suffix(os: &str, arm: bool) -> String {
     format!("-{}-{}", if arm { "arm64" } else { "x86_64" }, if os == "macos" { "macos" } else { "linux" })
 }
 
-/// opam for Omega's own root only: nothing from the user's opam setup, no system packages (sudo).
-fn opam() -> Command {
-    let mut c = env::command(opam_exe());
+/// Whether an inherited variable would point a tool at another opam switch.
+fn is_switch_var(name: &str) -> bool {
+    name.starts_with("OPAM") || matches!(name, "CAML_LD_LIBRARY_PATH" | "OCAMLPATH" | "OCAMLTOP_INCLUDE_PATH" | "OCAMLFIND_CONF")
+}
+
+fn clear_switch_vars(c: &mut Command) {
     for (k, _) in std::env::vars_os() {
         let k = k.to_string_lossy().to_string();
-        if k.starts_with("OPAM") || matches!(k.as_str(), "CAML_LD_LIBRARY_PATH" | "OCAMLPATH" | "OCAMLTOP_INCLUDE_PATH" | "OCAMLFIND_CONF") {
+        if is_switch_var(&k) {
             c.env_remove(k);
         }
     }
+}
+
+/// A program of Omega's switch runs with that switch only: `eval $(opam env)` in the shell Omega
+/// was started from can't mix in another compiler, and what it starts (dune, ocamlc) comes first
+/// from its own folder.
+pub fn managed_ocaml_env(c: &mut Command, exe: &Path) {
+    if !exe.starts_with(ocaml_bin()) {
+        return;
+    }
+    clear_switch_vars(c);
+    let path = env::path();
+    let dirs = std::iter::once(ocaml_bin()).chain(std::env::split_paths(&path));
+    if let Ok(joined) = std::env::join_paths(dirs) {
+        c.env("PATH", joined);
+    }
+}
+
+/// Launcher for shell commands (Run, Build, Test): the terminal's shell may have its own opam
+/// environment, which only a wrapper around the command can clear in every shell.
+const OCAML_RUNNER: &str = r#"#!/bin/sh
+# Runs a command with Omega's OCaml, without the opam environment of the calling shell.
+dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 1
+for v in $(env | sed -n 's/^\(OPAM[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v"; done
+unset CAML_LD_LIBRARY_PATH OCAMLPATH OCAMLTOP_INCLUDE_PATH OCAMLFIND_CONF
+PATH="$dir/root/omega/bin:$PATH"
+export PATH
+exec "$@"
+"#;
+
+fn write_ocaml_runner(dir: &Path) -> Result<(), String> {
+    let file = dir.join("run");
+    std::fs::write(&file, OCAML_RUNNER).map_err(|e| e.to_string())?;
+    make_executable(&file);
+    Ok(())
+}
+
+/// opam for Omega's own root only: nothing from the user's opam setup, no system packages (sudo).
+fn opam() -> Command {
+    let mut c = env::command(opam_exe());
+    clear_switch_vars(&mut c);
     c.env("OPAMROOT", opam_root()).envs([("OPAMYES", "1"), ("OPAMCOLOR", "never"), ("OPAMUTF8", "never"), ("OPAMNODEPEXTS", "1"), ("OPAMNOENVNOTICE", "1")]);
     c.stdin(Stdio::null());
     c
@@ -656,6 +699,7 @@ fn install_ocaml(app: &AppHandle) -> Result<String, String> {
     if update {
         run_opam(app, "ocaml", &["upgrade", "--switch", OCAML_SWITCH])?;
     }
+    write_ocaml_runner(&dir)?;
     record("ocaml", &ocaml_bin())?;
     Ok(env::norm(ocaml_bin()))
 }
@@ -729,6 +773,43 @@ pub fn ocaml_latest(package: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn switch_variables_are_recognised() {
+        for v in ["OPAMROOT", "OPAMSWITCH", "OPAM_SWITCH_PREFIX", "CAML_LD_LIBRARY_PATH", "OCAMLPATH", "OCAMLTOP_INCLUDE_PATH", "OCAMLFIND_CONF"] {
+            assert!(is_switch_var(v), "{v}");
+        }
+        for v in ["PATH", "HOME", "OCAMLRUNPARAM", "CAML_DEBUG_SOCKET"] {
+            assert!(!is_switch_var(v), "{v}");
+        }
+    }
+
+    #[test]
+    fn only_programs_of_omegas_switch_get_its_environment() {
+        let mut other = Command::new("dune");
+        managed_ocaml_env(&mut other, Path::new("/usr/bin/dune"));
+        assert_eq!(other.get_envs().count(), 0);
+
+        let exe = ocaml_bin().join("dune");
+        let mut own = Command::new(&exe);
+        managed_ocaml_env(&mut own, &exe);
+        let path = own.get_envs().find(|(k, _)| *k == "PATH").and_then(|(_, v)| v).expect("PATH");
+        assert_eq!(std::env::split_paths(path).next(), Some(ocaml_bin()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_runner_clears_another_switch_and_puts_its_own_first() {
+        let t = tempfile::tempdir().unwrap();
+        write_ocaml_runner(t.path()).unwrap();
+        let out = Command::new(t.path().join("run"))
+            .args(["sh", "-c", r#"echo "$OPAM_SWITCH_PREFIX|$OPAMROOT|$CAML_LD_LIBRARY_PATH|$OCAMLPATH|$KEEP|${PATH%%:*}""#])
+            .envs([("OPAM_SWITCH_PREFIX", "/other"), ("OPAMROOT", "/other"), ("CAML_LD_LIBRARY_PATH", "/other"), ("OCAMLPATH", "/other"), ("KEEP", "kept")])
+            .output()
+            .unwrap();
+        let real = t.path().canonicalize().unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), format!("||||kept|{}/root/omega/bin", real.display()));
+    }
 
     #[test]
     fn ocaml_names_what_is_missing() {

@@ -4,6 +4,7 @@ import { fsApi, basename, dirname, joinPath } from "../api";
 import { langFor } from "../code/languages";
 import { detectProject, pythonEntry, cmakeConfigure, cmakeExecutable } from "../code/projects";
 import { duneProjectIssue, duneSourcePath, nearestDuneProject, duneTarget, findDuneExecutables, pickExecutable, sameToolchain } from "../code/dune";
+import { OCAML_PROGRAM_ENV, managedOcaml } from "../code/ocamlTools";
 import { toolsDir, clientFor, fileUri, javaDebugBundles, metalsPausedFor, ocamlPauseRoot } from "../code/lsp.svelte";
 import { onGuestChange, toolPausedBy } from "../collab/guestChanges";
 import { t } from "../i18n/index.svelte";
@@ -165,17 +166,20 @@ export async function buildUnlessPaused(cmd: string, args: string[], cwd: string
 
 /** Earlybird from the same switch as the compiler that builds the bytecode, installed if missing. */
 async function earlybird(ctx: Ctx): Promise<string> {
-  let cmd = await which("ocamlearlybird");
+  // With Omega's compiler only Omega's Earlybird fits, whatever else is on the PATH.
+  const managed = await managedOcaml("ocamlc");
+  const find = () => (managed ? managedOcaml("ocamlearlybird") : which("ocamlearlybird"));
+  let cmd = await find();
   if (!cmd) {
     const name = "Earlybird";
     if (!(await ctx.askInstall(name))) throw new Error(t("code.ad.required", { name }));
     ctx.log(t("code.ad.installing", { name }));
     await withInstallProgress("earlybird", name, () => invoke("install_debugger", { kind: "earlybird" }));
     ctx.log(t("code.ad.installed", { name }));
-    cmd = await which("ocamlearlybird");
+    cmd = await find();
     if (!cmd) throw new Error(t("code.ad.required", { name }));
   }
-  const compiler = await which("ocamlc");
+  const compiler = managed ?? (await which("ocamlc"));
   if (!sameToolchain(cmd, compiler)) throw new Error(t("code.ad.ocamlMismatch", { adapter: dirname(cmd), compiler: compiler ? dirname(compiler) : "ocamlc" }));
   return cmd;
 }
@@ -357,13 +361,14 @@ export async function planFor(ctx: Ctx): Promise<Plan> {
       const target = await ocamlDebugTarget(root, ctx.file);
       const adapter = await earlybird(ctx);
       const bc = duneTarget(target, "bc");
-      await buildUnlessPaused("dune", ["build", bc], root, ctx, paused);
+      const managedDune = await managedOcaml("dune");
+      await buildUnlessPaused(managedDune ?? "dune", ["build", bc], root, ctx, paused);
       held();
       return {
         label: `OCaml · ${target.name}.bc`,
         cwd: root,
         adapter: { kind: "stdio", cmd: adapter, args: ["debug"] },
-        launch: { type: "ocaml.earlybird", request: "launch", name: "OCaml", program: joinPath(root, `_build/default/${bc.slice(2)}`), cwd: root, stopOnEntry: false, console: "integratedTerminal" },
+        launch: { type: "ocaml.earlybird", request: "launch", name: "OCaml", program: joinPath(root, `_build/default/${bc.slice(2)}`), cwd: root, stopOnEntry: false, console: "integratedTerminal", ...(managedDune ? { env: OCAML_PROGRAM_ENV } : {}) },
         // Earlybird reports dune's copies. Generated files have no source, so they stay as they are.
         sourcePath: async (p) => {
           const source = duneSourcePath(root, p);
