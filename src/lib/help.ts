@@ -245,6 +245,7 @@ const ORDER: [string, RawSheet | undefined][] = [
   ["shortcuts", shortcuts], ["markdown", markdown], ["latex", latex],
   ["python", codeSheets.python], ["c", codeSheets.c], ["cpp", codeSheets.cpp], ["java", codeSheets.java],
   ["javascript", codeSheets.javascript], ["typescript", codeSheets.typescript], ["rust", codeSheets.rust],
+  ["scala", codeSheets.scala], ["ocaml", codeSheets.ocaml], ["mojo", codeSheets.mojo],
 ];
 
 const cache = new Map<Locale, { id: string; label: string; sheet: Sheet }[]>();

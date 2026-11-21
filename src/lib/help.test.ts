@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "vitest";
 import { allSheets, resolveKeys, sheetIdFor, withKeys } from "./help";
 import { codeSheets } from "./help-code";
+import { LANGUAGES } from "./code/languages";
 import { setLocale, type Locale } from "./i18n/index.svelte";
 
 afterEach(() => setLocale("en"));
@@ -25,6 +26,14 @@ describe("cheat sheets", () => {
           expect(row[1]?.trim(), `${id} / ${sec.title}: ${row}`).toBeTruthy();
         }
       }
+    }
+  });
+
+  test("every language with a language server has its own sheet", () => {
+    for (const l of LANGUAGES.filter((l) => l.server)) {
+      expect(codeSheets[l.id], l.id).toBeDefined();
+      expect(sheetIdFor("code", l.id), l.id).toBe(l.id);
+      expect(allSheets().map((s) => s.id), l.id).toContain(l.id);
     }
   });
 
@@ -53,6 +62,7 @@ describe("cheat sheets", () => {
     expect(sheetIdFor("code", "rust")).toBe("rust");
     expect(sheetIdFor("code", "json")).toBe("python");
     expect(sheetIdFor("code", null)).toBe("python");
+    for (const id of ["scala", "ocaml", "mojo"]) expect(sheetIdFor("code", id)).toBe(id);
     expect(sheetIdFor("text", null)).toBe("shortcuts");
     expect(sheetIdFor("markdown", null)).toBe("markdown");
     expect(sheetIdFor("latex", "rust")).toBe("latex");
