@@ -482,7 +482,9 @@ export const isTaskPty = (pty: string) => {
 
 /** Sends input to a terminal tab: its shell, or the program running in a Build/Run tab (own PTY per run). */
 export function sendInput(id: string, data: string): Promise<void> {
-  if (instances.get(id)?.kind === "guest-shell") return Promise.reject(new Error("read-only terminal"));
+  const inst = instances.get(id);
+  if (inst?.kind === "guest-shell") return Promise.reject(new Error("read-only terminal"));
+  if (inst?.kind === "remote") return Promise.resolve(inst.onInput?.(data));
   return invoke("pty_write", { id: ptyOf(id), data });
 }
 

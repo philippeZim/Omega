@@ -349,6 +349,9 @@ describe("shell terminals", () => {
     await settle();
     expect(onInput).toHaveBeenCalledWith("y\r");
     expect(calls.some(([c]) => c === "pty_write")).toBe(false);
+    await T.sendInput(id, "n\r");
+    expect(onInput).toHaveBeenLastCalledWith("n\r");
+    expect(calls.some(([c]) => c === "pty_write")).toBe(false);
     await T.attach(id, document.createElement("div"));
     expect(spawns()).toEqual([]);
   });
