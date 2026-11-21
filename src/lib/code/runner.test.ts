@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
+import { mockIPC } from "@tauri-apps/api/mocks";
 import type { Action, Project } from "./projects";
 
 const h = vi.hoisted(() => ({
@@ -36,7 +37,7 @@ vi.mock("./projects", () => ({
   },
 }));
 
-const { runner, refreshProject, runAction } = await import("./runner.svelte");
+const { runner, refreshProject, runAction, createProject } = await import("./runner.svelte");
 
 beforeEach(() => {
   h.target = "app";
@@ -74,5 +75,70 @@ describe("runAction uses the project as saved (#79)", () => {
     await refreshProject();
     await runAction({ id: "x", label: "x", cmd: "echo x" });
     expect(h.runCommand.mock.calls[0][0]).toBe("echo x");
+  });
+});
+
+test("a guest's Edit Run command stores nothing and says where it is set", async () => {
+  const { editRunCommand, runnerRemote } = await import("./runner.svelte");
+  const { ui } = await import("../ui.svelte");
+  const set = vi.spyOn(Storage.prototype, "setItem");
+  runner.project = { kind: "cmake", root: "collab:", label: "x", run: { id: "run", label: "Run", cmd: "on host" }, build: null, test: null, more: [], needs: [] };
+  runnerRemote.project = () => runner.project;
+  await editRunCommand();
+  runnerRemote.project = null;
+  expect(ui.prompt).not.toHaveBeenCalled();
+  expect(set).not.toHaveBeenCalled();
+  expect(ui.toast).toHaveBeenCalled();
+  set.mockRestore();
+});
+
+test("New Project stays closed during a guest session", async () => {
+  const { openNewProject } = await import("./runner.svelte");
+  const { guestGuard } = await import("../collab/guard");
+  runner.newProject = false;
+  guestGuard.status = () => "connected";
+  openNewProject();
+  guestGuard.status = () => "none";
+  expect(runner.newProject).toBe(false);
+  openNewProject();
+  expect(runner.newProject).toBe(true);
+  runner.newProject = false;
+});
+
+describe("New Project when the user becomes a guest meanwhile", () => {
+  const tpl = { id: "tool", marker: "marker", open: ["main.py"], needs: [], create: async () => ({ files: { a: "1" }, cmds: ["scaffold"] }) };
+  const setup = async (flipOn: string) => {
+    const { TEMPLATES } = await import("./projects");
+    const { guestGuard } = await import("../collab/guard");
+    const { ui } = await import("../ui.svelte");
+    const state = await import("../state.svelte");
+    (TEMPLATES as unknown[]).splice(0, TEMPLATES.length, tpl, { id: "empty", marker: "", open: [], needs: [] });
+    for (const f of [ui.toast, state.setRoot, state.openFile, state.setMode]) vi.mocked(f).mockClear();
+    h.runCommand.mockReset();
+    mockIPC((cmd) => {
+      if (cmd === flipOn) guestGuard.status = () => "connected";
+      return cmd === "path_exists" ? false : null;
+    });
+    return { guestGuard, ui, state };
+  };
+
+  test.each(["tool", "empty"])("template %s: files stay, nothing opens, one message", async (id) => {
+    const { guestGuard, ui, state } = await setup("create_dir");
+    await createProject(id, "/home/me", "proj");
+    guestGuard.status = () => "none";
+    expect(state.setRoot).not.toHaveBeenCalled();
+    expect(state.setMode).not.toHaveBeenCalled();
+    expect(h.runCommand).not.toHaveBeenCalled();
+    expect(ui.toast).toHaveBeenCalledTimes(1);
+  });
+
+  test("stops waiting for the project file as soon as the user is a guest", async () => {
+    const { guestGuard, ui, state } = await setup("none");
+    h.runCommand.mockImplementation(() => void (guestGuard.status = () => "connected"));
+    await createProject("tool", "/home/me", "proj"); // would poll for 2 minutes
+    guestGuard.status = () => "none";
+    expect(state.setRoot).not.toHaveBeenCalled();
+    expect(state.openFile).not.toHaveBeenCalled();
+    expect(ui.toast).toHaveBeenCalledTimes(1);
   });
 });

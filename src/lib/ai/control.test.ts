@@ -176,3 +176,16 @@ describe("control MCP terminal_write (#88)", () => {
     expect(h.sendInput).toHaveBeenCalledWith("run-tab", "Jürgen\r");
   });
 });
+
+describe("control MCP open_folder in a guest session", () => {
+  test("reports an error instead of success with no project", async () => {
+    const { TOOLS } = await import("./control.svelte");
+    const { guestGuard } = await import("../collab/guard");
+    const { setRoot } = await import("../state.svelte");
+    vi.mocked(setRoot).mockClear();
+    guestGuard.status = () => "connected";
+    await expect(TOOLS.find((x) => x.name === "open_folder")!.run({ path: "/mine" })).rejects.toThrow("Leave it first");
+    guestGuard.status = () => "none";
+    expect(setRoot).not.toHaveBeenCalled();
+  });
+});

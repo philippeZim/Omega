@@ -14,7 +14,7 @@ const { stub } = vi.hoisted(() => {
   return { stub };
 });
 vi.mock("./state.svelte", () => stub({ app: { mode: "text" } }));
-vi.mock("./ui.svelte", () => stub({ ui: { dialog: null } }));
+vi.mock("./ui.svelte", () => stub({ ui: { dialog: null, toast: vi.fn() } }));
 vi.mock("./updater.svelte", () => stub());
 vi.mock("./report.svelte", () => stub());
 vi.mock("./settings.svelte", () => stub());
@@ -202,5 +202,18 @@ describe("modeSwitchLabel (#140)", () => {
     expect(modeSwitchLabel()).toBe(["Mod-1", "Mod-2", "Alt-F3", "Mod-4"].map(formatKey).join(" / "));
     for (const m of ["text", "markdown", "latex", "code"]) setKeys(`mode.${m}`, []);
     expect(modeSwitchLabel()).toBe("");
+  });
+});
+
+describe("guest session guards", () => {
+  test("hosting or joining while a guest is blocked", async () => {
+    const { guestGuard } = await import("./collab/guard");
+    const c = await import("./collab/collab.svelte");
+    guestGuard.status = () => "connected";
+    COMMANDS.find((x) => x.id === "collab.host")!.run();
+    COMMANDS.find((x) => x.id === "collab.join")!.run();
+    guestGuard.status = () => "none";
+    expect(c.startHosting).not.toHaveBeenCalled();
+    expect(c.joinFromClipboard).not.toHaveBeenCalled();
   });
 });

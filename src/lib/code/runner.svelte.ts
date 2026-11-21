@@ -9,6 +9,7 @@ import { onFilesChanged } from "../fsWatch.svelte";
 import { t } from "../i18n/index.svelte";
 import { ensureTools } from "../tools.svelte";
 import { cd, q } from "../platform";
+import { blockedAsGuest, keptOutOfSession } from "../collab/guard";
 
 export const runner = $state({
   project: null as Project | null,
@@ -25,6 +26,11 @@ export const runnerRemote = {
   project: null as (() => Project | null) | null,
   run: null as ((a: Action) => void) | null,
 };
+
+/** Opens the New Project dialog (not during a guest session: it would replace the shared project). */
+export function openNewProject() {
+  if (!blockedAsGuest()) runner.newProject = true;
+}
 
 // Editing a project file outside the editor (or git) can change the actions too.
 const PROJECT_FILES = new Set(["Cargo.toml", "pyproject.toml", "package.json", "CMakeLists.txt", "settings.gradle.kts", "settings.gradle", "build.gradle.kts", "build.gradle"]);
@@ -70,6 +76,8 @@ function withCustomRun(p: Project): Project {
 export async function editRunCommand() {
   const p = runner.project;
   if (!p) return;
+  // A guest's project is the host's: a command stored here would never run.
+  if (runnerRemote.project) return ui.toast(t("code.rb.runCmdOnHost"));
   const v = await ui.prompt(t("code.rb.runCmdTitle"), p.run?.cmd ?? "", t("code.rb.runCmdPlaceholder"), undefined, undefined, true);
   if (v === null) return;
   try {
@@ -181,6 +189,7 @@ export async function createProject(templateId: string, parent: string, name: st
   if (tpl.id === "empty") {
     await fsApi.createDir(dir);
     runner.newProject = false;
+    if (keptOutOfSession(dir)) return;
     setRoot(dir);
     refreshProject();
     return;
@@ -193,19 +202,25 @@ export async function createProject(templateId: string, parent: string, name: st
     for (const [rel, content] of Object.entries(plan.files ?? {})) await fsApi.writeFile(joinPath(dir, rel), content);
   }
   runner.newProject = false;
+  // Became a guest meanwhile: an in-parent tool hasn't created anything yet, so don't start it.
+  if (plan.inParent ? blockedAsGuest() : keptOutOfSession(dir)) return;
   setMode(tpl.mode ?? "code");
   const cmd = plan.cmds.join(" && ");
   if (cmd) runCommand(plan.inParent ? cmd : `${cd(dir)} && ${cmd}`, plan.inParent ? parent : null, t("code.newProjectTitle", { name }));
   // Open the folder as soon as the project file exists (tools differ in which source files they create).
   for (let i = 0; i < 240; i++) {
     if (i) await new Promise((r) => setTimeout(r, 500));
-    if (!(await fsApi.exists(joinPath(dir, tpl.marker)))) continue;
+    const created = await fsApi.exists(joinPath(dir, tpl.marker));
+    if (keptOutOfSession(dir)) return;
+    if (!created) continue;
     setRoot(dir);
     // Give the tool a moment to write its source files, then open the best candidate.
     for (let j = 0; j < 20; j++) {
       for (const rel of tpl.open) {
         const f = joinPath(dir, rel.replace("{name}", name.replace(/-/g, "_")));
-        if (await fsApi.exists(f)) {
+        const found = await fsApi.exists(f);
+        if (keptOutOfSession(dir)) return;
+        if (found) {
           await openFile(f);
           refreshProject();
           return;

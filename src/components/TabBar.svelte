@@ -1,6 +1,6 @@
 <script lang="ts">
   import Glyph from "./Glyph.svelte";
-  import { app, activate, closeTab, newFile, foreignProject } from "../lib/state.svelte";
+  import { app, activate, closeTab, newFileInSession, foreignProject } from "../lib/state.svelte";
   import { ui } from "../lib/ui.svelte";
   import RunBar from "./RunBar.svelte";
   import LspStatus from "./LspStatus.svelte";
@@ -59,7 +59,7 @@
         </button>
       </div>
     {/each}
-    <button class="add" onclick={newFile} title={withShortcut(t("app.newFile"), "file.new")} aria-label={t("app.newFile")}><Glyph name="plus" size={11} /></button>
+    <button class="add" onclick={() => newFileInSession()} title={withShortcut(t("app.newFile"), "file.new")} aria-label={t("app.newFile")}><Glyph name="plus" size={11} /></button>
   </div>
   {#if app.mode === "code"}<LspStatus compact={width < 640} /><RunBar {width} />{/if}
   </div>

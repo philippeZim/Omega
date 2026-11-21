@@ -6,7 +6,7 @@ vi.mock("../lib/state.svelte", async () => ({
   app: (await import("./TabBar.fixture.svelte")).app,
   activate: vi.fn(),
   closeTab: vi.fn(),
-  newFile: vi.fn(),
+  newFileInSession: vi.fn(),
   foreignProject: () => null,
 }));
 vi.mock("./RunBar.svelte", () => ({ default: () => {} }));

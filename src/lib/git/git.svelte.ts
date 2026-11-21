@@ -3,6 +3,7 @@ import { ensureTools } from "../tools.svelte";
 import { invoke } from "@tauri-apps/api/core";
 import { openDialog } from "../native";
 import { app, setRoot, openFile, save, syncFromDisk } from "../state.svelte";
+import { blockedAsGuest, keptOutOfSession } from "../collab/guard";
 import { ui } from "../ui.svelte";
 import { joinPath, fsApi } from "../api";
 import { t, type Key } from "../i18n/index.svelte";
@@ -412,9 +413,12 @@ export async function cloneInto(url: string, dest: string): Promise<string | nul
   const parent = dest.replace(/\/[^/]+$/, "") || "/";
   const r = await invoke<Out>("git", { root: parent, args: ["clone", url, dest] });
   if (r.code !== 0) return gitErrorMessage(r) || t("git.cloneFailed");
+  if (keptOutOfSession(dest)) return null;
   setRoot(dest);
   for (const f of ["README.md", "readme.md", "main.py", "src/main.rs", "src/main.py", "index.js"]) {
-    if (await fsApi.exists(joinPath(dest, f))) {
+    const found = await fsApi.exists(joinPath(dest, f));
+    if (keptOutOfSession(dest)) return null;
+    if (found) {
       await openFile(joinPath(dest, f));
       break;
     }
@@ -426,6 +430,7 @@ export async function cloneInto(url: string, dest: string): Promise<string | nul
 
 /** Project menu / command: opens the new-project dialog on its "Clone from Git" tab. */
 export async function cloneRepo() {
+  if (blockedAsGuest()) return;
   const { runner } = await import("../code/runner.svelte");
   cloneTabRequested.value = true;
   runner.newProject = true;

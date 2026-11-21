@@ -6,6 +6,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { snapshotPng } from "./snapshot";
 import { app, activeTab, openFile, save, setMode, setRoot } from "../state.svelte";
+import { guestGuard } from "../collab/guard";
+import { t } from "../i18n/index.svelte";
 import { ui } from "../ui.svelte";
 import * as ed from "../editor";
 import { fsApi, wellFormed } from "../api";
@@ -201,6 +203,7 @@ export const TOOLS: Tool[] = [
     description: "Öffnet einen Ordner (absoluter Pfad) als Projektordner, wie „Ordner öffnen“.",
     inputSchema: obj({ path: str("Ordnerpfad") }, ["path"]),
     run: async ({ path }) => {
+      if (guestGuard.status() !== "none") throw new Error(t("ai.collab.leaveFirst"));
       await fsApi.listDir(path);
       await setRoot(path);
       return { projectRoot: app.root };

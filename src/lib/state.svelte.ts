@@ -13,6 +13,7 @@ import { t } from "./i18n/index.svelte";
 import { onFilesChanged, watchRoot } from "./fsWatch.svelte";
 import { detectEol, fromDisk, toDisk, type Eol } from "./eol";
 import { findHeadingLine } from "./headingAnchor";
+import { blockedAsGuest, guestGuard } from "./collab/guard";
 
 setLspHooks({
   workspace: () => app.root,
@@ -445,6 +446,16 @@ export function newFile() {
   activate(id);
 }
 
+/** New File from the UI: a connected guest creates it in the host's project (#133). */
+export async function newFileInSession() {
+  if (guestGuard.status() === "connected") {
+    const { share, remoteCreate } = await import("./collab/share.svelte");
+    if (share.hostHasRoot) return remoteCreate("", false);
+    ui.toast(t("ai.collab.localFileHint"));
+  }
+  newFile();
+}
+
 const closedPaths: string[] = [];
 
 /** Ctrl+⇧+T: reopens the most recently closed file. */
@@ -496,7 +507,11 @@ export async function closeTab(id: string, force = false) {
 export async function save(id = app.activeId, forceDialog = false, overwrite = false): Promise<boolean> {
   const tab = app.tabs.find((t) => t.id === id);
   if (!tab) return false;
-  if (isRemotePath(tab.path)) return true; // saved by the host
+  if (isRemotePath(tab.path)) {
+    if (!forceDialog) return true; // saved by the host
+    const { saveCopyToHost } = await import("./collab/guestFiles");
+    return saveCopyToHost(tab);
+  }
   let path = tab.path;
   if (!path || forceDialog) {
     const chosen = await saveDialog({ defaultPath: path ?? (app.root ? `${app.root}/${tab.name}` : undefined) });
@@ -542,6 +557,7 @@ export async function save(id = app.activeId, forceDialog = false, overwrite = f
 }
 
 export async function openFolder() {
+  if (blockedAsGuest()) return;
   const dir = await openDialog({ directory: true, defaultPath: app.root ?? undefined });
   if (typeof dir === "string") setRoot(dir);
 }
@@ -550,6 +566,8 @@ export async function openFolder() {
 export const recentFolders = $state<string[]>(JSON.parse(localStorage.getItem("recentFolders") || "[]"));
 
 export function setRoot(dir: string | null) {
+  // Clearing stays allowed: joining puts the own folder aside that way.
+  if (dir && blockedAsGuest()) return;
   if (dir) dir = normPath(dir);
   if (dir) {
     const i = recentFolders.indexOf(dir);

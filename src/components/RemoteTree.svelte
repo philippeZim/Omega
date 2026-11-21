@@ -5,6 +5,7 @@
   import { ui } from "../lib/ui.svelte";
   import { activeTab } from "../lib/state.svelte";
   import { t } from "../lib/i18n/index.svelte";
+  import { treeKeyAction, focusTreeRow } from "../lib/treeNav";
 
   let { rel = "", depth = 0 }: { rel?: string; depth?: number } = $props();
   let entries = $state<{ name: string; rel: string; is_dir: boolean }[] | null>(null);
@@ -31,6 +32,7 @@
         : [{ label: t("common.open"), action: () => openRemote(e.rel) }]),
       { separator: true, label: "" },
       { label: t("common.rename"), action: () => remoteRename(e.rel) },
+      { label: t("app.copyRelativePath"), action: () => navigator.clipboard.writeText(e.rel) },
       { separator: true, label: "" },
       { label: t("common.delete"), action: () => remoteDelete(e.rel), danger: true },
     ]);
@@ -38,6 +40,22 @@
   async function newIn(dir: string, isDir: boolean) {
     open[dir] = true;
     await remoteCreate(dir, isDir);
+  }
+
+  // Same keys as the host's tree (#39). WebKit doesn't focus buttons on click.
+  function onClick(ev: MouseEvent, e: { rel: string; is_dir: boolean }) {
+    (ev.currentTarget as HTMLElement).focus({ preventScroll: true });
+    if (e.is_dir) open[e.rel] = !open[e.rel];
+    else openRemote(e.rel);
+  }
+  function onKey(ev: KeyboardEvent, e: { rel: string; is_dir: boolean }) {
+    const a = treeKeyAction(ev, { isDir: e.is_dir, open: !!open[e.rel] });
+    if (!a) return;
+    ev.preventDefault();
+    if (a === "expand" || a === "collapse") open[e.rel] = a === "expand";
+    else if (a === "rename") remoteRename(e.rel);
+    else if (a === "delete") remoteDelete(e.rel);
+    else focusTreeRow(ev.currentTarget as HTMLElement, a);
   }
 
   // Files other participants are in right now (coloured dots).
@@ -64,7 +82,7 @@
   <div class="loading" style="padding-left: {12 + depth * 14}px">…</div>
 {:else}
   {#each entries as e (e.rel)}
-    <button class="row" class:active={activeRel === e.rel} style="padding-left: {8 + depth * 14}px" onclick={() => (e.is_dir ? (open[e.rel] = !open[e.rel]) : openRemote(e.rel))} oncontextmenu={(ev) => menu(ev, e)}>
+    <button class="row" class:active={activeRel === e.rel} style="padding-left: {8 + depth * 14}px" role="treeitem" aria-level={depth + 1} aria-selected={activeRel === e.rel} aria-expanded={e.is_dir ? !!open[e.rel] : undefined} onclick={(ev) => onClick(ev, e)} onkeydown={(ev) => onKey(ev, e)} oncontextmenu={(ev) => menu(ev, e)}>
       {#if e.is_dir}
         <svg class="chev" class:open={open[e.rel]} width="10" height="10" viewBox="0 0 10 10"><path d="M3.5 2l3 3-3 3" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
       {:else}

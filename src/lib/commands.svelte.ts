@@ -9,18 +9,19 @@ import { EDITOR_COMMANDS, type CommandGroup } from "./editorCommands";
 import { KEYMAPS, type KeymapId } from "./keymaps";
 import { t, type Key } from "./i18n/index.svelte";
 import * as ed from "./editor";
-import { app, newFile, save, openFolder, closeTab, setMode, cycleTab, toggleSpell, reopenClosedTab } from "./state.svelte";
+import { app, newFileInSession, save, openFolder, closeTab, setMode, cycleTab, toggleSpell, reopenClosedTab } from "./state.svelte";
 import { ui } from "./ui.svelte";
 import { checkForUpdates } from "./updater.svelte";
 import { report } from "./report.svelte";
 import { settings, setSize } from "./settings.svelte";
-import { runner, runAction, stopRun } from "./code/runner.svelte";
+import { runner, runAction, stopRun, openNewProject } from "./code/runner.svelte";
 import * as debug from "./debug/debugger.svelte";
 import { dbg } from "./debug/store.svelte";
 import { setTerminalKeyFilter } from "./terminal.svelte";
 import { toggleZone, toggleFocus, showView, moveFocused, resetLayout } from "./layout.svelte";
 import { forwardSync } from "./latex/controller.svelte";
 import { openFind } from "./search/search.svelte";
+import { blockedAsGuest } from "./collab/guard";
 import { collab, startHosting, joinFromClipboard, approveNext, leave as leaveCollab } from "./collab/collab.svelte";
 import { git, push as gitPush, pull as gitPull, newBranch, cloneRepo, publishGitHub, refresh as gitRefresh, connectRemote, initRepo } from "./git/git.svelte";
 import { activeTab } from "./state.svelte";
@@ -77,17 +78,11 @@ const APP_COMMANDS: CommandDef[] = [
   { id: "app.spell", group: "general", keys: ["F7"], run: toggleSpell, when: () => !debugging() },
 
   // A guest's new file goes into the host's project, so it's shared and saved there (#133).
-  { id: "file.new", group: "files", keys: ["Mod-n"], run: async () => {
-    if (collab.role === "guest") {
-      const { share, remoteCreate } = await import("./collab/share.svelte");
-      if (share.hostHasRoot) return remoteCreate("", false);
-    }
-    newFile();
-  } },
+  { id: "file.new", group: "files", keys: ["Mod-n"], run: () => newFileInSession() },
   { id: "file.openFolder", group: "files", keys: ["Mod-o"], run: openFolder },
   { id: "file.save", group: "files", keys: ["Mod-s"], run: () => save() },
   { id: "file.saveAs", group: "files", keys: ["Mod-Shift-s"], run: () => save(app.activeId, true) },
-  { id: "project.new", group: "files", keys: [], run: () => (runner.newProject = true) },
+  { id: "project.new", group: "files", keys: [], run: () => openNewProject() },
   { id: "tab.close", group: "files", keys: ["Mod-w"], run: () => app.activeId && closeTab(app.activeId) },
   { id: "tab.reopen", group: "files", keys: ["Mod-Shift-t"], run: reopenClosedTab },
   { id: "tab.next", group: "files", keys: ["Mod-Tab"], run: () => cycleTab(1), inTerminal: true },
@@ -109,8 +104,8 @@ const APP_COMMANDS: CommandDef[] = [
   { id: "git.publish", group: "git", keys: [], run: () => publishGitHub() },
   { id: "git.blame", group: "git", keys: [], run: () => setGitBlame(!blameSettings.enabled) },
   { id: "collab.open", group: "collab", keys: ["Mod-Shift-c"], run: () => (collab.open = !collab.open), inTerminal: false },
-  { id: "collab.host", group: "collab", keys: [], run: () => { collab.open = true; startHosting(); } },
-  { id: "collab.join", group: "collab", keys: [], run: () => joinFromClipboard() },
+  { id: "collab.host", group: "collab", keys: [], run: () => { if (blockedAsGuest()) return; collab.open = true; startHosting(); } },
+  { id: "collab.join", group: "collab", keys: [], run: () => { if (!blockedAsGuest()) return joinFromClipboard(); } },
   { id: "collab.approve", group: "collab", keys: [], run: () => approveNext(), when: () => collab.requests.length > 0 },
   { id: "ai.claude", group: "ai", keys: [], run: async () => (await import("./ai/ide.svelte")).startAgent("claude") },
   { id: "ai.codex", group: "ai", keys: [], run: async () => (await import("./ai/ide.svelte")).startAgent("codex") },
