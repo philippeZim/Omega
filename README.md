@@ -5,7 +5,7 @@
 <h1 align="center">Omega</h1>
 
 <p align="center">
-  Notes, LaTeX and code. One app, one window, the whole semester.<br><br>
+  Notes, LaTeX and code in one editor.<br><br>
   <a href="https://github.com/philippeZim/Omega/releases/latest"><b>Download</b></a> ·
   <a href="#install">Install</a> ·
   <a href="https://github.com/philippeZim/Omega/issues">Feedback</a>
