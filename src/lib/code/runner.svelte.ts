@@ -113,7 +113,9 @@ export async function chooseVersion(s: VersionSetting) {
     const n = q.trim().toLowerCase();
     return n ? all.filter((o) => o.value.toLowerCase().includes(n)) : all;
   });
-  if (!v || v === s.current) return;
+  // The dialog trims what it returns, so the file's own value (e.g. a range) may come back changed.
+  const plain = (x: string | null) => x?.trim().replace(/\s+/g, " ");
+  if (!v || plain(v) === plain(s.current)) return;
   try {
     const cmd = await s.apply(v);
     if (cmd) {

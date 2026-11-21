@@ -37,7 +37,7 @@ vi.mock("./projects", () => ({
   },
 }));
 
-const { runner, refreshProject, runAction, createProject } = await import("./runner.svelte");
+const { runner, refreshProject, runAction, createProject, chooseVersion } = await import("./runner.svelte");
 const { TEMPLATES } = await import("./projects");
 const { ui } = await import("../ui.svelte");
 
@@ -214,5 +214,29 @@ describe("package actions on the host", () => {
     h.runCommand.mockReset();
     await runAction({ id: "fmt", label: "fmt", cmd: "uvx ruff format" });
     expect(h.runCommand.mock.calls[0][4]).toBeUndefined();
+  });
+});
+
+describe("chooseVersion with a range from the project file", () => {
+  const setting = (current: string) => ({ id: "node", label: "Node", current, chip: "Node", options: async () => [], apply: vi.fn(async (v: string) => `set ${v}`) });
+
+  test.each([[" >=18 <21 ", ">=18 <21"], ["20  ||  22", "20 || 22"], [">=18\n<21", ">=18 <21"]])("picking the file's own value %j does nothing", async (current, returned) => {
+    await refreshProject();
+    const s = setting(current);
+    vi.mocked(ui.prompt).mockResolvedValueOnce(returned);
+    vi.mocked(ui.toast).mockClear();
+    await chooseVersion(s);
+    expect(s.apply).not.toHaveBeenCalled();
+    expect(ui.toast).not.toHaveBeenCalled();
+    expect(h.runCommand).not.toHaveBeenCalled();
+  });
+
+  test("a concrete version still applies", async () => {
+    await refreshProject();
+    const s = setting(">=18 <21");
+    vi.mocked(ui.prompt).mockResolvedValueOnce("22");
+    await chooseVersion(s);
+    expect(s.apply).toHaveBeenCalledWith("22");
+    expect(h.runCommand.mock.calls[0][0]).toBe("set 22");
   });
 });

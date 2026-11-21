@@ -182,10 +182,41 @@ describe("Java (Gradle)", () => {
 });
 
 describe("versionArg: a version read from a project file can't inject", () => {
-  test.each(["3.12; touch /tmp/pwned", "$(id)", "`id`", "--force", "-y", "a b", "a|b", "a&b", "a'b", 'a"b', "a\\b", "a\nb", "%PATH%", ""])("refuses %j", (v) => {
-    expect(() => versionArg(v)).toThrow();
+  const ATTACKS = ["3.12; touch /tmp/pwned", "$(id)", "`id`", "--force", "-y", "a b", "a|b", "a&b", "a'b", 'a"b', "a\\b", "a\nb", "%PATH%", "", "a/b", "./x", "../x", "/usr/bin/python", "evil", "foo.txt"];
+  describe.each(["python", "node", "rust"] as const)("%s", (tool) => {
+    test.each(ATTACKS)("refuses %j", (v) => {
+      expect(() => versionArg(tool, v)).toThrow();
+    });
   });
-  test.each([["3.12", "3.12"], ["22", "22"], ["stable", "stable"], ["nightly-2026-01-01", "nightly-2026-01-01"], ["1.80.0", "1.80.0"], ["pypy@3.10", "pypy@3.10"], [">=3.12", "'>=3.12'"], ["^22", "'^22'"]])("%s", (v, word) => {
-    expect(versionArg(v)).toBe(word);
+
+  test.each(["3", "3.12", "3.12.4", "3.13t", "3.14rc1", "cpython@3.12", "cpython3.12", "pypy3.10", "pypy@3.10", "python3.12", ">=3.12", ">=3.11,<3.13"])("python accepts %s", (v) => {
+    expect(() => versionArg("python", v)).not.toThrow();
+  });
+  test.each(["3.12-x", "3.12-a-b-c", "cpython-3.12", "python-3.12", "pypy-3.10", "cpython-3.12-linux-x86_64-gnu", "cpython"])("python refuses the folder-like %s", (v) => {
+    expect(() => versionArg("python", v)).toThrow();
+  });
+  test.each(["22", "22.11", "22.11.0", "v22", "^22", "~22.1", ">=20", "lts", "latest", "lts/iron", "nightly"])("node accepts %s", (v) => {
+    expect(() => versionArg("node", v)).not.toThrow();
+  });
+  test.each(["stable", "beta", "nightly", "nightly-2026-01-01", "1.80", "1.80.0", "stable-x86_64-unknown-linux-gnu", "nightly-2026-01-01-aarch64-apple-darwin", "1.80.0-x86_64-pc-windows-msvc"])("rust accepts %s", (v) => {
+    expect(versionArg("rust", v)).toBe(v);
+  });
+  test("special characters are quoted as one word", () => {
+    expect(versionArg("python", ">=3.12")).toBe("'>=3.12'");
+    expect(versionArg("node", "^22")).toBe("'^22'");
+  });
+});
+
+describe("real-world ranges in project files", () => {
+  test.each([">=18 <21", "20 || 22", ">=18.0.0 <23"])("Node %s is shown, and a concrete version can be chosen", async (range) => {
+    files["/p/package.json"] = JSON.stringify({ engines: { node: range } });
+    const s = await one("pnpm", "node");
+    expect(s.current).toBe(range);
+    expect(await s.apply("22")).toBe("pnpm runtime set node 22 -y && pnpm install");
+  });
+
+  test("a range never goes to the shell as a version", async () => {
+    files["/p/package.json"] = JSON.stringify({ engines: { node: ">=18 <21; touch /tmp/pwned" } });
+    await expect((await one("pnpm", "node")).apply(">=18 <21; touch /tmp/pwned")).rejects.toThrow();
   });
 });
