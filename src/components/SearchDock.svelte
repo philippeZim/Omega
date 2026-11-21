@@ -14,7 +14,7 @@
     }
     return [...m];
   });
-  const rel = (f: string) => (app.root && f.startsWith(app.root + "/") ? f.slice(app.root.length + 1) : f);
+  const rel = (f: string) => (f.startsWith("collab:") ? f.slice(7) : app.root && f.startsWith(app.root + "/") ? f.slice(app.root.length + 1) : f);
 
   function segs(h: Hit) {
     const lead = h.text.length - h.text.trimStart().length;
@@ -41,7 +41,7 @@
       {#each groups as [file, hits] (file)}
         <button class="file" onclick={() => (collapsed[file] = !collapsed[file])}>
           <span class="chev" class:open={!collapsed[file]}><Glyph name="chevron" size={8} /></span>
-          <span class="fname">{basename(file)}</span>
+          <span class="fname">{basename(rel(file))}</span>
           <span class="fpath">{rel(file)}</span>
           <span class="n">{hits.length}</span>
         </button>

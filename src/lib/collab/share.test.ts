@@ -822,3 +822,446 @@ test("guest: a malformed folder listing from the host is an empty or filtered li
     expect(await p).toEqual(expected);
   }
 });
+
+// ------------------------------------------------------------------ project search for guests
+
+const { replaceInFiles, SEARCH_LIMITS } = await import("./projectSearch.svelte");
+const { setCapability } = await import("./rpc.svelte");
+
+/** Literal replace, as the backend plans it: UTF-16 offsets into the text it was given. */
+function literalPlan(text: string, query: string, replacement: string) {
+  const edits: [number, number, string][] = [];
+  for (let i = text.indexOf(query); i >= 0; i = text.indexOf(query, i + query.length)) edits.push([i, i + query.length, replacement]);
+  return { edits, count: edits.length, version: ver(text) };
+}
+
+/** The fake backend's text version. */
+const ver = (text: string) => `v:${text}`;
+
+/** The host's file system plus the search backend's commands; `backend` answers the searches. */
+function searchFs(initial: Record<string, string>, backend: (cmd: string, args: Msg) => unknown = () => null) {
+  const fs = hostFs(initial);
+  const other = fs.other;
+  const calls: string[] = [];
+  fs.other = (cmd, args) => {
+    if (!cmd.startsWith("guest_")) return other(cmd, args);
+    calls.push(cmd);
+    if (cmd === "guest_read_text") return fs.files.get(`${args.root}/${args.rel}`) ?? null;
+    if (cmd === "guest_replace_plan") {
+      const r = args.replace as Msg;
+      const text = args.text as string;
+      const same = r.expectVersion ? r.expectVersion === ver(text) : r.expectLine === ver(text.split("\n")[r.line - 1] ?? "");
+      if (!same) throw "changed";
+      return literalPlan(text, r.query, r.replacement);
+    }
+    if (cmd === "guest_write_check") return null;
+    if (cmd === "guest_write_text") {
+      const path = `${args.root}/${args.rel}`;
+      if (args.expected !== ver(fs.files.get(path) ?? "")) throw "changed";
+      fs.files.set(path, args.content as string);
+      return null;
+    }
+    return backend(cmd, args as Msg);
+  };
+  return { fs, calls };
+}
+
+const query = (q: string, extra: Msg = {}) => ({ query: q, caseSensitive: true, wholeWord: false, regex: false, mask: "", folder: "", maxResults: 100, ...extra });
+const replaceReq = (id: number, file: string, seen: string, q = "old", replacement = "new") => receive("g1", { t: "rpc.req", id, method: "search.replace", params: { query: query(q), replacement, file, expect: { version: ver(seen) } } });
+const answer = (id: number) => sent.find((s) => s.peer === "g1" && s.msg.t === "rpc.res" && s.msg.id === id)?.msg;
+
+test("guest Replace in an open file changes the shared doc: live for everyone, unsaved text kept, disk untouched", async () => {
+  const { fs } = searchFs({ "/p/a.txt": "old on disk\n" });
+  app.tabs.push({ id: "t1", path: "/p/a.txt", name: "a.txt" });
+  texts.set("t1", "unsaved old text\n");
+  await receive("g1", { t: "doc.open", path: "a.txt" });
+  await receive("g2", { t: "doc.open", path: "a.txt" });
+
+  await replaceReq(700, "a.txt", "unsaved old text\n");
+
+  expect(answer(700)).toMatchObject({ ok: true, result: { count: 1 } });
+  expect(guestCopy("a.txt")).toBe("unsaved new text\n");
+  const g2 = new Y.Doc();
+  for (const { peer, msg } of sent) if (peer === "g2" && msg.path === "a.txt" && msg.update && msg.t !== "aw") Y.applyUpdate(g2, unb64(msg.update));
+  expect(g2.getText("content").toString()).toBe("unsaved new text\n");
+  expect(fs.files.get("/p/a.txt")).toBe("old on disk\n");
+});
+
+test("guest Replace in a file nobody has open writes it to disk", async () => {
+  const { fs } = searchFs({ "/p/b.txt": "old old\n" });
+  await replaceReq(701, "b.txt", "old old\n");
+  expect(answer(701)).toMatchObject({ ok: true, result: { count: 2 } });
+  expect(fs.files.get("/p/b.txt")).toBe("new new\n");
+});
+
+test("guest Replace needs `edit`", async () => {
+  const { fs, calls } = searchFs({ "/p/b.txt": "old\n" });
+  (collab.participants[0] as { caps: string[] }).caps = ["run"];
+  await replaceReq(702, "b.txt", "old\n");
+  expect(answer(702)).toMatchObject({ ok: false, error: { code: "forbidden" } });
+  expect(calls).toEqual([]);
+  expect(fs.files.get("/p/b.txt")).toBe("old\n");
+});
+
+test("guest Replace refuses paths in git folders and through escaping symlinks", async () => {
+  const { fs } = searchFs({ "/p/.git/config": "old\n", "/p/ext/x.txt": "old\n" });
+  await replaceReq(703, ".git/config", "old\n");
+  await replaceReq(704, "ext/x.txt", "old\n");
+  await replaceReq(705, "../x.txt", "old\n");
+  for (const id of [703, 704, 705]) expect(answer(id)).toMatchObject({ ok: false, error: { code: "unavailable" } });
+  expect(fs.files.get("/p/.git/config")).toBe("old\n");
+  expect(fs.files.get("/p/ext/x.txt")).toBe("old\n");
+});
+
+test("taking `edit` away during a Replace stops it before anything changes", async () => {
+  const { fs } = searchFs({ "/p/b.txt": "old\n" });
+  const other = fs.other;
+  let release = () => {};
+  let planning = false;
+  const held = new Promise<void>((r) => (release = r));
+  fs.other = (cmd, args) => {
+    if (cmd !== "guest_replace_plan") return other(cmd, args);
+    planning = true;
+    return held.then(() => other(cmd, args));
+  };
+
+  const run = replaceReq(706, "b.txt", "old\n");
+  await vi.waitFor(() => expect(planning).toBe(true));
+  setCapability("g1", "edit", false);
+  release();
+  await run;
+
+  expect(answer(706)).toMatchObject({ ok: false, error: { code: "forbidden" } });
+  expect(fs.files.get("/p/b.txt")).toBe("old\n");
+});
+
+test("a Replace on text that changed while it was planned refuses instead of using stale offsets", async () => {
+  const { fs } = searchFs({ "/p/a.txt": "old\n" });
+  await receive("g1", { t: "doc.open", path: "a.txt" });
+  const other = fs.other;
+  let first = true;
+  const g = new Y.Doc();
+  fs.other = async (cmd, args) => {
+    const r = await other(cmd, args);
+    if (cmd === "guest_replace_plan" && first) {
+      first = false;
+      await guestInsert("a.txt", 0, "xx ", g);
+    }
+    return r;
+  };
+  await replaceReq(707, "a.txt", "old\n");
+  expect(answer(707)).toMatchObject({ ok: false, error: { code: "changed" } });
+  expect(guestCopy("a.txt", g)).toBe("xx old\n");
+});
+
+test("guest search results hold only what guests may see, and truncation is passed on", async () => {
+  searchFs({}, (cmd) =>
+    cmd === "guest_search_text"
+      ? { hits: ["src/a.txt", ".git/config", "sub/.GIT/x", "/etc/passwd", "../up.txt"].map((file) => ({ file, line: 1, ranges: [[0, 1]], text: "x" })), files: 5, total: 5, truncated: true }
+      : null,
+  );
+  await receive("g1", { t: "rpc.req", id: 710, method: "search.text", params: query("x") });
+  const res = answer(710)!;
+  expect(res.result.hits.map((h: { file: string }) => h.file)).toEqual(["src/a.txt"]);
+  expect(res.result.truncated).toBe(true);
+});
+
+test("the guest's file list drops git paths and absolute paths", async () => {
+  searchFs({}, (cmd) => (cmd === "guest_list_files" ? { files: ["a.txt", ".git/HEAD", "x/.Git/config", "/etc/passwd"], truncated: true } : null));
+  await receive("g1", { t: "rpc.req", id: 711, method: "search.list", params: {} });
+  expect(answer(711)).toMatchObject({ ok: true, result: { files: ["a.txt"], truncated: true } });
+});
+
+test("an open-files search with no readable file finds nothing instead of walking the project", async () => {
+  const { calls } = searchFs({});
+  await receive("g1", { t: "rpc.req", id: 712, method: "search.text", params: query("x", { files: [".git/config", "ext/x", "../y"] }) });
+  expect(answer(712)).toMatchObject({ ok: true, result: { hits: [], total: 0 } });
+  expect(calls).toEqual([]);
+});
+
+test("a search folder outside what guests may see is refused", async () => {
+  const { calls } = searchFs({});
+  await receive("g1", { t: "rpc.req", id: 713, method: "search.text", params: query("x", { folder: "ext" }) });
+  expect(answer(713)).toMatchObject({ ok: false, error: { code: "unavailable" } });
+  expect(calls).toEqual([]);
+});
+
+test("the guest's search sees unsaved text of open files", async () => {
+  let seen: Msg = {};
+  searchFs({ "/p/a.txt": "disk\n" }, (cmd, args) => {
+    if (cmd === "guest_search_text") seen = args.query as Msg;
+    return { hits: [], files: 0, total: 0, truncated: false };
+  });
+  app.tabs.push({ id: "t1", path: "/p/a.txt", name: "a.txt" });
+  texts.set("t1", "unsaved\n");
+  await receive("g1", { t: "rpc.req", id: 714, method: "search.text", params: query("x") });
+  expect(seen.overlay).toEqual({ "a.txt": "unsaved\n" });
+});
+
+test("cancelling a guest's search cancels it in the backend", async () => {
+  let finish: (v: unknown) => void = () => {};
+  const cancelled: unknown[] = [];
+  const { fs, calls } = searchFs({}, (cmd) => (cmd === "guest_search_text" ? new Promise((r) => (finish = r)) : null));
+  const other = fs.other;
+  fs.other = (cmd, args) => {
+    if (cmd === "guest_search_cancel") cancelled.push(args.token);
+    return other(cmd, args);
+  };
+  const run = receive("g1", { t: "rpc.req", id: 715, method: "search.text", params: query("x") });
+  await vi.waitFor(() => expect(calls).toContain("guest_search_text"));
+  await receive("g1", { t: "rpc.cancel", id: 715 });
+  await vi.waitFor(() => expect(cancelled).toHaveLength(1));
+  finish({ hits: [], files: 0, total: 0, truncated: false });
+  await run;
+});
+
+test("guest Replace reports each file: done, failed, and where a revoked right stopped it", async () => {
+  searchFs({});
+  Object.assign(collab, { role: "guest" });
+  const run = replaceInFiles(query("old") as never, "new", ["a", "b", "c", "d"].map((n) => ({ file: `collab:${n}.txt`, version: "v" })));
+  const reply = async (result: Msg) => {
+    await vi.waitFor(() => expect(sent.filter((s) => s.msg.t === "rpc.req" && !s.msg.done).length).toBe(1));
+    const req = sent.find((s) => s.msg.t === "rpc.req" && !s.msg.done)!.msg;
+    req.done = true;
+    await receive("host-peer", { t: "rpc.res", id: req.id, ...result });
+    return req.params.file;
+  };
+  expect(await reply({ ok: true, result: { count: 2 } })).toBe("a.txt");
+  expect(await reply({ ok: false, error: { code: "unreadable" } })).toBe("b.txt");
+  expect(await reply({ ok: false, error: { code: "forbidden" } })).toBe("c.txt");
+  const report = await run;
+  expect(report).toMatchObject({ replaced: 2, changed: 1, done: 2 });
+  expect(report.errors.map((e) => e.file)).toEqual(["b.txt"]);
+  expect(report.stopped).toBeTruthy();
+  expect(sent.filter((s) => s.msg.t === "rpc.req")).toHaveLength(3); // d.txt was never tried
+});
+
+test("Replace on one hit refuses when that line isn't what the guest saw, and leaves the file alone", async () => {
+  const { fs } = searchFs({ "/p/b.txt": "keep\nold now different\n" });
+  await receive("g1", { t: "rpc.req", id: 720, method: "search.replace", params: { query: query("old"), replacement: "new", file: "b.txt", expect: { line: 2, lineVersion: ver("old seen") } } });
+  expect(answer(720)).toMatchObject({ ok: false, error: { code: "changed" } });
+  expect(fs.files.get("/p/b.txt")).toBe("keep\nold now different\n");
+  await receive("g1", { t: "rpc.req", id: 721, method: "search.replace", params: { query: query("old"), replacement: "new", file: "b.txt", expect: { line: 2, lineVersion: ver("old now different") } } });
+  expect(answer(721)).toMatchObject({ ok: true, result: { count: 1 } });
+  expect(fs.files.get("/p/b.txt")).toBe("keep\nnew now different\n");
+});
+
+test("a Replace without an expectation is refused as invalid", async () => {
+  const { fs } = searchFs({ "/p/b.txt": "old\n" });
+  await receive("g1", { t: "rpc.req", id: 722, method: "search.replace", params: { query: query("old"), replacement: "new", file: "b.txt" } });
+  expect(answer(722)).toMatchObject({ ok: false, error: { code: "invalid_params" } });
+  expect(fs.files.get("/p/b.txt")).toBe("old\n");
+});
+
+test("a doc opened while a Replace is being planned gets the change as a live edit, not a disk write", async () => {
+  const { fs } = searchFs({ "/p/b.txt": "old\n" });
+  const other = fs.other;
+  let first = true;
+  fs.other = async (cmd, args) => {
+    const r = await other(cmd, args);
+    if (cmd === "guest_replace_plan" && first) {
+      first = false;
+      await receive("g1", { t: "doc.open", path: "b.txt" });
+    }
+    return r;
+  };
+  await replaceReq(723, "b.txt", "old\n");
+  expect(answer(723)).toMatchObject({ ok: true, result: { count: 1 } });
+  expect(guestCopy("b.txt")).toBe("new\n");
+  expect(fs.files.get("/p/b.txt")).toBe("old\n"); // the doc's write comes later, through its own path
+});
+
+test("a file with a second hard link is refused before anything changes", async () => {
+  const { fs } = searchFs({ "/p/b.txt": "old\n" });
+  const other = fs.other;
+  fs.other = (cmd, args) => {
+    if (cmd === "guest_write_check") throw "hardlinked";
+    return other(cmd, args);
+  };
+  await replaceReq(724, "b.txt", "old\n");
+  expect(answer(724)).toMatchObject({ ok: false, error: { code: "hardlinked" } });
+  expect(fs.files.get("/p/b.txt")).toBe("old\n");
+});
+
+test("an older search still being checked can't cancel the newer one", async () => {
+  const cancelled: unknown[] = [];
+  const tokens: Record<string, unknown> = {};
+  const { fs } = searchFs({}, (cmd, args) => {
+    if (cmd === "guest_search_text") tokens[(args.query as Msg).query] = args.token;
+    return { hits: [], files: 0, total: 0, truncated: false, versions: {} };
+  });
+  const other = fs.other;
+  let release = () => {};
+  const held = new Promise<void>((r) => (release = r));
+  fs.other = (cmd, args) => {
+    if (cmd === "guest_search_cancel") cancelled.push(args.token);
+    if (cmd === "collab_path_inside" && String(args.path).endsWith("/slow")) return held.then(() => true);
+    return other(cmd, args);
+  };
+  const older = receive("g1", { t: "rpc.req", id: 725, method: "search.text", params: query("older", { folder: "slow" }) });
+  await receive("g1", { t: "rpc.req", id: 726, method: "search.text", params: query("newer") });
+  expect(answer(726)).toMatchObject({ ok: true });
+  release();
+  await older;
+  expect(tokens.older).toBeUndefined(); // it never reached the backend
+  expect(cancelled).not.toContain(tokens.newer);
+});
+
+test("live text over the limit is left out of the search, skipped and reported as truncated", async () => {
+  let seen: Msg = {};
+  searchFs({ "/p/big.txt": "disk\n", "/p/a.txt": "disk\n" }, (cmd, args) => {
+    if (cmd === "guest_search_text") seen = args.query as Msg;
+    return { hits: [], files: 0, total: 0, truncated: false, versions: {} };
+  });
+  app.tabs.push({ id: "t1", path: "/p/big.txt", name: "big.txt" }, { id: "t2", path: "/p/a.txt", name: "a.txt" });
+  texts.set("t1", "x".repeat(SEARCH_LIMITS.liveFile + 1));
+  texts.set("t2", "small\n");
+  await receive("g1", { t: "rpc.req", id: 727, method: "search.text", params: query("x") });
+  expect(Object.keys(seen.overlay)).toEqual(["a.txt"]);
+  expect(seen.omit).toEqual(["big.txt"]);
+  expect(answer(727)).toMatchObject({ ok: true, result: { truncated: true } });
+
+  await receive("g1", { t: "rpc.req", id: 728, method: "search.read", params: { file: "big.txt" } });
+  expect(answer(728)).toMatchObject({ ok: false, error: { code: "too_large" } });
+});
+
+test("one guest can only have a few reads running at once", async () => {
+  const { fs } = searchFs({ "/p/a.txt": "text\n" });
+  const other = fs.other;
+  let release = () => {};
+  const held = new Promise<void>((r) => (release = r));
+  fs.other = (cmd, args) => (cmd === "guest_read_text" ? held.then(() => other(cmd, args)) : other(cmd, args));
+  const runs = Array.from({ length: SEARCH_LIMITS.reads }, (_, i) => receive("g1", { t: "rpc.req", id: 730 + i, method: "search.read", params: { file: "a.txt" } }));
+  await vi.waitFor(() => expect(fs.calls.filter((c) => c.cmd === "guest_read_text")).toHaveLength(SEARCH_LIMITS.reads));
+  await receive("g1", { t: "rpc.req", id: 739, method: "search.read", params: { file: "a.txt" } });
+  expect(answer(739)).toMatchObject({ ok: false, error: { code: "rate_limited" } });
+  release();
+  await Promise.all(runs);
+  expect(answer(730)).toMatchObject({ ok: true, result: "text\n" });
+});
+
+test("naming a hidden or ignored file reads it, like doc.open; git folders and escapes stay refused", async () => {
+  searchFs({ "/p/.env": "A=1\n", "/p/.git/config": "secret\n", "/p/ext/x": "secret\n" });
+  await receive("g1", { t: "rpc.req", id: 740, method: "search.read", params: { file: ".env" } });
+  await receive("g1", { t: "rpc.req", id: 741, method: "search.read", params: { file: ".git/config" } });
+  await receive("g1", { t: "rpc.req", id: 742, method: "search.read", params: { file: "ext/x" } });
+  expect(answer(740)).toMatchObject({ ok: true, result: "A=1\n" });
+  expect(answer(741)).toMatchObject({ ok: false, error: { code: "unavailable" } });
+  expect(answer(742)).toMatchObject({ ok: false, error: { code: "unavailable" } });
+});
+
+/** A guest with a host doc behind it: the guest's updates reach `host`, RPC calls are answered. */
+async function guestWithDoc(path: string, text: string) {
+  const host = new Y.Doc();
+  host.getText("content").insert(0, text);
+  Object.assign(collab, { role: "guest" });
+  await receive("host-peer", { t: "doc.state", path, name: path, update: b64(Y.encodeStateAsUpdate(host)) });
+  await vi.waitFor(() => expect(bindings.has(app.tabs.find((x) => x.path === `collab:${path}`)?.id ?? "")).toBe(true));
+  const pull = () => {
+    for (const { peer, msg } of sent) if (peer === "host-peer" && msg.t === "doc.update" && msg.path === path) Y.applyUpdate(host, unb64(msg.update));
+    return host.getText("content").toString();
+  };
+  return { host, pull };
+}
+
+/** Answers the guest's RPC calls until `run` settles. */
+async function serving<T>(run: Promise<T>, reply: (req: Msg) => Msg) {
+  let finished = false;
+  const out = run.finally(() => (finished = true));
+  const answered = new Set<number>();
+  while (!finished) {
+    for (const { msg } of [...sent]) {
+      if (msg.t !== "rpc.req" || answered.has(msg.id)) continue;
+      answered.add(msg.id);
+      await receive("host-peer", { t: "rpc.res", id: msg.id, ...reply(msg) });
+    }
+    await new Promise((r) => setTimeout(r, 1));
+  }
+  return out;
+}
+
+const yes = (req: Msg) => ({ ok: true, result: req.method === "search.applied" ? true : null });
+
+test("a guest's Replace in a doc it has open is on its undo stack, and undo reaches the host", async () => {
+  searchFs({});
+  const { pull } = await guestWithDoc("a.txt", "old text\n");
+  const tabId = app.tabs.find((x) => x.path === "collab:a.txt")!.id;
+  const report = await serving(replaceInFiles(query("old") as never, "new", [{ file: "collab:a.txt", version: ver("old text\n") }]), yes);
+  expect(report).toMatchObject({ replaced: 1, changed: 1, errors: [] });
+  expect(pull()).toBe("new text\n");
+  runAction(tabId, "collab.undo");
+  expect(pull()).toBe("old text\n");
+  runAction(tabId, "collab.redo");
+  expect(pull()).toBe("new text\n");
+});
+
+test("a guest's Replace the host never confirms is reported, not counted as done", async () => {
+  searchFs({});
+  await guestWithDoc("a.txt", "old\n");
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    let report: Awaited<ReturnType<typeof replaceInFiles>> | undefined;
+    const run = replaceInFiles(query("old") as never, "new", [{ file: "collab:a.txt", version: ver("old\n") }]).then((r) => (report = r));
+    const answered = new Set<number>();
+    for (let i = 0; i < 300 && !report; i++) {
+      for (const { msg } of [...sent]) {
+        if (msg.t !== "rpc.req" || answered.has(msg.id)) continue;
+        answered.add(msg.id);
+        await receive("host-peer", { t: "rpc.res", id: msg.id, ok: true, result: msg.method === "search.applied" ? false : null });
+      }
+      await vi.advanceTimersByTimeAsync(20);
+    }
+    await run;
+    expect(report).toMatchObject({ replaced: 0, changed: 0 });
+    expect(report!.errors.map((e) => e.file)).toEqual(["a.txt"]);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("a file the guest changed after the search is refused and reported in its own doc", async () => {
+  searchFs({});
+  const { pull } = await guestWithDoc("a.txt", "old but edited\n");
+  const report = await serving(replaceInFiles(query("old") as never, "new", [{ file: "collab:a.txt", version: ver("old as seen\n") }]), yes);
+  expect(report).toMatchObject({ replaced: 0, changed: 0 });
+  expect(report.errors).toHaveLength(1);
+  expect(pull()).toBe("old but edited\n");
+});
+
+test("the Find preview edits the shared doc without a tab, and lets go of it afterwards", async () => {
+  const { EditorView } = await import("@codemirror/view");
+  searchFs({});
+  Object.assign(collab, { role: "guest" });
+  const onDoc = vi.fn();
+  const stop = share.guestPreviewDoc("p.txt", onDoc);
+  expect(sent.some((s) => s.msg.t === "doc.open" && s.msg.path === "p.txt")).toBe(true);
+  const host = new Y.Doc();
+  host.getText("content").insert(0, "hello\n");
+  await receive("host-peer", { t: "doc.state", path: "p.txt", update: b64(Y.encodeStateAsUpdate(host)) });
+  expect(app.tabs).toEqual([]);
+  const [ext, text] = onDoc.mock.calls[0];
+  expect(text).toBe("hello\n");
+
+  const view = new EditorView({ state: EditorState.create({ doc: text, extensions: ext }) });
+  view.dispatch({ changes: { from: 0, insert: "X" } });
+  for (const { msg } of sent) if (msg.t === "doc.update" && msg.path === "p.txt") Y.applyUpdate(host, unb64(msg.update));
+  expect(host.getText("content").toString()).toBe("Xhello\n");
+  view.destroy();
+
+  stop();
+  expect(sent.some((s) => s.msg.t === "doc.close" && s.msg.path === "p.txt")).toBe(true);
+  expect(share.guestHasDoc("p.txt")).toBe(false);
+});
+
+test("a preview closed before the host answers opens no tab and releases the doc", async () => {
+  searchFs({});
+  Object.assign(collab, { role: "guest" });
+  const stop = share.guestPreviewDoc("late.txt", vi.fn());
+  stop();
+  const host = new Y.Doc();
+  host.getText("content").insert(0, "x");
+  await receive("host-peer", { t: "doc.state", path: "late.txt", update: b64(Y.encodeStateAsUpdate(host)) });
+  expect(app.tabs).toEqual([]);
+  expect(share.guestHasDoc("late.txt")).toBe(false);
+  expect(sent.some((s) => s.msg.t === "doc.close" && s.msg.path === "late.txt")).toBe(true);
+});

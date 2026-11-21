@@ -1,16 +1,18 @@
 <script lang="ts">
   import { onMount, onDestroy, tick } from "svelte";
   import { openDialog } from "../lib/native";
-  import { EditorState } from "@codemirror/state";
+  import { EditorState, type Extension } from "@codemirror/state";
   import { EditorView, lineNumbers, highlightActiveLine, keymap, drawSelection } from "@codemirror/view";
   import { history, historyKeymap, defaultKeymap } from "@codemirror/commands";
   import { syntaxHighlighting } from "@codemirror/language";
   import { find, runSearch, gotoHit, dockResults, replaceInFile, replaceAll, buildRegex, persistOptions, matchSummary, type Hit } from "../lib/search/search.svelte";
   import { matchHighlighter, refreshMatches } from "../lib/search/previewMatches";
   import { previewWriter } from "../lib/search/previewWriter";
+  import { activeRemote } from "../lib/search/remote";
   import { app } from "../lib/state.svelte";
   import { fsApi, basename, normPath } from "../lib/api";
   import * as ed from "../lib/editor";
+  import { runViewAction } from "../lib/editorActions";
   import { detectEol, toDisk, type Eol } from "../lib/eol";
   import { langFor, indentFor } from "../lib/code/languages";
   import { baseTheme, codeHighlight } from "../lib/theme";
@@ -26,7 +28,10 @@
   const writer = previewWriter((f, text) => fsApi.writeFile(f, text).catch(() => {}));
 
   const hit = $derived(find.hits[find.selected] as Hit | undefined);
-  const rel = (f: string) => (app.root && f.startsWith(app.root + "/") ? f.slice(app.root.length + 1) : f);
+  const rel = (f: string) => (f.startsWith("collab:") ? f.slice(7) : app.root && f.startsWith(app.root + "/") ? f.slice(app.root.length + 1) : f);
+  /** A guest in a session: the files are the host's, so the preview only shows them. */
+  const remote = activeRemote();
+  const folderName = (f: string) => (f === "collab:" ? "/" : basename(rel(f)));
 
   tick().then(() => {
     input?.focus();
@@ -38,7 +43,29 @@
   /** Highlights every match of the current query in the preview. */
   const highlighter = matchHighlighter(() => (find.query ? buildRegex() : null));
 
-  function previewState(text: string, file: string) {
+  /** Guest: lets go of the shared doc behind the preview. */
+  let releaseDoc: (() => void) | null = null;
+  function detachDoc() {
+    releaseDoc?.();
+    releaseDoc = null;
+  }
+
+  /** Guest with `edit`: from the first focus on, the preview edits the file's shared doc. */
+  function attachDoc() {
+    if (!remote || !preview || !previewFile || releaseDoc || !remote.canEdit()) return;
+    const file = previewFile;
+    releaseDoc = remote.previewDoc(file, (ext, text) => {
+      if (!preview || previewFile !== file) return;
+      if (!ext) releaseDoc = null;
+      const head = Math.min(preview.state.selection.main.head, (ext ? text : preview.state.doc.toString()).length);
+      const focused = preview.hasFocus;
+      preview.setState(previewState(ext ? text : preview.state.doc.toString(), file, ext ?? undefined));
+      preview.dispatch({ selection: { anchor: head } });
+      if (focused) preview.focus();
+    });
+  }
+
+  function previewState(text: string, file: string, shared?: Extension) {
     const lang = langFor(file);
     return EditorState.create({
       doc: text,
@@ -46,16 +73,20 @@
         lineNumbers(),
         highlightActiveLine(),
         drawSelection(),
-        history(),
-        keymap.of([...defaultKeymap, ...historyKeymap]),
+        // A shared doc has its own undo, the same one its tab uses.
+        shared
+          ? [shared, keymap.of([{ key: "Mod-z", run: (v) => runViewAction(v, "collab.undo") }, { key: "Mod-y", run: (v) => runViewAction(v, "collab.redo") }, { key: "Mod-Shift-z", run: (v) => runViewAction(v, "collab.redo") }, ...defaultKeymap])]
+          : [history(), keymap.of([...defaultKeymap, ...historyKeymap])],
         lang ? lang.ext() : [],
         indentFor(lang),
         syntaxHighlighting(codeHighlight),
         baseTheme,
         highlighter,
         EditorView.editorAttributes.of({ class: "mode-code" }),
+        // Until it's bound to the shared doc. Focus must stay possible for a guest who may edit.
+        remote && !shared ? [EditorState.readOnly.of(true), remote.canEdit() ? [] : EditorView.editable.of(false)] : [],
         EditorView.updateListener.of((u) => {
-          if (!u.docChanged || !previewFile) return;
+          if (!u.docChanged || !previewFile || remote) return;
           // Edits go straight into the file: open tabs get the same changes (undo + autosave),
           // other files are written after a short pause.
           const tab = app.tabs.find((t) => t.path === previewFile);
@@ -76,11 +107,14 @@
       const tab = app.tabs.find((t) => t.path === h.file);
       let text: string;
       try {
-        text = tab ? ed.getText(tab.id) : await fsApi.readFile(h.file);
+        const read = tab ? ed.getText(tab.id) : remote ? await remote.read(h.file) : await fsApi.readFile(h.file);
+        if (read === null) return;
+        text = read;
       } catch {
         return;
       }
       if (hit !== h) return;
+      detachDoc();
       previewFile = h.file;
       previewEol = detectEol(text);
       preview.setState(previewState(text, h.file));
@@ -109,10 +143,13 @@
     preview = new EditorView({ parent: previewHost!, state: EditorState.create({ doc: "" }) });
     // Re-run the search after editing in the preview (positions may have moved).
     preview.contentDOM.addEventListener("blur", () => runSearch(50));
+    // Not only on focus: an element focused while the window isn't active gets no focus event.
+    for (const type of ["focus", "mousedown", "keydown"]) preview.contentDOM.addEventListener(type, attachDoc);
   });
   onDestroy(() => {
     // Only a pending edit is written: an untouched preview must not overwrite a file changed on disk.
     writer.flush();
+    detachDoc();
     preview?.destroy();
   });
 
@@ -130,6 +167,7 @@
   }
 
   async function chooseFolder() {
+    if (remote) return setScope("folder"); // the folder of the active shared file (see openFind)
     const d = await openDialog({ directory: true, defaultPath: find.folder ?? app.root ?? undefined });
     if (typeof d === "string") {
       find.folder = normPath(d);
@@ -225,9 +263,9 @@
       <div class="scopes">
         <button class:on={find.scope === "project"} onclick={() => setScope("project")}>{t("git.search.scopeProject")}</button>
         <button class:on={find.scope === "folder"} onclick={() => (find.folder ? setScope("folder") : chooseFolder())} title={find.folder ?? ""}>
-          {t("git.search.scopeFolder")}{#if find.scope === "folder" && find.folder}: <b>{basename(find.folder)}</b>{/if}
+          {t("git.search.scopeFolder")}{#if find.scope === "folder" && find.folder}: <b>{folderName(find.folder)}</b>{/if}
         </button>
-        {#if find.scope === "folder"}<button class="pick" onclick={chooseFolder} title={t("git.search.chooseFolder")}>…</button>{/if}
+        {#if find.scope === "folder" && !remote}<button class="pick" onclick={chooseFolder} title={t("git.search.chooseFolder")}>…</button>{/if}
         <button class:on={find.scope === "open"} onclick={() => setScope("open")}>{t("git.search.scopeOpen")}</button>
       </div>
     </div>
@@ -236,17 +274,18 @@
       {#each find.hits.slice(0, 1000) as h, i (h.file + ":" + h.line + ":" + i)}
         <button class="hit" class:on={i === find.selected} onclick={() => (find.selected = i)} ondblclick={() => gotoHit(h)} title={rel(h.file)}>
           <span class="text">{#each segments(h) as s, k (k)}<span class:m={s.m}>{s.t}</span>{/each}</span>
-          <span class="loc">{basename(h.file)} <b>{h.line}</b></span>
+          <span class="loc">{basename(rel(h.file))} <b>{h.line}</b></span>
         </button>
       {:else}
         <p class="empty">{find.query ? (find.running ? t("git.search.searching") : t("common.noResults")) : t("git.search.enterQuery")}</p>
       {/each}
+      {#if remote && find.truncated}<p class="empty">{t("git.search.limited")}</p>{/if}
     </div>
 
     <div class="preview-head">
       {#if hit}
         <span class="pfile">{rel(hit.file)}</span>
-        <span class="phint">{t("git.search.previewHint")}</span>
+        <span class="phint">{remote && !remote.canEdit() ? t("git.search.guestPreviewHint") : t("git.search.previewHint")}</span>
       {/if}
     </div>
     <div class="preview" bind:this={previewHost}></div>

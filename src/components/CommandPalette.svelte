@@ -10,6 +10,7 @@
   import { joinPath, basename } from "../lib/api";
   import { allClients, workspaceSymbols } from "../lib/code/lsp.svelte";
   import { openFind, find, nextSearchId } from "../lib/search/search.svelte";
+  import { activeRemote } from "../lib/search/remote";
   import * as ed from "../lib/editor";
   import { t, type Key } from "../lib/i18n/index.svelte";
 
@@ -30,7 +31,17 @@
   let textHits = $state<Item[]>([]);
 
   tick().then(() => input?.focus());
-  if (app.root) invoke<string[]>("list_files", { root: app.root }).then((f) => (files = f));
+  /** A guest in a session searches the host's project. */
+  const remote = activeRemote();
+  let limited = $state(false);
+  const listRun = new AbortController();
+  if (remote) {
+    remote.listFiles(listRun.signal).then((r) => {
+      if (!r.ok) return;
+      files = r.value.files;
+      limited = r.value.truncated;
+    });
+  } else if (app.root) invoke<string[]>("list_files", { root: app.root }).then((f) => (files = f));
 
   interface Item {
     kind: "file" | "cmd" | "symbol" | "text";
@@ -56,7 +67,7 @@
     if (!term) {
       // Empty query: recent files first, like PyCharm.
       return recent
-        .filter((p) => !app.root || p.startsWith(app.root))
+        .filter((p) => (remote ? p.startsWith("collab:") : !app.root || p.startsWith(app.root)))
         .slice(0, 20)
         .map((p, i) => ({ kind: "file" as const, key: "r" + p, label: basename(p), detail: rel(p), positions: [], score: 100 - i, path: p }));
     }
@@ -65,7 +76,7 @@
       .map((f) => {
         const m = fuzzy(term, f);
         if (!m) return null;
-        const path = joinPath(app.root!, f);
+        const path = remote ? `collab:${f}` : joinPath(app.root!, f);
         const name = basename(f);
         const off = f.length - name.length;
         return {
@@ -123,13 +134,27 @@
       textHits = [...textHits, ...e.payload.hits.map((h) => ({ kind: "text" as const, key: `${h.file}:${h.line}`, label: h.text.trim(), detail: `${basename(h.file)}:${h.line}`, positions: [], score: 0, path: h.file, line: h.line, col: (h.ranges[0]?.[0] ?? 0) + 1 }))].slice(0, 100);
     }),
   ];
-  onDestroy(() => unlisten.forEach((p) => p.then((f) => f())));
+  let textRun: AbortController | null = null;
+  onDestroy(() => {
+    unlisten.forEach((p) => p.then((f) => f()));
+    listRun.abort();
+    textRun?.abort();
+  });
   let textTimer: number | undefined;
   function loadText(q: string) {
     clearTimeout(textTimer);
+    textRun?.abort();
     textHits = [];
-    if (q.length < 2 || !app.root) return;
+    if (q.length < 2 || (!remote && !app.root)) return;
     textTimer = window.setTimeout(async () => {
+      if (remote) {
+        const run = (textRun = new AbortController());
+        const r = await remote.text({ query: q, caseSensitive: false, wholeWord: false, regex: false, mask: "", folder: "", maxResults: 100 }, run.signal);
+        if (run.signal.aborted || !r.ok) return;
+        limited = r.value.truncated;
+        textHits = r.value.hits.map((h) => ({ kind: "text" as const, key: `${h.file}:${h.line}`, label: h.text.trim(), detail: `${basename(h.file.slice("collab:".length))}:${h.line}`, positions: [], score: 0, path: h.file, line: h.line, col: (h.ranges[0]?.[0] ?? 0) + 1 }));
+        return;
+      }
       textId = nextSearchId();
       await invoke<number>("search_text", { id: textId, root: app.root, opts: { query: q, caseSensitive: false, wholeWord: false, regex: false, mask: "", files: [], maxResults: 100 } });
     }, 150);
@@ -170,6 +195,10 @@
     if (!it) return;
     palette.open = false;
     if (it.kind === "cmd") return runCommand(it.cmd!);
+    if (remote && it.path?.startsWith("collab:") && it.line) {
+      const col = (it.col ?? 1) - 1;
+      return remote.reveal(it.path, it.line, [col, col]);
+    }
     await openFile(it.path!);
     const v = ed.getView();
     if (v && it.line) {
@@ -231,11 +260,12 @@
         {/each}
       {:else}
         <p class="empty">
-          {#if !app.root && (palette.tab === "files" || palette.tab === "text")}{t("commands.palette.openFolderFirst")}
+          {#if !remote && !app.root && (palette.tab === "files" || palette.tab === "text")}{t("commands.palette.openFolderFirst")}
           {:else if palette.tab === "symbols" && !allClients().length}{t("commands.palette.symbolsNeedLsp")}
           {:else if query}{t("common.noResults")}{:else}{t("commands.palette.typeToSearch")}{/if}
         </p>
       {/each}
+      {#if remote && limited}<p class="empty">{t("commands.palette.limited")}</p>{/if}
     </div>
   </div>
 </div>
