@@ -8,7 +8,7 @@ import { suggestPythonAdd, suggestPythonRemove, pythonRemoveArg, suggestNodeAdd,
 import { validScriptName } from "./packageInput";
 import { duneTarget, findDuneExecutables, pickExecutable } from "./dune";
 import { ocamlShellPrefix } from "./ocamlTools";
-import { isMojoFile, mojoCompiles, mojoEntry, mojoStem, pixiUsesMojo } from "./mojo";
+import { isMojoFile, mojoCompiles, mojoEntry, mojoStem, pixiMojoLauncher, pixiUsesMojo } from "./mojo";
 import { t, i18n, type Key } from "../i18n/index.svelte";
 
 export type ProjectKind = "cargo" | "uv" | "pnpm" | "cmake" | "gradle" | "sbt" | "scala-cli" | "dune" | "mojo" | "file";
@@ -417,8 +417,9 @@ export async function detectProject(file: string | null, workspace: string | nul
     // A project with a pixi manifest pins its own Mojo; without pixi, Omega's or the system's runs it.
     const manifest = (await fsApi.exists(joinPath(p.root, "pixi.toml"))) || (await fsApi.exists(joinPath(p.root, "mojoproject.toml")));
     // Where Mojo can't run, pixi can't fetch it either: `needs` then leads to the hint instead.
-    const pixi = manifest && (await mojoInstallable()) && !!(await which("pixi"));
-    const mojo = pixi ? "pixi run mojo" : "mojo";
+    const launcher = manifest && (await mojoInstallable()) && (await which("pixi")) ? await pixiMojoLauncher() : null;
+    const pixi = !!launcher;
+    const mojo = launcher ? `sh ${q(launcher)}` : "mojo";
     const entry = await mojoEntry(file, p.root);
     const relEntry = entry && rel(entry, p.root);
     const target = relEntry && q(relEntry.startsWith("-") ? `./${relEntry}` : relEntry);

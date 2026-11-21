@@ -1,5 +1,7 @@
 /** What Omega needs to know about Mojo files and projects. */
+import { invoke } from "@tauri-apps/api/core";
 import { basename, fsApi, joinPath } from "../api";
+import pixiLauncher from "./pixi-mojo.sh?raw";
 
 export const isMojoFile = (path: string) => /\.(?:mojo|🔥)$/iu.test(path);
 
@@ -24,6 +26,20 @@ export function pixiUsesMojo(toml: string, pyproject = false): boolean {
     } else if (inDeps && MOJO_PACKAGE.test(line)) return true;
   }
   return false;
+}
+
+/**
+ * The launcher for `mojo` in a pixi project (see pixi-mojo.sh), kept up to date in Omega's tools
+ * folder. Null if it can't be written: a project must not fall back to a plain `pixi run`.
+ */
+export async function pixiMojoLauncher(): Promise<string | null> {
+  try {
+    const path = `${await invoke<string>("tools_dir")}/pixi-mojo.sh`;
+    if ((await fsApi.readFile(path).catch(() => "")) !== pixiLauncher) await fsApi.writeFile(path, pixiLauncher);
+    return path;
+  } catch {
+    return null;
+  }
 }
 
 /** The file Run and Build use: the open Mojo file, else the project's usual entry point. */
