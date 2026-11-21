@@ -4,13 +4,71 @@ use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize}
 use serde::Serialize;
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager};
+
+/// What runs in a PTY. Guest input is only ever accepted for the matching kind.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum PtyKind {
+    /// The host's own interactive shell.
+    Shell,
+    /// One command (Build/Run): the terminal ends with it.
+    Command,
+    /// An interactive shell the host granted to a Code Together guest.
+    GuestShell,
+}
+
+/// Input not yet taken by the program, per PTY, that guests may queue. A program that stops
+/// reading must not hold up anything else.
+const GUEST_QUEUE_BYTES: usize = 64 * 1024;
+
+/// Writes to a PTY on its own thread: a full PTY buffer blocks there, not the caller.
+struct WriteQueue {
+    tx: mpsc::Sender<Vec<u8>>,
+    queued: Arc<AtomicUsize>,
+}
+
+impl WriteQueue {
+    fn new(mut writer: Box<dyn Write + Send>) -> Self {
+        let (tx, rx) = mpsc::channel::<Vec<u8>>();
+        let queued = Arc::new(AtomicUsize::new(0));
+        let left = queued.clone();
+        std::thread::spawn(move || {
+            while let Ok(bytes) = rx.recv() {
+                let done = writer.write_all(&bytes).and_then(|_| writer.flush());
+                left.fetch_sub(bytes.len(), Ordering::SeqCst);
+                if done.is_err() {
+                    break;
+                }
+            }
+        });
+        Self { tx, queued }
+    }
+
+    fn push(&self, bytes: Vec<u8>) -> Result<(), String> {
+        let n = bytes.len();
+        self.queued.fetch_add(n, Ordering::SeqCst);
+        self.tx.send(bytes).map_err(|_| {
+            self.queued.fetch_sub(n, Ordering::SeqCst);
+            "terminal does not exist".to_string()
+        })
+    }
+
+    /// Like `push`, refused while more than `limit` bytes would be waiting.
+    fn push_limited(&self, bytes: Vec<u8>, limit: usize) -> Result<(), String> {
+        if self.queued.load(Ordering::SeqCst) + bytes.len() > limit {
+            return Err("pty:busy".into());
+        }
+        self.push(bytes)
+    }
+}
 
 struct Session {
     master: Box<dyn MasterPty + Send>,
-    writer: Box<dyn Write + Send>,
+    writes: WriteQueue,
     child: Box<dyn Child + Send + Sync>,
+    kind: PtyKind,
 }
 
 #[derive(Default)]
@@ -163,6 +221,9 @@ fn single_command(id: &str, command: &str) -> Result<CommandBuilder, String> {
     Ok(c)
 }
 
+/// Variables through which a terminal reaches this Omega (control MCP, IDE server).
+const OMEGA_ACCESS_ENV: [&str; 4] = ["OMEGA_MCP_TOKEN", "CLAUDE_CODE_SSE_PORT", "ENABLE_IDE_INTEGRATION", "FORCE_CODE_TERMINAL"];
+
 /// Shell prompts run git by themselves in whatever folder the terminal is in.
 fn apply_git_guard(cmd: &mut CommandBuilder) {
     for (k, v) in crate::env::git_guard_env() {
@@ -180,8 +241,14 @@ pub fn pty_spawn(app: AppHandle, id: String, cwd: Option<String>, cols: u16, row
 
     let home = crate::env::home().display().to_string();
     let dir = cwd.filter(|d| std::path::Path::new(d).is_dir()).unwrap_or(home);
+    let pty_kind = match (&command, kind.as_deref()) {
+        (Some(_), _) => PtyKind::Command,
+        (None, Some("guest-shell")) => PtyKind::GuestShell,
+        _ => PtyKind::Shell,
+    };
     let mut cmd = match command.as_deref() {
         Some(c) => single_command(&id, c)?,
+        None if pty_kind == PtyKind::GuestShell => shell_command(false, None, &dir),
         None => shell_command(kind.as_deref() == Some("run"), shell.as_deref(), &dir),
     };
     cmd.cwd(&dir);
@@ -198,8 +265,8 @@ pub fn pty_spawn(app: AppHandle, id: String, cwd: Option<String>, cols: u16, row
     cmd.env("COLORTERM", "truecolor");
     cmd.env("TERM_PROGRAM", "Omega");
     // Claude Code started in this terminal connects to our IDE server automatically.
-    let ide_port = crate::ide_ws::PORT.load(std::sync::atomic::Ordering::SeqCst);
-    if ide_port != 0 {
+    let ide_port = crate::ide_ws::PORT.load(Ordering::SeqCst);
+    if ide_port != 0 && pty_kind != PtyKind::GuestShell {
         cmd.env("CLAUDE_CODE_SSE_PORT", ide_port.to_string());
         cmd.env("ENABLE_IDE_INTEGRATION", "true");
         cmd.env("FORCE_CODE_TERMINAL", "true");
@@ -208,7 +275,12 @@ pub fn pty_spawn(app: AppHandle, id: String, cwd: Option<String>, cols: u16, row
         cmd.env("no_proxy", &no_proxy);
     }
 
-    if let Some(t) = crate::mcp_control::TOKEN.lock().unwrap().clone() {
+    if pty_kind == PtyKind::GuestShell {
+        // Omega hands a guest none of its own access to the editor.
+        for k in OMEGA_ACCESS_ENV {
+            cmd.env_remove(k);
+        }
+    } else if let Some(t) = crate::mcp_control::TOKEN.lock().unwrap().clone() {
         cmd.env("OMEGA_MCP_TOKEN", t);
     }
     if cfg!(windows) {
@@ -226,7 +298,7 @@ pub fn pty_spawn(app: AppHandle, id: String, cwd: Option<String>, cols: u16, row
         .sessions
         .lock()
         .unwrap()
-        .insert(id.clone(), Session { master: pair.master, writer, child });
+        .insert(id.clone(), Session { master: pair.master, writes: WriteQueue::new(writer), child, kind: pty_kind });
 
     let app2 = app.clone();
     std::thread::spawn(move || {
@@ -253,8 +325,72 @@ pub fn pty_write(app: AppHandle, id: String, data: String) -> Result<(), String>
     let state = app.state::<PtyState>();
     let mut sessions = state.sessions.lock().unwrap();
     let s = sessions.get_mut(&id).ok_or("terminal does not exist")?;
-    s.writer.write_all(data.as_bytes()).map_err(|e| e.to_string())?;
-    s.writer.flush().map_err(|e| e.to_string())
+    s.writes.push(data.into_bytes())
+}
+
+/// Whether these process arguments are a shell waiting for commands: a shell without `-c` or a
+/// script to run, or one started with `-i`.
+fn is_interactive_shell(args: &[String]) -> bool {
+    let Some(name) = args.first().map(|a| a.rsplit(['/', '\\']).next().unwrap_or(a).trim_start_matches('-').trim_end_matches(".exe").to_ascii_lowercase()) else { return true };
+    if !["sh", "bash", "zsh", "dash", "ksh", "mksh", "fish", "csh", "tcsh", "nu", "elvish", "xonsh", "pwsh", "powershell", "cmd"].contains(&name.as_str()) {
+        return false;
+    }
+    for a in &args[1..] {
+        if a.starts_with("--") {
+            continue;
+        }
+        let Some(flags) = a.strip_prefix('-') else { return false }; // a script
+        if flags.contains('i') {
+            return true;
+        }
+        if flags.contains('c') {
+            return false;
+        }
+    }
+    true
+}
+
+#[cfg(target_os = "linux")]
+fn process_args(pid: i32) -> Option<Vec<String>> {
+    let raw = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+    let args: Vec<String> = raw.split(|b| *b == 0).filter(|a| !a.is_empty()).map(|a| String::from_utf8_lossy(a).into_owned()).collect();
+    (!args.is_empty()).then_some(args)
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn process_args(pid: i32) -> Option<Vec<String>> {
+    let out = std::process::Command::new("/bin/ps").args(["-ww", "-o", "args=", "-p", &pid.to_string()]).output().ok()?;
+    let args: Vec<String> = String::from_utf8_lossy(&out.stdout).split_whitespace().map(String::from).collect();
+    (out.status.success() && !args.is_empty()).then_some(args)
+}
+
+/// A login profile can start an interactive shell inside a Build/Run PTY (`exec fish`). Unknown
+/// counts as a shell. Windows runs `cmd /D /C`, which skips AutoRun and ends with the batch file.
+#[cfg(unix)]
+fn shell_in_foreground(s: &Session) -> bool {
+    s.master.process_group_leader().and_then(process_args).is_none_or(|a| is_interactive_shell(&a))
+}
+#[cfg(not(unix))]
+fn shell_in_foreground(_: &Session) -> bool {
+    false
+}
+
+/// Input from a Code Together guest. `target` says what the host means to reach: "task" only
+/// lands in a live Build/Run command, "shell" only in a shell granted to a guest. Never blocks.
+#[tauri::command(async)]
+pub fn pty_write_guest(app: AppHandle, id: String, data: String, target: String) -> Result<(), String> {
+    let state = app.state::<PtyState>();
+    let mut sessions = state.sessions.lock().unwrap();
+    let s = sessions.get_mut(&id).ok_or("pty:ended")?;
+    let accepted = match target.as_str() {
+        "task" => s.kind == PtyKind::Command && matches!(s.child.try_wait(), Ok(None)) && !shell_in_foreground(s),
+        "shell" => s.kind == PtyKind::GuestShell,
+        _ => false,
+    };
+    if !accepted {
+        return Err("pty:ended".into());
+    }
+    s.writes.push_limited(data.into_bytes(), GUEST_QUEUE_BYTES)
 }
 
 #[tauri::command]
@@ -277,21 +413,165 @@ pub fn shell_pids(app: &AppHandle) -> Vec<u32> {
 #[tauri::command]
 pub fn pty_kill_all(app: AppHandle) {
     let sessions: Vec<Session> = app.state::<PtyState>().sessions.lock().unwrap().drain().map(|(_, s)| s).collect();
-    for mut s in sessions {
-        let _ = s.child.kill();
+    for s in sessions {
+        end_session(s);
     }
+}
+
+/// Process ids in the terminal session led by `sid`, background jobs and `nohup` included.
+#[cfg(target_os = "linux")]
+fn session_members(sid: i32) -> Vec<i32> {
+    let Ok(dir) = std::fs::read_dir("/proc") else { return vec![] };
+    dir.flatten()
+        .filter_map(|e| e.file_name().to_str()?.parse::<i32>().ok())
+        .filter(|pid| {
+            let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else { return false };
+            // After the name in parentheses: state, ppid, pgrp, session.
+            stat.rsplit_once(')').and_then(|(_, rest)| rest.split_whitespace().nth(3)?.parse::<i32>().ok()) == Some(sid)
+        })
+        .collect()
+}
+#[cfg(all(unix, not(target_os = "linux")))]
+fn session_members(_: i32) -> Vec<i32> {
+    vec![]
+}
+
+/// Kills what runs in a guest's shell at once. Only a process that left the terminal session
+/// (`setsid`) gets away; outside Linux, so does a background job that ignores the hangup.
+#[cfg(unix)]
+fn kill_guest_processes(s: &mut Session) {
+    let Some(pid) = s.child.process_id().map(|p| p as i32).filter(|p| *p > 1) else { return };
+    let foreground = s.master.process_group_leader().filter(|p| *p > 1);
+    // A finished shell's id can be reused, so its group is only signalled while it's alive.
+    let alive = matches!(s.child.try_wait(), Ok(None));
+    unsafe {
+        if alive {
+            libc::killpg(pid, libc::SIGKILL);
+        }
+        if let Some(group) = foreground {
+            libc::killpg(group, libc::SIGKILL);
+        }
+    }
+    // Repeated for what forked while the first pass ran.
+    for _ in 0..3 {
+        let left = session_members(pid);
+        if left.is_empty() {
+            break;
+        }
+        for p in left {
+            unsafe { libc::kill(p, libc::SIGKILL) };
+        }
+    }
+}
+#[cfg(not(unix))]
+fn kill_guest_processes(_: &mut Session) {}
+
+fn end_session(mut s: Session) {
+    if s.kind == PtyKind::GuestShell {
+        kill_guest_processes(&mut s);
+    }
+    let _ = s.child.kill();
 }
 
 #[tauri::command]
 pub fn pty_kill(app: AppHandle, id: String) {
-    if let Some(mut s) = app.state::<PtyState>().sessions.lock().unwrap().remove(&id) {
-        let _ = s.child.kill();
+    let session = app.state::<PtyState>().sessions.lock().unwrap().remove(&id);
+    if let Some(s) = session {
+        end_session(s);
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_git_guard, CommandBuilder};
+    use super::*;
+
+    fn args(a: &[&str]) -> Vec<String> {
+        a.iter().map(|x| x.to_string()).collect()
+    }
+
+    #[test]
+    fn tells_a_waiting_shell_from_a_program_or_script() {
+        for a in [&["bash"][..], &["-zsh"], &["/usr/bin/fish", "-l"], &["bash", "-i", "x.sh"], &["sh", "-s"], &["bash", "--login"]] {
+            assert!(is_interactive_shell(&args(a)), "{a:?}");
+        }
+        for a in [&["python3", "main.py"][..], &["bash", "run.sh"], &["bash", "-l", "-c", "python3 x.py"], &["sh", "-lc", "make"], &["node"]] {
+            assert!(!is_interactive_shell(&args(a)), "{a:?}");
+        }
+        assert!(is_interactive_shell(&[]), "unknown counts as a shell");
+    }
+
+    /// Blocks in `write` until released, like a PTY whose program stopped reading.
+    struct Stuck(Arc<Mutex<()>>);
+    impl Write for Stuck {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            drop(self.0.lock().unwrap());
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn guest_input_is_bounded_and_never_blocks_the_caller() {
+        let gate = Arc::new(Mutex::new(()));
+        let held = gate.lock().unwrap();
+        let q = WriteQueue::new(Box::new(Stuck(gate.clone())));
+        q.push_limited(vec![0; 60], 100).unwrap();
+        q.push_limited(vec![0; 40], 100).unwrap();
+        assert_eq!(q.push_limited(vec![0; 1], 100).unwrap_err(), "pty:busy");
+        drop(held);
+        for _ in 0..200 {
+            if q.queued.load(Ordering::SeqCst) == 0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        q.push_limited(vec![0; 100], 100).unwrap();
+    }
+
+    #[cfg(unix)]
+    fn session(kind: PtyKind, script: &str) -> Session {
+        let pair = native_pty_system().openpty(PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 }).unwrap();
+        let mut c = CommandBuilder::new("/bin/sh");
+        c.args(["-c", script]);
+        let child = pair.slave.spawn_command(c).unwrap();
+        drop(pair.slave);
+        let writer = pair.master.take_writer().unwrap();
+        Session { master: pair.master, writes: WriteQueue::new(writer), child, kind }
+    }
+
+    #[cfg(unix)]
+    fn wait_until(mut f: impl FnMut() -> bool) -> bool {
+        (0..400).any(|_| {
+            let ok = f();
+            if !ok {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            ok
+        })
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn ending_a_guest_shell_kills_jobs_that_ignore_the_hangup() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("pid");
+        let s = session(PtyKind::GuestShell, &format!("trap '' HUP; sleep 300 & echo $! > {}.tmp; mv {0}.tmp {0}; wait", file.display()));
+        assert!(wait_until(|| file.exists()));
+        let job: i32 = std::fs::read_to_string(&file).unwrap().trim().parse().unwrap();
+        assert_eq!(unsafe { libc::kill(job, 0) }, 0);
+        end_session(s);
+        let gone = |p: i32| std::fs::read_to_string(format!("/proc/{p}/stat")).map_or(true, |st| st.rsplit_once(')').is_some_and(|(_, r)| r.trim_start().starts_with('Z')));
+        assert!(wait_until(|| gone(job)), "the job survived");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_finished_command_leaves_no_shell_behind() {
+        let mut s = session(PtyKind::Command, "exit 0");
+        assert!(wait_until(|| matches!(s.child.try_wait(), Ok(Some(_)))));
+    }
 
     #[test]
     fn terminals_get_the_git_guard_without_inherited_parameters() {
