@@ -1,4 +1,5 @@
 /** Glue between the UI and projects.ts: current project, running actions, new-project flow. */
+import { invoke } from "@tauri-apps/api/core";
 import { detectProject, type Action, type Project, TEMPLATES } from "./projects";
 import { versionSettings, type VersionSetting } from "./versions";
 import { runCommand, runTask, cancelTask, interruptRun } from "../terminal.svelte";
@@ -194,6 +195,8 @@ export async function createProject(templateId: string, parent: string, name: st
     refreshProject();
     return;
   }
+  // Templates run `git init` (cargo new does it by itself): not inside a bare repository.
+  if (await invoke<boolean>("git_in_bare_repo", { path: dir }).catch(() => false)) return ui.toast(t("git.initBareRepo"), "error");
   const needs = typeof tpl.needs === "function" ? await tpl.needs() : tpl.needs;
   if (!(await ensureTools(needs, t("tools.purpose.create")))) return;
   const plan = await tpl.create(name);

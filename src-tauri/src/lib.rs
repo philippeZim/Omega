@@ -75,6 +75,7 @@ pub fn run() {
             search::search_files,
             git::git,
             git::git_status,
+            git::git_in_bare_repo,
             git::git_head_file,
             git::git_blame,
             collab::collab_host,

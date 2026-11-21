@@ -1,5 +1,7 @@
 //! Thin git wrapper: runs the git CLI (uses the user's own config, SSH keys and credential helper).
 use serde::Serialize;
+use std::io::Read;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 #[derive(Serialize)]
@@ -22,10 +24,97 @@ fn git_cmd(root: &str) -> Command {
     c
 }
 
-/// Runs `git <args>` in `root`.
+/// `stderr` of a refused `git init`; the frontend shows its own translated text for it.
+const INIT_IN_BARE: &str = "omega:init_in_bare_repository";
+
+/// Whether `path` holds a valid HEAD as git understands it. Only reads the file, and only if it is
+/// a regular one (a FIFO would block).
+fn valid_head(path: &Path) -> bool {
+    let Ok(meta) = path.symlink_metadata() else { return false };
+    if meta.file_type().is_symlink() {
+        return std::fs::read_link(path).is_ok_and(|target| target.starts_with("refs/"));
+    }
+    if !meta.is_file() {
+        return false;
+    }
+    let mut bytes = Vec::new();
+    let Ok(file) = std::fs::File::open(path) else { return false };
+    if file.take(128).read_to_end(&mut bytes).is_err() {
+        return false;
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    let text = text.trim_end();
+    text.strip_prefix("ref:").is_some_and(|r| r.trim_start().starts_with("refs/")) || (matches!(text.len(), 40 | 64) && text.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+/// Whether a folder has the layout of a bare repository. Purely structural: its `config` is never
+/// read and git isn't asked, because a planted config can run commands.
+fn looks_bare(dir: &Path) -> bool {
+    valid_head(&dir.join("HEAD")) && dir.join("objects").is_dir() && dir.join("refs").is_dir()
+}
+
+/// Whether `path` (which may not exist yet) is a bare repository or inside one. A `.git` on the way
+/// up means a normal repository owns that folder.
+fn inside_bare_repo(path: &Path) -> bool {
+    let real = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    for dir in real.ancestors() {
+        if dir.join(".git").symlink_metadata().is_ok() {
+            return false;
+        }
+        if looks_bare(dir) {
+            return true;
+        }
+    }
+    false
+}
+
+/// The folders a `git <args>` run in `root` would initialize; empty if it isn't `git init`. Every
+/// plain argument after `init` counts, so an option's value can only make the check stricter.
+fn init_targets(root: &str, args: &[String]) -> Vec<PathBuf> {
+    let mut cwd = PathBuf::from(root);
+    let mut named = Vec::new();
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "-C" => {
+                if let Some(dir) = it.next() {
+                    cwd = cwd.join(dir);
+                }
+            }
+            "--git-dir" | "--work-tree" => named.extend(it.next().cloned()),
+            "-c" | "--namespace" | "--config-env" | "--attr-source" => {
+                it.next();
+            }
+            "init" => {
+                named.extend(it.filter(|a| !a.starts_with('-')).cloned());
+                let mut targets = vec![cwd.clone()];
+                targets.extend(named.iter().map(|dir| cwd.join(dir)));
+                return targets;
+            }
+            other if other.starts_with("--git-dir=") || other.starts_with("--work-tree=") => {
+                named.extend(other.split_once('=').map(|(_, dir)| dir.to_string()));
+            }
+            other if other.starts_with('-') => {}
+            _ => return Vec::new(),
+        }
+    }
+    Vec::new()
+}
+
+/// Whether a new project at `path` would end up inside a bare repository (see `inside_bare_repo`).
+#[tauri::command]
+pub fn git_in_bare_repo(path: String) -> bool {
+    inside_bare_repo(Path::new(&path))
+}
+
+/// Runs `git <args>` in `root`. `git init` is refused in a bare repository: it would put a nested
+/// `.git` into it, because `safe.bareRepository=explicit` makes git not see the repository.
 #[tauri::command]
 pub async fn git(root: String, args: Vec<String>) -> Result<GitOut, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        if init_targets(&root, &args).iter().any(|dir| inside_bare_repo(dir)) {
+            return Ok(GitOut { code: 128, stdout: String::new(), stderr: INIT_IN_BARE.into() });
+        }
         let out = git_cmd(&root).args(&args).output().map_err(|e| format!("git: {e}"))?;
         Ok(GitOut {
             code: out.status.code().unwrap_or(-1),
@@ -377,6 +466,109 @@ mod tests {
         assert!(log.stderr.starts_with("fatal:"), "{}", log.stderr);
         // Explicitly addressing it still works.
         run_git(&tmp, &["--git-dir=bare.git", "log", "-1"]);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    fn init_via_omega(root: &std::path::Path, args: &[&str]) -> GitOut {
+        let args = args.iter().map(|a| a.to_string()).collect();
+        tauri::async_runtime::block_on(git(root.to_string_lossy().into(), args)).unwrap()
+    }
+
+    fn plant_bare(dir: &std::path::Path, marker: &std::path::Path) {
+        std::fs::create_dir_all(dir.join("objects")).unwrap();
+        std::fs::create_dir_all(dir.join("refs")).unwrap();
+        std::fs::write(dir.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::write(dir.join("config"), format!("[core]\n\tbare = false\n\tworktree = .\n\tfsmonitor = \"touch {}; false\"\n", marker.display())).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn init_is_refused_in_a_bare_repository() {
+        let tmp = scratch("init-bare");
+        let (planted, marker) = (tmp.join("planted"), tmp.join("EXECUTED"));
+        plant_bare(&planted, &marker);
+        std::fs::create_dir_all(planted.join("sub")).unwrap();
+        new_repo(&tmp.join("src"));
+        run_git(&tmp, &["clone", "-q", "--bare", "src", "real.git"]);
+        std::os::unix::fs::symlink(&planted, tmp.join("link")).unwrap();
+
+        let refused: [(std::path::PathBuf, &[&str]); 9] = [
+            (planted.clone(), &["init", "-q"]),
+            (tmp.join("real.git"), &["init", "-q"]),
+            (tmp.join("link"), &["init"]),
+            (planted.join("sub"), &["init"]),
+            (tmp.clone(), &["-C", "planted", "init"]),
+            (tmp.clone(), &["-c", "a.b=c", "-C", "planted", "init", "-q"]),
+            (tmp.clone(), &["init", "-q", "planted"]),
+            (tmp.clone(), &["--git-dir=planted", "init"]),
+            (tmp.clone(), &["--git-dir", "planted", "init"]),
+        ];
+        for (root, args) in &refused {
+            let out = init_via_omega(root, args);
+            assert_eq!((out.code, out.stderr.as_str()), (128, INIT_IN_BARE), "{root:?} {args:?}");
+        }
+        for dir in [&planted, &planted.join("sub"), &tmp.join("real.git")] {
+            assert!(!dir.join(".git").exists(), "{dir:?}");
+        }
+        assert!(!marker.exists(), "the planted core.fsmonitor ran");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn init_still_works_in_ordinary_folders() {
+        let tmp = scratch("init-ok");
+        let ok = |name: &str, setup: &dyn Fn(&std::path::Path)| {
+            let dir = tmp.join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            setup(&dir);
+            let out = init_via_omega(&dir, &["init", "-q"]);
+            assert_eq!(out.code, 0, "{name}: {}", out.stderr);
+            assert!(dir.join(".git").is_dir(), "{name}");
+            assert!(status_of(&dir).repo, "{name}");
+        };
+        ok("empty", &|_| {});
+        ok("head-file", &|d| std::fs::write(d.join("HEAD"), "ref: refs/heads/main\n").unwrap());
+        ok("head-and-objects", &|d| {
+            std::fs::write(d.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+            std::fs::create_dir(d.join("objects")).unwrap();
+        });
+        ok("not-a-head", &|d| {
+            std::fs::write(d.join("HEAD"), "release notes for the next version\n").unwrap();
+            std::fs::create_dir(d.join("objects")).unwrap();
+            std::fs::create_dir(d.join("refs")).unwrap();
+        });
+        ok("head-folder", &|d| {
+            std::fs::create_dir(d.join("HEAD")).unwrap();
+            std::fs::create_dir(d.join("objects")).unwrap();
+            std::fs::create_dir(d.join("refs")).unwrap();
+        });
+        // Initializing again and a repository that lives below a bare-looking folder stay possible.
+        new_repo(&tmp.join("existing"));
+        assert_eq!(init_via_omega(&tmp.join("existing"), &["init", "-q"]).code, 0);
+        let outer = tmp.join("outer");
+        plant_bare(&outer, &tmp.join("EXECUTED"));
+        new_repo(&outer.join("inner"));
+        assert_eq!(init_via_omega(&outer.join("inner"), &["init", "-q"]).code, 0);
+        assert!(!tmp.join("EXECUTED").exists());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn only_git_init_is_checked() {
+        let args = |a: &[&str]| a.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        assert!(init_targets("/r", &args(&["status"])).is_empty());
+        assert!(init_targets("/r", &args(&["commit", "-m", "init"])).is_empty());
+        assert!(init_targets("/r", &args(&["-c", "init", "log"])).is_empty());
+        assert_eq!(init_targets("/r", &args(&["-C", "a", "init", "-q", "b"])), [PathBuf::from("/r/a"), PathBuf::from("/r/a/b")]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn new_projects_inside_a_bare_repository_are_detected() {
+        let tmp = scratch("init-new");
+        plant_bare(&tmp.join("planted"), &tmp.join("EXECUTED"));
+        assert!(git_in_bare_repo(tmp.join("planted/new-project").to_string_lossy().into()));
+        assert!(!git_in_bare_repo(tmp.join("new-project").to_string_lossy().into()));
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

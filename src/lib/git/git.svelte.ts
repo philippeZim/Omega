@@ -400,11 +400,17 @@ export async function newBranch() {
 
 // ------------------------------------------------------------------ init / clone / publish
 
-export async function initRepo() {
-  if (!app.root) return;
-  if (!(await ensureTools(["git"], t("tools.purpose.git")))) return;
-  if (await runOk(["init", "-q"], "git.op.init")) ui.toast(t("git.repoCreated"));
+/** Creates a repository in the project folder; false if there is none afterwards. */
+export async function initRepo(): Promise<boolean> {
+  if (!app.root) return false;
+  if (!(await ensureTools(["git"], t("tools.purpose.git")))) return false;
+  const r = await run(["init", "-q"]);
+  if (r.code === 0) ui.toast(t("git.repoCreated"));
+  // The backend refuses this one: a nested .git would land inside the bare repository.
+  else if (r.stderr === "omega:init_in_bare_repository") ui.toast(t("git.initBareRepo"), "error");
+  else ui.toast(t("git.failed", { what: t("git.op.init"), msg: gitErrorMessage(r) }), "error");
   await refresh();
+  return r.code === 0;
 }
 
 /** Clones `url` into `dest`, opens it as the workspace. Returns an error message or null. */
@@ -439,7 +445,7 @@ export const cloneTabRequested = $state({ value: false });
 
 /** Connects (or changes) the "origin" remote, e.g. an empty repository created on GitLab/GitHub. */
 export async function connectRemote() {
-  if (!git.repo) await initRepo();
+  if (!git.repo && !(await initRepo())) return;
   const url = await ui.prompt(git.remoteUrl ? t("git.changeRemote") : t("git.connectRemote"), git.remoteUrl ?? "", t("git.remotePlaceholder"));
   if (!url || url === git.remoteUrl) return;
   const r = git.remoteUrl ? await runOk(["remote", "set-url", "origin", url], "git.op.changeRemote") : await runOk(["remote", "add", "origin", url], "git.op.connectRemote");
@@ -464,7 +470,7 @@ export async function publishGitHub() {
     { label: t("git.private"), value: "private", primary: true },
   ]);
   if (vis !== "public" && vis !== "private") return;
-  if (!git.repo) await initRepo();
+  if (!git.repo && !(await initRepo())) return;
   // gh needs at least one commit to push.
   const head = await run(["rev-parse", "--verify", "HEAD"]);
   if (head.code !== 0) {

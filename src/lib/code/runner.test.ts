@@ -38,6 +38,8 @@ vi.mock("./projects", () => ({
 }));
 
 const { runner, refreshProject, runAction, createProject } = await import("./runner.svelte");
+const { TEMPLATES } = await import("./projects");
+const { ui } = await import("../ui.svelte");
 
 beforeEach(() => {
   h.target = "app";
@@ -141,4 +143,27 @@ describe("New Project when the user becomes a guest meanwhile", () => {
     expect(state.openFile).not.toHaveBeenCalled();
     expect(ui.toast).toHaveBeenCalledTimes(1);
   });
+});
+
+test("a template isn't created inside a bare repository, because it would run git init there", async () => {
+  const create = vi.fn(async () => ({ files: {}, cmds: ["git init -q"] }));
+  TEMPLATES.push({ id: "bare-check", label: "T", tool: "t", needs: [], marker: "m", open: [], create } as never);
+  const made: string[] = [];
+  mockIPC((cmd, args) => {
+    const a = args as { path: string };
+    if (cmd === "path_exists") return false;
+    if (cmd === "git_in_bare_repo") return a.path.startsWith("/bare/");
+    if (cmd === "create_dir") made.push(a.path);
+    return null;
+  });
+  vi.mocked(ui.toast).mockClear();
+  try {
+    await createProject("bare-check", "/bare", "x");
+    expect(ui.toast).toHaveBeenCalledWith("This folder is a bare Git repository or inside one, so no new repository can be created here.", "error");
+    expect(create).not.toHaveBeenCalled();
+    expect(made).toEqual([]);
+    expect(h.runCommand).not.toHaveBeenCalled();
+  } finally {
+    TEMPLATES.pop();
+  }
 });

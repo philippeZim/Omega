@@ -19,7 +19,7 @@ vi.mock("../tools.svelte", () => ({ ensureTools: async () => true }));
 vi.mock("../native", () => ({ openDialog: async () => null }));
 vi.mock("../i18n/index.svelte", () => ({ t: (k: string, p?: Record<string, unknown>) => (p ? `${k} ${JSON.stringify(p)}` : k) }));
 
-import { abortOperation, branches, commit, git, pull, push, refresh } from "./git.svelte";
+import { abortOperation, branches, commit, connectRemote, git, initRepo, pull, push, refresh } from "./git.svelte";
 
 // ---------------------------------------------------------------- scripted fake repository
 
@@ -183,5 +183,48 @@ describe("pull stopped at a rebase conflict (#67)", () => {
     await commit(false);
     expect(calls.some((a) => a[0] === "commit")).toBe(false);
     expect(calls).toContainEqual(["rebase", "--continue"]);
+  });
+});
+
+describe("Init in a bare repository", () => {
+  /** A folder git doesn't count as a repository; `init` answers like the backend. */
+  function notARepo(init: { code: number; stdout: string; stderr: string }) {
+    mockIPC((cmd, payload) => {
+      if (cmd === "git_status") return { repo: false, top: "", branch: "", upstream: null, ahead: 0, behind: 0, changes: [], operation: null };
+      if (cmd !== "git") return null;
+      const a = (payload as { args: string[] }).args;
+      calls.push(a);
+      return a[0] === "init" ? init : { code: 0, stdout: "", stderr: "" };
+    });
+  }
+  const refused = { code: 128, stdout: "", stderr: "omega:init_in_bare_repository" };
+
+  test("shows the one translated message and reports failure", async () => {
+    notARepo(refused);
+    await refresh();
+    calls = [];
+    m.toast = [];
+    expect(await initRepo()).toBe(false);
+    expect(m.toast).toEqual([["git.initBareRepo", "error"]]);
+  });
+
+  test("connecting a remote stops there instead of going on without a repository", async () => {
+    notARepo(refused);
+    await refresh();
+    calls = [];
+    const { ui } = await import("../ui.svelte");
+    const prompt = vi.spyOn(ui, "prompt");
+    await connectRemote();
+    expect(calls).toEqual([["init", "-q"]]);
+    expect(prompt).not.toHaveBeenCalled();
+    prompt.mockRestore();
+  });
+
+  test("a normal folder is still initialized", async () => {
+    notARepo({ code: 0, stdout: "", stderr: "" });
+    await refresh();
+    m.toast = [];
+    expect(await initRepo()).toBe(true);
+    expect(m.toast).toEqual([["git.repoCreated", undefined]]);
   });
 });
