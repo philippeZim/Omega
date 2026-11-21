@@ -3,14 +3,15 @@
  * offers to install what's missing into Omega's app folder (see src-tauri/src/tools.rs), so the
  * same features work on Windows, macOS and Linux without manual setup.
  */
+import { backendErrorText } from "./backendError";
 import { invoke } from "@tauri-apps/api/core";
 import { pathChanged } from "./terminal.svelte";
-import { listen } from "@tauri-apps/api/event";
+import { listen } from "./windowEvents";
 import { ui } from "./ui.svelte";
 import { t } from "./i18n/index.svelte";
 import { OS } from "./platform";
 
-export type ToolId = "uv" | "tectonic" | "node" | "pnpm" | "cmake" | "ninja" | "clangd" | "jdk" | "gradle" | "rust" | "git" | "cc";
+export type ToolId = "uv" | "tectonic" | "node" | "pnpm" | "cmake" | "ninja" | "clangd" | "jdk" | "gradle" | "rust" | "git" | "cc" | "scala" | "sbt" | "ocaml" | "mojo";
 
 interface ToolInfo {
   label: string;
@@ -34,7 +35,18 @@ export const TOOLS: Record<ToolId, ToolInfo> = {
   gradle: { label: "Gradle", cmds: ["gradle"], mb: 140 },
   rust: { label: "Rust (rustup)", cmds: ["cargo"], mb: 300 },
   git: { label: "Git", cmds: ["git"], mb: 60 },
-  cc: { label: OS === "windows" ? "C/C++ compiler (LLVM-MinGW)" : OS === "macos" ? "Xcode Command Line Tools" : "C/C++ compiler", cmds: CC_CMDS, mb: OS === "windows" ? 170 : 0 },
+  scala: { label: "Scala CLI + Coursier", cmds: ["scala-cli"], mb: 75 },
+  sbt: { label: "sbt", cmds: ["sbt"], mb: 60 },
+  ocaml: { label: "OCaml (opam, dune)", cmds: ["dune"], mb: 600 },
+  mojo: { label: "Mojo (compiler, LSP, LLDB)", cmds: ["mojo"], mb: 300 },
+  cc: {
+    // A getter so the label follows the UI language (#63).
+    get label() {
+      return OS === "windows" ? t("tools.ccWindows") : OS === "macos" ? "Xcode Command Line Tools" : t("tools.cc");
+    },
+    cmds: CC_CMDS,
+    mb: OS === "windows" ? 170 : 0,
+  },
 };
 
 export const toolState = $state({
@@ -59,9 +71,16 @@ const canInstall = async (id: ToolId) => (await (installable ??= invoke<string[]
 
 /** How to get a tool by hand when Omega can't install it (Linux system compilers). */
 function manualHint(id: ToolId): string {
+  if (id === "ocaml" && OS === "windows") return t("tools.ocamlWindows");
+  if (id === "mojo") return t(OS === "windows" ? "tools.mojoWindows" : "tools.mojoUnsupported");
   if (id === "cc" || id === "git")
     return "sudo apt install build-essential git   # Debian/Ubuntu\nsudo dnf install gcc gcc-c++ git          # Fedora\nsudo pacman -S base-devel git             # Arch";
   return "";
+}
+
+/** Why Omega can't install Mojo on this system, empty if it can. */
+export async function mojoInstallHint(): Promise<string> {
+  return (await canInstall("mojo")) ? "" : manualHint("mojo");
 }
 
 /**
@@ -92,7 +111,7 @@ export async function installTool(id: ToolId): Promise<boolean> {
   } catch (e) {
     const err = String(e);
     if (err.includes("XCODE_CLT")) await ui.confirm(t("tools.xcodeTitle"), t("tools.xcodeMsg"), t("common.ok"));
-    else ui.toast(t("tools.failed", { name: info.label, err }), "error");
+    else ui.toast(t("tools.failed", { name: info.label, err: backendErrorText(err) }), "error");
     return false;
   } finally {
     delete toolState.installing[id];

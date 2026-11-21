@@ -1,13 +1,18 @@
 <script lang="ts">
   import Glyph from "./Glyph.svelte";
-  import { app, activate, closeTab, newFile, foreignProject } from "../lib/state.svelte";
+  import { app, activate, closeTab, newFileInSession, foreignProject } from "../lib/state.svelte";
   import { ui } from "../lib/ui.svelte";
   import RunBar from "./RunBar.svelte";
+  import LspStatus from "./LspStatus.svelte";
+  import LangPicker from "./LangPicker.svelte";
   import { t } from "../lib/i18n/index.svelte";
+  import { shortcutLabel, withShortcut } from "../lib/commands.svelte";
+  import { tabHints } from "../lib/tabHints";
+  import { tick } from "svelte";
 
   function menu(e: MouseEvent, id: string, path: string | null) {
     ui.openMenu(e, [
-      { label: t("common.close"), shortcut: `${t("app.ctrl")}+W`, action: () => closeTab(id) },
+      { label: t("common.close"), shortcut: shortcutLabel("tab.close"), action: () => closeTab(id) },
       { label: t("app.closeOthers"), action: () => app.tabs.filter((x) => x.id !== id).forEach((x) => closeTab(x.id)) },
       ...(app.tabs.some((x) => foreignProject(x))
         ? [{ label: t("app.closeForeign"), action: () => app.tabs.filter((x) => foreignProject(x)).forEach((x) => closeTab(x.id)) }]
@@ -17,12 +22,22 @@
   }
 
   let width = $state(1000);
+  // Parent folders that tell tabs with the same file name apart (#38).
+  const hints = $derived(tabHints(app.tabs));
+
+  // Keep the active tab visible when the tabs overflow (#117).
+  let tabsEl = $state<HTMLElement | null>(null);
+  $effect(() => {
+    void app.activeId;
+    void app.tabs.length;
+    tick().then(() => tabsEl?.querySelector<HTMLElement>(".tab.active")?.scrollIntoView({ block: "nearest", inline: "nearest" }));
+  });
 </script>
 
 {#if app.tabs.length || app.mode === "code"}
   <div class="tabbar" bind:clientWidth={width}>
-  <div class="tabs">
-    {#each app.tabs as tab (tab.id)}
+  <div class="tabs" bind:this={tabsEl}>
+    {#each app.tabs as tab, i (tab.id)}
       {@const foreign = foreignProject(tab)}
       <div
         class="tab"
@@ -39,14 +54,15 @@
       >
         {#if foreign}<span class="proj">{foreign}</span>{/if}
         <span class="name">{tab.name}</span>
+        {#if hints[i]}<span class="hint">{hints[i]}</span>{/if}
         <button class="close" class:dirty={tab.dirty} onclick={(e) => { e.stopPropagation(); closeTab(tab.id); }} aria-label={t("common.close")}>
           <span class="x"><Glyph name="x" size={8} /></span><span class="d"></span>
         </button>
       </div>
     {/each}
-    <button class="add" onclick={newFile} title="{t('app.newFile')} ({t('app.ctrl')}+N)" aria-label={t("app.newFile")}><Glyph name="plus" size={11} /></button>
+    <button class="add" onclick={() => newFileInSession()} title={withShortcut(t("app.newFile"), "file.new")} aria-label={t("app.newFile")}><Glyph name="plus" size={11} /></button>
   </div>
-  {#if app.mode === "code"}<RunBar {width} />{/if}
+  {#if app.mode === "code"}<LangPicker compact={width < 640} /><LspStatus compact={width < 640} /><RunBar {width} />{/if}
   </div>
 {/if}
 
@@ -103,6 +119,16 @@
     background: rgba(var(--fg-rgb), 0.08);
   }
   .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .hint {
+    flex-shrink: 1;
+    min-width: 0;
+    max-width: 110px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 11px;
+    opacity: 0.55;
+  }
   .close {
     width: 18px;
     height: 18px;

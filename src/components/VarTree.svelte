@@ -34,8 +34,11 @@
     {:else}
       <span class="name">{n.name}</span>
       {#if n.type}<span class="type">{n.type}</span>{/if}
-      <span class="eq">=</span>
-      <span class="value" class:changed={n.changed} title={n.value}>{n.value}</span>
+      <!-- Group nodes (e.g. debugpy's "special variables") have no value: no dangling "=". -->
+      {#if n.value}
+        <span class="eq">=</span>
+        <span class="value" class:changed={n.changed} title={n.value}>{n.value}</span>
+      {/if}
     {/if}
   </div>
   {#if n.expanded && n.children}

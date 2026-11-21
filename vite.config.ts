@@ -8,7 +8,8 @@ export default defineConfig(() => ({
   plugins: [svelte()],
   clearScreen: false,
   server: {
-    port: 1420,
+    // Instances started by dev/omega-mcp.mjs run their own Vite on a free port.
+    port: Number(process.env.OMEGA_VITE_PORT) || 1420,
     strictPort: true,
     host: host || false,
     hmr: host ? { protocol: "ws", host, port: 1421 } : undefined,

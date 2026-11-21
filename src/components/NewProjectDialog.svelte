@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { open as openDialog } from "@tauri-apps/plugin-dialog";
+  import { openDialog } from "../lib/native";
   import { invoke } from "@tauri-apps/api/core";
   import { runner, createProject } from "../lib/code/runner.svelte";
   import { TEMPLATES } from "../lib/code/projects";
@@ -52,7 +52,9 @@
   });
 
   const filteredRepos = $derived((repos ?? []).filter((r) => !repoFilter || r.nameWithOwner.toLowerCase().includes(repoFilter.toLowerCase())));
-  const validNew = $derived(/^[A-Za-z_][\w-]*$/.test(name) && !!parent);
+  // Tools (cargo, uv, pnpm, CMake, Gradle) need an identifier-like name; a plain folder only a valid file name.
+  const nameOk = $derived(template === "empty" ? /^[^/\\:*?"<>|]+$/.test(name) && name.trim() === name && name !== "." && name !== ".." : /^[A-Za-z_][\w-]*$/.test(name));
+  const validNew = $derived(nameOk && !!parent);
   const validClone = $derived(!!url.trim() && !!dirName.trim() && !!parent && !cloning);
 
   async function choose() {
@@ -85,11 +87,24 @@
   function close() {
     if (!cloning) runner.newProject = false;
   }
+
+  // A drag from inside the dialog that ends on the backdrop (e.g. selecting text) also fires a
+  // click there, so only a press that started on the backdrop may close the dialog.
+  let pressedBackdrop = false;
+
+  // Focus the dialog when it opens, so typing and Enter work without clicking into it first.
+  let sheet = $state<HTMLElement>();
+  $effect(() => {
+    if (runner.newProject && sheet) (sheet.querySelector<HTMLInputElement>("input:not([readonly])") ?? sheet).focus();
+  });
 </script>
 
+<!-- Escape closes the dialog wherever the focus is (e.g. after the folder picker closed), like Settings. -->
+<svelte:window onkeydown={(e) => e.key === "Escape" && runner.newProject && !e.defaultPrevented && (e.preventDefault(), close())} />
+
 {#if runner.newProject}
-  <div class="backdrop" role="presentation" onclick={close}>
-    <div class="sheet" role="dialog" tabindex="-1" onclick={(e) => e.stopPropagation()} onkeydown={(e) => { if (e.key === "Escape") close(); if (e.key === "Enter" && !(e.target as HTMLElement).closest(".repos")) submit(); }}>
+  <div class="backdrop" role="presentation" onmousedown={(e) => (pressedBackdrop = e.target === e.currentTarget)} onclick={() => pressedBackdrop && close()}>
+    <div class="sheet" role="dialog" tabindex="-1" bind:this={sheet} onclick={(e) => e.stopPropagation()} onkeydown={(e) => { if (e.key === "Enter" && !(e.target as HTMLElement).closest(".repos")) submit(); }}>
       <div class="seg">
         <button class:on={tab === "new"} onclick={() => (tab = "new")}>{t("code.np.newProject")}</button>
         <button class:on={tab === "clone"} onclick={() => (tab = "clone")}>{t("code.np.cloneFromGit")}</button>
@@ -149,7 +164,11 @@
       </label>
 
       {#if tab === "new"}
-        <p class="hint">{t("code.np.willCreate")} <code>{parent}/{name}</code>{template === "empty" ? "." : t("code.np.outputInTerminal")}</p>
+        {#if nameOk}
+          <p class="hint">{t("code.np.willCreate")} <code>{parent}/{name}</code>{template === "empty" ? "." : t("code.np.outputInTerminal")}</p>
+        {:else}
+          <p class="hint err">{t(template === "empty" ? "code.np.invalidFolderName" : "code.np.invalidName")}</p>
+        {/if}
       {:else}
         <p class="hint" class:err={!!cloneError}>{cloneError || (cloning ? t("code.np.cloning") : t("code.np.cloneInto", { path: `${parent}/${dirName || "…"}` }))}</p>
       {/if}

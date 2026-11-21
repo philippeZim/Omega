@@ -1,6 +1,6 @@
 /** Live explorer: the Rust side watches the open folder and reports which directories changed. */
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { listen } from "./windowEvents";
 
 /**
  * Bumped per batch. `dirs`: directories whose listing changed; `files`: files created, removed,

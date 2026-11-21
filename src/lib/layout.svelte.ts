@@ -38,7 +38,8 @@ function num(key: string): number | null {
   return n > 0 ? n : null;
 }
 
-function load(): { zones: Record<Zone, ZoneState>; open: OpenState } {
+/** Reads the saved layout from localStorage, dropping unknown / duplicate views (exported for tests). */
+export function load(): { zones: Record<Zone, ZoneState>; open: OpenState } {
   let saved: { zones?: Record<Zone, Partial<ZoneState>>; open?: OpenState } | null = null;
   try {
     saved = JSON.parse(localStorage.getItem("layout") || "null");
@@ -46,18 +47,28 @@ function load(): { zones: Record<Zone, ZoneState>; open: OpenState } {
   const zones = structuredClone(DEFAULT_ZONES);
   if (saved?.zones) {
     const seen = new Set<ViewId>();
+    const missing: Zone[] = [];
     for (const z of ZONES) {
       const s = saved.zones[z];
-      if (!s) continue;
+      if (!s || typeof s !== "object") {
+        missing.push(z);
+        continue;
+      }
       zones[z].views = [];
-      for (const v of s.views ?? []) {
+      for (const v of Array.isArray(s.views) ? s.views : []) {
         if (VIEWS.includes(v) && !seen.has(v)) {
           seen.add(v);
           zones[z].views.push(v);
         }
       }
-      zones[z].active = s.active ?? null;
+      zones[z].active = s.active && zones[z].views.includes(s.active) ? s.active : null;
       if (typeof s.size === "number" && s.size > 0) zones[z].size = s.size;
+    }
+    // A zone missing from the saved data keeps its defaults, minus views placed elsewhere.
+    for (const z of missing) {
+      zones[z].views = zones[z].views.filter((v) => !seen.has(v));
+      if (zones[z].active && !zones[z].views.includes(zones[z].active)) zones[z].active = null;
+      for (const v of zones[z].views) seen.add(v);
     }
     // Views added in a later version go to their default zone.
     for (const v of VIEWS) if (!seen.has(v)) zones[defaultZone(v)].views.push(v);
@@ -67,7 +78,20 @@ function load(): { zones: Record<Zone, ZoneState>; open: OpenState } {
     zones.right.size = num("pdfWidth") ?? 560;
     zones.bottom.size = num("termHeight") ?? 260;
   }
-  return { zones, open: saved?.open ?? {} };
+  return { zones, open: sanitizeOpen(saved?.open) };
+}
+
+/** Keeps only `{ <mode>: { <zone>: boolean } }` entries of saved open state; anything else is dropped. */
+function sanitizeOpen(raw: unknown): OpenState {
+  const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
+  const out: Record<string, Partial<Record<Zone, boolean>>> = {};
+  if (!isObj(raw)) return out;
+  for (const [mode, zones] of Object.entries(raw)) {
+    if (!isObj(zones)) continue;
+    const z = Object.fromEntries(ZONES.filter((k) => typeof zones[k] === "boolean").map((k) => [k, zones[k] as boolean]));
+    if (Object.keys(z).length) out[mode] = z;
+  }
+  return out as OpenState;
 }
 
 const initial = load();
@@ -169,7 +193,9 @@ export function setOpen(z: Zone, open: boolean) {
     peek[z] = open;
     if (open) for (const o of ZONES) if (o !== z) peek[o] = false;
   }
-  (layout.open[app.mode] ??= {})[z] = open;
+  // Assign first and read back: the value of the assignment would be the plain object, not the proxy.
+  layout.open[app.mode] ??= {};
+  layout.open[app.mode]![z] = open;
   save();
 }
 

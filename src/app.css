@@ -35,6 +35,8 @@
   --label-3: rgba(235, 235, 245, 0.3);
   --accent: #6b9be0;
   --accent-soft: rgba(107, 155, 224, 0.22);
+  /* Background of filled accent buttons with white text (>= 4.5:1, WCAG AA). */
+  --accent-fill: #3a6fc4;
   --green: #7bbf8e;
   --red: #df7067;
   --orange: #d6a35f;
@@ -82,6 +84,7 @@
   --label-3: rgba(60, 60, 67, 0.38);
   --accent: #3478f6;
   --accent-soft: rgba(52, 120, 246, 0.16);
+  --accent-fill: #2d6ae0;
   --green: #2f9e55;
   --red: #d9443a;
   --orange: #c77c12;
@@ -172,7 +175,7 @@ input:focus { box-shadow: var(--recess-shadow), 0 0 0 1px rgba(var(--fg-rgb), 0.
   transition: background 0.12s;
 }
 .btn:hover { background: rgba(var(--fg-rgb), 0.13); }
-.btn.primary { background: var(--accent); color: white; }
+.btn.primary { background: var(--accent-fill); color: white; }
 .btn.primary:hover { filter: brightness(1.1); }
 .btn.danger { color: var(--red); }
 
@@ -226,7 +229,6 @@ input:focus { box-shadow: var(--recess-shadow), 0 0 0 1px rgba(var(--fg-rgb), 0.
   border-radius: inherit;
   background: radial-gradient(120% 140% at 20% 50%, rgba(var(--tint), 0.12), rgba(var(--tint), 0) 70%);
   opacity: 0;
-  transition: opacity 0.3s ease;
 }
 /* Light sweep */
 .gbtn::after {
@@ -244,11 +246,10 @@ input:focus { box-shadow: var(--recess-shadow), 0 0 0 1px rgba(var(--fg-rgb), 0.
 .gbtn:hover:not(:disabled) {
   color: var(--label);
   background: rgba(var(--fg-rgb), 0.07);
-  transform: translateY(-1px);
   box-shadow: inset 0 1px 0 rgba(var(--hl-rgb), 0.1), 0 4px 12px rgba(0, 0, 0, 0.3);
 }
 .gbtn:hover:not(:disabled)::before { opacity: 1; }
-.gbtn:active:not(:disabled) { transform: scale(0.93); transition-duration: 0.12s; }
+.gbtn:active:not(:disabled) { background: rgba(var(--fg-rgb), 0.13); box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.35); transition-duration: 0.12s; }
 .gbtn:disabled { color: rgba(var(--fg-rgb), 0.28); }
 .gbtn:disabled svg { filter: grayscale(1) opacity(0.5); }
 .gbtn.on { background: var(--raised-bg); color: var(--label); box-shadow: var(--raised-shadow); }
@@ -256,16 +257,16 @@ input:focus { box-shadow: var(--recess-shadow), 0 0 0 1px rgba(var(--fg-rgb), 0.
 .gbtn .ico { color: rgb(var(--tint)); }
 
 .gbtn.run { --tint: 123, 191, 142; }
-.gbtn.run:hover:not(:disabled) svg { transform: translateX(2px) scale(1.08); }
+.gbtn.run:hover:not(:disabled) svg { filter: drop-shadow(0 0 3px rgba(var(--tint), 0.7)); }
 .gbtn.debug { --tint: 214, 163, 95; }
 .gbtn.stop { --tint: 223, 112, 103; }
-.gbtn.stop:hover:not(:disabled) svg { transform: scale(0.82) rotate(90deg); }
+.gbtn.stop:hover:not(:disabled) svg { filter: drop-shadow(0 0 3px rgba(var(--tint), 0.7)); }
 .gbtn.step { --tint: 134, 185, 204; }
 .gbtn.neutral { --tint: 107, 155, 224; }
 
 /* Active/running indicator: soft breathing ring */
-.gbtn.live { color: var(--label); background: rgba(var(--tint), 0.1); }
-.gbtn.live::before { opacity: 1; animation: gbreath 1.8s ease-in-out infinite; }
+.gbtn.live { color: var(--label); background: rgba(var(--tint), 0.1); box-shadow: inset 0 0 0 1px rgba(var(--tint), 0.4); animation: gbreath 1.8s ease-in-out infinite; }
+.gbtn.live::before { opacity: 1; }
 
 
 .gsep { width: 1px; height: 16px; margin: 0 3px; background: rgba(var(--fg-rgb), 0.09); }
@@ -286,12 +287,12 @@ input:focus { box-shadow: var(--recess-shadow), 0 0 0 1px rgba(var(--fg-rgb), 0.
 }
 
 @keyframes gbreath {
-  0%, 100% { opacity: 0.55; }
-  50% { opacity: 1; }
+  0%, 100% { box-shadow: inset 0 0 0 1px rgba(var(--tint), 0.2); }
+  50% { box-shadow: inset 0 0 0 1px rgba(var(--tint), 0.6), 0 0 8px rgba(var(--tint), 0.25); }
 }
 @media (prefers-reduced-motion: reduce) {
   .gbtn, .gbtn svg { transition: none; }
-  .gbtn::after, .gbtn.live::before, .gbtn:hover svg { animation: none !important; }
+  .gbtn::after, .gbtn.live, .gbtn:hover svg { animation: none !important; }
 }
 
 /* Text selection in inputs and UI text (WebKitGTK's default is a barely visible dark blue). */

@@ -2,10 +2,10 @@
   import Glyph from "./Glyph.svelte";
   import { onDestroy } from "svelte";
   import { convertFileSrc } from "@tauri-apps/api/core";
-  import { openUrl } from "@tauri-apps/plugin-opener";
+  import { openUrl } from "../lib/native";
   import * as pdfjs from "pdfjs-dist";
   import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
-  import { latex, setDark, reverseSync, forwardSync, installLatex } from "../lib/latex/controller.svelte";
+  import { latex, setDark, reverseSync, forwardSync, installLatex, remoteLatex, remotePdfBytes, compileNow } from "../lib/latex/controller.svelte";
   import { app, activeTab, openFile } from "../lib/state.svelte";
   import * as ed from "../lib/editor";
   import { t } from "../lib/i18n/index.svelte";
@@ -31,16 +31,30 @@
 
   async function load(path: string) {
     const seq = ++renderSeq;
-    const url = convertFileSrc(path) + "?v=" + latex.pdfVersion;
-    const next = await pdfjs.getDocument({ url, isEvalSupported: false }).promise.catch(() => null);
-    if (!next || seq !== renderSeq) return;
+    const data = remotePdfBytes();
+    const source = data ? { data } : { url: convertFileSrc(path) + "?v=" + latex.pdfVersion };
+    const next = await pdfjs.getDocument({ ...source, isEvalSupported: false }).promise.catch(() => null);
+    if (!next) return;
+    if (seq !== renderSeq) return void next.destroy();
     const old = doc;
     doc = next;
-    await render(seq);
-    old?.destroy();
+    try {
+      await render(seq);
+    } finally {
+      old?.destroy();
+    }
   }
 
   async function render(seq = ++renderSeq) {
+    try {
+      await renderPages(seq);
+    } catch (e) {
+      // clear() or a newer load destroyed the doc mid-render ("Worker was destroyed").
+      if (seq === renderSeq) throw e;
+    }
+  }
+
+  async function renderPages(seq: number) {
     if (!doc) return;
     const ratio = scroller.scrollTop / Math.max(1, scroller.scrollHeight);
     const dpr = window.devicePixelRatio || 1;
@@ -116,8 +130,18 @@
     scroller.scrollTo({ top: pageEl.offsetTop + top - 12, behavior: "smooth" });
   }
 
+  /** Drops the rendered pages (e.g. after switching to a .tex tab without a PDF). */
+  function clear() {
+    renderSeq++;
+    doc?.destroy();
+    doc = null;
+    pageSizes = [];
+    pagesEl.replaceChildren();
+  }
+
   $effect(() => {
-    if (latex.pdf && latex.pdfVersion) load(latex.pdf);
+    if (!latex.pdf) clear();
+    else if (latex.pdfVersion) load(latex.pdf);
   });
 
   $effect(() => {
@@ -146,8 +170,22 @@
     const s = r.width / pageSizes[page - 1].w;
     const hit = reverseSync(page, (e.clientX - r.left) / s, (e.clientY - r.top) / s);
     if (!hit) return;
-    if (hit.file && hit.file !== activeTab()?.path) await openFile(hit.file);
-    gotoLine(hit.line);
+    await openAt(hit.file, hit.line);
+  }
+
+  /** A diagnostic from another file than the active one (e.g. an \input chapter). */
+  const otherFile = (file: string) => !!file && file !== activeTab()?.path && !file.endsWith("untitled.tex");
+  /** Path relative to the project folder, else the file name. */
+  const shortName = (file: string) => (file.startsWith("collab:") ? file.slice(7) : app.root && file.startsWith(app.root + "/") ? file.slice(app.root.length + 1) : file.split("/").pop());
+
+  /** Opens `file` (if it isn't the active tab) and jumps to `line` there; nothing if it failed to open. */
+  async function openAt(file: string, line: number) {
+    if (otherFile(file)) {
+      if (file.startsWith("collab:")) return remoteLatex.openAt(file, line); // opens asynchronously
+      await openFile(file);
+      if (activeTab()?.path !== file) return;
+    }
+    gotoLine(line);
   }
 
   function gotoLine(line: number) {
@@ -220,6 +258,12 @@
     </button>
   </div>
 
+  {#if latex.pausedBy !== null}
+    <div class="paused" role="status">
+      <span>{t(latex.guestInRun ? "ai.collab.latex.hostPausedInRun" : "ai.collab.latex.hostPaused", { name: latex.pausedBy })}</span>
+      <button onclick={compileNow}>{t("ai.collab.latex.compile")}</button>
+    </div>
+  {/if}
   {#if latex.progress && latex.pdf}
     <div class="topbar-progress" title={t(`code.pdf.phase.${latex.progress.phase}`)}><div class="fill" style="width: {latex.progress.percent}%"></div></div>
   {/if}
@@ -265,9 +309,10 @@
       </div>
       <div class="log-list">
         {#each latex.diagnostics as d, i (i)}
-          <button class="diag {d.severity}" onclick={async () => { if (d.file && d.file !== activeTab()?.path && !d.file.endsWith("untitled.tex")) await openFile(d.file); gotoLine(d.line); }}>
+          <button class="diag {d.severity}" onclick={() => openAt(d.file, d.line)}>
             <span class="sev"></span>
             <span class="msg">{d.message}</span>
+            {#if otherFile(d.file)}<span class="ln file" title={d.file}>{shortName(d.file)}</span>{/if}
             {#if d.line}<span class="ln">{t("code.pdf.line", { n: d.line })}</span>{/if}
           </button>
         {:else}
@@ -329,7 +374,12 @@
     border-top-color: var(--label);
     animation: spin 0.8s linear infinite;
   }
-  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes spin {
+    0%, 100% { border-color: var(--label) var(--label-3) var(--label-3) var(--label-3); }
+    25% { border-color: var(--label-3) var(--label) var(--label-3) var(--label-3); }
+    50% { border-color: var(--label-3) var(--label-3) var(--label) var(--label-3); }
+    75% { border-color: var(--label-3) var(--label-3) var(--label-3) var(--label); }
+  }
   .tool {
     display: inline-grid;
     place-items: center;
@@ -374,11 +424,14 @@
   .bar { height: 6px; margin: 12px 0 8px; border-radius: 999px; background: var(--recess); box-shadow: var(--recess-shadow); overflow: hidden; }
   .bar .fill, .topbar-progress .fill { position: relative; height: 100%; border-radius: inherit; background: var(--accent); transition: width 0.35s ease; overflow: hidden; }
   /* Moving sheen so the bar visibly lives even when a single step takes long. */
-  .bar .fill::after, .topbar-progress .fill::after { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.35), transparent); transform: translateX(-100%); animation: sheen 1.4s ease-in-out infinite; }
-  @keyframes sheen { to { transform: translateX(100%); } }
+  .bar .fill::after, .topbar-progress .fill::after { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.35), transparent) no-repeat; background-size: 50% 100%; background-position: -100% 0; animation: sheen 1.4s ease-in-out infinite; }
+  @keyframes sheen { to { background-position: 200% 0; } }
   .pc-sub { min-height: 16px; display: flex; gap: 5px; font-size: 11.5px; color: var(--label-2); font-variant-numeric: tabular-nums; white-space: nowrap; }
   .pc-file { overflow: hidden; text-overflow: ellipsis; color: var(--label-3); font-family: var(--mono); font-size: 11px; }
   .pc-hint { margin: 10px 0 0; font-size: 11.5px; color: var(--label-3); }
+  .paused { display: flex; align-items: center; gap: 10px; padding: 8px 12px 8px 16px; flex-shrink: 0; font-size: 12px; color: var(--label-2); background: var(--well); border-bottom: 1px solid rgba(var(--fg-rgb), 0.06); }
+  .paused span { flex: 1; min-width: 0; }
+  .paused button { flex-shrink: 0; padding: 5px 12px; border-radius: 999px; background: var(--accent); color: #fff; font-weight: 600; }
   .topbar-progress { height: 2px; flex-shrink: 0; background: transparent; }
   @media (prefers-reduced-motion: reduce) { .bar .fill::after, .topbar-progress .fill::after { animation: none; } }
   .empty h3 { color: var(--label); margin: 0 0 8px; }
@@ -393,6 +446,7 @@
   .diag.warning .sev { background: var(--orange); }
   .msg { flex: 1; }
   .ln { color: var(--label-3); font-family: var(--mono); font-size: 11px; }
+  .ln.file { max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .none { color: var(--label-3); font-size: 12px; padding: 4px 8px; }
   details { margin: 8px; color: var(--label-2); font-size: 12px; }
   pre { font-family: var(--mono); font-size: 11px; white-space: pre-wrap; color: var(--label-3); max-height: 300px; overflow: auto; }

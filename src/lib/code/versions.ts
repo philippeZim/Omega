@@ -11,6 +11,7 @@
  */
 import { invoke } from "@tauri-apps/api/core";
 import { fsApi, joinPath } from "../api";
+import { q } from "../platform";
 import { t, type Key } from "../i18n/index.svelte";
 import type { Project } from "./projects";
 import type { Suggestion } from "./packages";
@@ -30,6 +31,32 @@ export interface VersionSetting {
 }
 
 const read = (p: string) => fsApi.readFile(p).catch(() => null);
+
+const PY_CMP = String.raw`(?:>=|<=|==|!=|~=|>|<)\d+(?:\.\d+){0,2}(?:\.\*)?`;
+const PY_IMPL = "(?:cpython|python|pypy|graalpy|cp|pp|gp)";
+const PY_VER = String.raw`\d+(?:\.\d+){0,2}(?:(?:a|b|rc)\d+)?t?`;
+const NODE_VER = String.raw`v?\d+(?:\.(?:\d+|x|\*)){0,2}(?:-[0-9a-z.-]+)?`;
+
+/**
+ * What each tool may get. Allowlists: `uv python pin` reads anything else that names an existing
+ * file or folder as a path to an interpreter, even without a slash. That includes the dashed forms
+ * (`cpython-3.12`, `cpython-3.12-linux-x86_64-gnu`), so only `@` or nothing may follow the name.
+ */
+const VERSION_FORMS = {
+  python: new RegExp(`^(?:(?:${PY_IMPL}@?)?${PY_VER}|${PY_CMP}(?:,${PY_CMP})*)$`, "i"),
+  node: new RegExp(`^(?:(?:\\^|~|>=|<=|>|<|=)?${NODE_VER}|latest|lts|lts/[a-z]+|rc|nightly)$`, "i"),
+  rust: /^(?:stable|beta|nightly|\d+\.\d+(?:\.\d+)?)(?:-\d{4}-\d{2}-\d{2})?(?:-[a-z0-9_]+(?:-[a-z0-9_]+){1,3})?$/,
+};
+
+/**
+ * A version as one shell word. The offered values include the one read from the project's files,
+ * so it can't go into the command as it is.
+ */
+export function versionArg(tool: keyof typeof VERSION_FORMS, v: string): string {
+  if (v.length > 100 || !VERSION_FORMS[tool].test(v)) throw new Error(t("code.ver.badVersion", { value: v.slice(0, 40) }));
+  return q(v);
+}
+
 const capture = (cmd: string, args: string[], cwd: string) =>
   invoke<{ code: number; stdout: string }>("run_capture", { cmd, args, cwd }).catch(() => ({ code: -1, stdout: "" }));
 
@@ -75,12 +102,13 @@ async function python(root: string): Promise<VersionSetting> {
       return markCurrent(opts, pin);
     },
     async apply(v) {
+      const arg = versionArg("python", v);
       // Keep requires-python compatible, otherwise `uv sync` refuses the pinned interpreter.
       if (pyproject && req) {
         const minor = v.match(/^(\d+\.\d+)/)?.[1];
         if (minor) await fsApi.writeFile(joinPath(root, "pyproject.toml"), pyproject.replace(/^(\s*requires-python\s*=\s*)["'][^"']*["']/m, `$1">=${minor}"`));
       }
-      return `uv python pin ${v} && uv sync`;
+      return `uv python pin ${arg} && uv sync`;
     },
   };
 }
@@ -116,7 +144,7 @@ async function node(root: string): Promise<VersionSetting> {
       const major = current?.match(/\d+/)?.[0] ?? null;
       return markCurrent(opts, current && opts.some((o) => o.value === major) ? major : current);
     },
-    apply: async (v) => `pnpm runtime set node ${v} -y && pnpm install`,
+    apply: async (v) => `pnpm runtime set node ${versionArg("node", v)} -y && pnpm install`,
   };
 }
 
@@ -148,11 +176,12 @@ async function rust(root: string): Promise<VersionSetting[]> {
         return markCurrent(base.map((b) => (installed.includes(b.value) && !b.tag ? { ...b, tag: t("code.pkg.installed") } : b)), channel);
       },
       async apply(v) {
+        const arg = versionArg("rust", v);
         const body = toml
           ? toml.replace(/^(\s*channel\s*=\s*)["'][^"']*["']/m, `$1"${v}"`)
           : `[toolchain]\nchannel = "${v}"\n`;
         await fsApi.writeFile(tomlPath, /channel\s*=/.test(body) ? body : `${body.trimEnd()}\nchannel = "${v}"\n`);
-        return `rustup toolchain install ${v} && cargo build`;
+        return `rustup toolchain install ${arg} && cargo build`;
       },
     },
     ...(cargo && edition

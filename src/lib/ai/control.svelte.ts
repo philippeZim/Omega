@@ -3,9 +3,12 @@
  * clicking, typing, screenshots, console, terminal). Executed here, transported by mcp_control.rs.
  */
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
-import { toPng } from "html-to-image";
+import { onGlobalChange } from "../windowStorage";
+import { listen } from "../windowEvents";
+import { snapshotPng } from "./snapshot";
 import { app, activeTab, openFile, save, setMode, setRoot } from "../state.svelte";
+import { guestGuard } from "../collab/guard";
+import { t } from "../i18n/index.svelte";
 import { ui } from "../ui.svelte";
 import * as ed from "../editor";
 import { fsApi, wellFormed } from "../api";
@@ -14,12 +17,17 @@ import { formatKey } from "../keys";
 import { git } from "../git/git.svelte";
 import { dbg } from "../debug/store.svelte";
 import { collab } from "../collab/collab.svelte";
-import { terms, readTerminal, runCommand as runInTerminal, newTerminal, closeTerminal, toggleSplit } from "../terminal.svelte";
+import { terms, readTerminal, runCommand as runInTerminal, newTerminal, closeTerminal, toggleSplit, sendInput } from "../terminal.svelte";
 import { layout, ZONES, VIEWS, visibleViews, activeView, zoneShown, isShown, available, showView, hideView, focusView, moveView, setOpen, resetLayout, type ViewId, type Zone } from "../layout.svelte";
 import { runner } from "../code/runner.svelte";
 import { find } from "../search/search.svelte";
 import { settings } from "../settings.svelte";
 import type { Mode } from "../modes";
+import { audit, CHECKS, type Check } from "./uiAudit";
+import { sandboxNative } from "../native";
+import { findElements, labelOf, keyCode, typesIntoEditor } from "./dom";
+import { report } from "../report.svelte";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 
 // ------------------------------------------------------------------ console capture
 
@@ -61,68 +69,37 @@ ui.toast = (text: string, kind: "info" | "error" = "info") => {
 
 // ------------------------------------------------------------------ UI helpers
 
-const INTERACTIVE = "button, a, input, textarea, select, [role=button], [role=tab], [role=menuitem], [role=treeitem], [role=switch], [role=checkbox], [contenteditable=true], .row, .item, .hit, .chip, .tab";
-
-function visible(el: Element) {
-  const r = el.getBoundingClientRect();
-  if (r.width === 0 || r.height === 0) return false;
-  const st = getComputedStyle(el);
-  return st.visibility !== "hidden" && st.display !== "none" && st.opacity !== "0";
-}
-
-function labelOf(el: Element): string {
-  const h = el as HTMLElement;
-  return (
-    h.getAttribute("aria-label") ||
-    h.dataset.tip ||
-    h.getAttribute("title") ||
-    (h as HTMLInputElement).placeholder ||
-    h.innerText ||
-    h.textContent ||
-    ""
-  ).replace(/\s+/g, " ").trim().slice(0, 120);
-}
-
-/** Finds elements by visible text / aria-label / tooltip (case-insensitive) or CSS selector. */
-function findElements(opts: { text?: string; selector?: string; exact?: boolean }): HTMLElement[] {
-  let els: HTMLElement[];
-  if (opts.selector) els = [...document.querySelectorAll<HTMLElement>(opts.selector)];
-  else els = [...document.querySelectorAll<HTMLElement>(INTERACTIVE)];
-  els = els.filter(visible);
-  if (opts.text) {
-    const q = opts.text.toLowerCase().trim();
-    const match = (el: HTMLElement) => {
-      const l = labelOf(el).toLowerCase();
-      return opts.exact ? l === q : l.includes(q);
-    };
-    els = els.filter(match);
-    // Prefer the innermost matching element (a button inside a matching row, not the row).
-    els = els.filter((el) => !els.some((o) => o !== el && el.contains(o)));
-    // Exact matches first.
-    els.sort((a, b) => Number(labelOf(b).toLowerCase() === q) - Number(labelOf(a).toLowerCase() === q));
-  }
-  return els;
-}
-
 function describe(el: HTMLElement, i: number) {
   const r = el.getBoundingClientRect();
   return {
     index: i,
     tag: el.tagName.toLowerCase(),
     role: el.getAttribute("role") ?? undefined,
-    label: labelOf(el),
+    label: labelOf(el).slice(0, 160),
     disabled: (el as HTMLButtonElement).disabled || undefined,
     checked: el.getAttribute("aria-checked") ?? el.getAttribute("aria-selected") ?? undefined,
     rect: { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) },
   };
 }
 
-function clickElement(el: HTMLElement, double = false) {
+function clickElement(el: HTMLElement, double = false, right = false) {
   el.scrollIntoView({ block: "nearest" });
   const r = el.getBoundingClientRect();
-  const opts = { bubbles: true, cancelable: true, composed: true, clientX: r.x + r.width / 2, clientY: r.y + r.height / 2, button: 0 };
-  el.dispatchEvent(new PointerEvent("pointerover", opts));
-  el.dispatchEvent(new MouseEvent("mouseover", opts));
+  const base = { bubbles: true, cancelable: true, composed: true, clientX: r.x + r.width / 2, clientY: r.y + r.height / 2 };
+  const opts = { ...base, button: 0 };
+  el.dispatchEvent(new PointerEvent("pointerover", base));
+  el.dispatchEvent(new MouseEvent("mouseover", base));
+  if (right) {
+    // The whole sequence as button 2, so left-click handlers (tab activation, cursor) don't fire.
+    const down = { ...base, button: 2, buttons: 2 };
+    const up = { ...base, button: 2, buttons: 0 };
+    el.dispatchEvent(new PointerEvent("pointerdown", down));
+    el.dispatchEvent(new MouseEvent("mousedown", down));
+    el.dispatchEvent(new PointerEvent("pointerup", up));
+    el.dispatchEvent(new MouseEvent("mouseup", up));
+    el.dispatchEvent(new MouseEvent("contextmenu", up));
+    return;
+  }
   el.dispatchEvent(new PointerEvent("pointerdown", opts));
   el.dispatchEvent(new MouseEvent("mousedown", opts));
   if (el.matches("input, textarea, [contenteditable=true]")) el.focus();
@@ -131,6 +108,9 @@ function clickElement(el: HTMLElement, double = false) {
   el.dispatchEvent(new MouseEvent("click", opts));
   if (double) el.dispatchEvent(new MouseEvent("dblclick", opts));
 }
+
+/** Zoom set by `set_viewport` (null = the user's uiScale). */
+let viewportZoom: number | null = null;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -166,7 +146,7 @@ const str = (description: string) => ({ type: "string", description });
 const num = (description: string) => ({ type: "number", description });
 const bool = (description: string) => ({ type: "boolean", description });
 
-const TOOLS: Tool[] = [
+export const TOOLS: Tool[] = [
   {
     name: "get_state",
     description: "Aktueller Zustand der IDE: Modus, Projektordner, offene Tabs, aktiver Editor (Cursor, Auswahl), offene Panels/Dialoge, Git, Debugger, Terminal, Collab-Session, letzte Meldungen (Toasts).",
@@ -182,11 +162,12 @@ const TOOLS: Tool[] = [
         dialog: ui.dialog ? { title: ui.dialog.title, message: ui.dialog.message, buttons: ui.dialog.options.map((o) => o.label), input: ui.dialog.input?.value } : null,
         contextMenu: ui.menu ? ui.menu.items.filter((i) => !i.separator).map((i) => i.label) : null,
         collabPanel: collab.open,
+        report: report.open,
       },
       project: runner.project ? { tool: runner.project.label, root: runner.project.root, run: runner.project.run?.cmd, build: runner.project.build?.cmd } : null,
       git: git.repo ? { branch: git.branch, ahead: git.ahead, behind: git.behind, remote: git.remoteUrl, changes: git.changes.map((c) => `${c.x}${c.y} ${c.path}`) } : null,
       debugger: { status: dbg.status, label: dbg.label, stopReason: dbg.stopReason, location: dbg.exec, panel: isShown("debug") },
-      terminal: { visible: isShown("terminal"), split: terms.split, tabs: terms.tabs.map((t) => ({ id: t.id, title: t.title, kind: t.kind, exited: t.exited, status: t.status, code: t.code, active: t.id === terms.active })) },
+      terminal: { visible: isShown("terminal"), split: terms.split, tabs: terms.tabs.filter((t) => t.kind !== "guest-shell").map((t) => ({ id: t.id, title: t.title, kind: t.kind, exited: t.exited, status: t.status, code: t.code, active: t.id === terms.active })) },
       collab: collab.role ? { role: collab.role, status: collab.status, ticket: collab.ticket || undefined, participants: collab.participants.map((p) => ({ name: p.name, role: p.role, direct: p.direct, rtt: p.rtt, addr: p.addr })), pendingRequests: collab.requests.map((r) => r.name) } : collab.error ? { role: null, error: collab.error } : null,
       recentToasts: toastLog.slice(-8),
     }),
@@ -223,6 +204,7 @@ const TOOLS: Tool[] = [
     description: "Öffnet einen Ordner (absoluter Pfad) als Projektordner, wie „Ordner öffnen“.",
     inputSchema: obj({ path: str("Ordnerpfad") }, ["path"]),
     run: async ({ path }) => {
+      if (guestGuard.status() !== "none") throw new Error(t("ai.collab.leaveFirst"));
       await fsApi.listDir(path);
       await setRoot(path);
       return { projectRoot: app.root };
@@ -334,13 +316,13 @@ const TOOLS: Tool[] = [
   {
     name: "click",
     description: "Klickt ein Element an, gefunden über sichtbaren Text, aria-label, Tooltip oder CSS-Selektor. Bei mehreren Treffern 'index' angeben.",
-    inputSchema: obj({ text: str("Text/Label/Tooltip"), selector: str("CSS-Selektor"), index: num("Treffer-Index (Standard 0)"), double: bool("Doppelklick"), exact: bool("Text muss exakt passen") }),
-    run: async ({ text, selector, index, double, exact }) => {
+    inputSchema: obj({ text: str("Text/Label/Tooltip"), selector: str("CSS-Selektor"), index: num("Treffer-Index (Standard 0)"), double: bool("Doppelklick"), right: bool("Rechtsklick (öffnet Kontextmenüs)"), exact: bool("Text muss exakt passen") }),
+    run: async ({ text, selector, index, double, right, exact }) => {
       const els = findElements({ text, selector, exact });
       const el = els[index ?? 0];
       if (!el) throw new Error(`Kein Element gefunden (${text ?? selector}). Treffer: ${els.length}`);
       const info = describe(el, index ?? 0);
-      clickElement(el, double);
+      clickElement(el, double, right);
       await sleep(200);
       return { clicked: info, alternatives: els.length - 1 };
     },
@@ -396,8 +378,8 @@ const TOOLS: Tool[] = [
       const el = document.activeElement as HTMLElement | null;
       const v = ed.getView();
       const tid = focusedTerminal();
-      if (tid) await invoke("pty_write", { id: tid, data: text });
-      else if (v && el && v.dom.contains(el)) {
+      if (tid) await sendInput(tid, text);
+      else if (v && typesIntoEditor(el, v.dom)) {
         const at = v.state.selection.main;
         v.dispatch({ changes: { from: at.from, to: at.to, insert: text }, selection: { anchor: at.from + text.length }, userEvent: "input.type" });
       } else if (el && (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) {
@@ -425,7 +407,7 @@ const TOOLS: Tool[] = [
     run: async ({ text, selector, gone, timeoutMs }) => {
       const end = Date.now() + (timeoutMs ?? 8000);
       while (Date.now() < end) {
-        const found = findElements({ text, selector }).length > 0;
+        const found = findElements({ text, selector, all: true }).length > 0;
         if (found !== !!gone) return { ok: true, waitedMs: (timeoutMs ?? 8000) - (end - Date.now()) };
         await sleep(100);
       }
@@ -451,25 +433,51 @@ const TOOLS: Tool[] = [
   {
     name: "screenshot",
     description: "Screenshot des App-Inhalts (PNG) – ganzes Fenster oder ein Element per Selektor/Text.",
-    inputSchema: obj({ selector: str("CSS-Selektor (optional)"), text: str("Element per Text (optional)"), scale: num("Skalierung, Standard 0.75") }),
+    inputSchema: obj({ selector: str("CSS-Selektor (optional)"), text: str("Element per Text (optional)"), scale: num("Skalierung, Standard 1 (kleinere Werte können Artefakte zeigen)") }),
     run: async ({ selector, text, scale }) => {
-      const el = selector || text ? findElements({ selector, text })[0] : document.body;
+      const el = selector || text ? findElements({ selector, text, all: true })[0] : document.body;
       if (!el) throw new Error("Element nicht gefunden");
-      const base = { pixelRatio: scale ?? 0.75, backgroundColor: "#030304", filter: (n: Node) => !(n instanceof HTMLElement && (n.classList.contains("tip") || n.classList.contains("cm-widgetBuffer"))) };
+      const base = { pixelRatio: scale ?? 1, backgroundColor: "#030304", filter: (n: Node) => !(n instanceof HTMLElement && (n.classList.contains("tip") || n.classList.contains("cm-widgetBuffer") || "guestText" in n.dataset)) };
       // A resource that fails to load (font/image) rejects with a bare Event → retry without them.
       const PIXEL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
       let url: string;
       try {
-        url = await toPng(el, { ...base, cacheBust: true });
+        url = await snapshotPng(el, { ...base, cacheBust: true });
       } catch (e) {
         try {
-          url = await toPng(el, { ...base, skipFonts: true, imagePlaceholder: PIXEL });
+          url = await snapshotPng(el, { ...base, skipFonts: true, imagePlaceholder: PIXEL });
         } catch (e2) {
           const what = (x: unknown) => (x instanceof Event ? `${x.type} bei ${(x.target as HTMLElement | null)?.outerHTML?.slice(0, 120) ?? "?"}` : String(x));
           throw new Error(`Screenshot fehlgeschlagen: ${what(e)} / ${what(e2)}`);
         }
       }
       return { __image: url.split(",")[1] };
+    },
+  },
+  {
+    name: "ui_audit",
+    description: "Misst grafische Fehler im aktuellen Fenster: abgeschnittener/überlaufender Text (overflow), Bedienelemente außerhalb des Fensters (offscreen) oder verdeckt (covered), zu wenig Textkontrast (contrast), Buttons ohne Beschriftung (unlabeled), unübersetzte Texte/rohe Schlüssel (i18n). Editor-, Terminal- und PDF-Inhalt werden übersprungen.",
+    inputSchema: obj({
+      checks: { type: "array", items: { type: "string", enum: CHECKS }, description: "Nur diese Prüfungen (Standard: alle)" },
+      selector: str("Nur innerhalb dieses Elements (CSS-Selektor)"),
+      min_contrast: num("Mindestkontrast (Standard 4.5)"),
+      limit: num("max. Funde (Standard 80)"),
+    }),
+    run: ({ checks, selector, min_contrast, limit }) => audit({ checks: checks as Check[], selector, minContrast: min_contrast, limit }),
+  },
+  {
+    name: "set_viewport",
+    description: "Emuliert ein kleineres/größeres Fenster über den Webview-Zoom (Test-Fenster liegen auf einem unsichtbaren Desktop und können nicht echt verkleinert werden). Mit 'width' und/oder 'height' wird der Zoom so gewählt, dass die engere Dimension genau passt; die andere folgt dem Seitenverhältnis des echten Fensters. Ohne Argumente: zurück zur normalen UI-Skalierung.",
+    inputSchema: obj({ width: num("Breite in CSS-Pixeln, z. B. 800"), height: num("Höhe in CSS-Pixeln, z. B. 600") }),
+    run: async ({ width, height }) => {
+      const base = settings.uiScale || 1;
+      const z0 = viewportZoom ?? base; // window size at zoom 1 = CSS size × current zoom
+      const fits = [width && (window.innerWidth * z0) / width, height && (window.innerHeight * z0) / height].filter(Boolean) as number[];
+      const zoom = fits.length ? Math.max(0.25, Math.min(5, ...fits)) : base;
+      await getCurrentWebview().setZoom(zoom);
+      viewportZoom = fits.length ? zoom : null;
+      await sleep(400);
+      return { viewport: { w: window.innerWidth, h: window.innerHeight }, zoom: +zoom.toFixed(3) };
     },
   },
   {
@@ -489,9 +497,9 @@ const TOOLS: Tool[] = [
     description: "Schreibt Text direkt in ein Terminal (wie Tippen; Steuerzeichen erlaubt, z.B. \\r für Enter, \\x03 für Strg+C).",
     inputSchema: obj({ text: str("Text bzw. Steuerzeichen"), id: str("Terminal-ID aus get_state (Standard: aktives)"), enter: bool("Danach Enter senden") }, ["text"]),
     run: async ({ text, id, enter }) => {
-      const tid = id ?? terms.active;
+      const tid = toolTerminal(id);
       if (!tid) throw new Error("Kein Terminal offen");
-      await invoke("pty_write", { id: tid, data: text + (enter ? "\r" : "") });
+      await sendInput(tid, text + (enter ? "\r" : ""));
       return `geschrieben an ${tid}`;
     },
   },
@@ -499,7 +507,7 @@ const TOOLS: Tool[] = [
     name: "terminal_read",
     description: "Liest die letzten Zeilen eines Terminals (Standard: aktives).",
     inputSchema: obj({ id: str("Terminal-ID aus get_state (optional)"), lines: num("Standard 60") }),
-    run: ({ id, lines }) => readTerminal(id ?? terms.active, lines ?? 60),
+    run: ({ id, lines }) => readTerminal(toolTerminal(id), lines ?? 60),
   },
   {
     name: "show_view",
@@ -552,7 +560,7 @@ const TOOLS: Tool[] = [
     description: "Schließt ein Terminal und beendet seine Shell (Standard: aktives). Der nächste Run-Befehl startet bei Bedarf einen neuen Run-Terminal.",
     inputSchema: obj({ id: str("Terminal-ID aus get_state (optional)") }),
     run: ({ id }) => {
-      const tid = id ?? terms.active;
+      const tid = toolTerminal(id);
       if (!tid || !terms.tabs.some((t) => t.id === tid)) throw new Error("Terminal nicht gefunden");
       closeTerminal(tid);
       return `geschlossen: ${tid}`;
@@ -566,6 +574,12 @@ const TERM_KEYS: Record<string, string> = {
   Home: "\x1b[H", End: "\x1b[F", PageUp: "\x1b[5~", PageDown: "\x1b[6~",
 };
 
+/** The terminal a tool acts on. A guest's shell is never one: its content is the guest's words. */
+function toolTerminal(id?: string | null): string | null {
+  const tid = id ?? terms.active;
+  return terms.tabs.find((t) => t.id === tid)?.kind === "guest-shell" ? null : tid;
+}
+
 /** Terminal id if keyboard focus is inside a terminal (xterm ignores synthetic key events). */
 function focusedTerminal(): string | null {
   const host = (document.activeElement as HTMLElement | null)?.closest<HTMLElement>(".term-host");
@@ -573,7 +587,7 @@ function focusedTerminal(): string | null {
 }
 
 async function pressKey({ key, ctrl, shift, alt }: Args) {
-  const code = /^[0-9]$/.test(key) ? `Digit${key}` : key.length === 1 ? `Key${key.toUpperCase()}` : key;
+  const code = keyCode(key);
   const init = { key, bubbles: true, cancelable: true, composed: true, ctrlKey: !!ctrl, shiftKey: !!shift, altKey: !!alt, code };
   const label = [ctrl && "Strg", shift && "Umschalt", alt && "Alt", key].filter(Boolean).join("+");
   const tid = focusedTerminal();
@@ -582,7 +596,7 @@ async function pressKey({ key, ctrl, shift, alt }: Args) {
     let seq = TERM_KEYS[key] ?? key;
     if (ctrl && key.length === 1) seq = String.fromCharCode(key.toUpperCase().charCodeAt(0) & 0x1f);
     if (alt) seq = "\x1b" + seq;
-    await invoke("pty_write", { id: tid, data: seq });
+    await sendInput(tid, seq);
     await sleep(150);
     return `an Terminal gesendet: ${[ctrl && "Strg", alt && "Alt", key].filter(Boolean).join("+")}`;
   }
@@ -600,6 +614,10 @@ export const control = $state({
   enabled: localStorage.getItem("mcp.control") === "true",
   port: Number(localStorage.getItem("mcp.port")) || 47821,
   token: localStorage.getItem("mcp.token") || "",
+  /** Port the server actually listens on (differs from `port` for instances: free port). */
+  boundPort: 0,
+  /** Name of this instance (OMEGA_INSTANCE, started by dev/omega-mcp.mjs), "" for a normal Omega. */
+  instance: "",
   running: false,
   error: "",
   calls: 0,
@@ -621,7 +639,9 @@ export async function startControl() {
   clearTimeout(retryTimer);
   control.error = "";
   try {
-    await invoke("mcp_control_start", { port: control.port, token: control.token, tools: TOOLS.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })) });
+    // Instances (several side by side) take a free port; the proxy finds it via the registry.
+    const port = control.instance ? (instancePort ?? 0) : control.port;
+    control.boundPort = await invoke<number>("mcp_control_start", { port, token: control.token, tools: TOOLS.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })) });
     control.running = true;
   } catch (e) {
     control.running = false;
@@ -654,7 +674,35 @@ export async function setControlPort(p: number) {
   if (control.enabled) await startControl();
 }
 
-const url = () => `http://127.0.0.1:${control.port}/mcp`;
+/** Shows what the shared server is doing now, after another window changed it. */
+export async function syncControl() {
+  const info = await invoke<{ running: boolean; port: number | null }>("mcp_control_info").catch(() => null);
+  if (!info) return;
+  control.running = control.enabled && info.running;
+  if (info.port) control.boundPort = info.port;
+  if (control.running || !control.enabled) control.error = "";
+}
+
+// The other window starts or moves the server right after storing: look again shortly after.
+function followControl() {
+  clearTimeout(retryTimer);
+  void syncControl();
+  for (const ms of [400, 1500]) setTimeout(() => void syncControl(), ms);
+}
+onGlobalChange("mcp.control", (v) => {
+  control.enabled = v === "true";
+  followControl();
+});
+onGlobalChange("mcp.port", (v) => {
+  control.port = Number(v) || control.port;
+  followControl();
+});
+onGlobalChange("mcp.token", (v) => {
+  if (v) control.token = v;
+  followControl();
+});
+
+const url = () => `http://127.0.0.1:${control.boundPort || control.port}/mcp`;
 /** Command that registers the control MCP in each agent (run once in a terminal). */
 export const mcpAddCommand = (agent: "claude" | "codex" | "opencode") =>
   agent === "claude"
@@ -682,7 +730,41 @@ listen<{ call: number; name: string; args: Args }>("mcp-call", async (e) => {
   invoke("mcp_reply", { call, result });
 });
 
-if (control.enabled) startControl();
+/**
+ * Test instances run on an invisible desktop, but native windows (GTK file dialogs, the browser,
+ * the file manager) would open on the user's desktop. In instances, file dialogs therefore
+ * become an in-app prompt for the path (fillable via type_text/press_key Enter), and opening
+ * URLs or paths is only logged (get_console) and toasted.
+ */
+function sandboxNativeWindows() {
+  sandboxNative({
+    async dialog(kind, o: any) {
+      console.info(`[instance] native dialog (${kind}) shown as in-app prompt`);
+      // ui.prompt turns newlines into spaces, so several paths are separated by "|".
+      const v = await ui.prompt(`Native dialog (${kind})${o.title ? `: ${o.title}` : ""}`, o.defaultPath ?? "", o.multiple ? "absolute paths, separated by |" : "absolute path");
+      if (!v) return null;
+      return o.multiple ? v.split("|").map((x) => x.trim()).filter(Boolean) : v.trim();
+    },
+    open(what) {
+      console.info(`[instance] would open: ${what}`);
+      ui.toast(`[instance] would open: ${what}`);
+    },
+  });
+}
+
+// An instance (OMEGA_INSTANCE) exists to be driven by an agent: control MCP always on.
+let instancePort: number | null = null;
+invoke<{ name: string | null; mcpPort: number | null }>("instance_info")
+  .catch(() => ({ name: null, mcpPort: null }))
+  .then((info) => {
+    control.instance = info?.name ?? "";
+    instancePort = info?.mcpPort ?? null;
+    if (control.instance) {
+      control.enabled = true;
+      sandboxNativeWindows();
+    }
+    if (control.enabled) startControl();
+  });
 
 // Event listeners/intervals live at module level → full reload instead of duplicate HMR instances.
 if (import.meta.hot) import.meta.hot.accept(() => location.reload());

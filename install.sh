@@ -27,8 +27,34 @@ BIN="$HOME/.local/bin"
 APPS="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 ICONS="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor"
 
+# Quotes a value for a POSIX shell script.
+sh_quote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+
+# Quotes a path for the Exec line of a .desktop file.
+desktop_quote() { printf '"%s"' "$(printf '%s' "$1" | sed -e 's/[\\"`$]/\\\\&/g' -e 's/%/%%/g')"; }
+
+# Is the `omega` at $1 ours? Marked launchers, and the two-line one older versions of this script wrote.
+is_our_launcher() {
+  [ -f "$1" ] && [ ! -L "$1" ] || return 1
+  grep -q 'omega-launcher' "$1" && return 0
+  [ "$(wc -l < "$1")" -eq 2 ] && [ "$(head -n 1 "$1")" = '#!/bin/sh' ] && tail -n 1 "$1" | grep -q '^exec .*Omega\.AppImage "\$@"$'
+}
+
+# write_launcher <file> <command words, already quoted>. Leaves someone else's `omega` alone.
+write_launcher() {
+  if { [ -e "$1" ] || [ -L "$1" ]; } && ! is_our_launcher "$1"; then
+    say "Note: $1 already exists and isn't from Omega, so it was left alone."
+    say "      Omega's Settings > Installations can replace it."
+    return 0
+  fi
+  printf '#!/bin/sh\n# omega-launcher: created by Omega\nexec %s "$@"\n' "$2" > "$1.tmp.$$"
+  chmod 755 "$1.tmp.$$"
+  mv -f "$1.tmp.$$" "$1"
+}
+
 uninstall_linux() {
-  rm -f "$BIN/Omega.AppImage" "$BIN/omega" "$APPS/omega.desktop"
+  rm -f "$BIN/Omega.AppImage" "$APPS/omega.desktop"
+  if is_our_launcher "$BIN/omega"; then rm -f "$BIN/omega"; fi
   for s in 128x128 256x256 512x512; do rm -f "$ICONS/$s/apps/omega.png"; done
   command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$APPS" 2>/dev/null || true
   say "Omega removed. Your settings stay in ~/.local/share/io.github.philippezim.omega."
@@ -58,13 +84,16 @@ install_linux() {
 
   # Without libfuse2 (missing by default on e.g. Ubuntu 24.04) the AppImage can still run by
   # unpacking itself on every start. Slower, so we tell the user how to fix it.
-  run="$BIN/Omega.AppImage"
+  # NO_CLEANUP: `omega` detaches from the terminal, and the process that exits must not delete
+  # what its detached copy runs from.
+  run=$(sh_quote "$BIN/Omega.AppImage")
+  exec_line=$(desktop_quote "$BIN/Omega.AppImage")
   if ! has_fuse2; then
-    run="env APPIMAGE_EXTRACT_AND_RUN=1 $BIN/Omega.AppImage"
+    run="env APPIMAGE_EXTRACT_AND_RUN=1 NO_CLEANUP=1 $run"
+    exec_line="env APPIMAGE_EXTRACT_AND_RUN=1 NO_CLEANUP=1 $exec_line"
     nofuse=1
   fi
-  printf '#!/bin/sh\nexec %s "$@"\n' "$run" > "$BIN/omega"
-  chmod 755 "$BIN/omega"
+  write_launcher "$BIN/omega" "$run"
 
   for s in 128x128 256x256 512x512; do mkdir -p "$ICONS/$s/apps"; done
   fetch "$RAW/src-tauri/icons/128x128.png" "$ICONS/128x128/apps/omega.png" 2>/dev/null || true
@@ -77,7 +106,7 @@ Type=Application
 Name=Omega
 GenericName=Editor
 Comment=Notes, LaTeX and code in one app
-Exec=$run %F
+Exec=$exec_line %F
 Icon=omega
 Terminal=false
 Categories=Development;TextEditor;
@@ -89,7 +118,7 @@ EOF
   command -v gtk-update-icon-cache >/dev/null 2>&1 && gtk-update-icon-cache -f -t "$ICONS" 2>/dev/null || true
 
   say ""
-  say "Omega $version is installed. Start it from your app menu, or run: omega"
+  say "Omega $version is installed. Start it from your app menu, or run: omega ."
   case ":$PATH:" in *":$BIN:"*) ;; *) say "(Add ~/.local/bin to your PATH to use the omega command.)" ;; esac
   if [ "${nofuse:-}" = 1 ]; then
     say ""
@@ -118,12 +147,18 @@ install_macos() {
   mv "$tmp/Omega.app" "$dest/Omega.app"
   # The app isn't notarized yet; without this macOS refuses to open it.
   xattr -cr "$dest/Omega.app" 2>/dev/null || true
+  mkdir -p "$BIN"
+  for exe in "$dest/Omega.app/Contents/MacOS/"*; do
+    [ -x "$exe" ] && write_launcher "$BIN/omega" "$(sh_quote "$exe")" && break
+  done
   say ""
-  say "Omega is installed in $dest. Open it from Launchpad or Spotlight."
+  say "Omega is installed in $dest. Open it from Launchpad or Spotlight, or run: omega ."
+  case ":$PATH:" in *":$BIN:"*) ;; *) say "(Add ~/.local/bin to your PATH to use the omega command.)" ;; esac
 }
 
 uninstall_macos() {
   rm -rf /Applications/Omega.app "$HOME/Applications/Omega.app"
+  if is_our_launcher "$BIN/omega"; then rm -f "$BIN/omega"; fi
   say "Omega removed."
 }
 

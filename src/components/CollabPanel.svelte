@@ -1,6 +1,6 @@
 <script lang="ts">
   import Glyph from "./Glyph.svelte";
-  import { collab, startHosting, join, leave, approve, deny, kick, setMyName, clipboardTicket } from "../lib/collab/collab.svelte";
+  import { collab, startHosting, join, leave, approve, deny, kick, setMyName, clipboardTicket, isMe as isMeOf } from "../lib/collab/collab.svelte";
   import { onMount, tick } from "svelte";
 
   let codeInput: HTMLInputElement | undefined = $state();
@@ -15,6 +15,9 @@
   import { ui } from "../lib/ui.svelte";
   import { app } from "../lib/state.svelte";
   import { share, follow } from "../lib/collab/share.svelte";
+  import { capabilityLabel } from "../lib/collab/rpc.svelte";
+  import { requestCapability, requestStartCapability } from "../lib/collab/guestShell.svelte";
+  import { CAPABILITIES } from "../lib/collab/guard";
   import { t } from "../lib/i18n/index.svelte";
 
   /** Presence key of a participant ("host" for the host as seen by guests). */
@@ -47,7 +50,7 @@
   <header>
     <h2>{t("ai.collab.title")}</h2>
     <button class="me" onclick={rename} title={t("ai.collab.changeName")}>
-      <span class="dot" style="background: {collab.me.color}"></span>{collab.me.name || t("ai.collab.setName")}
+      <span class="dot" style="background: {collab.me.color}"></span><span class="mename">{collab.me.name || t("ai.collab.setName")}</span>
     </button>
   </header>
 
@@ -66,6 +69,7 @@
     <p class="desc"><span class="spin"></span> {collab.status === "joining" ? t("ai.collab.connecting") : t("ai.collab.waiting")}</p>
     <button class="btn wide" onclick={leave}>{t("common.cancel")}</button>
   {:else}
+    <div class="scroll">
     {#if collab.role === "host"}
       <label class="lbl" for="ticket">{t("ai.collab.ticket")}</label>
       <div class="ticket">
@@ -81,18 +85,20 @@
           <button class="btn small primary" onclick={() => approve(r)}>{t("ai.collab.allow")}</button>
         </div>
       {/each}
+      {#if collab.requests.length && collab.startCaps.includes("terminal")}<p class="err">{t("ai.collab.shell.startWarning")}</p>{/if}
+      {#if collab.refused}<p class="hint">{t("ai.collab.refusedCount", { count: collab.refused })}</p>{/if}
     {/if}
 
     <label class="lbl" for="plist">{t("ai.collab.participants")}</label>
     <div class="people" id="plist">
       {#each collab.participants as p (p.peer)}
-        {@const isMe = collab.role === "host" ? p.peer === "self" : p.name === collab.me.name && p.color === collab.me.color}
+        {@const isMe = isMeOf(p)}
         {@const where = share.presence[presenceKey(p)]}
         {@const following = share.following === presenceKey(p)}
         <div class="person" class:following>
           <span class="avatar" style="background: {p.color}">{p.name.slice(0, 1).toUpperCase()}</span>
           <span class="pinfo">
-            <span class="pname">{p.name}{isMe ? t("ai.collab.you") : ""}</span>
+            <span class="pname" title={p.name}><span class="pn">{p.name}</span>{#if isMe}<span class="you">{t("ai.collab.you")}</span>{/if}</span>
             {#if !isMe && where?.file}<span class="pfile">{fileLabel(where.file)}:{where.line}</span>{/if}
           </span>
           {#if p.role === "host"}<span class="tag">{t("ai.collab.host")}</span>{/if}
@@ -107,10 +113,36 @@
             <button class="x" onclick={() => kick(p.peer)} title={t("ai.collab.remove")} aria-label={t("ai.collab.remove")}><Glyph name="x" size={8} /></button>
           {/if}
         </div>
+        {#if collab.role === "host" && p.role === "guest"}
+          <div class="caps" role="group" aria-label={t("ai.collab.capabilities")}>
+            {#each CAPABILITIES as cap (cap)}
+              {@const on = !!p.caps?.includes(cap)}
+              <button class="followbtn cap" class:on role="switch" aria-checked={on} title={t(`ai.collab.capHint.${cap}`)} onclick={() => requestCapability(p.peer, cap, !on)}>{capabilityLabel(cap)}</button>
+            {/each}
+          </div>
+        {:else if collab.role === "guest" && isMe}
+          <div class="caps" role="list" aria-label={t("ai.collab.yourCapabilities")}>
+            {#each collab.myCaps as cap (cap)}
+              <span class="tag" role="listitem" title={t(`ai.collab.capHint.${cap}`)}>{capabilityLabel(cap)}</span>
+            {/each}
+          </div>
+        {/if}
       {/each}
     </div>
 
-    <button class="btn wide danger" onclick={leave}>{collab.role === "host" ? t("ai.collab.end") : t("ai.collab.leave")}</button>
+    {#if collab.role === "host"}
+      <span class="lbl" id="startcaps">{t("ai.collab.startRights")}</span>
+      <div class="caps start" role="group" aria-labelledby="startcaps">
+        {#each CAPABILITIES as cap (cap)}
+          {@const on = collab.startCaps.includes(cap)}
+          <button class="followbtn cap" class:on role="switch" aria-checked={on} title={t(`ai.collab.capHint.${cap}`)} onclick={() => requestStartCapability(cap, !on)}>{capabilityLabel(cap)}</button>
+        {/each}
+      </div>
+      <p class="hint starthint">{t("ai.collab.startRightsHint")}</p>
+    {/if}
+    </div>
+
+    <button class="btn wide danger end" onclick={leave}>{collab.role === "host" ? t("ai.collab.end") : t("ai.collab.leave")}</button>
   {/if}
 </div>
 
@@ -122,6 +154,12 @@
     right: 14px;
     z-index: 90;
     width: 380px;
+    /* Never larger than the window: the middle scrolls, the header and End/Leave stay. */
+    max-width: calc(100vw - 28px);
+    max-height: calc(100vh - 72px);
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
     padding: 18px;
     border-radius: 24px;
     background: var(--glass-strong);
@@ -130,11 +168,15 @@
     /* No open animation: animating opacity/transform over backdrop-filter makes WebKitGTK render a
        frame without the panel (it blinks), same as the help panel. */
   }
-  header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
-  h2 { margin: 0; font-size: 17px; font-weight: 700; }
-  .me { display: flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border-radius: 999px; font-size: 12px; color: var(--label-2); background: rgba(var(--fg-rgb), 0.06); }
+  header { flex-shrink: 0; display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+  .scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; margin-bottom: 10px; }
+  .end { flex-shrink: 0; }
+  h2 { margin: 0; font-size: 17px; font-weight: 700; white-space: nowrap; flex-shrink: 0; }
+  /* Long names are cut with an ellipsis instead of wrapping the header (#131). */
+  .me { display: flex; align-items: center; gap: 6px; min-width: 0; height: 26px; padding: 0 10px; border-radius: 999px; font-size: 12px; color: var(--label-2); background: rgba(var(--fg-rgb), 0.06); }
   .me:hover { color: var(--label); background: rgba(var(--fg-rgb), 0.12); }
-  .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .mename { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .desc { margin: 0 0 14px; font-size: 12.5px; line-height: 1.5; color: var(--label-2); display: flex; align-items: center; gap: 8px; }
   .wide { width: 100%; }
   .or { display: flex; align-items: center; gap: 10px; margin: 14px 0; color: var(--label-3); font-size: 11px; }
@@ -152,18 +194,30 @@
   .person:hover { background: rgba(var(--fg-rgb), 0.05); }
   .person.following { background: rgba(var(--fg-rgb), 0.07); }
   .pinfo { display: flex; flex-direction: column; min-width: 0; line-height: 1.2; }
+  /* One line per name, cut with an ellipsis; the rest of the row keeps its size (#131). */
+  .pname { display: flex; white-space: nowrap; }
+  .pn { overflow: hidden; text-overflow: ellipsis; }
+  .you { white-space: pre; flex-shrink: 0; }
   .pfile { font-size: 10.5px; color: var(--label-3); font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 150px; }
-  .followbtn { height: 22px; padding: 0 9px; border-radius: 999px; font-size: 11px; color: var(--label-2); background: rgba(var(--fg-rgb), 0.06); }
+  .followbtn { flex-shrink: 0; white-space: nowrap; height: 22px; padding: 0 9px; border-radius: 999px; font-size: 11px; color: var(--label-2); background: rgba(var(--fg-rgb), 0.06); }
   .followbtn:hover { background: rgba(var(--fg-rgb), 0.12); color: var(--label); }
   .followbtn.on { background: var(--accent); color: #fff; }
-  .avatar { width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; font-size: 11px; font-weight: 700; color: #111; }
-  .tag { font-size: 10px; padding: 1px 7px; border-radius: 999px; background: rgba(var(--fg-rgb), 0.1); color: var(--label-2); }
+  .caps { display: flex; flex-wrap: wrap; gap: 4px; padding: 0 8px 8px 41px; }
+  .caps.start { padding: 0 4px; }
+  .starthint { margin-bottom: 14px; }
+  .avatar { flex-shrink: 0; width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; font-size: 11px; font-weight: 700; color: #111; }
+  .tag { flex-shrink: 0; white-space: nowrap; font-size: 10px; padding: 1px 7px; border-radius: 999px; background: rgba(var(--fg-rgb), 0.1); color: var(--label-2); }
   .spacer { flex: 1; }
-  .conn { font-size: 11px; color: var(--green); font-variant-numeric: tabular-nums; }
+  .conn { flex-shrink: 0; white-space: nowrap; font-size: 11px; color: var(--green); font-variant-numeric: tabular-nums; }
   .conn.relay { color: var(--orange); }
-  .x { width: 20px; height: 20px; display: grid; place-items: center; border-radius: 50%; color: var(--label-3); }
+  .x { flex-shrink: 0; width: 20px; height: 20px; display: grid; place-items: center; border-radius: 50%; color: var(--label-3); }
   .x:hover { background: var(--fill-2); color: var(--label); }
   .danger { color: var(--red); }
   .spin { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--label-3); border-top-color: var(--label); animation: spin 0.8s linear infinite; flex-shrink: 0; }
-  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes spin {
+    0%, 100% { border-color: var(--label) var(--label-3) var(--label-3) var(--label-3); }
+    25% { border-color: var(--label-3) var(--label) var(--label-3) var(--label-3); }
+    50% { border-color: var(--label-3) var(--label-3) var(--label) var(--label-3); }
+    75% { border-color: var(--label-3) var(--label-3) var(--label-3) var(--label); }
+  }
 </style>

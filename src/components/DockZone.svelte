@@ -1,6 +1,7 @@
 <script lang="ts">
+  import { flushSync } from "svelte";
   import Glyph from "./Glyph.svelte";
-  import { layout, visibleViews, activeView, zoneShown, isOverlay, setActive, setOpen, setSize, saveLayout, startDrag, noteFocus, drag, MIN_SIZE, type Zone, type ViewId } from "../lib/layout.svelte";
+  import { layout, visibleViews, activeView, zoneShown, isOverlay, setActive, setOpen, setSize, saveLayout, startDrag, noteFocus, drag, viewport, MIN_SIZE, type Zone, type ViewId } from "../lib/layout.svelte";
   import { t } from "../lib/i18n/index.svelte";
   import { git, refresh as gitRefresh } from "../lib/git/git.svelte";
   import { find } from "../lib/search/search.svelte";
@@ -35,6 +36,37 @@
       case "pdf": return "PDF";
     }
   }
+
+  /** Icons for the compact tab strip; views without one keep their (truncating) label. */
+  const ICONS: Partial<Record<ViewId, "folder" | "changes" | "outline">> = { files: "folder", changes: "changes", outline: "outline" };
+
+  // Compact strip (#56): when the labels don't fit (narrow zone, long German/French words), inactive
+  // tabs show only their icon (label in tooltip/aria-label) and the active tab shows icon + label.
+  let head: HTMLElement | undefined = $state();
+  let compact = $state(false);
+  function measure() {
+    if (!head) return;
+    compact = false;
+    flushSync();
+    const labels = head.querySelectorAll<HTMLElement>(".switch .label");
+    compact = [...labels].some((l) => l.scrollWidth > l.clientWidth + 1);
+  }
+  $effect(() => {
+    if (!head) return;
+    const ro = new ResizeObserver(() => measure());
+    ro.observe(head);
+    return () => ro.disconnect();
+  });
+  // Labels, tab set and count badge change the needed width without resizing the header; zone and
+  // window size are tracked here too (ResizeObserver doesn't fire for windows that aren't painted).
+  $effect(() => {
+    views.map(label).join();
+    void git.changes.length;
+    void active;
+    void z.size;
+    void viewport.w;
+    queueMicrotask(measure);
+  });
 
   function pick(v: ViewId) {
     setActive(zone, v);
@@ -71,11 +103,13 @@
 <section class="dock dock-{zone} glass" class:hidden={!shown} class:overlay data-zone={zone} onfocusin={noteFocus}
   style={zone === "bottom" ? `height: ${z.size}px` : overlay ? `width: min(${z.size}px, 100% - 48px)` : `width: ${z.size}px; min-width: ${MIN_SIZE[zone]}px`}>
   <div class="resizer" role="separator" onpointerdown={startResize}></div>
-  <header class="head">
-    <div class="switch" class:grow={active !== "terminal"} class:single={views.length === 1} data-drop-zone={zone} role="tablist">
+  <header class="head" bind:this={head}>
+    <div class="switch" class:grow={active !== "terminal"} class:single={views.length === 1} class:compact data-drop-zone={zone} role="tablist">
       {#each views as v (v)}
-        <button class="vt" class:on={v === active} class:dragging={drag.view === v} data-view-tab={v} role="tab" aria-selected={v === active}
-          onpointerdown={(e) => startDrag(e, v)} onclick={() => pick(v)} title={label(v)}>
+        {@const icon = compact ? ICONS[v] : undefined}
+        <button class="vt" class:on={v === active} class:iconic={icon && v !== active} class:dragging={drag.view === v} data-view-tab={v} role="tab" aria-selected={v === active}
+          aria-label={label(v)} onpointerdown={(e) => startDrag(e, v)} onclick={() => pick(v)} title={label(v)}>
+          {#if icon}<Glyph name={icon} size={12} stroke={1.3} />{/if}
           <span class="label">{label(v)}</span>
           {#if v === "changes" && git.changes.length}<span class="count" title={String(git.changes.length)}>{compactCount(git.changes.length)}</span>{/if}
           {#if v === "search"}
@@ -127,14 +161,15 @@
     top: 0;
     bottom: 0;
     z-index: 30;
-    background: var(--glass-strong);
+    /* Opaque (#57): the glass tint over the window background, so editor text can't show through
+       (backdrop-filter blur isn't reliable in every webview). */
+    background: linear-gradient(var(--glass-strong), var(--glass-strong)), var(--bg);
     box-shadow: var(--glass-highlight), 0 24px 70px rgba(0, 0, 0, 0.7), 0 4px 14px rgba(0, 0, 0, 0.45);
-    animation: dock-in 0.18s cubic-bezier(0.3, 0.9, 0.3, 1);
+    /* No open animation: this is still glass (backdrop-filter) above the workspace, so WebKitGTK would flash. */
   }
+  :global(:root[data-material="liquid"]) .dock.overlay { background: var(--glass-sheen), linear-gradient(var(--glass-strong), var(--glass-strong)), var(--bg); }
   .dock-left.overlay { left: 0; }
   .dock-right.overlay { right: 0; }
-  /* Opacity only: WebKitGTK flashes a stale frame when a transform animation ends. */
-  @keyframes dock-in { from { opacity: 0; } }
 
   .resizer { position: absolute; z-index: 5; }
   .dock-left .resizer { right: -6px; top: 0; bottom: 0; width: 6px; cursor: col-resize; }
@@ -154,6 +189,10 @@
   .vt:not(.on):hover { color: var(--label); }
   .vt.dragging { opacity: 0.4; }
   .label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  /* Compact strip: icon-only tabs keep their natural (small) width, the active tab takes the rest. */
+  .compact .vt:not(.on) { flex: 0 0 auto; }
+  .vt.iconic { padding: 0 9px; }
+  .vt.iconic .label { display: none; }
   .count { flex-shrink: 0; min-width: 16px; height: 16px; padding: 0 5px; display: grid; place-items: center; border-radius: 999px; font-size: 10px; line-height: 1; font-variant-numeric: tabular-nums; background: rgba(var(--fg-rgb), 0.14); }
   .x { flex-shrink: 0; width: 16px; height: 16px; margin-right: -4px; display: grid; place-items: center; border-radius: 50%; color: var(--label-2); }
   .x:hover { background: var(--fill-2); color: var(--label); }

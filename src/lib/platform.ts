@@ -40,20 +40,41 @@ export const venvPython = (venv: string) => (IS_WIN ? `${venv}/Scripts/python.ex
 
 // ------------------------------------------------------------------ Run-terminal dialect
 
-/** Quotes an argument (a path or word) for the Run terminal. */
+/** A Unicode noncharacter: what `q` returns instead of a value cmd.exe can't be given safely. */
+const UNQUOTABLE = "﷐";
+
+const hasControl = (s: string) => /[\x00-\x1f\x7f-\x9f]/.test(s);
+
+/**
+ * Quotes an argument (a path or word) for the Run terminal. On Windows that is cmd.exe running a
+ * batch file. `%` expands even inside double quotes, and `%%` only protects one parsing pass: a
+ * `.cmd` wrapper that uses `call` expands it again. So such a value never reaches the command:
+ * it's replaced by a marker, and `hasUnquotable` commands are refused.
+ */
 export function q(s: string): string {
   if (IS_WIN) {
+    if (hasControl(s) || /[%"]/.test(s)) return UNQUOTABLE;
     const w = /^[A-Za-z]:\//.test(s) || s.startsWith("./") ? s.replace(/\//g, "\\") : s;
-    return /^[\w@+=:,.\\-]+$/.test(w) ? w : `"${w.replace(/"/g, '""')}"`;
+    return /^[\w@+=:,.\\-]+$/.test(w) ? w : `"${w}"`;
   }
   return /^[\w@%+=:,./-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`;
 }
+
+/** Whether a command contains a value `q` refused. It must not be run. */
+export const hasUnquotable = (cmd: string) => cmd.includes(UNQUOTABLE);
+
+/**
+ * Whether a file name from another machine can go into a command through `q`. Control characters
+ * would act on the terminal, and cmd.exe expands `%` even inside quotes. `!` is refused too: Omega
+ * turns delayed expansion off, but a `.cmd` wrapper can turn it back on.
+ */
+export const quotablePath = (s: string, windows = IS_WIN) => !hasControl(s) && !(windows && /[%"!]/.test(s));
 
 /** Changes into `dir` (also switching drives on Windows). */
 export const cd = (dir: string) => (IS_WIN ? `cd /d ${q(dir)}` : `cd ${q(dir)}`);
 
 /** Runs a program given by a path relative to the cwd (e.g. "build/app"). */
-export const runRel = (rel: string) => (IS_WIN ? q(`./${rel}`) : `./${rel}`);
+export const runRel = (rel: string) => q(`./${rel}`);
 
 /** Runs `cmd` only if `file` (relative to cwd) does not exist. */
 export const unlessExists = (file: string, cmd: string) =>

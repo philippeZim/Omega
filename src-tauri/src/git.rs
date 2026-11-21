@@ -1,5 +1,7 @@
 //! Thin git wrapper: runs the git CLI (uses the user's own config, SSH keys and credential helper).
 use serde::Serialize;
+use std::io::Read;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 #[derive(Serialize)]
@@ -16,14 +18,193 @@ fn git_cmd(root: &str) -> Command {
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_EDITOR", "true")
         .env("GIT_MERGE_AUTOEDIT", "no")
-        .env("LANG", "C");
+        // Untranslated messages: the toasts look for "fatal:"/"error:" (LC_ALL beats LANG/LC_MESSAGES).
+        .env("LANG", "C")
+        .env("LC_ALL", "C");
     c
 }
 
-/// Runs `git <args>` in `root`.
+/// Turns git's hooks off. On Windows git reads `/dev/null` as `<drive>:\dev\null`, a real folder
+/// that can hold a `pre-commit` program (a project in `C:\dev`, say), and runs it. `//./NUL` is the
+/// null device there, so nothing can exist below it.
+const NO_HOOKS: &str = if cfg!(windows) { "core.hooksPath=//./NUL" } else { "core.hooksPath=/dev/null" };
+
+/// The frontend's guard (`GIT_GUARD`) is the same on every platform; the value is settled here.
+/// Only in git's own options before the command, so a commit message with this text stays as it is.
+fn with_no_hooks(mut args: Vec<String>) -> Vec<String> {
+    let mut i = 0;
+    while i < args.len() && args[i].starts_with('-') {
+        if args[i] == "-c" {
+            if let Some(value) = args.get_mut(i + 1).filter(|v| *v == "core.hooksPath=/dev/null") {
+                *value = NO_HOOKS.to_string();
+            }
+            i += 1;
+        }
+        i += 1;
+    }
+    args
+}
+
+/// For what Omega runs on its own (status poll, gutter, blame): never a hook or fsmonitor program.
+/// A Code Together guest can edit tracked files, and `core.hooksPath` may point at them.
+fn quiet_git_cmd(root: &str) -> Command {
+    let mut c = git_cmd(root);
+    c.args(["-c", NO_HOOKS, "-c", "core.fsmonitor=false"]);
+    c
+}
+
+/// The repository's effective hooks folder (honours `core.hooksPath`). `Ok(None)`: not a repository.
+/// `Err`: it can't be determined, e.g. a broken config, which callers must treat as unsafe.
+pub(crate) fn hooks_dir(root: &str) -> Result<Option<PathBuf>, ()> {
+    let out = git_cmd(root).args(["-c", "core.fsmonitor=false", "rev-parse", "--git-path", "hooks"]).output().map_err(|_| ())?;
+    if out.status.success() {
+        let dir = String::from_utf8_lossy(&out.stdout).trim_end_matches(['\r', '\n']).to_string();
+        return if dir.is_empty() { Err(()) } else { Ok(Some(Path::new(root).join(dir))) };
+    }
+    if String::from_utf8_lossy(&out.stderr).contains("not a git repository") {
+        return Ok(None);
+    }
+    Err(())
+}
+
+/// The files the repository's local config is read from: those with settings, and everything an
+/// `include.path` / `includeIf.*.path` names (also when its condition doesn't apply right now, or
+/// the file is empty). A guest who could edit one could set `core.hooksPath` or `core.sshCommand`.
+pub(crate) fn config_include_files(root: &str) -> Result<Vec<PathBuf>, ()> {
+    let out = git_cmd(root).args(["-c", "core.fsmonitor=false", "config", "--local", "--includes", "--list", "--show-origin", "-z"]).output().map_err(|_| ())?;
+    if !out.status.success() {
+        return Err(());
+    }
+    Ok(parse_config_includes(Path::new(root), &String::from_utf8_lossy(&out.stdout), std::env::var_os("HOME").map(PathBuf::from)))
+}
+
+/// `git config --list --show-origin -z`: `file:<path>` NUL `<key>` LF `<value>` NUL, and so on.
+fn parse_config_includes(root: &Path, text: &str, home: Option<PathBuf>) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let mut parts = text.split('\0');
+    while let (Some(origin), Some(entry)) = (parts.next(), parts.next()) {
+        let Some(origin) = origin.strip_prefix("file:") else { continue };
+        let file = root.join(origin);
+        let (key, value) = entry.split_once('\n').unwrap_or((entry, ""));
+        let key = key.to_ascii_lowercase();
+        if !value.is_empty() && (key == "include.path" || (key.starts_with("includeif.") && key.ends_with(".path"))) {
+            let named = match (value.strip_prefix("~/"), &home) {
+                (Some(rest), Some(home)) => home.join(rest),
+                _ => file.parent().unwrap_or(root).join(value),
+            };
+            files.push(named);
+        }
+        files.push(file);
+    }
+    files.sort();
+    files.dedup();
+    files
+}
+
+/// `stderr` of a refused `git init`; the frontend shows its own translated text for it.
+const INIT_IN_BARE: &str = "omega:init_in_bare_repository";
+
+/// Whether `path` holds a valid HEAD as git understands it. Only reads the file, and only if it is
+/// a regular one (a FIFO would block).
+fn valid_head(path: &Path) -> bool {
+    let Ok(meta) = path.symlink_metadata() else { return false };
+    if meta.file_type().is_symlink() {
+        return std::fs::read_link(path).is_ok_and(|target| target.starts_with("refs/"));
+    }
+    if !meta.is_file() {
+        return false;
+    }
+    let mut bytes = Vec::new();
+    let Ok(file) = std::fs::File::open(path) else { return false };
+    if file.take(128).read_to_end(&mut bytes).is_err() {
+        return false;
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    let text = text.trim_end();
+    text.strip_prefix("ref:").is_some_and(|r| r.trim_start().starts_with("refs/")) || (matches!(text.len(), 40 | 64) && text.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+/// Whether a folder has the layout of a bare repository. Purely structural: its `config` is never
+/// read and git isn't asked, because a planted config can run commands.
+fn looks_bare(dir: &Path) -> bool {
+    valid_head(&dir.join("HEAD")) && dir.join("objects").is_dir() && dir.join("refs").is_dir()
+}
+
+/// Whether `path` (which may not exist yet) is a bare repository or inside one. A `.git` on the way
+/// up means a normal repository owns that folder.
+fn inside_bare_repo(path: &Path) -> bool {
+    let real = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    for dir in real.ancestors() {
+        if dir.join(".git").symlink_metadata().is_ok() {
+            return false;
+        }
+        if looks_bare(dir) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Whether a `-c` / `--config-env` value defines a git alias (section names ignore case).
+fn defines_alias(setting: &str) -> bool {
+    setting.get(..6).is_some_and(|s| s.eq_ignore_ascii_case("alias."))
+}
+
+/// The folders a `git <args>` run in `root` could initialize; empty if it can't. That is `init`, its
+/// synonym `init-db`, and any command when the arguments define an alias, since it may expand to
+/// init. Every plain argument after the command counts, so an option's value can only make the
+/// check stricter.
+fn init_targets(root: &str, args: &[String]) -> Vec<PathBuf> {
+    let mut cwd = PathBuf::from(root);
+    let mut named = Vec::new();
+    let mut alias = false;
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "-C" => {
+                if let Some(dir) = it.next() {
+                    cwd = cwd.join(dir);
+                }
+            }
+            "--git-dir" | "--work-tree" => named.extend(it.next().cloned()),
+            "-c" | "--config-env" => alias |= it.next().is_some_and(|v| defines_alias(v)),
+            "--namespace" | "--attr-source" => {
+                it.next();
+            }
+            other if other.starts_with("--config-env=") => alias |= defines_alias(&other["--config-env=".len()..]),
+            other if other.starts_with("--git-dir=") || other.starts_with("--work-tree=") => {
+                named.extend(other.split_once('=').map(|(_, dir)| dir.to_string()));
+            }
+            other if other.starts_with('-') => {}
+            command => {
+                if !alias && command != "init" && command != "init-db" {
+                    return Vec::new();
+                }
+                named.extend(it.filter(|a| !a.starts_with('-')).cloned());
+                let mut targets = vec![cwd.clone()];
+                targets.extend(named.iter().map(|dir| cwd.join(dir)));
+                return targets;
+            }
+        }
+    }
+    Vec::new()
+}
+
+/// Whether a new project at `path` would end up inside a bare repository (see `inside_bare_repo`).
+#[tauri::command]
+pub fn git_in_bare_repo(path: String) -> bool {
+    inside_bare_repo(Path::new(&path))
+}
+
+/// Runs `git <args>` in `root`. `git init` is refused in a bare repository: it would put a nested
+/// `.git` into it, because `safe.bareRepository=explicit` makes git not see the repository.
 #[tauri::command]
 pub async fn git(root: String, args: Vec<String>) -> Result<GitOut, String> {
+    let args = with_no_hooks(args);
     tauri::async_runtime::spawn_blocking(move || {
+        if init_targets(&root, &args).iter().any(|dir| inside_bare_repo(dir)) {
+            return Ok(GitOut { code: 128, stdout: String::new(), stderr: INIT_IN_BARE.into() });
+        }
         let out = git_cmd(&root).args(&args).output().map_err(|e| format!("git: {e}"))?;
         Ok(GitOut {
             code: out.status.code().unwrap_or(-1),
@@ -53,63 +234,101 @@ pub struct Status {
     ahead: u32,
     behind: u32,
     changes: Vec<Change>,
+    /// "rebase" or "merge" while one is in progress (e.g. stopped at a conflict), else None.
+    operation: Option<String>,
 }
 
 /// Repository status (branch, ahead/behind, changed files). `repo: false` outside a repository.
 #[tauri::command]
 pub async fn git_status(root: String) -> Result<Status, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let top = git_cmd(&root).args(["rev-parse", "--show-toplevel"]).output().map_err(|e| e.to_string())?;
+        let top = quiet_git_cmd(&root).args(["rev-parse", "--show-toplevel"]).output().map_err(|e| e.to_string())?;
         if !top.status.success() {
-            return Ok(Status { repo: false, top: String::new(), branch: String::new(), upstream: None, ahead: 0, behind: 0, changes: vec![] });
+            return Ok(Status { repo: false, top: String::new(), branch: String::new(), upstream: None, ahead: 0, behind: 0, changes: vec![], operation: None });
         }
         let top = String::from_utf8_lossy(&top.stdout).trim().to_string();
-        let out = git_cmd(&top).args(["status", "--porcelain=v1", "-b", "-z", "--untracked-files=all"]).output().map_err(|e| e.to_string())?;
+        let out = quiet_git_cmd(&top).args(["status", "--porcelain=v1", "-b", "-z", "--untracked-files=all"]).output().map_err(|e| e.to_string())?;
         let text = String::from_utf8_lossy(&out.stdout).to_string();
-        let mut parts = text.split('\0').filter(|s| !s.is_empty());
-        let (mut branch, mut upstream, mut ahead, mut behind) = (String::new(), None, 0, 0);
-        let mut changes = Vec::new();
-        while let Some(p) = parts.next() {
-            if let Some(h) = p.strip_prefix("## ") {
-                // "main...origin/main [ahead 1, behind 2]" or "No commits yet on main"
-                let h = h.trim_start_matches("No commits yet on ").to_string();
-                let (head, rest) = h.split_once(" [").map(|(a, b)| (a.to_string(), b.trim_end_matches(']').to_string())).unwrap_or((h.clone(), String::new()));
-                if let Some((b, u)) = head.split_once("...") {
-                    branch = b.into();
-                    upstream = Some(u.into());
-                } else {
-                    branch = head;
-                }
-                for piece in rest.split(", ") {
-                    if let Some(n) = piece.strip_prefix("ahead ") { ahead = n.parse().unwrap_or(0); }
-                    if let Some(n) = piece.strip_prefix("behind ") { behind = n.parse().unwrap_or(0); }
-                }
-                continue;
+        let mut s = Status { top: top.clone(), ..parse_status(&text) };
+        let git_dir = quiet_git_cmd(&top).args(["rev-parse", "--absolute-git-dir"]).output().map_err(|e| e.to_string())?;
+        if git_dir.status.success() {
+            let (operation, branch) = operation_in(std::path::Path::new(String::from_utf8_lossy(&git_dir.stdout).trim()));
+            s.operation = operation;
+            // A rebase detaches HEAD ("HEAD (no branch)"); show the branch being rebased instead.
+            if let Some(b) = branch {
+                s.branch = b;
             }
-            if p.len() < 4 {
-                continue;
-            }
-            let (x, y, path) = (p[0..1].to_string(), p[1..2].to_string(), p[3..].to_string());
-            let orig = if x == "R" || x == "C" { parts.next().map(|s| s.to_string()) } else { None };
-            changes.push(Change { path, x, y, orig });
         }
-        Ok(Status { repo: true, top, branch, upstream, ahead, behind, changes })
+        Ok(s)
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// Rebase/merge in progress in `git_dir`: ("rebase" | "rebase-apply" | "merge", branch being rebased).
+/// "rebase-apply" is the older apply backend (`--continue` only, no manual commit in between);
+/// a `git am` session also lives in rebase-apply/ (marked by "applying") and is not reported.
+fn operation_in(git_dir: &std::path::Path) -> (Option<String>, Option<String>) {
+    for d in ["rebase-merge", "rebase-apply"] {
+        let dir = git_dir.join(d);
+        if dir.is_dir() {
+            if dir.join("applying").exists() {
+                return (None, None);
+            }
+            let head = std::fs::read_to_string(dir.join("head-name")).ok();
+            let branch = head.map(|h| h.trim().trim_start_matches("refs/heads/").to_string()).filter(|h| !h.is_empty() && h != "detached HEAD");
+            return (Some(if d == "rebase-merge" { "rebase" } else { "rebase-apply" }.into()), branch);
+        }
+    }
+    if git_dir.join("MERGE_HEAD").is_file() {
+        return (Some("merge".into()), None);
+    }
+    (None, None)
+}
+
+/// Parses `git status --porcelain=v1 -b -z` output (`top` is left empty).
+fn parse_status(text: &str) -> Status {
+    let mut parts = text.split('\0').filter(|s| !s.is_empty());
+    let (mut branch, mut upstream, mut ahead, mut behind) = (String::new(), None, 0, 0);
+    let mut changes = Vec::new();
+    while let Some(p) = parts.next() {
+        if let Some(h) = p.strip_prefix("## ") {
+            // "main...origin/main [ahead 1, behind 2]" or "No commits yet on main"
+            let h = h.trim_start_matches("No commits yet on ").to_string();
+            let (head, rest) = h.split_once(" [").map(|(a, b)| (a.to_string(), b.trim_end_matches(']').to_string())).unwrap_or((h.clone(), String::new()));
+            if let Some((b, u)) = head.split_once("...") {
+                branch = b.into();
+                upstream = Some(u.into());
+            } else {
+                branch = head;
+            }
+            for piece in rest.split(", ") {
+                if let Some(n) = piece.strip_prefix("ahead ") { ahead = n.parse().unwrap_or(0); }
+                if let Some(n) = piece.strip_prefix("behind ") { behind = n.parse().unwrap_or(0); }
+            }
+            continue;
+        }
+        if p.len() < 4 {
+            continue;
+        }
+        let (x, y, path) = (p[0..1].to_string(), p[1..2].to_string(), p[3..].to_string());
+        let orig = if x == "R" || x == "C" { parts.next().map(|s| s.to_string()) } else { None };
+        changes.push(Change { path, x, y, orig });
+    }
+    Status { repo: true, top: String::new(), branch, upstream, ahead, behind, changes, operation: None }
 }
 
 /// File content at HEAD (None if the file is new / not in HEAD).
 #[tauri::command]
 pub async fn git_head_file(root: String, path: String) -> Result<Option<String>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let top = git_cmd(&root).args(["rev-parse", "--show-toplevel"]).output().map_err(|e| e.to_string())?;
+        let top = quiet_git_cmd(&root).args(["rev-parse", "--show-toplevel"]).output().map_err(|e| e.to_string())?;
         if !top.status.success() {
             return Ok(None);
         }
         let top = String::from_utf8_lossy(&top.stdout).trim().to_string();
         let rel = std::path::Path::new(&path).strip_prefix(&top).map(|p| p.to_string_lossy().to_string()).unwrap_or(path);
-        let out = git_cmd(&top).args(["show", &format!("HEAD:{rel}")]).output().map_err(|e| e.to_string())?;
+        let out = quiet_git_cmd(&top).args(["show", &format!("HEAD:{rel}")]).output().map_err(|e| e.to_string())?;
         Ok(out.status.success().then(|| String::from_utf8_lossy(&out.stdout).to_string()))
     })
     .await
@@ -135,21 +354,26 @@ pub struct Blame {
 
 /// `git blame` of a file. With `contents` the (unsaved) editor buffer is blamed instead of the
 /// file on disk, so line numbers always match the editor. None outside a repository / untracked.
+/// `no_textconv` is set for Code Together guests: they can edit `.gitattributes`, which picks the
+/// helper a blame would run.
 #[tauri::command]
-pub async fn git_blame(root: String, path: String, contents: Option<String>) -> Result<Option<Blame>, String> {
+pub async fn git_blame(root: String, path: String, contents: Option<String>, no_textconv: Option<bool>) -> Result<Option<Blame>, String> {
     use std::io::Write;
     use std::process::Stdio;
     tauri::async_runtime::spawn_blocking(move || {
         // Resolve the repository from the file's own folder (it may live outside the project).
         let dir = std::path::Path::new(&path).parent().filter(|d| d.is_dir()).map(|d| d.to_string_lossy().to_string()).unwrap_or(root);
-        let top = git_cmd(&dir).args(["rev-parse", "--show-toplevel"]).output().map_err(|e| e.to_string())?;
+        let top = quiet_git_cmd(&dir).args(["rev-parse", "--show-toplevel"]).output().map_err(|e| e.to_string())?;
         if !top.status.success() {
             return Ok(None);
         }
         let top = String::from_utf8_lossy(&top.stdout).trim().to_string();
         let rel = std::path::Path::new(&path).strip_prefix(&top).map(|p| p.to_string_lossy().replace('\\', "/")).unwrap_or(path);
-        let mut cmd = git_cmd(&top);
+        let mut cmd = quiet_git_cmd(&top);
         cmd.args(["blame", "--porcelain"]);
+        if no_textconv.unwrap_or(false) {
+            cmd.arg("--no-textconv");
+        }
         if contents.is_some() {
             cmd.args(["--contents", "-"]);
         }
@@ -216,4 +440,457 @@ fn parse_blame(s: &str) -> Blame {
         }
     }
     Blame { commits, lines: out }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn operation_detects_rebase_and_merge() {
+        let dir = std::env::temp_dir().join(format!("omega-git-op-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(operation_in(&dir), (None, None));
+        std::fs::write(dir.join("MERGE_HEAD"), "abc\n").unwrap();
+        assert_eq!(operation_in(&dir), (Some("merge".into()), None));
+        std::fs::create_dir(dir.join("rebase-merge")).unwrap();
+        std::fs::write(dir.join("rebase-merge/head-name"), "refs/heads/feature/x\n").unwrap();
+        assert_eq!(operation_in(&dir), (Some("rebase".into()), Some("feature/x".into())));
+        std::fs::remove_dir_all(dir.join("rebase-merge")).unwrap();
+        std::fs::remove_file(dir.join("MERGE_HEAD")).unwrap();
+        std::fs::create_dir(dir.join("rebase-apply")).unwrap();
+        std::fs::write(dir.join("rebase-apply/head-name"), "refs/heads/main\n").unwrap();
+        assert_eq!(operation_in(&dir), (Some("rebase-apply".into()), Some("main".into())));
+        // `git am` uses rebase-apply/ too: not a rebase, nothing to continue from the branch menu.
+        std::fs::write(dir.join("rebase-apply/applying"), "").unwrap();
+        assert_eq!(operation_in(&dir), (None, None));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_status_poll_runs_no_hook() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("status-hook");
+        run_git(&dir, &["init", "-q"]);
+        std::fs::write(dir.join("a.txt"), "one\n").unwrap();
+        run_git(&dir, &["add", "a.txt"]);
+        run_git(&dir, &["commit", "-q", "-m", "one"]);
+        let hooks = dir.join("hooks");
+        std::fs::create_dir(&hooks).unwrap();
+        let marker = dir.join("hook-ran");
+        let hook = hooks.join("post-index-change");
+        crate::env::write_test_script(&hook, &format!("#!/bin/sh\ntouch '{}'\n", marker.display()));
+        run_git(&dir, &["config", "core.hooksPath", hooks.to_str().unwrap()]);
+        // A newer mtime makes `git status` refresh and rewrite the index, which fires this hook.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        std::fs::write(dir.join("a.txt"), "one\n").unwrap();
+        tauri::async_runtime::block_on(git_status(dir.to_string_lossy().into())).unwrap();
+        assert!(!marker.exists(), "the status poll ran a hook");
+        // The same status without the guard does fire it, so this test can tell the difference.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        std::fs::write(dir.join("a.txt"), "one\n").unwrap();
+        git_cmd(dir.to_str().unwrap()).args(["status", "--porcelain"]).output().unwrap();
+        assert!(marker.exists(), "plain status should have fired the hook");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn config_includes_are_listed_with_their_origin() {
+        let text = "file:.git/config\0core.bare\nfalse\0file:.git/config\0include.path\n../shared.cfg\0file:.git/../shared.cfg\0include.path\nnested.cfg\0file:.git/config\0includeif.gitdir:/x/.path\n~/h.cfg\0command line:\0x.y\nz\0";
+        let files = parse_config_includes(Path::new("/r"), text, Some(PathBuf::from("/home/u")));
+        for want in ["/r/.git/config", "/r/.git/../shared.cfg", "/r/.git/../nested.cfg", "/home/u/h.cfg"] {
+            assert!(files.contains(&PathBuf::from(want)), "{want} in {files:?}");
+        }
+        assert_eq!(files.len(), 4);
+    }
+
+    #[test]
+    fn hooks_dir_follows_config_and_fails_closed() {
+        let dir = scratch("hooks-dir");
+        let root = dir.to_str().unwrap();
+        assert_eq!(hooks_dir(root), Ok(None));
+        run_git(&dir, &["init", "-q"]);
+        assert!(hooks_dir(root).unwrap().unwrap().ends_with(".git/hooks"));
+        run_git(&dir, &["config", "core.hooksPath", ".husky"]);
+        assert!(hooks_dir(root).unwrap().unwrap().ends_with(".husky"));
+        let config = dir.join(".git/config");
+        let good = std::fs::read(&config).unwrap();
+        std::fs::write(&config, "[broken").unwrap();
+        assert_eq!(hooks_dir(root), Err(()));
+        std::fs::write(&config, good).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn blame_for_guests_runs_no_textconv_helper() {
+        let dir = scratch("blame-textconv");
+        let root = dir.to_str().unwrap().to_string();
+        run_git(&dir, &["init", "-q"]);
+        let marker = dir.join("helper-ran");
+        let helper = dir.join("conv.sh");
+        let script = format!("#!/bin/sh\ntouch '{}'\ncat \"$1\"\n", marker.display());
+        #[cfg(unix)]
+        crate::env::write_test_script(&helper, &script);
+        #[cfg(not(unix))]
+        std::fs::write(&helper, script).unwrap();
+        run_git(&dir, &["config", "diff.x.textconv", helper.to_str().unwrap()]);
+        std::fs::write(dir.join(".gitattributes"), "*.txt diff=x\n").unwrap();
+        std::fs::write(dir.join("a.txt"), "one\n").unwrap();
+        run_git(&dir, &["add", "a.txt", ".gitattributes"]);
+        run_git(&dir, &["commit", "-q", "-m", "one"]);
+        let file = dir.join("a.txt").to_str().unwrap().to_string();
+        let blame = tauri::async_runtime::block_on(git_blame(root, file, Some("one\n".into()), Some(true))).unwrap();
+        assert_eq!(blame.map(|b| b.lines.len()), Some(1));
+        assert!(!marker.exists(), "the textconv helper ran");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("omega-git-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // As the frontend passes it: git can't create folders below a `\\?\` path.
+        PathBuf::from(crate::env::norm(dir.canonicalize().unwrap()))
+    }
+
+    #[test]
+    fn the_hook_guard_names_a_path_that_cannot_hold_a_hook() {
+        let text = "core.hooksPath=/dev/null";
+        let args = with_no_hooks(["--no-pager", "-c", text, "commit", "-m", text].map(String::from).to_vec());
+        assert_eq!(args[2], if cfg!(windows) { "core.hooksPath=//./NUL" } else { text });
+        assert_eq!(args[5], text, "a commit message is not an option");
+    }
+
+    fn run_git(dir: &std::path::Path, args: &[&str]) {
+        let id = ["-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", "-c", "protocol.file.allow=always"];
+        let out = git_cmd(dir.to_str().unwrap()).args(id).args(args).output().unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    fn status_of(dir: &std::path::Path) -> Status {
+        tauri::async_runtime::block_on(git_status(dir.to_string_lossy().into())).unwrap()
+    }
+
+    fn new_repo(dir: &std::path::Path) {
+        std::fs::create_dir_all(dir).unwrap();
+        run_git(dir, &["init", "-q"]);
+        std::fs::write(dir.join("a.txt"), "a\n").unwrap();
+        run_git(dir, &["add", "a.txt"]);
+        run_git(dir, &["commit", "-qm", "a"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_planted_bare_repository_never_runs_its_config() {
+        use tauri::async_runtime::block_on;
+        let tmp = scratch("planted");
+        let (dir, marker) = (tmp.join("proj"), tmp.join("EXECUTED"));
+        std::fs::create_dir_all(dir.join("objects")).unwrap();
+        std::fs::create_dir_all(dir.join("refs")).unwrap();
+        std::fs::write(dir.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::write(dir.join("a.txt"), "a\n").unwrap();
+        let hook = format!("touch {}; false", marker.display());
+        std::fs::write(dir.join("config"), format!("[core]\n\trepositoryformatversion = 0\n\tbare = false\n\tworktree = .\n\tfsmonitor = \"{hook}\"\n")).unwrap();
+        let root = dir.to_string_lossy().to_string();
+        let file = dir.join("a.txt").to_string_lossy().to_string();
+
+        // Every way Omega reaches git: status poll, generic command, gutter, blame, run_capture.
+        assert!(!status_of(&dir).repo);
+        let direct = block_on(git(root.clone(), vec!["status".into()])).unwrap();
+        assert_eq!(direct.code, 128);
+        assert!(direct.stderr.contains("safe.bareRepository"), "{}", direct.stderr);
+        assert_eq!(block_on(git_head_file(root.clone(), file.clone())).unwrap(), None);
+        assert!(block_on(git_blame(root.clone(), file, Some("a\n".into()), None)).unwrap().is_none());
+        let captured = block_on(crate::proc::run_capture("git".into(), vec!["status".into()], Some(root))).unwrap();
+        assert_eq!(serde_json::to_value(&captured).unwrap()["code"], 128);
+        assert!(!marker.exists(), "the planted core.fsmonitor ran");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn normal_repositories_worktrees_and_submodules_keep_working() {
+        let tmp = scratch("layouts");
+        let main = tmp.join("main");
+        new_repo(&main);
+        assert!(status_of(&main).repo);
+
+        run_git(&main, &["worktree", "add", "-q", "../wt", "-b", "wt"]);
+        assert!(tmp.join("wt/.git").is_file());
+        let wt = status_of(&tmp.join("wt"));
+        assert!(wt.repo);
+        assert_eq!(wt.branch, "wt");
+
+        new_repo(&tmp.join("lib"));
+        run_git(&main, &["submodule", "add", "-q", "../lib", "mod"]);
+        assert!(main.join("mod/.git").is_file());
+        assert!(status_of(&main.join("mod")).repo);
+
+        // A worktree of a bare repository is opened through its `.git` file, not discovered.
+        run_git(&tmp, &["clone", "-q", "--bare", "main", "bare.git"]);
+        let barewt = tmp.join("barewt");
+        run_git(&tmp, &["--git-dir=bare.git", "worktree", "add", "-q", barewt.to_str().unwrap(), "-b", "bw"]);
+        assert!(status_of(&barewt).repo);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn a_deliberately_opened_bare_repository_fails_cleanly() {
+        use tauri::async_runtime::block_on;
+        let tmp = scratch("bare");
+        new_repo(&tmp.join("src"));
+        run_git(&tmp, &["clone", "-q", "--bare", "src", "bare.git"]);
+        let bare = tmp.join("bare.git");
+        let s = status_of(&bare);
+        assert!(!s.repo && s.changes.is_empty());
+        let log = block_on(git(bare.to_string_lossy().into(), vec!["log".into()])).unwrap();
+        assert_eq!(log.code, 128);
+        assert!(log.stderr.starts_with("fatal:"), "{}", log.stderr);
+        // Explicitly addressing it still works.
+        run_git(&tmp, &["--git-dir=bare.git", "log", "-1"]);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    fn init_via_omega(root: &std::path::Path, args: &[&str]) -> GitOut {
+        let args = args.iter().map(|a| a.to_string()).collect();
+        tauri::async_runtime::block_on(git(root.to_string_lossy().into(), args)).unwrap()
+    }
+
+    fn plant_bare(dir: &std::path::Path, marker: &std::path::Path) {
+        std::fs::create_dir_all(dir.join("objects")).unwrap();
+        std::fs::create_dir_all(dir.join("refs")).unwrap();
+        std::fs::write(dir.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::write(dir.join("config"), format!("[core]\n\trepositoryformatversion = 0\n\tbare = false\n\tworktree = .\n\tfsmonitor = \"touch {}; false\"\n", marker.display())).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn init_is_refused_in_a_bare_repository() {
+        let tmp = scratch("init-bare");
+        let (planted, marker) = (tmp.join("planted"), tmp.join("EXECUTED"));
+        plant_bare(&planted, &marker);
+        std::fs::create_dir_all(planted.join("sub")).unwrap();
+        new_repo(&tmp.join("src"));
+        run_git(&tmp, &["clone", "-q", "--bare", "src", "real.git"]);
+        std::os::unix::fs::symlink(&planted, tmp.join("link")).unwrap();
+
+        let refused: [(std::path::PathBuf, &[&str]); 16] = [
+            (planted.clone(), &["init", "-q"]),
+            (tmp.join("real.git"), &["init", "-q"]),
+            (tmp.join("link"), &["init"]),
+            (planted.join("sub"), &["init"]),
+            (tmp.clone(), &["-C", "planted", "init"]),
+            (tmp.clone(), &["-c", "a.b=c", "-C", "planted", "init", "-q"]),
+            (tmp.clone(), &["init", "-q", "planted"]),
+            (tmp.clone(), &["--git-dir=planted", "init"]),
+            (tmp.clone(), &["--git-dir", "planted", "init"]),
+            (planted.clone(), &["init-db", "-q"]),
+            (planted.clone(), &["-c", "alias.i=init", "i"]),
+            (planted.clone(), &["-c", "ALIAS.i=init", "i", "-q"]),
+            (planted.clone(), &["-c", "alias.i=!git init", "i"]),
+            (planted.clone(), &["--config-env=alias.i=SOME_VAR", "i"]),
+            (planted.clone(), &["--config-env", "alias.i=SOME_VAR", "i"]),
+            (tmp.clone(), &["-C", "planted", "-c", "alias.i=init", "i"]),
+        ];
+        for (root, args) in &refused {
+            let out = init_via_omega(root, args);
+            assert_eq!((out.code, out.stderr.as_str()), (128, INIT_IN_BARE), "{root:?} {args:?}");
+        }
+        for dir in [&planted, &planted.join("sub"), &tmp.join("real.git")] {
+            assert!(!dir.join(".git").exists(), "{dir:?}");
+        }
+        assert!(!marker.exists(), "the planted core.fsmonitor ran");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn init_still_works_in_ordinary_folders() {
+        let tmp = scratch("init-ok");
+        let ok = |name: &str, setup: &dyn Fn(&std::path::Path)| {
+            let dir = tmp.join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            setup(&dir);
+            let out = init_via_omega(&dir, &["init", "-q"]);
+            assert_eq!(out.code, 0, "{name}: {}", out.stderr);
+            assert!(dir.join(".git").is_dir(), "{name}");
+            assert!(status_of(&dir).repo, "{name}");
+        };
+        ok("empty", &|_| {});
+        ok("head-file", &|d| std::fs::write(d.join("HEAD"), "ref: refs/heads/main\n").unwrap());
+        ok("head-and-objects", &|d| {
+            std::fs::write(d.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+            std::fs::create_dir(d.join("objects")).unwrap();
+        });
+        ok("not-a-head", &|d| {
+            std::fs::write(d.join("HEAD"), "release notes for the next version\n").unwrap();
+            std::fs::create_dir(d.join("objects")).unwrap();
+            std::fs::create_dir(d.join("refs")).unwrap();
+        });
+        ok("head-folder", &|d| {
+            std::fs::create_dir(d.join("HEAD")).unwrap();
+            std::fs::create_dir(d.join("objects")).unwrap();
+            std::fs::create_dir(d.join("refs")).unwrap();
+        });
+        // Initializing again and a repository that lives below a bare-looking folder stay possible.
+        new_repo(&tmp.join("existing"));
+        assert_eq!(init_via_omega(&tmp.join("existing"), &["init", "-q"]).code, 0);
+        // An alias in a normal repository just runs.
+        let aliased = init_via_omega(&tmp.join("existing"), &["-c", "alias.st=status --short", "st"]);
+        assert_eq!((aliased.code, aliased.stderr.as_str()), (0, ""));
+        let outer = tmp.join("outer");
+        plant_bare(&outer, &tmp.join("EXECUTED"));
+        new_repo(&outer.join("inner"));
+        assert_eq!(init_via_omega(&outer.join("inner"), &["init", "-q"]).code, 0);
+        assert!(!tmp.join("EXECUTED").exists());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn only_git_init_is_checked() {
+        let args = |a: &[&str]| a.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        assert!(init_targets("/r", &args(&["status"])).is_empty());
+        assert!(init_targets("/r", &args(&["commit", "-m", "init"])).is_empty());
+        assert!(init_targets("/r", &args(&["-c", "init", "log"])).is_empty());
+        assert!(init_targets("/r", &args(&["-c", "user.name=alias.x", "status"])).is_empty());
+        assert_eq!(init_targets("/r", &args(&["-c", "alias.s=status", "s"])), [PathBuf::from("/r")]);
+        assert_eq!(init_targets("/r", &args(&["-C", "a", "init", "-q", "b"])), [PathBuf::from("/r/a"), PathBuf::from("/r/a/b")]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn new_projects_inside_a_bare_repository_are_detected() {
+        let tmp = scratch("init-new");
+        plant_bare(&tmp.join("planted"), &tmp.join("EXECUTED"));
+        assert!(git_in_bare_repo(tmp.join("planted/new-project").to_string_lossy().into()));
+        assert!(!git_in_bare_repo(tmp.join("new-project").to_string_lossy().into()));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn git_runs_with_untranslated_messages() {
+        let c = git_cmd(".");
+        let env: Vec<_> = c.get_envs().filter_map(|(k, v)| Some((k.to_str()?.to_string(), v?.to_str()?.to_string()))).collect();
+        assert!(env.contains(&("LC_ALL".into(), "C".into())));
+    }
+
+    const H1: &str = "1111111111111111111111111111111111111111";
+    const H2: &str = "2222222222222222222222222222222222222222";
+    const H0: &str = "0000000000000000000000000000000000000000";
+
+    #[test]
+    fn blame_reuses_index_for_repeated_hash() {
+        let s = format!(
+            "{H1} 1 1 1\nauthor Alice\nauthor-mail <alice@x.org>\nauthor-time 100\nsummary first\nfilename a.txt\n\tline1\n\
+             {H2} 2 2 1\nauthor Bob\nauthor-mail <bob@x.org>\nauthor-time 200\nsummary second\nfilename a.txt\n\tline2\n\
+             {H1} 3 3 1\nfilename a.txt\n\tline3\n"
+        );
+        let b = parse_blame(&s);
+        assert_eq!(b.commits.len(), 2);
+        assert_eq!(b.lines, vec![0, 1, 0]);
+        assert_eq!(b.commits[0].hash, H1);
+        assert_eq!(b.commits[0].author, "Alice");
+        assert_eq!(b.commits[0].mail, "alice@x.org");
+        assert_eq!(b.commits[0].time, 100);
+        assert_eq!(b.commits[0].summary, "first");
+        assert_eq!(b.commits[1].author, "Bob");
+        assert_eq!(b.commits[1].mail, "bob@x.org");
+        assert_eq!(b.commits[1].time, 200);
+    }
+
+    #[test]
+    fn blame_uncommitted_is_minus_one() {
+        let s = format!("{H0} 1 1 1\nauthor Not Committed Yet\nauthor-mail <not.committed.yet>\nsummary Version of a.txt from a.txt\n\tnew\n");
+        let b = parse_blame(&s);
+        assert_eq!(b.lines, vec![-1]);
+        assert_eq!(b.commits.len(), 1);
+        assert_eq!(b.commits[0].author, "Not Committed Yet");
+        assert_eq!(b.commits[0].mail, "not.committed.yet");
+    }
+
+    #[test]
+    fn blame_length_is_highest_final_line_with_gaps() {
+        let s = format!("{H1} 1 2 1\nauthor A\n\tx\n{H1} 3 5 1\n\ty\n");
+        let b = parse_blame(&s);
+        assert_eq!(b.lines, vec![-1, 0, -1, -1, 0]);
+    }
+
+    #[test]
+    fn blame_empty() {
+        let b = parse_blame("");
+        assert!(b.commits.is_empty());
+        assert!(b.lines.is_empty());
+    }
+
+    #[test]
+    fn status_branch_ahead_behind() {
+        let s = parse_status("## main...origin/main [ahead 1, behind 2]\0 M src/a.rs\0");
+        assert!(s.repo);
+        assert_eq!(s.branch, "main");
+        assert_eq!(s.upstream.as_deref(), Some("origin/main"));
+        assert_eq!((s.ahead, s.behind), (1, 2));
+        assert_eq!(s.changes.len(), 1);
+        let c = &s.changes[0];
+        assert_eq!((c.x.as_str(), c.y.as_str(), c.path.as_str()), (" ", "M", "src/a.rs"));
+        assert!(c.orig.is_none());
+    }
+
+    #[test]
+    fn status_only_behind_and_no_upstream() {
+        let s = parse_status("## dev...origin/dev [behind 7]\0");
+        assert_eq!((s.ahead, s.behind), (0, 7));
+        let s = parse_status("## feature\0");
+        assert_eq!(s.branch, "feature");
+        assert!(s.upstream.is_none());
+        assert_eq!((s.ahead, s.behind), (0, 0));
+    }
+
+    #[test]
+    fn status_no_commits_yet() {
+        let s = parse_status("## No commits yet on main\0?? a.txt\0");
+        assert_eq!(s.branch, "main");
+        assert!(s.upstream.is_none());
+        assert_eq!(s.changes.len(), 1);
+    }
+
+    #[test]
+    fn status_detached_head() {
+        let s = parse_status("## HEAD (no branch)\0");
+        assert_eq!(s.branch, "HEAD (no branch)");
+        assert!(s.upstream.is_none());
+    }
+
+    #[test]
+    fn status_rename_sets_orig() {
+        let s = parse_status("## main\0R  new.rs\0old.rs\0M  other.rs\0");
+        assert_eq!(s.changes.len(), 2);
+        assert_eq!(s.changes[0].x, "R");
+        assert_eq!(s.changes[0].path, "new.rs");
+        assert_eq!(s.changes[0].orig.as_deref(), Some("old.rs"));
+        assert_eq!(s.changes[1].path, "other.rs");
+        assert!(s.changes[1].orig.is_none());
+    }
+
+    #[test]
+    fn status_untracked_with_spaces() {
+        let s = parse_status("## main\0?? path with spaces/file name.txt\0");
+        assert_eq!(s.changes[0].x, "?");
+        assert_eq!(s.changes[0].y, "?");
+        assert_eq!(s.changes[0].path, "path with spaces/file name.txt");
+    }
+
+    #[test]
+    fn status_skips_short_entries() {
+        let s = parse_status("## main\0M \0?? \0 M ok\0");
+        assert_eq!(s.changes.len(), 1);
+        assert_eq!(s.changes[0].path, "ok");
+    }
+
+    #[test]
+    fn status_empty() {
+        let s = parse_status("");
+        assert!(s.repo);
+        assert_eq!(s.branch, "");
+        assert!(s.changes.is_empty());
+    }
 }

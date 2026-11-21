@@ -3,7 +3,7 @@
   import { t } from "../lib/i18n/index.svelte";
 
   const items = $derived(Object.entries(toolState.installing));
-  const stage = (s: string) => (s === "extract" ? t("tools.extracting") : s === "install" ? t("tools.installing") : t("tools.downloading"));
+  const stage = (s: string) => (s === "extract" ? t("tools.extracting") : s === "install" ? t("tools.installing") : s === "build" ? t("tools.building") : t("tools.downloading"));
   const mb = (n: number) => (n / 1048576).toFixed(n > 10485760 ? 0 : 1);
 </script>
 
@@ -13,10 +13,10 @@
       <div class="item">
         <div class="row">
           <span class="name">{stage(p.stage)} · {p.label}</span>
-          <span class="size">{p.done ? `${mb(p.done)}${p.total ? ` / ${mb(p.total)}` : ""} MB` : ""}</span>
+          <span class="size">{p.stage === "build" ? (p.total ? `${p.done} / ${p.total}` : "") : p.done ? `${mb(p.done)}${p.total ? ` / ${mb(p.total)}` : ""} MB` : ""}</span>
         </div>
-        <div class="bar" class:indeterminate={!p.total || p.stage !== "download"}>
-          <div class="fill" style="width: {p.total && p.stage === 'download' ? Math.min(100, (p.done / p.total) * 100) : 100}%"></div>
+        <div class="bar" class:indeterminate={!p.total || (p.stage !== "download" && p.stage !== "build")}>
+          <div class="fill" style="width: {p.total && (p.stage === 'download' || p.stage === 'build') ? Math.min(100, (p.done / p.total) * 100) : 100}%"></div>
         </div>
       </div>
     {/each}
@@ -44,6 +44,7 @@
   .size { opacity: 0.6; font-variant-numeric: tabular-nums; }
   .bar { height: 4px; border-radius: 2px; background: rgba(127, 127, 127, 0.25); overflow: hidden; }
   .fill { height: 100%; background: var(--accent, #6b9be0); transition: width 0.2s; }
-  .indeterminate .fill { width: 35% !important; animation: slide 1.1s ease-in-out infinite; }
-  @keyframes slide { from { transform: translateX(-100%); } to { transform: translateX(300%); } }
+  /* Moves the background, not the element: a transform animation on glass flashes in WebKitGTK. */
+  .indeterminate .fill { width: 100% !important; background: linear-gradient(var(--accent, #6b9be0), var(--accent, #6b9be0)) no-repeat; background-size: 35% 100%; animation: slide 1.1s ease-in-out infinite; }
+  @keyframes slide { from { background-position: -53.85% 0; } to { background-position: 153.85% 0; } }
 </style>

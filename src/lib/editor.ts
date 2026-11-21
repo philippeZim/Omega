@@ -22,27 +22,9 @@ export interface EditorConfig {
 import { baseTheme } from "./theme";
 import { REGISTERED_RUNS } from "./editorCommands";
 import { Prec } from "@codemirror/state";
-import { i18n, onLocaleChange, t, type Key } from "./i18n/index.svelte";
-
-/** CodeMirror's built-in UI phrases (search panel, go to line, folding, lint) → our dictionary keys. */
-const CM_PHRASES: [string, Key][] = [
-  ["Find", "commands.cm.find"], ["Replace", "commands.cm.replace"], ["next", "commands.cm.next"],
-  ["previous", "commands.cm.previous"], ["all", "commands.cm.all"], ["match case", "commands.cm.matchCase"],
-  ["regexp", "commands.cm.regexp"], ["by word", "commands.cm.byWord"], ["replace", "commands.cm.replaceOne"],
-  ["replace all", "commands.cm.replaceAll"], ["close", "commands.cm.close"], ["Go to line", "commands.cm.gotoLine"],
-  ["go", "commands.cm.go"], ["current match", "commands.cm.currentMatch"], ["on line", "commands.cm.onLine"],
-  ["replaced match on line $", "commands.cm.replacedOnLine"], ["replaced $ matches", "commands.cm.replacedCount"],
-  ["Completions", "commands.cm.completions"], ["Diagnostics", "commands.cm.diagnostics"],
-  ["No diagnostics", "commands.cm.noDiagnostics"], ["folded code", "commands.cm.foldedCode"], ["unfold", "commands.cm.unfold"],
-  ["Fold line", "commands.cm.foldLine"], ["Unfold line", "commands.cm.unfoldLine"], ["Folded lines", "commands.cm.foldedLines"],
-  ["Unfolded lines", "commands.cm.unfoldedLines"], ["to", "commands.cm.to"], ["Control character", "commands.cm.controlChar"],
-  ["Selection deleted", "commands.cm.selectionDeleted"],
-];
-
-/** Phrases for the current UI language (English = CodeMirror's defaults). */
-function phrases() {
-  return i18n.locale === "en" ? [] : EditorState.phrases.of(Object.fromEntries(CM_PHRASES.map(([p, k]) => [p, t(k)])));
-}
+import { onLocaleChange } from "./i18n/index.svelte";
+import { stripBom } from "./eol";
+import { phrases } from "./cmPhrases";
 
 /** Keys handled by the command registry first (set by commands.svelte.ts). */
 let keyHandler: (e: KeyboardEvent, view: EditorView) => boolean = () => false;
@@ -142,11 +124,23 @@ export function mount(parent: HTMLElement) {
 
 export function createDoc(id: string, content: string) {
   // The state is created lazily with the right extensions on first activation.
-  const state = EditorState.create({ doc: content });
+  // The BOM is not part of the text (it would show as a special character); save writes it back (eol.ts).
+  const state = EditorState.create({ doc: stripBom(content) });
   docs.set(id, { state, saved: state.doc, cfg: null, collab: null });
 }
 
+/** Cursor of recently closed files (by path), restored when the file is opened again in this session. */
+const closedPos = new Map<string, { anchor: number; head: number }>();
+
 export function disposeDoc(id: string) {
+  const d = docs.get(id);
+  const path = d?.cfg?.path;
+  if (d && path) {
+    const { anchor, head } = (id === activeId && view ? view.state : d.state).selection.main;
+    closedPos.delete(path);
+    closedPos.set(path, { anchor, head });
+    if (closedPos.size > 100) closedPos.delete(closedPos.keys().next().value!);
+  }
   docs.delete(id);
 }
 
@@ -160,12 +154,18 @@ export function activate(id: string | null, cfg: EditorConfig) {
     return;
   }
   const d = docs.get(id)!;
+  let restored: number | null = null;
   if (d.cfg === null) {
-    d.state = EditorState.create({ doc: d.state.doc, extensions: baseExtensions(cfg, d.collab) });
+    const pos = cfg.path ? closedPos.get(cfg.path) : undefined;
+    const len = d.state.doc.length;
+    const selection = pos && { anchor: Math.min(pos.anchor, len), head: Math.min(pos.head, len) };
+    d.state = EditorState.create({ doc: d.state.doc, selection, extensions: baseExtensions(cfg, d.collab) });
     d.cfg = cfg;
+    if (selection) restored = selection.head;
   }
   view.dom.style.display = "";
   view.setState(d.state);
+  if (restored !== null) view.dispatch({ effects: EditorView.scrollIntoView(restored, { y: "center" }) });
   if (!sameCfg(d.cfg, cfg)) configure(cfg);
   reportCursor(view.state);
   view.focus();
@@ -181,6 +181,19 @@ export function configure(cfg: EditorConfig) {
   if (!prev || prev.mode !== cfg.mode || prev.path !== cfg.path) effects.push(modeConf.reconfigure(modeExtensions(cfg.mode, cfg.path)));
   if (!prev || prev.spell !== cfg.spell || prev.mode !== cfg.mode) effects.push(spellConf.reconfigure(cfg.spell ? spellcheck(cfg.spell, cfg.mode) : []));
   if (effects.length) view.dispatch({ effects });
+}
+
+/**
+ * This editor's document `id` has a new path or language: new highlighting and tooling, same text,
+ * cursor and undo history. Also for a background tab, whose stored path would otherwise be stale.
+ */
+export function refreshLanguage(id: string, path: string | null) {
+  const d = docs.get(id);
+  if (!d?.cfg) return; // not shown yet: it's configured with the current path when activated
+  d.cfg = { ...d.cfg, path };
+  const effects = modeConf.reconfigure(modeExtensions(d.cfg.mode, path));
+  if (id === activeId && view) view.dispatch({ effects });
+  else d.state = d.state.update({ effects }).state;
 }
 
 export function getText(id: string): string {
@@ -223,7 +236,7 @@ export function getView() {
  * Applies changes to a document from outside the main view (find/replace, search preview).
  * Open tabs keep undo history; the dirty flag (and with it autosave) updates as usual.
  */
-export function applyChanges(id: string, spec: { changes: import("@codemirror/state").ChangeSpec }) {
+export function applyChanges(id: string, spec: Pick<import("@codemirror/state").TransactionSpec, "changes" | "annotations">) {
   const d = docs.get(id);
   if (!d) return;
   if (id === activeId && view) {
@@ -260,6 +273,11 @@ export function setCollab(id: string, ext: import("@codemirror/state").Extension
   const effects = collabConf.reconfigure(ext ?? []);
   if (id === activeId && view) view.dispatch({ effects });
   else d.state = d.state.update({ effects }).state;
+}
+
+/** Mode the active document is configured for (null without an active document). */
+export function activeMode(): Mode | null {
+  return (activeId && docs.get(activeId)?.cfg?.mode) || null;
 }
 
 export function isActive(id: string) {

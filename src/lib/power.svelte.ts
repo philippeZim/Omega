@@ -1,7 +1,8 @@
 // Keep the computer awake (also with the lid closed) while an AI agent runs in a terminal.
 // The backend (src-tauri/src/power.rs) watches the terminals; this only holds the setting.
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { onGlobalChange } from "./windowStorage";
+import { listen } from "./windowEvents";
 
 type Status = { active: boolean; agent: string | null; lid: boolean; error: string | null };
 
@@ -18,4 +19,5 @@ export async function setKeepAwake(enabled: boolean) {
 }
 
 listen<Status>("power-status", (e) => (power.status = e.payload));
+onGlobalChange("keepAwakeAgents", (v) => (power.enabled = v !== "false"));
 setKeepAwake(power.enabled);

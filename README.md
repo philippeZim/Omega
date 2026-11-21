@@ -5,7 +5,7 @@
 <h1 align="center">Omega</h1>
 
 <p align="center">
-  Notes, LaTeX and code. One app, one window, the whole semester.<br><br>
+  Notes, LaTeX and code in one editor.<br><br>
   <a href="https://github.com/philippeZim/Omega/releases/latest"><b>Download</b></a> ·
   <a href="#install">Install</a> ·
   <a href="https://github.com/philippeZim/Omega/issues">Feedback</a>
@@ -15,41 +15,48 @@
 
 ![LaTeX source next to the live PDF](docs/screenshots/latex.png)
 
-Lecture notes in Obsidian, the exercise sheet in Overleaf, the programming assignment in VS Code. Omega replaces all three, and switching between them is just `Ctrl+1` to `Ctrl+4`.
+Obsidian, Overleaf and VS Code in one app.
 
-### LaTeX without the setup
+### LaTeX, no setup
 
-Type on the left, the PDF updates on the right. No TeX distribution to install, no compile button, and `Ctrl+J` jumps straight to the line you're looking at.
+Live PDF as you type. No TeX installation, no compile button.
 
-### Notes that look finished while you write them
+### Notes that render as you type
 
-Formulas, tables and callouts render as you type. The Markdown only shows up on the line you're editing.
+Formulas, tables and callouts, without Markdown clutter.
 
 ![Markdown notes with rendered math and a callout](docs/screenshots/markdown.png)
 
-### A real IDE when it's time to code
+### A full IDE
 
-Run, test and debug Python, Rust, C/C++, Java and JavaScript, with completion, a terminal and Git built in. Whatever a language needs gets set up the first time you open a file.
+Run, test and debug Python, Rust, C/C++, Java and JavaScript. Completion, terminal and Git included. Language tools set themselves up.
 
 ![Python in the editor, output in the terminal](docs/screenshots/code.png)
 
-And a few things you'll be glad about later: live collaboration with a classmate, spell checking in German, English and French, Claude Code / Codex / OpenCode in the terminal, and `F1` for a cheat sheet in every mode.
+### Also included
+
+- Live collaboration
+- Spell checking in German, English and French
+- Claude Code, Codex and OpenCode in the terminal
+- Powerful, customizable keyboard shortcuts
 
 ## Install
 
-**Linux and macOS:** paste this into a terminal. It picks the right version for your machine and adds Omega to your app menu.
+**Linux and macOS:**
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/philippeZim/Omega/main/install.sh | sh
 ```
 
-**Windows:** download the `…_x64-setup.exe` from the [latest release](https://github.com/philippeZim/Omega/releases/latest) and run it. Windows warns the first time because the app isn't signed yet: *More info → Run anyway*.
+**Windows:** run the `…_x64-setup.exe` from the [latest release](https://github.com/philippeZim/Omega/releases/latest). The app isn't signed yet, so choose *More info → Run anyway*.
 
-That's the only time you install it. Omega updates itself from then on.
+Omega updates itself.
+
+**From a terminal:** `omega .` opens the current folder, `omega <path>` a folder or file. If the folder is already open, its window comes to the front. The installers set the command up without admin rights; for `.deb`/`.rpm` or older installs, use *Settings → Installations → Install omega command*.
 
 ## Feedback
 
-Something broken or missing? Hit the speech-bubble button in the top bar. It turns your description and a screenshot into a GitHub issue in a few seconds.
+Use the speech-bubble button in the top bar to report a bug with a screenshot.
 
 ## Build from source
 
@@ -58,7 +65,7 @@ pnpm install
 pnpm tauri dev
 ```
 
-You need Rust, Node.js and pnpm (plus the WebKitGTK packages on Linux, see the [Tauri prerequisites](https://tauri.app/start/prerequisites/)). How releases work is described in [docs/RELEASING.md](docs/RELEASING.md).
+Requires Rust, Node.js, pnpm and the [Tauri prerequisites](https://tauri.app/start/prerequisites/). See [docs/RELEASING.md](docs/RELEASING.md) for releases.
 
 ## License
 

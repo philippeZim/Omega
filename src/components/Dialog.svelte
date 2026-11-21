@@ -68,9 +68,7 @@
   });
 
   function close(v: string | null) {
-    const d = ui.dialog;
-    ui.dialog = null;
-    d?.resolve(v, value);
+    ui.closeDialog(v, value);
     queueMicrotask(() => { if (!ui.dialog) ed.focus(); });
   }
 
@@ -166,6 +164,6 @@
   .buttons { display: grid; grid-template-columns: repeat(var(--n), 1fr); gap: 8px; padding: 0 14px 14px; }
   .buttons button { height: 38px; border-radius: 999px; font-size: 13.5px; font-weight: 500; background: rgba(var(--fg-rgb), 0.08); box-shadow: inset 0 1px 0 rgba(var(--hl-rgb), 0.06); }
   .buttons button:hover { background: rgba(var(--fg-rgb), 0.14); }
-  .buttons button.primary { font-weight: 600; background: var(--accent); color: white; }
+  .buttons button.primary { font-weight: 600; background: var(--accent-fill); color: white; }
   .buttons button.danger { color: var(--red); }
 </style>

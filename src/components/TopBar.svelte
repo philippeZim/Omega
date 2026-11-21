@@ -2,21 +2,33 @@
   import { app, setMode, openFolder, setRoot, recentFolders } from "../lib/state.svelte";
   import { fsApi } from "../lib/api";
   import { t } from "../lib/i18n/index.svelte";
-  import { git, branches, switchBranch, newBranch, pull, push, cloneRepo, publishGitHub, initRepo, connectRemote } from "../lib/git/git.svelte";
+  import { aheadLabel } from "../lib/git/labels";
+  import { git, isGuestGit, guestRefusal, type GuestGitAction, branches, switchBranch, newBranch, pull, push, fetchNow, continueOperation, abortOperation, cloneRepo, publishGitHub, initRepo, connectRemote } from "../lib/git/git.svelte";
+
+  /** Entries a guest would be refused stay visible, disabled, and say why. */
+  const allowed = (a: GuestGitAction) => {
+    const why = guestRefusal(a);
+    return why ? { disabled: true, title: why } : {};
+  };
 
   async function branchMenu(e: MouseEvent) {
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
     const b = await branches();
-    const ctrl = t("app.ctrl");
     ui.openMenu(new MouseEvent("contextmenu", { clientX: r.left, clientY: r.bottom + 8 }), [
-      { label: t("app.newBranch"), action: newBranch },
-      { label: t("app.pull") + (git.behind ? t("app.behind", { n: git.behind }) : ""), shortcut: `${ctrl} T`, action: pull },
-      { label: "Push" + (git.ahead ? t("app.ahead", { n: git.ahead }) : ""), shortcut: `${ctrl} ⇧ K`, action: push },
-      { label: t("app.showChanges"), shortcut: `${ctrl} K`, action: () => showView("changes") },
-      { label: git.remoteUrl ? t("app.remoteChange", { url: git.remoteUrl.replace(/^https?:\/\/|^git@/, "").replace(/\.git$/, "") }) : t("app.connectRemote"), action: connectRemote },
+      ...(git.operation === "rebase"
+        ? [{ label: t("git.continueRebase"), action: () => continueOperation(), ...allowed("continue") }, { label: t("git.abortRebase"), action: abortOperation, ...allowed("abort") }, { separator: true, label: "" }]
+        : git.operation === "merge"
+          ? [{ label: t("git.continueMerge"), action: () => continueOperation(), ...allowed("continue") }, { label: t("git.abortMerge"), action: abortOperation, ...allowed("abort") }, { separator: true, label: "" }]
+          : []),
+      { label: t("app.newBranch"), action: newBranch, ...allowed("newBranch") },
+      { label: t("app.pull") + (git.behind ? t("app.behind", { n: git.behind }) : ""), shortcut: shortcutLabel("git.pull"), action: pull, ...allowed("pull") },
+      { label: t("app.fetch"), action: fetchNow, ...allowed("fetch") },
+      { label: t("app.push") + (git.ahead ? aheadLabel(git.ahead) : ""), shortcut: shortcutLabel("git.push"), action: push, ...allowed("push") },
+      { label: t("app.showChanges"), shortcut: shortcutLabel("git.commit"), action: () => showView("changes") },
+      ...(isGuestGit() ? [] : [{ label: git.remoteUrl ? t("app.remoteChange", { url: git.remoteUrl.replace(/^https?:\/\/|^git@/, "").replace(/\.git$/, "") }) : t("app.connectRemote"), action: connectRemote }]),
       { separator: true, label: "" },
-      ...b.local.map((n) => ({ label: (n === git.branch ? "✓  " : "     ") + n, action: () => n !== git.branch && switchBranch(n) })),
-      ...(b.remote.length ? [{ separator: true, label: "" }, ...b.remote.map((n) => ({ label: "     " + n, action: () => switchBranch(n, true) }))] : []),
+      ...b.local.map((n) => ({ label: (n === git.branch ? "✓  " : "     ") + n, action: () => n !== git.branch && switchBranch(n), ...(n === git.branch ? {} : allowed("switch")) })),
+      ...(b.remote.length ? [{ separator: true, label: "" }, ...b.remote.map((n) => ({ label: "     " + n, action: () => switchBranch(n, true), ...allowed("switch") }))] : []),
     ]);
   }
 
@@ -26,8 +38,10 @@
     const pretty = (p: string) => (home && p.startsWith(home) ? "~" + p.slice(home.length) : p);
     const recents = recentFolders.filter((f) => f !== app.root).slice(0, 8);
     ui.openMenu(new MouseEvent("contextmenu", { clientX: r.left, clientY: r.bottom + 8 }), [
-      { label: t("app.openFolder") + "…", shortcut: `${t("app.ctrl")} O`, action: openFolder },
-      { label: t("app.newProject") + "…", action: () => (runner.newProject = true) },
+      { label: t("app.newWindow"), shortcut: shortcutLabel("window.new"), action: () => void newWindow() },
+      { separator: true, label: "" },
+      { label: t("app.openFolder") + "…", shortcut: shortcutLabel("file.openFolder"), action: openFolder },
+      { label: t("app.newProject") + "…", action: openNewProject },
       { label: t("app.cloneRepo"), action: cloneRepo },
       ...(app.root && !git.repo ? [{ label: t("app.initRepo"), action: initRepo }] : []),
       ...(app.root ? [{ label: t("app.publishGitHub"), action: publishGitHub }] : []),
@@ -39,8 +53,10 @@
   import { ui } from "../lib/ui.svelte";
   import { report } from "../lib/report.svelte";
   import { MODES } from "../lib/modes";
+  import { shortcutLabel, withShortcut } from "../lib/commands.svelte";
+  import { newWindow } from "../lib/windowActions";
   import { basename } from "../lib/api";
-  import { runner } from "../lib/code/runner.svelte";
+  import { openNewProject } from "../lib/code/runner.svelte";
   import { settings } from "../lib/settings.svelte";
   import { collab } from "../lib/collab/collab.svelte";
   import { share } from "../lib/collab/share.svelte";
@@ -61,9 +77,9 @@
 
   // Narrow window: the mode switcher becomes a pill with a menu …
   function modeMenu(e: MouseEvent) {
-    ui.openMenu(below(e), MODES.map((m, i) => ({
+    ui.openMenu(below(e), MODES.map((m) => ({
       label: (m.id === app.mode ? "✓  " : "     ") + m.label,
-      shortcut: `${t("app.ctrl")} ${i + 1}`,
+      shortcut: shortcutLabel(`mode.${m.id}`),
       action: () => setMode(m.id),
     })));
   }
@@ -71,10 +87,10 @@
   // … and the round buttons on the right move into a "more" menu (settings stays).
   function moreMenu(e: MouseEvent) {
     ui.openMenu(below(e, true), [
-      { label: t("commands.group.terminal"), shortcut: `${t("app.ctrl")} ^`, action: toggleTerminalPanel },
+      { label: t("commands.group.terminal"), shortcut: shortcutLabel("terminal.toggle"), action: toggleTerminalPanel },
       { label: t("app.collab"), action: () => (collab.open = !collab.open) },
       { label: t("app.report.button"), action: () => (report.open = true) },
-      { label: t("app.help"), shortcut: "F1", action: () => (ui.help = !ui.help) },
+      { label: t("app.help"), shortcut: shortcutLabel("app.help"), action: () => (ui.help = !ui.help) },
       { label: t("app.settings"), action: () => (settings.open = !settings.open) },
     ]);
   }
@@ -82,7 +98,7 @@
 
 <header class="topbar">
   <div class="left">
-    <button class="ghost" title="{t('app.sidebar')} ({t('app.ctrl')}+B)" class:on={zoneShown("left")} onclick={() => toggleZone("left")} aria-label={t("app.sidebar")}>
+    <button class="ghost" title={withShortcut(t("app.sidebar"), "app.sidebar")} class:on={zoneShown("left")} onclick={() => toggleZone("left")} aria-label={t("app.sidebar")}>
       <svg width="16" height="16" viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.3"/><line x1="6" y1="2.5" x2="6" y2="13.5" stroke="currentColor" stroke-width="1.3"/></svg>
     </button>
     <button class="title" onclick={projectMenu} title={app.root ?? t("app.openFolder")}>
@@ -92,29 +108,29 @@
     {#if git.repo && git.branch}
       <button class="branch" onclick={branchMenu} title={t("app.branchTitle")}>
         <svg width="12" height="12" viewBox="0 0 16 16"><circle cx="4" cy="3.5" r="1.8" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="4" cy="12.5" r="1.8" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="12" cy="5" r="1.8" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M4 5.3v5.4M12 6.8c0 3-4 2.5-7.2 4.4" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>
-        <span>{git.branch}</span>
+        <span>{git.branch}{git.operation === "rebase" ? t("git.rebasing") : git.operation === "merge" ? t("git.merging") : ""}</span>
         {#if git.ahead}<span class="ab">↑{git.ahead}</span>{/if}
         {#if git.behind}<span class="ab">↓{git.behind}</span>{/if}
         {#if git.changes.length}<span class="dirty"></span>{/if}
       </button>
     {/if}
     <span class="divider extra"></span>
-    <button class="ghost extra" title="{t('app.openFolder')} ({t('app.ctrl')}+O)" onclick={openFolder} aria-label={t("app.openFolder")}>
+    <button class="ghost extra" title={withShortcut(t("app.openFolder"), "file.openFolder")} onclick={openFolder} aria-label={t("app.openFolder")}>
       <svg width="15" height="14" viewBox="0 0 15 14"><path d="M1.5 3.5a1 1 0 0 1 1-1h3l1.3 1.5h5.7a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1h-10a1 1 0 0 1-1-1z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>
     </button>
-    <button class="ghost extra" title={t("app.newProject")} onclick={() => (runner.newProject = true)} aria-label={t("app.newProject")}>
+    <button class="ghost extra" title={t("app.newProject")} onclick={openNewProject} aria-label={t("app.newProject")}>
       <svg width="14" height="14" viewBox="0 0 14 14"><path d="M7 2.5v9M2.5 7h9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
     </button>
   </div>
 
-  <button class="mode-pill" onclick={modeMenu} title={t("app.ctrl") + "+1 – " + MODES.length}>
+  <button class="mode-pill" onclick={modeMenu} title={MODES.map((m) => withShortcut(m.label, `mode.${m.id}`)).join(" · ")}>
     <span>{MODES[activeIndex]?.label}</span>
     <svg width="9" height="9" viewBox="0 0 10 10"><path d="M2.5 3.8L5 6.3l2.5-2.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
   </button>
   <div class="segmented" role="tablist" style="--count: {MODES.length}">
     <div class="thumb" style="--index: {activeIndex}"></div>
-    {#each MODES as m, i (m.id)}
-      <button role="tab" aria-selected={app.mode === m.id} class:active={app.mode === m.id} title="{m.label} ({t('app.ctrl')}+{i + 1})" onclick={() => setMode(m.id)}>
+    {#each MODES as m (m.id)}
+      <button role="tab" aria-selected={app.mode === m.id} class:active={app.mode === m.id} title={withShortcut(m.label, `mode.${m.id}`)} onclick={() => setMode(m.id)}>
         {m.label}
       </button>
     {/each}
@@ -140,7 +156,7 @@
     <button class="ghost help wide" class:on={report.open} title={t("app.report.button")} onclick={() => (report.open = true)} aria-label={t("app.report.button")}>
       <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M12 7v4"/><path d="M12 14h.01"/></svg>
     </button>
-    <button class="ghost help wide" class:on={ui.help} title={t("app.cheatSheet")} onclick={() => (ui.help = !ui.help)} aria-label={t("app.help")}>?</button>
+    <button class="ghost help wide" class:on={ui.help} title={withShortcut(t("help.cheatSheet"), "app.help")} onclick={() => (ui.help = !ui.help)} aria-label={t("app.help")}>?</button>
     <button class="ghost help more" title={t("code.rb.more")} onclick={moreMenu} aria-label={t("code.rb.more")}>
       <svg width="16" height="4" viewBox="0 0 16 4"><circle cx="2" cy="2" r="1.6" fill="currentColor"/><circle cx="8" cy="2" r="1.6" fill="currentColor"/><circle cx="14" cy="2" r="1.6" fill="currentColor"/></svg>
     </button>

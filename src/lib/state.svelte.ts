@@ -1,18 +1,22 @@
-import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
-import { basename, dirname, extname, fsApi, normPath } from "./api";
+import { openDialog, saveDialog, openUrl } from "./native";
+import { onGlobalChange } from "./windowStorage";
+import { basename, dirname, extname, fsApi, joinPath, normPath, wellFormed } from "./api";
 import * as ed from "./editor";
 import { modeForExtension, type Mode } from "./modes";
+import { moveLanguageOverrides, overrideFor } from "./code/langOverride.svelte";
 import { ui } from "./ui.svelte";
 import type { SpellLang } from "./spell";
 import { setLinkHandler, resolvePath } from "./markdown/livePreview";
-import { openUrl } from "@tauri-apps/plugin-opener";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import * as latexCtl from "./latex/controller.svelte";
 import { setLspHooks } from "./code/lspExtension";
-import { allClients, fileUri } from "./code/lsp.svelte";
+import { closeLspDoc, saveLspDoc } from "./code/lsp.svelte";
 import { t } from "./i18n/index.svelte";
 import { onFilesChanged, watchRoot } from "./fsWatch.svelte";
 import { detectEol, fromDisk, toDisk, type Eol } from "./eol";
+import { findHeadingLine } from "./headingAnchor";
+import { blockedAsGuest, guestGuard } from "./collab/guard";
+import { toolsBeforeSave } from "./collab/guestChanges";
 
 setLspHooks({
   workspace: () => app.root,
@@ -31,13 +35,30 @@ setLspHooks({
 
 setLinkHandler(async (href, fromPath) => {
   if (/^[a-z][a-z0-9+.-]*:/i.test(href)) return openUrl(href).catch((e) => ui.toast(String(e), "error"));
-  if (href.startsWith("#")) return;
+  if (href.startsWith("#")) return jumpToHeading(href.slice(1));
+  if (isRemotePath(fromPath)) return collabHooks.openLink(href, fromPath!, jumpToHeading);
   let p = resolvePath(href, fromPath);
   if (!p) return ui.toast(t("app.relativeLinkUnsaved"), "error");
   if (!(await fsApi.exists(p)) && (await fsApi.exists(p + ".md"))) p += ".md";
   if (!(await fsApi.exists(p))) return ui.toast(t("app.fileNotFound", { path: p }), "error");
-  openFile(p);
+  // A folder can't be opened as a tab: say so instead of the raw OS error (#48).
+  if (await fsApi.listDir(p).then(() => true, () => false)) return ui.toast(t("app.linkIsFolder", { path: p }), "error");
+  await openFile(p);
+  const hash = href.indexOf("#");
+  if (hash >= 0 && href.length > hash + 1 && activeTab()?.path === p) jumpToHeading(href.slice(hash + 1));
 });
+
+/** "[x](#sec-two)": moves the cursor in the active tab to that heading (#42). */
+function jumpToHeading(fragment: string) {
+  const id = app.activeId;
+  const view = ed.getView();
+  if (!id || !view) return;
+  const line = findHeadingLine(ed.getText(id), fragment);
+  if (line < 0) return ui.toast(t("app.headingNotFound", { name: fragment }), "error");
+  const pos = view.state.doc.line(line + 1).from;
+  view.dispatch({ selection: { anchor: pos }, scrollIntoView: true });
+  view.focus();
+}
 
 const spellLangs: Record<string, SpellLang> = JSON.parse(localStorage.getItem("spellLangs") || "{}");
 
@@ -50,6 +71,8 @@ export interface Tab {
   root?: string | null;
   /** Line ending of the file on disk (the editor always uses "\n"); undefined = "\n". */
   eol?: Eol;
+  /** The file was deleted outside Omega: the tab stays dirty, autosave skips it (#32). */
+  deleted?: boolean;
 }
 
 export const app = $state({
@@ -75,15 +98,28 @@ function cfg(): ed.EditorConfig {
 export function setSpellLang(lang: SpellLang) {
   const path = activeTab()?.path;
   if (path) {
+    // Per file only: other files keep their language (#45).
     spellLangs[path] = lang;
     localStorage.setItem("spellLangs", JSON.stringify(spellLangs));
+  } else {
+    // No file (untitled tab or no tab): sets the default for files without their own choice.
+    app.spellDefault = lang;
+    localStorage.setItem("spellDefault", lang);
   }
-  app.spellDefault = lang;
-  localStorage.setItem("spellDefault", lang);
   if (!app.spellEnabled) app.spellEnabled = true;
   localStorage.setItem("spellEnabled", "true");
   ed.configure(cfg());
 }
+
+// Changed in another window.
+onGlobalChange(["spellEnabled", "spellDefault", "spellLangs"], () => {
+  app.spellEnabled = localStorage.getItem("spellEnabled") === "true";
+  app.spellDefault = (localStorage.getItem("spellDefault") as SpellLang) || "de";
+  const langs: Record<string, SpellLang> = JSON.parse(localStorage.getItem("spellLangs") || "{}");
+  for (const k of Object.keys(spellLangs)) delete spellLangs[k];
+  Object.assign(spellLangs, langs);
+  ed.configure(cfg());
+});
 
 export function toggleSpell() {
   app.spellEnabled = !app.spellEnabled;
@@ -97,14 +133,34 @@ const uid = () => Math.random().toString(36).slice(2, 10);
 /** Live-collaboration hooks (set by collab/share.svelte.ts; avoids an import cycle). */
 export const collabHooks = {
   openRemote: (_path: string) => {},
+  /** The edit being applied right now came from someone who may not cause a compile. */
+  editBlocksCompile: () => false,
+  openLink: async (_href: string, _from: string, _jumpToHeading: (fragment: string) => void): Promise<void> => {},
   tabOpened: (_id: string, _path: string) => {},
   tabClosed: (_path: string | null, _id: string) => {},
+  pathMoved: (_from: string, _to: string | null) => {},
 };
 export const isRemotePath = (p: string | null | undefined) => !!p && p.startsWith("collab:");
+
+/** Resolves "." and ".." segments of an absolute path ("/p/../x" → "/x"). */
+export function resolveDots(path: string): string {
+  if (!/(^|\/)\.\.?(\/|$)/.test(path)) return path;
+  const out: string[] = [];
+  for (const seg of path.split("/")) {
+    if (seg === ".") continue;
+    if (seg === "..") {
+      if (out.length > 1 || (out.length === 1 && out[0] !== "" && !/^[A-Za-z]:$/.test(out[0]))) out.pop();
+    } else out.push(seg);
+  }
+  const r = out.join("/") || "/";
+  return /^[A-Za-z]:$/.test(r) ? r + "/" : r;
+}
 
 /** True if `path` lies inside the folder `root`. */
 export function inRoot(path: string, root: string | null): boolean {
   if (!root) return false;
+  path = resolveDots(path);
+  root = resolveDots(root);
   const r = root.endsWith("/") ? root : root + "/";
   return path === root || path.startsWith(r);
 }
@@ -139,8 +195,25 @@ async function autosave(id: string | null) {
   clearTimeout(autosaveTimers.get(id));
   autosaveTimers.delete(id);
   const t = app.tabs.find((t) => t.id === id);
-  if (t?.path && t.dirty) await save(id);
+  if (!t?.path || !t.dirty || t.deleted || isRemotePath(t.path)) return;
+  // Deleted outside Omega before the watcher noticed: don't bring the file back (#32).
+  if (!(await fsApi.exists(t.path))) return markDeleted(t);
+  await save(id);
 }
+
+/** The tab's file is gone from disk: keep the buffer, but as unsaved, so closing it asks (#32). */
+function markDeleted(tab: Tab) {
+  if (tab.deleted) return;
+  tab.deleted = true;
+  tab.dirty = true;
+  ui.toast(t("app.deletedOnDisk", { name: tab.name }));
+}
+
+/**
+ * Tabs whose edits would be lost on quit after flushAutosave(): new files that never got a path and
+ * files deleted outside Omega (autosave skips those, #32).
+ */
+export const unsavedTabs = () => app.tabs.filter((t) => t.dirty && (!t.path || t.deleted));
 
 /** Writes every modified file that has a path. */
 export async function flushAutosave() {
@@ -218,14 +291,21 @@ export async function syncFromDisk(paths?: string[]) {
         try {
           raw = await fsApi.readFile(t.path);
         } catch {
-          continue; // deleted or unreadable: keep the buffer
+          // Deleted: keep the buffer, but mark the tab. Unreadable: just keep the buffer.
+          if (!t.deleted && !(await fsApi.exists(t.path).catch(() => true))) markDeleted(t);
+          continue;
+        }
+        if (t.deleted) {
+          // The file is back (git checkout, undo in another program).
+          t.deleted = false;
+          t.dirty = ed.isDirty(t.id);
         }
         // Skip if Omega saved the tab while we were reading.
         if (saved === null || writing.has(t.id) || ed.savedText(t.id) !== saved) continue;
         const disk = fromDisk(raw);
         // Unchanged since we loaded or wrote it (this also covers events caused by our own saves);
-        // only the line ending may have been converted.
-        if (disk === saved) {
+        // only the line ending may have been converted, or lone surrogates replaced by U+FFFD (#21).
+        if (disk === wellFormed(saved)) {
           t.eol = detectEol(raw);
           continue;
         }
@@ -248,8 +328,7 @@ document.addEventListener("visibilitychange", () => document.hidden && flushAuto
 getCurrentWindow()
   .onCloseRequested(async (e) => {
     await flushAutosave();
-    // Files on disk are autosaved; only new files that never got a path would be lost.
-    const lost = app.tabs.filter((t) => t.dirty && !t.path);
+    const lost = unsavedTabs();
     if (!lost.length) return;
     e.preventDefault();
     const ok = await ui.confirm(t("app.quitUnsavedTitle", { n: lost.length }), t("app.quitUnsavedMessage"), t("app.quitAnyway"), true);
@@ -261,6 +340,7 @@ ed.setCallbacks({
   onDirty(id, dirty) {
     const t = app.tabs.find((t) => t.id === id);
     if (t && isRemotePath(t.path)) dirty = false; // the host saves shared files
+    if (t?.deleted) dirty = true; // only an explicit save brings the file back
     if (t && t.dirty !== dirty) t.dirty = dirty;
     if (dirty) scheduleAutosave(id);
   },
@@ -268,7 +348,12 @@ ed.setCallbacks({
     app.cursor = { line, col, selected };
   },
   onChange(id) {
-    if (app.mode === "latex") latexCtl.schedule(id, activeTab()?.path ?? null);
+    // Only the active buffer: a background tab reloaded from disk must not be compiled under the
+    // active tab's path (#50). The controller recompiles on dependency changes by itself.
+    if (app.mode === "latex" && id === app.activeId) {
+      if (collabHooks.editBlocksCompile()) latexCtl.schedule(id, activeTab()?.path ?? null, undefined, false);
+      else latexCtl.schedule(id, activeTab()?.path ?? null);
+    }
   },
 });
 
@@ -298,6 +383,7 @@ function touchRecent(path: string | null | undefined) {
   if (recent.length > 50) recent.length = 50;
   localStorage.setItem("recentFiles", JSON.stringify(recent));
 }
+onGlobalChange("recentFiles", (v) => void recent.splice(0, recent.length, ...(JSON.parse(v || "[]") as string[])));
 
 export function activate(id: string) {
   if (app.activeId !== id) autosave(app.activeId);
@@ -308,7 +394,7 @@ export function activate(id: string) {
 }
 
 export async function openFile(path: string) {
-  path = normPath(path);
+  path = resolveDots(normPath(path));
   const existing = app.tabs.find((t) => t.path === path);
   if (existing) return activate(existing.id);
   if (isRemotePath(path)) return collabHooks.openRemote(path);
@@ -322,13 +408,37 @@ export async function openFile(path: string) {
   const id = uid();
   ed.createDoc(id, content);
   app.tabs.push({ id, path, name: basename(path), dirty: false, root: inRoot(path, app.root) ? app.root : null, eol: detectEol(content) });
-  const suggested = modeForExtension(extname(path));
+  const suggested = overrideFor(path) ? "code" : modeForExtension(extname(path));
   if (suggested && suggested !== app.mode) {
     app.mode = suggested;
     localStorage.setItem("mode", suggested);
   }
   activate(id);
   collabHooks.tabOpened(id, path);
+}
+
+/**
+ * Explorer "New File / New Folder": creates `name` inside `dir` and opens a new file. Uses
+ * create_file, which never truncates an existing file (#6). Returns false on failure (toast shown).
+ */
+export async function createEntry(dir: string, name: string, isDir: boolean): Promise<boolean> {
+  // "sub/x.txt" creates the folders in between; anything that could leave `dir` ("..", a
+  // leading "/") or name nothing (empty parts, trailing "/", ".") is rejected (#35).
+  if (name.split(/[\\/]/).some((seg) => seg === "" || seg === "." || seg === "..")) {
+    ui.toast(t("app.invalidEntryName", { name }), "error");
+    return false;
+  }
+  const p = joinPath(dir, name);
+  try {
+    if (isDir) await fsApi.createDir(p);
+    else await fsApi.createFile(p);
+  } catch (e) {
+    ui.toast(!isDir && (await fsApi.exists(p)) ? t("code.existsAlready", { name }) : String(e), "error");
+    return false;
+  }
+  app.treeVersion++;
+  if (!isDir) openFile(p);
+  return true;
 }
 
 /** Opens a tab whose content doesn't come from disk (shared files of a collab session). */
@@ -355,6 +465,16 @@ export function newFile() {
   ed.createDoc(id, "");
   app.tabs.push({ id, path: null, name: t("app.untitled", { n: untitledCounter++ }), dirty: false });
   activate(id);
+}
+
+/** New File from the UI: a connected guest creates it in the host's project (#133). */
+export async function newFileInSession() {
+  if (guestGuard.status() === "connected") {
+    const { share, remoteCreate } = await import("./collab/share.svelte");
+    if (share.hostHasRoot) return remoteCreate("", false);
+    ui.toast(t("ai.collab.localFileHint"));
+  }
+  newFile();
 }
 
 const closedPaths: string[] = [];
@@ -393,7 +513,7 @@ export async function closeTab(id: string, force = false) {
     if (closedPaths.length > 30) closedPaths.shift();
   }
   ed.disposeDoc(id);
-  if (tab.path) for (const c of allClients()) c.close(fileUri(tab.path));
+  if (tab.path) closeLspDoc(tab.path);
   if (app.activeId === id) {
     const next = app.tabs[idx] ?? app.tabs[idx - 1];
     if (next) activate(next.id);
@@ -408,7 +528,11 @@ export async function closeTab(id: string, force = false) {
 export async function save(id = app.activeId, forceDialog = false, overwrite = false): Promise<boolean> {
   const tab = app.tabs.find((t) => t.id === id);
   if (!tab) return false;
-  if (isRemotePath(tab.path)) return true; // saved by the host
+  if (isRemotePath(tab.path)) {
+    if (!forceDialog) return true; // saved by the host
+    const { saveCopyToHost } = await import("./collab/guestFiles");
+    return saveCopyToHost(tab);
+  }
   let path = tab.path;
   if (!path || forceDialog) {
     const chosen = await saveDialog({ defaultPath: path ?? (app.root ? `${app.root}/${tab.name}` : undefined) });
@@ -423,24 +547,29 @@ export async function save(id = app.activeId, forceDialog = false, overwrite = f
       disk = fromDisk(await fsApi.readFile(path));
     } catch {} // missing: nothing to protect
     const saved = ed.savedText(tab.id);
-    if (disk !== null && saved !== null && disk !== saved && disk !== ed.getText(tab.id)) return resolveConflict(tab);
+    // write_file replaced lone surrogates with U+FFFD, so compare against that (#21).
+    if (disk !== null && saved !== null && disk !== wellFormed(saved) && disk !== wellFormed(ed.getText(tab.id))) return resolveConflict(tab);
   }
   const snapshot = ed.getDoc(tab.id);
   // Never write without a live document (e.g. after an editor reset) – that would empty the file.
   if (!snapshot) return false;
+  const undoToolPause = toolsBeforeSave(tab.id, tab.path, path);
   writing.add(tab.id);
   try {
     await fsApi.writeFile(path, toDisk(snapshot.toString(), tab.eol));
   } catch (e) {
+    undoToolPause();
     ui.toast(t("app.saveFailed", { error: String(e) }), "error");
     return false;
   } finally {
     writing.delete(tab.id);
   }
   ed.markSaved(tab.id, snapshot);
+  tab.deleted = false;
   window.dispatchEvent(new CustomEvent("omega:saved", { detail: path }));
-  for (const c of allClients()) c.save(fileUri(path), ed.getText(tab.id));
+  void saveLspDoc(path, ed.getText(tab.id));
   if (tab.path !== path) {
+    if (tab.path) closeLspDoc(tab.path);
     tab.path = path;
     tab.name = basename(path);
     app.treeVersion++;
@@ -452,6 +581,7 @@ export async function save(id = app.activeId, forceDialog = false, overwrite = f
 }
 
 export async function openFolder() {
+  if (blockedAsGuest()) return;
   const dir = await openDialog({ directory: true, defaultPath: app.root ?? undefined });
   if (typeof dir === "string") setRoot(dir);
 }
@@ -459,7 +589,11 @@ export async function openFolder() {
 /** Recently opened folders (most recent first). */
 export const recentFolders = $state<string[]>(JSON.parse(localStorage.getItem("recentFolders") || "[]"));
 
+onGlobalChange("recentFolders", (v) => void recentFolders.splice(0, recentFolders.length, ...(JSON.parse(v || "[]") as string[])));
+
 export function setRoot(dir: string | null) {
+  // Clearing stays allowed: joining puts the own folder aside that way.
+  if (dir && blockedAsGuest()) return;
   if (dir) dir = normPath(dir);
   if (dir) {
     const i = recentFolders.indexOf(dir);
@@ -478,9 +612,11 @@ watchRoot(app.root);
 
 /** Called after a rename/delete in the explorer so open tabs follow the file. */
 export function pathMoved(from: string, to: string | null) {
+  moveLanguageOverrides(from, to);
   for (const t of app.tabs) {
     if (!t.path) continue;
     if (t.path === from || t.path.startsWith(from + "/")) {
+      closeLspDoc(t.path);
       if (to === null) {
         t.path = null;
         t.dirty = true;
@@ -488,8 +624,10 @@ export function pathMoved(from: string, to: string | null) {
         t.path = to + t.path.slice(from.length);
         t.name = basename(t.path);
       }
+      ed.refreshLanguage(t.id, t.path);
     }
   }
+  collabHooks.pathMoved(from, to);
   app.treeVersion++;
 }
 

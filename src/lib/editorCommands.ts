@@ -62,16 +62,28 @@ const duplicate: Command = (view) => {
   return true;
 };
 
-/** Joins the next line onto the current one. */
+/** Joins the next line onto the current one; a selection over several lines joins all of them. */
 const joinLines: Command = (view) => {
   const { state } = view;
   view.dispatch(
     state.changeByRange((r) => {
-      const line = state.doc.lineAt(r.head);
-      if (line.number >= state.doc.lines) return { range: r };
-      const next = state.doc.line(line.number + 1);
-      const lead = /^\s*/.exec(next.text)![0].length;
-      return { changes: { from: line.to, to: next.from + lead, insert: " " }, range: EditorSelection.cursor(line.to) };
+      const first = state.doc.lineAt(r.from);
+      let last = state.doc.lineAt(r.to);
+      // A selection ending at the start of a line (Shift+Down) doesn't include that line.
+      if (last.number > first.number && r.to === last.from) last = state.doc.line(last.number - 1);
+      if (last.number === first.number) {
+        if (first.number >= state.doc.lines) return { range: r };
+        last = state.doc.line(first.number + 1);
+      }
+      const changes = [];
+      for (let n = first.number; n < last.number; n++) {
+        const line = state.doc.line(n), next = state.doc.line(n + 1);
+        const lead = /^\s*/.exec(next.text)![0].length;
+        changes.push({ from: line.to, to: next.from + lead, insert: " " });
+      }
+      const set = state.changes(changes);
+      const range = r.empty ? EditorSelection.cursor(first.to) : EditorSelection.range(set.mapPos(r.anchor, r.anchor > r.head ? 1 : -1), set.mapPos(r.head, r.head > r.anchor ? 1 : -1));
+      return { changes: set, range };
     }),
   );
   return true;
@@ -80,17 +92,25 @@ const joinLines: Command = (view) => {
 const sortLines: Command = (view) => {
   const { state } = view;
   const r = state.selection.main;
-  const from = state.doc.lineAt(r.from).from, to = state.doc.lineAt(r.to).to;
+  const first = state.doc.lineAt(r.from);
+  let last = state.doc.lineAt(r.to);
+  // A selection ending at the start of a line (Shift+Down, or Select All with a final newline) doesn't include it.
+  if (last.number > first.number && r.to === last.from) last = state.doc.line(last.number - 1);
+  const from = first.from, to = last.to;
   if (from === to) return false;
   const sorted = state.sliceDoc(from, to).split("\n").sort((a, b) => a.localeCompare(b)).join("\n");
-  view.dispatch({ changes: { from, to, insert: sorted } });
+  // Same length, so the selection stays where it was.
+  view.dispatch({ changes: { from, to, insert: sorted }, selection: EditorSelection.range(r.anchor, r.head) });
   return true;
 };
 
 const changeCase = (upper: boolean): Command => (view) => {
   view.dispatch(view.state.changeByRange((r) => {
     const text = view.state.sliceDoc(r.from, r.to);
-    return { changes: { from: r.from, to: r.to, insert: upper ? text.toUpperCase() : text.toLowerCase() }, range: r };
+    const insert = upper ? text.toUpperCase() : text.toLowerCase();
+    // The text can change length ("ß" → "SS"), so select the whole result, keeping the direction.
+    const end = r.from + insert.length;
+    return { changes: { from: r.from, to: r.to, insert }, range: r.anchor > r.head ? EditorSelection.range(end, r.from) : EditorSelection.range(r.from, end) };
   }));
   return true;
 };

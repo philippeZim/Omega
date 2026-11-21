@@ -193,12 +193,46 @@ export interface OutlineItem {
 
 const LEVELS: Record<string, number> = { part: 0, chapter: 1, section: 2, subsection: 3, subsubsection: 4, paragraph: 5 };
 
+/** Rest of a blank line (spaces, tabs, CR) up to its newline; sticky, used right after a "\n". */
+const BLANK_LINE = /[ \t\r]*\n/y;
+
+/** Body of the brace group that starts at `from` (just after its "{"), honouring nested
+ *  groups and escaped braces; null if it isn't closed before a blank line or the end. */
+function groupBody(text: string, from: number): string | null {
+  let depth = 1;
+  for (let i = from; i < text.length; i++) {
+    const c = text[i];
+    if (c === "\\") i++;
+    else if (c === "{") depth++;
+    else if (c === "}" && --depth === 0) return text.slice(from, i);
+    else if (c === "\n") {
+      BLANK_LINE.lastIndex = i + 1;
+      if (BLANK_LINE.test(text)) return null;
+    }
+  }
+  return null;
+}
+
+/** Whether `pos` lies after an unescaped "%" on its line. */
+function inComment(text: string, pos: number): boolean {
+  for (let i = text.lastIndexOf("\n", pos - 1) + 1; i < pos; i++) {
+    if (text[i] === "\\") i++;
+    else if (text[i] === "%") return true;
+  }
+  return false;
+}
+
 export function outline(text: string): OutlineItem[] {
   const out: OutlineItem[] = [];
-  const re = /^[^%\n]*?\\(part|chapter|section|subsection|subsubsection|paragraph)\*?(?:\[[^\]]*\])?\{([^}]*)\}/gm;
+  const re = /\\(part|chapter|section|subsection|subsubsection|paragraph)\*?(?:\[[^\]]*\])?\{/g;
   for (let m; (m = re.exec(text)); ) {
-    const pos = m.index + m[0].indexOf("\\" + m[1]);
-    out.push({ level: LEVELS[m[1]], title: m[2].trim() || t("commands.tex.empty"), line: text.slice(0, pos).split("\n").length, pos });
+    const pos = m.index;
+    if (inComment(text, pos)) continue;
+    const start = m.index + m[0].length;
+    const title = groupBody(text, start);
+    if (title === null) continue;
+    re.lastIndex = start + title.length + 1;
+    out.push({ level: LEVELS[m[1]], title: title.trim() || t("commands.tex.empty"), line: text.slice(0, pos).split("\n").length, pos });
   }
   return out;
 }

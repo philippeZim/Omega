@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { localTerminalTitle } from "../../lib/collab/guard";
   import { app } from "../../lib/state.svelte";
   import { terms, newTerminal, attach, fitTerm, focusTerm } from "../../lib/terminal.svelte";
   import { isShown, registerFocus } from "../../lib/layout.svelte";
@@ -12,7 +13,7 @@
 
   // Always have at least one shell when the view is shown.
   $effect(() => {
-    if (shown && terms.tabs.length === 0) newTerminal(app.root);
+    if (shown && !terms.active && terms.tabs.every((t) => t.kind === "guest-shell")) newTerminal(app.root, "shell", localTerminalTitle());
   });
 
   $effect(() => {

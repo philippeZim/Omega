@@ -19,6 +19,7 @@ import type { SyntaxNode } from "@lezer/common";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { CalloutFoldWidget, CalloutHeadWidget, parseCalloutHead } from "./callout";
 import { TableWidget } from "./table";
+import { ASSET_PREFIX, remoteRel } from "../collab/guestAssets";
 import { BulletWidget, CheckboxWidget, CodeHeaderWidget, HrWidget, ImageWidget, MathWidget, renderMath } from "./widgets";
 import "./markdown.css";
 
@@ -33,10 +34,19 @@ function dirOf(p: string) {
   return p.replace(/\/[^/]*$/, "") || "/";
 }
 
+/** decodeURI that keeps the raw text when it is not a valid escape (a literal "%", e.g. "100%.md"). */
+function safeDecode(s: string) {
+  try {
+    return decodeURI(s);
+  } catch {
+    return s;
+  }
+}
+
 export function resolvePath(href: string, fromPath: string | null): string | null {
   const drive = /^[A-Za-z]:[\\/]/.test(href);
   if (!drive && /^[a-z][a-z0-9+.-]*:/i.test(href)) return null;
-  let p = decodeURI(href.split("#")[0]).replace(/\\/g, "/");
+  let p = safeDecode(href.split("#")[0]).replace(/\\/g, "/");
   if (!p.startsWith("/") && !drive) {
     if (!fromPath) return null;
     p = dirOf(fromPath) + "/" + p;
@@ -51,8 +61,15 @@ export function resolvePath(href: string, fromPath: string | null): string | nul
   return prefix + "/" + parts.join("/");
 }
 
+/** A link destination as written, without the CommonMark `<…>` brackets (`[x](<a b.md>)`). */
+export function linkDest(raw: string) {
+  return /^<.*>$/.test(raw) ? raw.slice(1, -1) : raw;
+}
+
 function imageSrc(url: string, fromPath: string | null) {
   if (/^(https?|data):/i.test(url)) return url;
+  // A guest's shared doc: the host resolves it. Nothing here may touch this machine's files.
+  if (fromPath?.startsWith("collab:")) return ASSET_PREFIX + (remoteRel(url, fromPath) ?? "");
   const abs = resolvePath(url, fromPath);
   return abs ? convertFileSrc(abs) : url;
 }
@@ -154,6 +171,19 @@ const INLINE: Record<string, string> = {
 };
 const INLINE_MARKS = new Set(["EmphasisMark", "StrikethroughMark", "HighlightMark", "CodeMark"]);
 
+/** Reference labels match case-insensitively, with runs of whitespace collapsed (CommonMark). */
+const refKey = (label: string) => label.trim().replace(/\s+/g, " ").toLowerCase();
+
+/** `[[Note#Heading]]` → "Note.md#Heading"; a name without an extension is a Markdown note. */
+export function wikiHref(target: string) {
+  const hash = target.indexOf("#");
+  const name = (hash < 0 ? target : target.slice(0, hash)).trim();
+  const frag = hash < 0 ? "" : target.slice(hash);
+  if (!name) return frag;
+  // The link handler percent-decodes hrefs; keep a literal "%" in a note name.
+  return name.replace(/%/g, "%25") + (/\.[A-Za-z0-9]+$/.test(name) ? "" : ".md") + frag;
+}
+
 function listDepth(node: SyntaxNode) {
   let d = 0;
   for (let p = node.parent; p; p = p.parent) if (p.name === "BulletList" || p.name === "OrderedList") d++;
@@ -182,6 +212,28 @@ function buildInline(view: EditorView, path: string | null): DecorationSet {
   const widget = (a: number, b: number, w: any) => out.push(Decoration.replace({ widget: w }).range(a, b));
   const withSpace = (pos: number) => (slice(pos, pos + 1) === " " ? pos + 1 : pos);
   const callouts = new Set<number>();
+  /** Nesting depth of the blockquote on each quoted line (keyed by line start). */
+  const quoteDepth = new Map<number, number>();
+  let refs: Map<string, string> | null = null;
+  /** URL of the reference definition `[label]: url` anywhere in the document (collected on first use). */
+  const refUrl = (label: string) => {
+    if (!refs) {
+      const found = new Map<string, string>();
+      syntaxTree(state).iterate({
+        enter(n) {
+          if (n.name === "LinkReference") {
+            const l = n.node.getChild("LinkLabel"), u = n.node.getChild("URL");
+            const key = l && refKey(slice(l.from + 1, l.to - 1));
+            if (key && u && !found.has(key)) found.set(key, linkDest(slice(u.from, u.to)));
+            return false;
+          }
+          if (n.name === "Paragraph" || n.name === "FencedCode" || n.name === "CodeBlock" || n.name === "Table") return false;
+        },
+      });
+      refs = found;
+    }
+    return refs.get(refKey(label));
+  };
   /** The `[!type]` marker of the callout being decorated; nodes inside it (e.g. a Link) are skipped. */
   let skip: [number, number] | null = null;
 
@@ -234,7 +286,10 @@ function buildInline(view: EditorView, path: string | null): DecorationSet {
         }
 
         if (name === "QuoteMark") {
-          line(n.from, "md-quote");
+          let depth = 0;
+          for (let p = node.parent; p; p = p.parent) if (p.name === "Blockquote") depth++;
+          const lineFrom = state.doc.lineAt(n.from).from;
+          quoteDepth.set(lineFrom, Math.max(depth, quoteDepth.get(lineFrom) ?? 0));
           if (onLines(state, sel, n.from, n.from)) mark(n.from, n.to, "md-formatting");
           else hide(n.from, withSpace(n.to));
           return;
@@ -251,7 +306,15 @@ function buildInline(view: EditorView, path: string | null): DecorationSet {
         if (name === "Link") {
           const marks = node.getChildren("LinkMark");
           const urlNode = node.getChild("URL");
-          const url = urlNode ? slice(urlNode.from, urlNode.to) : "";
+          let url = urlNode ? linkDest(slice(urlNode.from, urlNode.to)) : "";
+          if (!urlNode && marks.length === 2) {
+            // Reference link: [text][label], [label][] or [label]. Without a definition it is plain text.
+            const label = node.getChild("LinkLabel");
+            const key = label && label.to - label.from > 2 ? slice(label.from + 1, label.to - 1) : slice(marks[0].to, marks[1].from);
+            const def = refUrl(key);
+            if (def === undefined) return;
+            url = def;
+          }
           if (marks.length >= 2) {
             const tFrom = marks[0].to, tTo = marks[1].from;
             if (touches(sel, n.from, n.to)) {
@@ -267,12 +330,29 @@ function buildInline(view: EditorView, path: string | null): DecorationSet {
           return;
         }
 
+        if (name === "WikiLink") {
+          const inner = slice(n.from + 2, n.to - 2);
+          const bar = inner.indexOf("|");
+          const tFrom = bar < 0 ? n.from + 2 : n.from + 3 + bar, tTo = n.to - 2;
+          if (touches(sel, n.from, n.to)) {
+            mark(n.from, tFrom, "md-formatting");
+            mark(tFrom, tTo, "md-link");
+            mark(tTo, n.to, "md-formatting");
+          } else {
+            const target = (bar < 0 ? inner : inner.slice(0, bar)).trim();
+            hide(n.from, tFrom);
+            mark(tFrom, tTo, "md-link", { "data-href": wikiHref(target), title: target });
+            hide(tTo, n.to);
+          }
+          return false;
+        }
+
         if (name === "Image") {
           if (!touches(sel, n.from, n.to)) {
             const urlNode = node.getChild("URL");
             const marks = node.getChildren("LinkMark");
             const alt = marks.length >= 2 ? slice(marks[0].to, marks[1].from) : "";
-            if (urlNode) widget(n.from, n.to, new ImageWidget(imageSrc(slice(urlNode.from, urlNode.to), path), alt));
+            if (urlNode) widget(n.from, n.to, new ImageWidget(imageSrc(linkDest(slice(urlNode.from, urlNode.to)), path), alt));
           } else mark(n.from, n.to, "md-formatting");
           return false;
         }
@@ -364,6 +444,9 @@ function buildInline(view: EditorView, path: string | null): DecorationSet {
       },
     });
   }
+  // Nested quotes get one extra bar per level (drawn by markdown.css from --qd).
+  for (const [from, depth] of quoteDepth)
+    out.push(Decoration.line({ class: "md-quote", attributes: depth > 1 ? { style: `--qd: ${depth}` } : undefined }).range(from));
   return Decoration.set(out, true);
 }
 
@@ -411,11 +494,39 @@ export function toggleWrap(marker: string) {
     const len = marker.length;
     view.dispatch(
       state.changeByRange((r) => {
-        const before = state.sliceDoc(r.from - len, r.from), after = state.sliceDoc(r.to, r.to + len);
-        if (before === marker && after === marker)
+        const ch = marker[0];
+        const uniform = [...marker].every((c) => c === ch);
+        // Length of the run of marker characters from `pos` in direction `dir`, not passing `limit`.
+        const run = (pos: number, dir: -1 | 1, limit: number) => {
+          let n = 0;
+          while (dir < 0 ? pos - n - 1 >= limit : pos + n + 1 <= limit) {
+            const at = dir < 0 ? pos - n - 1 : pos + n;
+            if (state.sliceDoc(at, at + 1) !== ch) break;
+            n++;
+          }
+          return n;
+        };
+        // With "*" a run of two is bold only (`**x**`), so italic must add its own marker instead of eating half of it.
+        const isWrap = (n: number) => (len === 1 && (ch === "*" || ch === "_") ? n === 1 || n >= 3 : n >= len);
+        // "_" between letters (`snake_case_x`) is part of a word, never emphasis.
+        const word = (pos: number) => /[\p{L}\p{N}]/u.test(state.sliceDoc(pos, pos + 1));
+        const intraword = (from: number, to: number) => ch === "_" && (word(from - 1) || word(to));
+
+        // Markers around the selection: a*[b]*c
+        const out = uniform
+          ? Math.min(run(r.from, -1, 0), run(r.to, 1, state.doc.length))
+          : state.sliceDoc(r.from - len, r.from) === marker && state.sliceDoc(r.to, r.to + len) === marker ? len : 0;
+        if (isWrap(out) && !intraword(r.from - out, r.to + out))
           return {
             changes: [{ from: r.from - len, to: r.from }, { from: r.to, to: r.to + len }],
             range: EditorSelection.range(r.from - len, r.to - len),
+          };
+        // Markers selected along with the text: a[*b*]c
+        const inner = uniform ? Math.min(run(r.from, 1, r.to), run(r.to, -1, r.from)) : 0;
+        if (r.to - r.from > 2 * inner && isWrap(inner) && !intraword(r.from, r.to))
+          return {
+            changes: [{ from: r.from, to: r.from + len }, { from: r.to - len, to: r.to }],
+            range: EditorSelection.range(r.from, r.to - 2 * len),
           };
         return {
           changes: [{ from: r.from, insert: marker }, { from: r.to, insert: marker }],

@@ -3,17 +3,21 @@
   import { invoke } from "@tauri-apps/api/core";
   import { MergeView } from "@codemirror/merge";
   import { EditorView, lineNumbers } from "@codemirror/view";
-  import { EditorState } from "@codemirror/state";
+  import { EditorState, type ChangeSet } from "@codemirror/state";
   import { syntaxHighlighting } from "@codemirror/language";
   import { history, historyKeymap, defaultKeymap } from "@codemirror/commands";
   import { keymap } from "@codemirror/view";
-  import { diffState } from "../lib/git/diff.svelte";
+  import { diffState, DIFF_CONFIG } from "../lib/git/diff.svelte";
   import { git, refresh } from "../lib/git/git.svelte";
+  import { guestCan } from "../lib/collab/guard";
+  import { GIT_LIMITS } from "../lib/collab/gitArgs";
+  import { ui } from "../lib/ui.svelte";
   import { app } from "../lib/state.svelte";
   import { fsApi, basename } from "../lib/api";
   import * as ed from "../lib/editor";
   import { detectEol, toDisk, type Eol } from "../lib/eol";
   import { langFor } from "../lib/code/languages";
+  import { effectiveLang } from "../lib/code/langOverride.svelte";
   import { baseTheme, codeHighlight } from "../lib/theme";
   import { t } from "../lib/i18n/index.svelte";
 
@@ -21,9 +25,15 @@
   let view: MergeView | null = null;
   let writeTimer: number | undefined;
   let eol: Eol = "\n";
-  let info = $state<"git.diff.deleted" | "git.diff.newFile" | null>(null);
+  let info = $state<"git.diff.deleted" | "git.diff.newFile" | "git.diff.renamedFrom" | "git.diff.binary" | "git.diff.readOnly" | null>(null);
+  let tooLarge = $state(false);
+  let binary = $state(false);
   const file = diffState.file!;
-  const rel = git.top && file.startsWith(git.top + "/") ? file.slice(git.top.length + 1) : file;
+  // Code Together guest: the file is "collab:<relative path>" and the host supplies both sides.
+  const guest = file.startsWith("collab:");
+  const rel = guest ? file.slice("collab:".length) : git.top && file.startsWith(git.top + "/") ? file.slice(git.top.length + 1) : file;
+  // A renamed/copied file has no HEAD version under its new path: compare against the source (#70).
+  const orig = git.changes.find((c) => c.path === rel)?.orig ?? null;
 
   function close() {
     diffState.file = null;
@@ -31,18 +41,89 @@
     queueMicrotask(() => ed.focus());
   }
 
+  /** Guest: reverted chunks go into the shared doc, the only copy that reaches the host. */
+  function mountGuest(head: string, current: string, editable: boolean, editSharedDoc: (rel: string, base: string, changes: ChangeSet) => boolean) {
+    let base = current;
+    const lang = langFor(rel);
+    const common = [lineNumbers(), lang ? lang.ext() : [], syntaxHighlighting(codeHighlight), baseTheme, EditorView.editorAttributes.of({ class: "mode-code" })];
+    view = new MergeView({
+      parent: host!,
+      a: { doc: head, extensions: [...common, EditorState.readOnly.of(true), EditorView.editable.of(false)] },
+      b: {
+        doc: current,
+        extensions: [
+          ...common,
+          ...(editable
+            ? [EditorView.updateListener.of((u) => {
+                if (!u.docChanged) return;
+                for (const tr of u.transactions) {
+                  if (!tr.docChanged) continue;
+                  if (!editSharedDoc(rel, base, tr.changes)) {
+                    ui.toast(t("git.diff.changedMeanwhile"), "error");
+                    return close();
+                  }
+                  base = tr.state.doc.toString();
+                }
+              })]
+            : [EditorState.readOnly.of(true), EditorView.editable.of(false)]),
+        ],
+      },
+      ...(editable ? { revertControls: "a-to-b" as const } : {}),
+      highlightChanges: true,
+      gutter: true,
+      collapseUnchanged: { margin: 3, minSize: 6 },
+      diffConfig: DIFF_CONFIG,
+    });
+  }
+
+  async function loadGuest() {
+    // Loaded on demand: only a session needs the collab modules.
+    const [{ guestDiff }, { editSharedDoc, sharedDocOpen }] = await Promise.all([import("../lib/collab/gitRemote.svelte"), import("../lib/collab/share.svelte")]);
+    const r = await guestDiff(rel);
+    if (!r.ok) {
+      ui.toast(r.message, "error");
+      return close();
+    }
+    const d = r.value;
+    if (d.tooLarge) return void (tooLarge = binary = true);
+    if (d.binary) {
+      binary = true;
+      info = "git.diff.binary";
+      return;
+    }
+    const editable = guestCan("edit") && sharedDocOpen(rel) && !d.deleted;
+    if (d.deleted) info = "git.diff.deleted";
+    else if (d.head === null) info = "git.diff.newFile";
+    else if (d.orig) info = "git.diff.renamedFrom";
+    else if (!editable) info = "git.diff.readOnly";
+    mountGuest(d.head ?? "", d.current ?? "", editable, editSharedDoc);
+  }
+
   onMount(async () => {
-    const head = (await invoke<string | null>("git_head_file", { root: git.top || app.root, path: file })) ?? "";
+    if (guest) return loadGuest();
+    const headPath = orig && git.top ? git.top + "/" + orig : file;
+    const head = (await invoke<string | null>("git_head_file", { root: git.top || app.root, path: headPath })) ?? "";
     const tab = app.tabs.find((t) => t.path === file);
     let current = "";
+    let unreadable = false;
     try {
       current = tab ? ed.getText(tab.id) : await fsApi.readFile(file);
       eol = detectEol(current);
     } catch {
-      info = "git.diff.deleted";
+      // Not readable as UTF-8 text is not the same as gone (#66).
+      unreadable = await fsApi.exists(file).catch(() => false);
+      if (!unreadable) info = "git.diff.deleted";
     }
     if (!head) info = "git.diff.newFile";
-    const lang = langFor(file);
+    else if (orig) info = "git.diff.renamedFrom";
+    // Binary content (NUL bytes, or not UTF-8): a text diff would show lossily decoded bytes, and
+    // reverting a chunk would write them back and corrupt the file (#66). No editor, no revert arrows.
+    if (unreadable || head.includes("\0") || current.includes("\0")) {
+      binary = true;
+      info = "git.diff.binary";
+      return;
+    }
+    const lang = effectiveLang(file);
     const common = [lineNumbers(), lang ? lang.ext() : [], syntaxHighlighting(codeHighlight), baseTheme, EditorView.editorAttributes.of({ class: "mode-code" })];
     view = new MergeView({
       parent: host!,
@@ -70,6 +151,8 @@
       highlightChanges: true,
       gutter: true,
       collapseUnchanged: { margin: 3, minSize: 6 },
+      // The default character diff gives up on files with many scattered changes (#74).
+      diffConfig: DIFF_CONFIG,
     });
   });
 
@@ -87,16 +170,20 @@
 <div class="backdrop" role="presentation" onclick={close}>
   <div class="sheet" role="dialog" tabindex="-1" onclick={(e) => e.stopPropagation()} onkeydown={() => {}}>
     <header>
-      <span class="title">{basename(file)}</span>
+      <span class="title">{basename(rel)}</span>
       <span class="path">{rel}</span>
-      {#if info}<span class="info">{t(info)}</span>{/if}
+      {#if info}<span class="info">{info === "git.diff.renamedFrom" ? t(info, { orig: orig ?? "" }) : t(info)}</span>{/if}
       <span class="spacer"></span>
       <button class="close" onclick={close} aria-label={t("common.close")}>
         <svg width="10" height="10" viewBox="0 0 10 10"><path d="M1.5 1.5l7 7M8.5 1.5l-7 7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
       </button>
     </header>
-    <div class="labels"><span>{t("git.diff.head")}</span><span>{t("git.diff.current")}</span></div>
-    <div class="merge" bind:this={host}></div>
+    {#if !binary}<div class="labels"><span>{t("git.diff.head")}</span><span>{t("git.diff.current")}</span></div>{/if}
+    {#if binary}
+      <div class="binary">{tooLarge ? t("git.diff.tooLarge", { mb: GIT_LIMITS.maxFile / 1024 / 1024 }) : t("git.diff.binaryHint")}</div>
+    {:else}
+      <div class="merge" bind:this={host}></div>
+    {/if}
   </div>
 </div>
 
@@ -111,6 +198,7 @@
   .close { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 50%; color: var(--label-2); align-self: center; }
   .close:hover { background: var(--fill-hover); color: var(--label); }
   .labels { display: grid; grid-template-columns: 1fr 1fr; padding: 0 22px 6px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--label-3); }
+  .binary { flex: 1; display: grid; place-items: center; padding: 24px; text-align: center; font-size: 13px; color: var(--label-3); background: var(--well); }
   .merge { flex: 1; min-height: 0; overflow: auto; background: var(--well); }
   .merge :global(.cm-mergeView) { height: 100%; }
   .merge :global(.cm-mergeViewEditors) { min-height: 100%; }

@@ -4,6 +4,19 @@
   import { terms, newTerminal, closeTerminal, focusTerm, listShells, shellPref, setDefaultShell, toggleSplit } from "../../lib/terminal.svelte";
   import { ui } from "../../lib/ui.svelte";
   import { t } from "../../lib/i18n/index.svelte";
+  import { guestGuard, localTerminalTitle } from "../../lib/collab/guard";
+
+  // A guest's shells run on its own machine, never on the host.
+  const isGuest = $derived(guestGuard.status() !== "none");
+
+  let list: HTMLDivElement | undefined = $state();
+
+  // The active tab (often the newest one, at the far right) is always scrolled into view.
+  $effect(() => {
+    void terms.tabs.length;
+    const el = list?.querySelector<HTMLElement>(`[data-term="${CSS.escape(terms.active ?? "")}"]`);
+    el?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  });
 
   /** Menu of available shells (WSL distributions, Git Bash, zsh/fish …) for a new terminal. */
   async function shellMenu(e: MouseEvent) {
@@ -14,7 +27,7 @@
       x: r.left,
       y: r.bottom + 4,
       items: [
-        ...shells.map((sh) => ({ label: `${sh.label}${sh.id === def ? " ✓" : ""}`, action: () => newTerminal(app.root, "shell", undefined, sh) })),
+        ...shells.map((sh) => ({ label: `${sh.label}${sh.id === def ? " ✓" : ""}`, action: () => newTerminal(app.root, "shell", localTerminalTitle(), sh) })),
         { label: "", separator: true },
         ...shells
           .filter((sh) => sh.id !== def)
@@ -25,22 +38,26 @@
 </script>
 
 <div class="ttabs">
-  <div class="list">
+  <div class="list" bind:this={list}>
   {#each terms.tabs as tab (tab.id)}
-    <div class="tab" class:active={tab.id === terms.active} class:exited={tab.exited} role="tab" tabindex="0" aria-selected={tab.id === terms.active}
+    <div class="tab" data-term={tab.id} class:active={tab.id === terms.active} class:exited={tab.exited} role="tab" tabindex="0" aria-selected={tab.id === terms.active}
       onclick={() => { terms.active = tab.id; focusTerm(tab.id); }} onkeydown={(e) => e.key === "Enter" && (terms.active = tab.id)}>
       {#if tab.status && tab.status !== "running"}
         <span class="st {tab.status}" title={tab.status === "ok" ? t("code.term.stOk") : tab.status === "fail" ? t("code.term.stFail", { code: String(tab.code) }) : t("code.term.stStopped")}>{tab.status === "ok" ? "✓" : tab.status === "fail" ? "✗" : "■"}</span>
       {:else}
         <span class="dot" class:run={tab.kind === "run" || tab.kind === "build"} class:busy={tab.status === "running"} title={tab.status === "running" ? t("code.term.stRunning") : undefined}></span>
       {/if}
+      {#if tab.hostShell}<span class="onhost">{t("ai.collab.shell.tabBadge")}</span>{/if}
       <span class="label" title={tab.title}>{tab.title}</span>
       <button class="x" onclick={(e) => { e.stopPropagation(); closeTerminal(tab.id); }} aria-label={t("common.close")}><Glyph name="x" size={8} /></button>
     </div>
   {/each}
   </div>
-  <button class="add" title={t("code.term.new")} onclick={() => newTerminal(app.root)}><Glyph name="plus" size={10} /></button>
+  <button class="add" title={isGuest ? t("code.term.newLocal") : t("code.term.new")} aria-label={isGuest ? t("code.term.newLocal") : t("code.term.new")} onclick={() => newTerminal(app.root, "shell", localTerminalTitle())}><Glyph name="plus" size={10} /></button>
   <button class="add pick" title={t("code.term.chooseShell")} onclick={shellMenu}><Glyph name="chevron-down" size={10} /></button>
+  {#if isGuest && guestGuard.status() === "connected" && guestGuard.can("terminal") && guestGuard.openHostShell}
+    <button class="hostshell" title={t("ai.collab.shell.openHint")} onclick={() => guestGuard.openHostShell?.()}>{t("ai.collab.shell.open")}</button>
+  {/if}
   {#if terms.tabs.length > 1 || terms.split}
     <button class="add split" class:on={terms.split} title={terms.split ? t("layout.termTabs") : t("layout.termSplit")} aria-label={t("layout.termSplit")} onclick={toggleSplit}>
       {#if terms.split}
@@ -58,7 +75,8 @@
   /* Tabs keep a readable minimum and scroll sideways; the buttons next to them stay put. */
   .list { flex: 0 1 auto; min-width: 0; display: flex; align-items: center; gap: 4px; overflow-x: auto; }
   .list::-webkit-scrollbar { height: 0; }
-  .list > .tab { flex: 0 1 auto; min-width: 88px; max-width: 240px; }
+  /* Wide enough for "Terminal 3" or "cargo: Test", so tabs stay distinguishable. */
+  .list > .tab { flex: 0 1 auto; min-width: 132px; max-width: 240px; }
   .tab { height: 28px; display: flex; align-items: center; gap: 7px; padding: 0 5px 0 12px; border-radius: 999px; color: var(--label-2); font-size: 12px; white-space: nowrap; cursor: default; }
   .tab > :not(.label) { flex-shrink: 0; }
   .label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
@@ -70,11 +88,15 @@
   .st.fail { color: var(--red); }
   .st.stopped { color: var(--label-3); font-size: 8px; }
   .dot.busy { animation: busy 1.1s ease-in-out infinite; }
-  @keyframes busy { 50% { opacity: 0.3; transform: scale(0.75); } }
+  /* Colour only: opacity or transform animations on glass flash in WebKitGTK. */
+  @keyframes busy { 50% { background-color: var(--label-3); } }
   .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--label-3); }
   .dot.run { background: var(--green); }
   .x { width: 18px; height: 18px; display: grid; place-items: center; border-radius: 50%; color: var(--label-2); }
   .x:hover { background: var(--fill-2); color: var(--label); }
+  .onhost { padding: 1px 6px; border-radius: 999px; font-size: 10px; font-weight: 700; color: #fff; background: var(--red); }
+  .hostshell { height: 24px; padding: 0 10px; border-radius: 999px; font-size: 11.5px; color: var(--red); background: rgba(var(--fg-rgb), 0.07); }
+  .hostshell:hover { background: rgba(var(--fg-rgb), 0.14); }
   .add { width: 28px; height: 28px; display: grid; place-items: center; border-radius: 50%; color: var(--label-2); }
   .add.pick { margin-left: -4px; }
   .add:hover { background: var(--fill-hover); color: var(--label); }

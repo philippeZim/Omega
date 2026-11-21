@@ -8,12 +8,14 @@
   import { fsChanges } from "../lib/fsWatch.svelte";
   import TreeNode from "./TreeNode.svelte";
   import { untrack } from "svelte";
-  import { fsApi, joinPath, dirname, basename, type Entry } from "../lib/api";
-  import { app, openFile, pathMoved, activeTab, inRoot } from "../lib/state.svelte";
+  import { fsApi, basename, type Entry } from "../lib/api";
+  import { renameTarget } from "../lib/pathName";
+  import { app, openFile, pathMoved, activeTab, inRoot, createEntry } from "../lib/state.svelte";
   import { ui } from "../lib/ui.svelte";
   import { git, kind } from "../lib/git/git.svelte";
   import { t } from "../lib/i18n/index.svelte";
   import { fileDrag, startFileDrag } from "../lib/fileDrag.svelte";
+  import { treeKeyAction, focusTreeRow } from "../lib/treeNav";
 
   const gitKind = $derived.by(() => {
     if (!git.repo || !git.top || !path.startsWith(git.top + "/")) return null;
@@ -76,16 +78,9 @@
   async function create(dir: boolean) {
     const name = await ui.prompt(dir ? t("app.newFolder") : t("app.newFile"), "", dir ? t("app.folderNamePlaceholder") : t("app.fileNamePlaceholder"));
     if (!name) return;
-    const p = joinPath(path, name);
-    try {
-      if (dir) await fsApi.createDir(p);
-      else await fsApi.createFile(p);
+    if (await createEntry(path, name, dir)) {
       expanded.add(path);
       persist();
-      app.treeVersion++;
-      if (!dir) openFile(p);
-    } catch (e) {
-      ui.toast(!dir && (await fsApi.exists(p)) ? t("code.existsAlready", { name }) : String(e), "error");
     }
   }
 
@@ -94,7 +89,11 @@
     const dot = name.lastIndexOf(".");
     const next = await ui.prompt(t("common.rename"), name, "", dot > 0 ? dot : undefined);
     if (!next || next === name) return;
-    const to = joinPath(dirname(path), next);
+    const to = renameTarget(path, next);
+    if (!to) {
+      ui.toast(t("app.invalidRenameName", { name: next }), "error");
+      return;
+    }
     try {
       await fsApi.rename(path, to);
       pathMoved(path, to);
@@ -112,6 +111,23 @@
     } catch (e) {
       ui.toast(String(e), "error");
     }
+  }
+
+  // WebKit doesn't focus buttons on click, so the keyboard would have nothing to start from.
+  function onClick(e: MouseEvent) {
+    (e.currentTarget as HTMLElement).focus({ preventScroll: true });
+    toggle();
+  }
+
+  // Arrows move the focus and open/close folders, F2 renames, Delete deletes (#39).
+  function onKey(e: KeyboardEvent) {
+    const a = treeKeyAction(e, { isDir: !!isDir, open });
+    if (!a) return;
+    e.preventDefault();
+    if (a === "expand" || a === "collapse") toggle();
+    else if (a === "rename") rename();
+    else if (a === "delete") remove();
+    else focusTreeRow(e.currentTarget as HTMLElement, a);
   }
 
   function menu(e: MouseEvent) {
@@ -137,7 +153,7 @@
 
 {#if !root}
   <button class="row" class:active style="padding-left: {8 + (depth - 1) * 14}px" class:drop-target={dropTarget} class:dragging data-tree-path={path} data-tree-dir={isDir ? "1" : "0"}
-    onpointerdown={(e) => startFileDrag(e, path)} onclick={toggle} oncontextmenu={menu} role="treeitem" aria-selected={active} aria-expanded={isDir ? open : undefined}>
+    onpointerdown={(e) => startFileDrag(e, path)} onclick={onClick} onkeydown={onKey} oncontextmenu={menu} role="treeitem" aria-level={depth} aria-selected={active} aria-expanded={isDir ? open : undefined}>
     {#if isDir}
       <svg class="chev" class:open width="10" height="10" viewBox="0 0 10 10"><path d="M3.5 2l3 3-3 3" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
     {:else}

@@ -2375,21 +2375,24 @@ dependencies = [
 
 [[package]]
 name = "ide"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.23.1",
  "flate2",
  "futures-util",
  "getrandom 0.4.3",
  "globset",
+ "icu_normalizer",
  "ignore",
  "iroh",
+ "libc",
  "mimalloc",
  "notify",
  "portable-pty",
  "regex",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "spellbook",
  "tar",
  "tauri",
@@ -2399,6 +2402,7 @@ dependencies = [
  "tauri-plugin-opener",
  "tauri-plugin-process",
  "tauri-plugin-updater",
+ "tempfile",
  "tiny_http",
  "tokio",
  "tokio-tungstenite",

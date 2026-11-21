@@ -101,12 +101,21 @@ fn monitor(app: AppHandle) {
     }
 }
 
+/// Every process with its parent.
+pub fn process_parents() -> std::collections::HashMap<u32, u32> {
+    platform::processes().into_iter().map(|p| (p.pid, p.ppid)).collect()
+}
+
 /// First AI agent found below one of the given shell processes.
 fn find_agent(roots: &[u32]) -> Option<String> {
     if roots.is_empty() {
         return None;
     }
-    let procs = platform::processes();
+    find_agent_in(&platform::processes(), roots)
+}
+
+/// First AI agent among the descendants of `roots` in the process list `procs`.
+fn find_agent_in(procs: &[Proc], roots: &[u32]) -> Option<String> {
     let mut stack: Vec<u32> = roots.to_vec();
     let mut seen = std::collections::HashSet::new();
     while let Some(pid) = stack.pop() {
@@ -445,9 +454,63 @@ mod platform {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    fn p(pid: u32, ppid: u32, name: &str, args: &str) -> Proc {
+        Proc { pid, ppid, name: name.into(), args: args.into() }
+    }
+
     #[test]
     fn lists_processes() {
         let procs = super::platform::processes();
         assert!(procs.iter().any(|p| p.pid == std::process::id()));
+    }
+
+    #[test]
+    fn agent_names() {
+        assert_eq!(agent_name(&p(1, 0, "claude", "")), Some("claude"));
+        assert_eq!(agent_name(&p(1, 0, "Claude.exe", "")), Some("claude"));
+        assert_eq!(agent_name(&p(1, 0, "codex", "")), Some("codex"));
+        assert_eq!(agent_name(&p(1, 0, "opencode", "")), Some("opencode"));
+        assert_eq!(agent_name(&p(1, 0, "node", "node /usr/lib/node_modules/@anthropic-ai/claude-code/cli.js")), Some("claude"));
+        assert_eq!(
+            agent_name(&p(1, 0, "node.exe", r"C:\Program Files\nodejs\node.exe C:\Users\u\AppData\Roaming\npm\node_modules\@anthropic-ai\claude-code\cli.js")),
+            Some("claude")
+        );
+        assert_eq!(agent_name(&p(1, 0, "bun", "bun /home/u/.bun/bin/codex")), Some("codex"));
+        assert_eq!(agent_name(&p(1, 0, "node", "node /usr/lib/node_modules/@openai/codex/bin/codex.js")), Some("codex"));
+        assert_eq!(agent_name(&p(1, 0, "node", "node /home/u/project/server.js")), None);
+        assert_eq!(agent_name(&p(1, 0, "bash", "")), None);
+        // Only node/bun/deno are inspected for their script.
+        assert_eq!(agent_name(&p(1, 0, "python", "python @anthropic-ai/claude-code")), None);
+        assert_eq!(agent_name(&p(1, 0, "claude-helper", "")), None);
+    }
+
+    #[test]
+    fn find_agent_in_tree() {
+        let procs = [
+            p(10, 1, "bash", ""),
+            p(11, 10, "tmux", ""),
+            p(12, 11, "node", "node /x/node_modules/@anthropic-ai/claude-code/cli.js"),
+            p(20, 1, "zsh", ""),
+            p(21, 20, "vim", ""),
+            p(30, 99, "codex", ""), // not below any root
+        ];
+        assert_eq!(find_agent_in(&procs, &[10]).as_deref(), Some("claude"));
+        assert_eq!(find_agent_in(&procs, &[20, 10]).as_deref(), Some("claude"));
+        assert_eq!(find_agent_in(&procs, &[20]), None);
+        assert_eq!(find_agent_in(&procs, &[]), None);
+        // The root itself is not checked, only its descendants.
+        assert_eq!(find_agent_in(&procs, &[12]), None);
+        assert_eq!(find_agent(&[]), None);
+    }
+
+    #[test]
+    fn find_agent_in_cycle_terminates() {
+        let procs = [p(1, 2, "bash", ""), p(2, 1, "sh", ""), p(3, 3, "self", "")];
+        assert_eq!(find_agent_in(&procs, &[1]), None);
+        assert_eq!(find_agent_in(&procs, &[3]), None);
+        let procs = [p(1, 2, "bash", ""), p(2, 1, "sh", ""), p(5, 2, "opencode", "")];
+        assert_eq!(find_agent_in(&procs, &[1]).as_deref(), Some("opencode"));
     }
 }

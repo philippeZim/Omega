@@ -4,28 +4,32 @@
  * the command palette and the Shortcuts cheat sheet.
  */
 import type { EditorView } from "@codemirror/view";
-import { candidates, normalize } from "./keys";
+import { onGlobalChange } from "./windowStorage";
+import { newWindow } from "./windowActions";
+import { candidates, formatKey, normalize } from "./keys";
 import { EDITOR_COMMANDS, type CommandGroup } from "./editorCommands";
 import { KEYMAPS, type KeymapId } from "./keymaps";
 import { t, type Key } from "./i18n/index.svelte";
 import * as ed from "./editor";
-import { app, newFile, save, openFolder, closeTab, setMode, cycleTab, toggleSpell, reopenClosedTab } from "./state.svelte";
+import { app, newFileInSession, save, openFolder, closeTab, setMode, cycleTab, toggleSpell, reopenClosedTab } from "./state.svelte";
 import { ui } from "./ui.svelte";
 import { checkForUpdates } from "./updater.svelte";
 import { report } from "./report.svelte";
 import { settings, setSize } from "./settings.svelte";
-import { runner, runAction, stopRun } from "./code/runner.svelte";
+import { runner, runAction, stopRun, openNewProject } from "./code/runner.svelte";
+import { openLanguageMenu } from "./code/langMenu";
 import * as debug from "./debug/debugger.svelte";
 import { dbg } from "./debug/store.svelte";
 import { setTerminalKeyFilter } from "./terminal.svelte";
 import { toggleZone, toggleFocus, showView, moveFocused, resetLayout } from "./layout.svelte";
 import { forwardSync } from "./latex/controller.svelte";
 import { openFind } from "./search/search.svelte";
+import { blockedAsGuest, blockedWhileHosting } from "./collab/guard";
 import { collab, startHosting, joinFromClipboard, approveNext, leave as leaveCollab } from "./collab/collab.svelte";
 import { git, push as gitPush, pull as gitPull, newBranch, cloneRepo, publishGitHub, refresh as gitRefresh, connectRemote, initRepo } from "./git/git.svelte";
 import { activeTab } from "./state.svelte";
 import { blameSettings, setGitBlame } from "./git/blame.svelte";
-import type { Mode } from "./modes";
+import { MODES, type Mode } from "./modeList";
 
 export interface Command {
   id: string;
@@ -67,7 +71,7 @@ const APP_COMMANDS: CommandDef[] = [
   { id: "search.inFiles", group: "search", keys: ["Mod-Shift-f"], run: () => openFind(false), inTerminal: true },
   { id: "search.replaceInFiles", group: "search", keys: ["Mod-Shift-r"], run: () => openFind(true), inTerminal: true },
   { id: "app.help", group: "general", keys: ["F1"], run: () => (ui.help = !ui.help) },
-  { id: "app.settings", group: "general", keys: ["Mod-Comma"], run: () => (settings.open = !settings.open) },
+  { id: "app.settings", group: "general", keys: ["Mod-,"], run: () => (settings.open = !settings.open) },
   { id: "app.checkUpdates", group: "general", keys: [], run: () => checkForUpdates(true) },
   { id: "app.report", group: "general", keys: [], run: () => (report.open = true), inTerminal: true },
   { id: "app.zoomIn", group: "general", keys: ["Mod-Plus", "Mod-="], run: () => setSize("uiScale", Math.min(1.5, +(settings.uiScale + 0.05).toFixed(2))), inTerminal: true },
@@ -76,11 +80,13 @@ const APP_COMMANDS: CommandDef[] = [
   { id: "app.sidebar", group: "window", keys: ["Mod-b"], run: () => toggleZone("left"), inTerminal: true },
   { id: "app.spell", group: "general", keys: ["F7"], run: toggleSpell, when: () => !debugging() },
 
-  { id: "file.new", group: "files", keys: ["Mod-n"], run: newFile },
+  // A guest's new file goes into the host's project, so it's shared and saved there (#133).
+  { id: "file.new", group: "files", keys: ["Mod-n"], run: () => newFileInSession() },
   { id: "file.openFolder", group: "files", keys: ["Mod-o"], run: openFolder },
+  { id: "window.new", group: "window", keys: ["Mod-Alt-n"], run: () => void newWindow(), inTerminal: true },
   { id: "file.save", group: "files", keys: ["Mod-s"], run: () => save() },
   { id: "file.saveAs", group: "files", keys: ["Mod-Shift-s"], run: () => save(app.activeId, true) },
-  { id: "project.new", group: "files", keys: [], run: () => (runner.newProject = true) },
+  { id: "project.new", group: "files", keys: [], run: () => openNewProject() },
   { id: "tab.close", group: "files", keys: ["Mod-w"], run: () => app.activeId && closeTab(app.activeId) },
   { id: "tab.reopen", group: "files", keys: ["Mod-Shift-t"], run: reopenClosedTab },
   { id: "tab.next", group: "files", keys: ["Mod-Tab"], run: () => cycleTab(1), inTerminal: true },
@@ -102,8 +108,8 @@ const APP_COMMANDS: CommandDef[] = [
   { id: "git.publish", group: "git", keys: [], run: () => publishGitHub() },
   { id: "git.blame", group: "git", keys: [], run: () => setGitBlame(!blameSettings.enabled) },
   { id: "collab.open", group: "collab", keys: ["Mod-Shift-c"], run: () => (collab.open = !collab.open), inTerminal: false },
-  { id: "collab.host", group: "collab", keys: [], run: () => { collab.open = true; startHosting(); } },
-  { id: "collab.join", group: "collab", keys: [], run: () => joinFromClipboard() },
+  { id: "collab.host", group: "collab", keys: [], run: () => { if (blockedAsGuest()) return; collab.open = true; if (!blockedWhileHosting()) startHosting(); } },
+  { id: "collab.join", group: "collab", keys: [], run: () => { if (!blockedAsGuest() && !blockedWhileHosting()) return joinFromClipboard(); } },
   { id: "collab.approve", group: "collab", keys: [], run: () => approveNext(), when: () => collab.requests.length > 0 },
   { id: "ai.claude", group: "ai", keys: [], run: async () => (await import("./ai/ide.svelte")).startAgent("claude") },
   { id: "ai.codex", group: "ai", keys: [], run: async () => (await import("./ai/ide.svelte")).startAgent("codex") },
@@ -132,6 +138,7 @@ const APP_COMMANDS: CommandDef[] = [
   { id: "layout.moveBottom", group: "window", keys: ["Mod-Alt-Shift-ArrowDown"], run: () => moveFocused("bottom"), inTerminal: true },
   { id: "layout.reset", group: "window", keys: [], run: resetLayout },
 
+  { id: "code.language", group: "code", keys: [], run: () => openLanguageMenu(), modes: ["code"] },
   { id: "run.run", group: "run", keys: ["Shift-F10"], run: () => runAction(runner.project?.run), modes: ["code"] },
   { id: "run.build", group: "run", keys: ["Mod-F9"], run: () => runAction(runner.project?.build), modes: ["code"] },
   { id: "run.test", group: "run", keys: [], run: () => runAction(runner.project?.test), modes: ["code"] },
@@ -204,6 +211,11 @@ function presetBase(id: KeymapId): Record<string, string[]> {
   return base;
 }
 
+/** Display names of the modes a command is limited to ("LaTeX", not the raw id "latex"). */
+export function modeNames(modes: Mode[] | undefined): string {
+  return (modes ?? []).map((m) => MODES.find((x) => x.id === m)?.label ?? m).join(", ");
+}
+
 /** Keys of a command in the active preset, ignoring the user's own changes. */
 export function defaultKeysFor(id: string): string[] {
   return presetBase(keymapState.preset)[id] ?? [];
@@ -213,9 +225,32 @@ export function keysFor(id: string): string[] {
   return (keymapState.overrides[id] ?? defaultKeysFor(id)).map(normalize);
 }
 
+// Changed in another window.
+onGlobalChange("keybindings", () => (keymapState.overrides = loadOverrides()));
+onGlobalChange("keymap.preset", () => (keymapState.preset = loadPreset()));
+
 function saveOverrides() {
   if (Object.keys(keymapState.overrides).length) localStorage.setItem("keybindings", JSON.stringify(keymapState.overrides));
   else localStorage.removeItem("keybindings");
+}
+
+/** Current shortcut(s) of a command for menus and tooltips, e.g. "Ctrl 1 / Ctrl 2"; "" when unbound. */
+export function shortcutLabel(id: string): string {
+  return keysFor(id).map(formatKey).join(" / ");
+}
+
+/** Shortcuts of the four mode commands for hints: "Ctrl 1 – 4" for the usual run, else each first key ("" if none is bound). */
+export function modeSwitchLabel(): string {
+  const keys = MODES.map((m) => keysFor(`mode.${m.id}`)[0]);
+  const prefix = keys[0]?.replace(/1$/, "");
+  if (prefix && keys[0] !== prefix && keys.every((k, i) => k === `${prefix}${i + 1}`)) return `${formatKey(keys[0]!)} – ${keys.length}`;
+  return keys.filter((k): k is string => !!k).map(formatKey).join(" / ");
+}
+
+/** Tooltip text with the current shortcut appended, e.g. "Sidebar (Ctrl B)". */
+export function withShortcut(text: string, id: string): string {
+  const s = shortcutLabel(id);
+  return s ? `${text} (${s})` : text;
 }
 
 export function setKeys(id: string, keys: string[] | null) {

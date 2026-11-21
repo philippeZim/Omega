@@ -7,6 +7,8 @@
  * - Remove: the dependencies declared in pyproject.toml / package.json.
  */
 import { fsApi, joinPath } from "../api";
+import { t } from "../i18n/index.svelte";
+import { quotePackageArg, validGroupName, validPackage } from "./packageInput";
 
 export interface Suggestion {
   /** Text put into the input field. */
@@ -139,6 +141,47 @@ function loadPypiNames(): Promise<string[]> {
   return pypiNames;
 }
 
+/**
+ * Top-level string items of a TOML array body (the text between `[` and `]`).
+ * Skips `#` comments (a `#` inside a string is not a comment) and inline tables
+ * such as `{ include-group = "test" }`.
+ */
+function arrayStrings(body: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  for (let i = 0; i < body.length; i++) {
+    const c = body[i];
+    if (c === "#") {
+      while (i < body.length && body[i] !== "\n") i++;
+    } else if (c === "{") depth++;
+    else if (c === "}") depth = Math.max(0, depth - 1);
+    else if (c === '"' || c === "'") {
+      let v = "";
+      for (i++; i < body.length && body[i] !== c && body[i] !== "\n"; i++) {
+        // Basic strings support backslash escapes; literal ('...') strings don't.
+        if (c === '"' && body[i] === "\\" && i + 1 < body.length) i++;
+        v += body[i];
+      }
+      if (depth === 0) out.push(v);
+    }
+  }
+  return out;
+}
+
+/** Index of the `]` closing an array body that starts at `from`, skipping strings and comments; -1 if none. */
+function arrayEnd(text: string, from: number): number {
+  for (let i = from; i < text.length; i++) {
+    const c = text[i];
+    if (c === "]") return i;
+    if (c === "#") {
+      while (i < text.length && text[i] !== "\n") i++;
+    } else if (c === '"' || c === "'") {
+      for (i++; i < text.length && text[i] !== c; i++) if (c === '"' && text[i] === "\\") i++;
+    }
+  }
+  return -1;
+}
+
 /** Dependency names declared in pyproject.toml, with the group they belong to ("" = main). */
 export async function pythonDeps(root: string): Promise<{ name: string; group: string }[]> {
   let text: string;
@@ -149,22 +192,32 @@ export async function pythonDeps(root: string): Promise<{ name: string; group: s
   }
   const out: { name: string; group: string }[] = [];
   const names = (arr: string) =>
-    [...arr.matchAll(/["']([^"']+)["']/g)].map((m) => m[1].match(/^\s*([A-Za-z0-9][A-Za-z0-9._-]*)/)?.[1]).filter((x): x is string => !!x);
+    arrayStrings(arr).map((v) => v.match(/^\s*([A-Za-z0-9][A-Za-z0-9._-]*)/)?.[1]).filter((x): x is string => !!x);
   let section = "";
-  // Arrays may span lines: walk "key = [ ... ]" blocks per section.
-  const re = /^\s*\[([^\]]+)\]\s*$|^\s*([A-Za-z0-9_.-]+|"[^"]+")\s*=\s*\[((?:"[^"]*"|'[^']*'|#[^\n]*|[^\]"'#])*)\]/gm;
-  for (const m of text.matchAll(re)) {
+  // Arrays may span lines: find "key = [" by regex, then scan for the closing `]`
+  // (a backtracking regex over the body hangs on unterminated arrays with comments).
+  const re = /^\s*\[([^\]]+)\]\s*$|^\s*([A-Za-z0-9_.-]+|"[^"]+")\s*=\s*\[/gm;
+  for (let m: RegExpExecArray | null; (m = re.exec(text)); ) {
     if (m[1]) {
       section = m[1].trim();
       continue;
     }
+    const end = arrayEnd(text, re.lastIndex);
+    if (end < 0) continue; // unterminated (e.g. while typing): not a dependency list
+    const body = text.slice(re.lastIndex, end);
+    re.lastIndex = end + 1;
     const key = m[2].replace(/"/g, "");
-    if (section === "project" && key === "dependencies") for (const n of names(m[3])) out.push({ name: n, group: "" });
-    else if (section === "dependency-groups") for (const n of names(m[3])) out.push({ name: n, group: key });
-    else if (section === "tool.uv" && key === "dev-dependencies") for (const n of names(m[3])) out.push({ name: n, group: "dev" });
+    if (section === "project" && key === "dependencies") for (const n of names(body)) out.push({ name: n, group: "" });
+    else if (section === "dependency-groups") for (const n of names(body)) out.push({ name: n, group: key });
+    else if (section === "tool.uv" && key === "dev-dependencies") for (const n of names(body)) out.push({ name: n, group: "dev" });
   }
   return out;
 }
+
+// A picked suggestion goes into the command line, and these lists come from project files and the
+// registries, so only real package names are offered.
+const isPyName = (n: string) => validPackage("uv", "remove", n);
+const isNodeName = (n: string) => validPackage("pnpm", "remove", n);
 
 export function suggestPythonAdd(root: string, dev: boolean): Suggest {
   return async (q) => {
@@ -173,14 +226,14 @@ export function suggestPythonAdd(root: string, dev: boolean): Suggest {
     const desc = new Map([...PY_POPULAR, ...PY_DEV]);
     const tag = (n: string) => (installed.has(norm(n)) ? "installed" : undefined);
     if (!q.trim()) return curated.map(([value, detail]) => ({ value, detail, tag: tag(value) }));
-    const names = rank(await loadPypiNames(), q.trim());
+    const names = rank((await loadPypiNames()).filter(isPyName), q.trim());
     return names.map((value) => ({ value, detail: desc.get(value), tag: tag(value) }));
   };
 }
 
 export function suggestPythonRemove(root: string): Suggest {
   return async (q) => {
-    const deps = await pythonDeps(root);
+    const deps = (await pythonDeps(root)).filter((d) => isPyName(d.name));
     const hit = q.trim() ? rank(deps.map((d) => d.name), q.trim(), 200) : deps.map((d) => d.name);
     return hit.map((value) => ({ value, tag: deps.find((d) => d.name === value)?.group || undefined }));
   };
@@ -191,10 +244,29 @@ export async function pythonRemoveArg(root: string, input: string): Promise<stri
   const deps = await pythonDeps(root);
   const parts = input.split(/\s+/).filter(Boolean);
   if (parts.some((p) => p.startsWith("-"))) return input; // user passed flags themselves
-  const groups = new Set(parts.map((p) => deps.find((d) => norm(d.name) === norm(p))?.group ?? ""));
-  if (groups.size !== 1) return input;
-  const g = [...groups][0];
-  return g === "" ? input : g === "dev" ? `--dev ${input}` : `--group ${g} ${input}`;
+  const g = removeGroup(deps, parts);
+  if (!g) return input;
+  if (g === "dev") return `--dev ${input}`;
+  // The name comes from pyproject.toml, which isn't necessarily the host's own text.
+  if (!validGroupName(g)) throw new Error(t("code.act.badGroup"));
+  return `--group ${quotePackageArg(g)} ${input}`;
+}
+
+/** The one group all these packages are in; null when they're in the main list or in several. */
+function removeGroup(deps: { name: string; group: string }[], names: string[]): string | null {
+  const groups = new Set(names.map((p) => deps.find((d) => norm(d.name) === norm(p))?.group ?? ""));
+  return groups.size === 1 ? [...groups][0] || null : null;
+}
+
+/**
+ * `uv remove` flags as separate words, for names from a Code Together guest. Null when the group
+ * name isn't a plain one: anybody who can edit pyproject.toml chooses it.
+ */
+export async function pythonRemoveFlags(root: string, names: string[]): Promise<string[] | null> {
+  const g = removeGroup(await pythonDeps(root), names);
+  if (!g) return [];
+  if (g === "dev") return ["--dev"];
+  return validGroupName(g) ? ["--group", quotePackageArg(g)] : null;
 }
 
 // ------------------------------------------------------------------ npm
@@ -219,7 +291,7 @@ export function suggestNodeAdd(root: string, dev: boolean): Suggest {
     try {
       const r = await fetch(`https://registry.npmjs.org/-/v1/search?text=${encodeURIComponent(q.trim())}&size=20`);
       const objs = ((await r.json()) as { objects: { package: { name: string; description?: string } }[] }).objects;
-      return objs.map((o) => ({ value: o.package.name, detail: o.package.description, tag: tag(o.package.name) }));
+      return objs.filter((o) => isNodeName(o.package.name)).map((o) => ({ value: o.package.name, detail: o.package.description, tag: tag(o.package.name) }));
     } catch {
       return rank([...NPM_POPULAR, ...NPM_DEV].map(([n]) => n), q.trim()).map((value) => ({ value, tag: tag(value) }));
     }
@@ -228,7 +300,7 @@ export function suggestNodeAdd(root: string, dev: boolean): Suggest {
 
 export function suggestNodeRemove(root: string): Suggest {
   return async (q) => {
-    const deps = await nodeDeps(root);
+    const deps = (await nodeDeps(root)).filter((d) => isNodeName(d.name));
     const hit = q.trim() ? rank(deps.map((d) => d.name), q.trim(), 200) : deps.map((d) => d.name);
     return hit.map((value) => ({ value, tag: deps.find((d) => d.name === value)?.dev ? "dev" : undefined }));
   };

@@ -24,9 +24,12 @@
   import { installs, catalog, refreshInstalls, checkUpdates, updateAvailable, wasChecked, canInstall, manualHint, install, update, remove, type Group } from "../lib/installs.svelte";
 
   const INSTALL_GROUPS: Group[] = ["tool", "lsp", "debug"];
-  const installItems = catalog();
+  const installItems = $derived(catalog());
   $effect(() => {
-    if (tab === "installs") refreshInstalls();
+    if (tab === "installs") {
+      refreshInstalls();
+      refreshCliCommand();
+    }
   });
   const updateCount = $derived(installItems.filter((i) => updateAvailable(i.id)).length);
   import { blameSettings, setGitBlame } from "../lib/git/blame.svelte";
@@ -41,6 +44,7 @@
     if (tab === "ai") detectAgents();
   });
   import { formatKey } from "../lib/keys";
+  import { cliCommand, installCliCommand, refreshCliCommand } from "../lib/cliCommand.svelte";
   import { keysFor } from "../lib/commands.svelte";
   import { writeText } from "@tauri-apps/plugin-clipboard-manager";
   import { ui } from "../lib/ui.svelte";
@@ -117,7 +121,7 @@
               <div><b>{t(sz.label)}</b><span class="sub2">{t(sz.sub)}</span></div>
               <div class="stepper">
                 <button onclick={() => setSize(sz.key, Math.max(sz.min, +(v - sz.step).toFixed(2)))} aria-label={t("app.settings.smaller")}><Glyph name="minus" size={10} /></button>
-                <input type="range" min={sz.min} max={sz.max} step={sz.step} value={v} oninput={(e) => setSize(sz.key, Number((e.currentTarget as HTMLInputElement).value))} />
+                <input type="range" aria-label={t(sz.label)} min={sz.min} max={sz.max} step={sz.step} value={v} oninput={(e) => setSize(sz.key, Number((e.currentTarget as HTMLInputElement).value))} />
                 <button onclick={() => setSize(sz.key, Math.min(sz.max, +(v + sz.step).toFixed(2)))} aria-label={t("app.settings.larger")}><Glyph name="plus" size={10} /></button>
                 <span class="val">{sz.unit === "%" ? Math.round(v * 100) + " %" : sz.key === "proseWidth" && v >= PROSE_WIDTH_FULL ? t("app.settings.proseWidthFull") : v + " px"}</span>
               </div>
@@ -157,6 +161,29 @@
           <button class="btn ghost" disabled={installs.loading} onclick={refreshInstalls}>{t("installs.refresh")}</button>
           {#if installs.checkedAt && !installs.checking}<span class="note inline">{updateCount ? t("installs.updatesFound", { n: updateCount }) : t("installs.noUpdates")}</span>{/if}
         </div>
+        {#if cliCommand.status?.available}
+          {@const cli = cliCommand.status}
+          <h3>{t("app.cli.title")}</h3>
+          <div class="box">
+            <div class="srow">
+              <div class="grow">
+                <b>omega</b>
+                <span class="sub2 ipath" title={cli.path}>{cli.state === "foreign" ? t("app.cli.foreign", { path: cli.path }) : cli.state === "missing" ? t("app.cli.sub") : cli.path}</span>
+                {#if cli.state !== "foreign" && !cli.onPath}<span class="sub2">{t("app.cli.notOnPath", { dir: cli.dir })}</span>{/if}
+              </div>
+              <div class="rowend">
+                {#if cli.state === "installed"}<span class="pill ok">{t("app.cli.ready")}</span>{:else}
+                  <button class="btn" disabled={cliCommand.busy} onclick={installCliCommand}>{cli.state === "stale" ? t("app.cli.update") : t("app.cli.install")}</button>
+                {/if}
+              </div>
+            </div>
+          </div>
+        {:else if cliCommand.error}
+          <h3>{t("app.cli.title")}</h3>
+          <div class="box">
+            <div class="srow"><div class="grow"><b>omega</b><span class="sub2">{cliCommand.error}</span></div></div>
+          </div>
+        {/if}
         {#each INSTALL_GROUPS as g (g)}
           <h3>{t(`installs.group.${g}`)}</h3>
           <div class="box">
@@ -249,7 +276,7 @@
         <p class="desc">{t("app.settings.controlDesc")}</p>
         <div class="box">
           <div class="srow">
-            <div><b>{t("app.settings.controlMcp")}</b><span class="sub2">{control.running ? t("app.settings.controlRunning", { port: control.port }) + (control.calls ? t("app.settings.controlCalls", { n: control.calls, tool: control.lastTool }) : "") : control.error ? control.error : t("app.settings.off")}</span></div>
+            <div><b>{t("app.settings.controlMcp")}</b><span class="sub2">{control.running ? t("app.settings.controlRunning", { port: control.boundPort || control.port }) + (control.calls ? t("app.settings.controlCalls", { n: control.calls, tool: control.lastTool }) : "") : control.error ? control.error : t("app.settings.off")}</span></div>
             <button class="switch" class:on={control.enabled} onclick={() => setControlEnabled(!control.enabled)} role="switch" aria-checked={control.enabled} aria-label={t("app.settings.controlMcp")}><span></span></button>
           </div>
           {#if control.enabled}
@@ -268,7 +295,7 @@
             </div>
             <div class="srow">
               <div><b>Port</b><span class="sub2">{t("app.settings.portSub")}</span></div>
-              <input class="port" type="number" min="1024" max="65535" value={control.port} onchange={(e) => setControlPort(Number((e.currentTarget as HTMLInputElement).value))} />
+              <input class="port" type="number" aria-label="Port" min="1024" max="65535" value={control.port} onchange={(e) => setControlPort(Number((e.currentTarget as HTMLInputElement).value))} />
             </div>
             <div class="srow">
               <div><b>{t("app.settings.renewToken")}</b><span class="sub2">{t("app.settings.renewTokenSub")}</span></div>
@@ -345,6 +372,9 @@
   .scroll { flex: 1; overflow: auto; padding: 8px 34px 34px; }
   /* One centred column for title, tabs and content (wide windows would otherwise spread it). */
   header, .tabs, .scroll > section { width: 100%; max-width: 900px; margin-left: auto; margin-right: auto; }
+  /* Header and tabs pad their content inside the box like .scroll does around the sections, so their
+     column is wider by that padding (34px each side) and the left edges line up at every width (#124). */
+  header, .tabs { max-width: calc(900px + 2 * 34px); }
   header { padding-left: 34px; padding-right: 26px; }
   .tabs { padding-left: 30px; }
   .tabs { display: flex; gap: 6px; padding: 6px 30px 10px; overflow-x: auto; flex-shrink: 0; }

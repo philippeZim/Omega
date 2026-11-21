@@ -1,4 +1,6 @@
 <script lang="ts">
+  import "./lib/collab/assets.svelte";
+  import "./lib/collab/latexRemote.svelte";
   import TopBar from "./components/TopBar.svelte";
   import TabBar from "./components/TabBar.svelte";
   import EditorPane from "./components/EditorPane.svelte";
@@ -22,7 +24,14 @@
   import CollabPanel from "./components/CollabPanel.svelte";
   import { collab } from "./lib/collab/collab.svelte";
   import "./lib/collab/share.svelte";
+  import "./lib/collab/projectSearch.svelte";
   import "./lib/collab/session.svelte";
+  import "./lib/collab/lspHost.svelte";
+  import "./lib/collab/lspGuest.svelte";
+  import { guestShells } from "./lib/collab/guestShell.svelte";
+  import GuestShellBar from "./components/GuestShellBar.svelte";
+  import "./lib/collab/debugRemote.svelte";
+  import "./lib/collab/gitRemote.svelte";
   import "./lib/ai/control.svelte";
   import "./lib/ai/ide.svelte";
   import DiffView from "./components/DiffView.svelte";
@@ -54,21 +63,9 @@
   setConditionHook((current) => ui.prompt(t("app.breakpointCondition"), current, t("app.breakpointConditionPlaceholder")));
 
   import { onMount } from "svelte";
-  import { invoke } from "@tauri-apps/api/core";
-  import { openFile, setRoot } from "./lib/state.svelte";
-  import { fsApi } from "./lib/api";
+  import { bootWindow } from "./lib/windowSession.svelte";
 
-  // `omega <folder|file>…` opens folders as workspace and files as tabs.
-  onMount(async () => {
-    for (const p of await invoke<string[]>("cli_paths")) {
-      try {
-        await fsApi.listDir(p);
-        setRoot(p);
-      } catch {
-        if (await fsApi.exists(p)) await openFile(p);
-      }
-    }
-  });
+  onMount(() => void bootWindow());
 
 
   // Floating side zones close when a file gets opened or the user clicks into the editor column.
@@ -132,6 +129,9 @@
 <ContextMenu />
 {#if collab.open}
   <CollabPanel />
+{/if}
+{#if guestShells.list.length}
+  <GuestShellBar />
 {/if}
 <Toasts />
 <ToolProgress />

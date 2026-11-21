@@ -26,9 +26,9 @@ pub struct Owner {
     package: String,
 }
 
-const TOOLS: &[&str] = &["uv", "tectonic", "node", "pnpm", "cmake", "ninja", "jdk", "gradle", "rust", "git", "cc"];
-const LSPS: &[&str] = &["python", "typescript", "java", "rust", "clangd"];
-const DEBUGGERS: &[&str] = &["codelldb", "debugpy", "jsdebug", "javadebug"];
+const TOOLS: &[&str] = &["uv", "tectonic", "node", "pnpm", "cmake", "ninja", "jdk", "gradle", "rust", "git", "cc", "scala", "sbt", "ocaml", "mojo"];
+const LSPS: &[&str] = &["python", "typescript", "java", "rust", "clangd", "scala", "ocaml"];
+const DEBUGGERS: &[&str] = &["codelldb", "debugpy", "jsdebug", "javadebug", "earlybird"];
 
 fn all_ids() -> Vec<String> {
     let mut v: Vec<String> = TOOLS.iter().map(|t| format!("tool:{t}")).collect();
@@ -54,6 +54,11 @@ fn tool_cmds(id: &str) -> &'static [&'static str] {
         "ninja" => &["ninja"],
         "gradle" => &["gradle"],
         "git" => &["git"],
+        "scala" => &["scala-cli"],
+        "sbt" if cfg!(windows) => &["sbt.bat"],
+        "sbt" => &["sbt"],
+        "ocaml" => &["dune"],
+        "mojo" => &["mojo"],
         _ => &[],
     }
 }
@@ -95,6 +100,8 @@ fn version_arg(cmd: &str) -> &'static [&'static str] {
     match cmd {
         "java" => &["-version"],
         "cl" => &[],
+        // Plain `sbt --version` boots sbt and creates project/ and target/ in the current folder.
+        "sbt" | "sbt.bat" => &["--script-version"],
         _ => &["--version"],
     }
 }
@@ -162,7 +169,8 @@ fn locate(id: &str) -> (&'static str, Option<PathBuf>, Option<String>) {
                 let v = if name == "cc" && cfg!(windows) { name_version(&t.join("cc"), "llvm-mingw-") } else { exe_version(&exe, version_arg(cmd)) };
                 return omega(exe, v);
             }
-            system_tool(tool_cmds(name), true)
+            // A system sbt may be a launcher without --script-version, which would boot sbt here.
+            system_tool(tool_cmds(name), name != "sbt")
         }
         ("lsp", "python") => {
             let d = t.join("python").join("node_modules");
@@ -195,6 +203,15 @@ fn locate(id: &str) -> (&'static str, Option<PathBuf>, Option<String>) {
                 None => ("missing", None, None),
             }
         }
+        ("lsp", "scala") => {
+            let d = t.join("metals");
+            match env::which(&env::norm(d.join("metals"))) {
+                Some(p) => omega(p, std::fs::read_to_string(d.join(".omega-version")).ok().map(|s| s.trim().to_string())),
+                None => system_tool(&["metals"], false),
+            }
+        }
+        ("lsp", "ocaml") => ocaml_package("ocamllsp"),
+        ("debug", "earlybird") => ocaml_package("ocamlearlybird"),
         ("debug", "codelldb") => {
             let d = t.join("codelldb").join("extension");
             if d.is_dir() { omega(t.join("codelldb"), json_version(&d.join("package.json"))) } else { ("missing", None, None) }
@@ -220,6 +237,17 @@ fn locate(id: &str) -> (&'static str, Option<PathBuf>, Option<String>) {
             }
         }
         _ => ("missing", None, None),
+    }
+}
+
+/// A program of the OCaml toolchain: from Omega's switch, else from the system.
+fn ocaml_package(cmd: &str) -> (&'static str, Option<PathBuf>, Option<String>) {
+    match env::which(&env::norm(crate::tools::ocaml_bin().join(cmd))) {
+        Some(p) => {
+            let v = exe_version(&p, &["--version"]);
+            omega(p, v)
+        }
+        None => system_tool(&[cmd], true),
     }
 }
 
@@ -254,20 +282,29 @@ fn segment_after(p: &str, marker: &str) -> Option<String> {
     p.split_once(marker).and_then(|(_, rest)| rest.split('/').next()).filter(|s| !s.is_empty()).map(String::from)
 }
 
+/// Package manager recognisable from the (normalised) path alone: mise, Homebrew, Scoop.
+fn owner_from_path(p: &str) -> Option<Owner> {
+    let own = |m: &str, p: String| Some(Owner { manager: m.into(), package: p });
+    if let Some(n) = segment_after(p, "/mise/installs/") {
+        return own("mise", n);
+    }
+    if let Some(n) = segment_after(p, "/Cellar/") {
+        return own("brew", n);
+    }
+    if let Some(n) = segment_after(&p.to_lowercase(), "/scoop/apps/") {
+        return own("scoop", n);
+    }
+    None
+}
+
 /// Which package manager installed `path` (and under which package name).
 fn owner(path: &Path) -> Option<Owner> {
     let own = |m: &str, p: String| Some(Owner { manager: m.into(), package: p });
     let real = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let (orig, canon) = (env::norm(path), env::norm(&real));
     for p in [&orig, &canon] {
-        if let Some(n) = segment_after(p, "/mise/installs/") {
-            return own("mise", n);
-        }
-        if let Some(n) = segment_after(p, "/Cellar/") {
-            return own("brew", n);
-        }
-        if let Some(n) = segment_after(&p.to_lowercase(), "/scoop/apps/") {
-            return own("scoop", n);
+        if let Some(o) = owner_from_path(p) {
+            return Some(o);
         }
     }
     if path.starts_with(env::home().join(".cargo").join("bin")) && env::which("rustup").is_some() {
@@ -328,7 +365,7 @@ fn sys_available(o: &Owner, pacman_updates: &Option<std::collections::HashMap<St
             // No checkupdates: compare with the (possibly stale) sync database.
             let (ok, info) = out(env::command("pacman").args(["-Si", p])).ok_or_else(none)?;
             if !ok {
-                return Err("nicht in den Repos (AUR?)".into());
+                return Err("installs:not_in_repos".into());
             }
             let repo = info.lines().find(|l| l.starts_with("Version")).and_then(|l| l.split(':').nth(1)).map(|v| v.trim().to_string()).ok_or_else(none)?;
             let (_, inst) = out(env::command("pacman").args(["-Q", p])).ok_or_else(none)?;
@@ -364,8 +401,47 @@ fn sys_available(o: &Owner, pacman_updates: &Option<std::collections::HashMap<St
             let line = o.lines().find(|l| l.starts_with("stable")).unwrap_or_default();
             Ok(if line.to_lowercase().contains("update available") { line.rsplit("->").next().and_then(extract_version) } else { None })
         }
-        _ => Err("unbekannter Paketmanager".into()),
+        "scoop" => {
+            let (_, o) = out(env::tool("scoop")?.arg("status")).ok_or_else(none)?;
+            parse_scoop_status(&o, p)
+        }
+        _ => Err("installs:unknown_manager".into()),
     }
+}
+
+/// Latest version of `package` from `scoop status` output: Ok(None) = not listed as outdated.
+/// Scoop prints a PowerShell table ("Name  Installed Version  Latest Version  Missing Dependencies
+/// Info"); old versions printed "Updates are available for:" followed by "name: old -> new" lines.
+fn parse_scoop_status(text: &str, package: &str) -> Result<Option<String>, String> {
+    let lines: Vec<&str> = text.lines().collect();
+    if let Some(h) = lines.iter().position(|l| l.trim_start().starts_with("Name") && l.contains("Latest Version")) {
+        // Cells are fixed-width columns aligned with the header.
+        let col = |name: &str| lines[h].find(name).map(|b| lines[h][..b].chars().count());
+        let start = col("Latest Version").ok_or("scoop status: no Latest Version column")?;
+        let end = col("Missing Dependencies").or_else(|| col("Info")).unwrap_or(usize::MAX);
+        for row in &lines[h + 1..] {
+            if row.split_whitespace().next() != Some(package) {
+                continue;
+            }
+            let cell: String = row.chars().skip(start).take(end.saturating_sub(start)).collect();
+            return Ok(cell.split_whitespace().next().map(String::from));
+        }
+        return Ok(None);
+    }
+    for l in &lines {
+        if let Some((name, rest)) = l.trim().split_once(':') {
+            if name.trim() == package {
+                if let Some((_, new)) = rest.split_once("->") {
+                    return Ok(Some(new.trim().to_string()));
+                }
+            }
+        }
+    }
+    let low = text.to_lowercase();
+    if low.contains("everything is ok") || low.contains("updates are available") {
+        return Ok(None);
+    }
+    Err("scoop status: unexpected output".into())
 }
 
 /// Asks the package managers about updates for the given system installations.
@@ -416,11 +492,11 @@ fn json(url: &str) -> Result<serde_json::Value, String> {
 
 fn gh_latest(repo: &str) -> Result<String, String> {
     let r = json(&format!("https://api.github.com/repos/{repo}/releases/latest"))?;
-    r["tag_name"].as_str().and_then(extract_version).ok_or_else(|| format!("{repo}: keine Version"))
+    r["tag_name"].as_str().and_then(extract_version).ok_or_else(|| format!("installs:no_version:{repo}"))
 }
 
 fn npm_latest(pkg: &str) -> Result<String, String> {
-    json(&format!("https://registry.npmjs.org/{pkg}/latest"))?["version"].as_str().map(String::from).ok_or_else(|| format!("{pkg}: keine Version"))
+    json(&format!("https://registry.npmjs.org/{pkg}/latest"))?["version"].as_str().map(String::from).ok_or_else(|| format!("installs:no_version:{pkg}"))
 }
 
 fn latest(id: &str) -> Result<Option<String>, String> {
@@ -429,7 +505,7 @@ fn latest(id: &str) -> Result<Option<String>, String> {
         "tool:tectonic" => gh_latest("tectonic-typesetting/tectonic")?,
         "tool:node" => {
             let index = json("https://nodejs.org/dist/index.json")?;
-            index.as_array().and_then(|a| a.iter().find(|r| r["lts"].is_string())).and_then(|r| r["version"].as_str()).and_then(extract_version).ok_or("Node.js: keine Version")?
+            index.as_array().and_then(|a| a.iter().find(|r| r["lts"].is_string())).and_then(|r| r["version"].as_str()).and_then(extract_version).ok_or("installs:no_version:Node.js")?
         }
         "tool:pnpm" => gh_latest("pnpm/pnpm")?,
         "tool:cmake" => gh_latest("Kitware/CMake")?,
@@ -439,9 +515,16 @@ fn latest(id: &str) -> Result<Option<String>, String> {
             let os = if cfg!(windows) { "windows" } else if cfg!(target_os = "macos") { "mac" } else { "linux" };
             let arch = if cfg!(target_arch = "aarch64") { "aarch64" } else { "x64" };
             let r = json(&format!("https://api.adoptium.net/v3/assets/latest/21/hotspot?architecture={arch}&image_type=jdk&os={os}&vendor=eclipse"))?;
-            r[0]["version"]["semver"].as_str().and_then(extract_version).ok_or("JDK: keine Version")?
+            r[0]["version"]["semver"].as_str().and_then(extract_version).ok_or("installs:no_version:JDK")?
         }
-        "tool:gradle" => json("https://services.gradle.org/versions/current")?["version"].as_str().map(String::from).ok_or("Gradle: keine Version")?,
+        "tool:scala" => gh_latest("VirtusLab/scala-cli")?,
+        "tool:sbt" => gh_latest("sbt/sbt")?,
+        "lsp:scala" => crate::tools::metals_latest()?,
+        "tool:ocaml" => crate::tools::ocaml_latest("dune")?,
+        "tool:mojo" => crate::tools::mojo_latest()?,
+        "lsp:ocaml" => crate::tools::ocaml_latest("ocaml-lsp-server")?,
+        "debug:earlybird" => crate::tools::ocaml_latest("earlybird")?,
+        "tool:gradle" => json("https://services.gradle.org/versions/current")?["version"].as_str().map(String::from).ok_or("installs:no_version:Gradle")?,
         "tool:git" if cfg!(windows) => gh_latest("git-for-windows/git")?,
         "tool:cc" if cfg!(windows) => gh_latest("mstorsjo/llvm-mingw")?,
         "tool:rust" => {
@@ -451,20 +534,20 @@ fn latest(id: &str) -> Result<Option<String>, String> {
             let line = text.lines().find(|l| l.starts_with("stable")).unwrap_or_default();
             let tail = line.rsplit("->").next().unwrap_or(line);
             let tail = tail.rsplit(':').next().unwrap_or(tail);
-            extract_version(tail).ok_or("rustup check: keine Version")?
+            extract_version(tail).ok_or("installs:no_version:rustup")?
         }
         "lsp:python" => npm_latest("basedpyright")?,
         "lsp:typescript" => npm_latest("typescript-language-server")?,
         "lsp:java" => {
             let name = crate::tools::http_text("https://download.eclipse.org/jdtls/snapshots/latest.txt")?;
-            extract_version(name.trim().trim_start_matches("jdt-language-server-")).ok_or("jdtls: keine Version")?
+            extract_version(name.trim().trim_start_matches("jdt-language-server-")).ok_or("installs:no_version:jdtls")?
         }
         "debug:codelldb" => gh_latest("vadimcn/codelldb")?,
-        "debug:debugpy" => json("https://pypi.org/pypi/debugpy/json")?["info"]["version"].as_str().map(String::from).ok_or("debugpy: keine Version")?,
+        "debug:debugpy" => json("https://pypi.org/pypi/debugpy/json")?["info"]["version"].as_str().map(String::from).ok_or("installs:no_version:debugpy")?,
         "debug:jsdebug" => gh_latest("microsoft/vscode-js-debug")?,
         "debug:javadebug" => {
             let meta = crate::tools::http_text("https://repo1.maven.org/maven2/com/microsoft/java/com.microsoft.java.debug.plugin/maven-metadata.xml")?;
-            meta.split("<release>").nth(1).and_then(|s| s.split("</release>").next()).map(String::from).ok_or("java-debug: keine Version")?
+            meta.split("<release>").nth(1).and_then(|s| s.split("</release>").next()).map(String::from).ok_or("installs:no_version:java-debug")?
         }
         _ => return Ok(None),
     };
@@ -509,26 +592,48 @@ fn uninstall(id: &str) -> Result<(), String> {
     match id.split_once(':').unwrap_or(("", id)) {
         ("tool", "rust") => {
             if !manifest.contains_key("rust") {
-                return Err("Rust wurde nicht von Omega installiert".into());
+                return Err("installs:not_ours:Rust".into());
             }
             run_ok(env::tool("rustup")?.args(["self", "uninstall", "-y"]))?;
             crate::tools::forget("rust")
         }
+        ("tool", "ocaml") => {
+            // Waits for a running install, then decides on what that install has left.
+            // Holds no other lock, and nothing below takes this one again.
+            let _work = crate::tools::opam_install_lock();
+            if !crate::tools::manifest().contains_key("ocaml") {
+                return Err("installs:not_ours:ocaml".into());
+            }
+            remove_dir(&t.join("ocaml"))?;
+            crate::tools::forget("ocaml")
+        }
+        ("tool", "mojo") => {
+            // Ends a running install, then decides on what that install has left.
+            let _work = crate::tools::mojo_removal_lock();
+            if !crate::tools::manifest().contains_key("mojo") {
+                return Err("installs:not_ours:mojo".into());
+            }
+            remove_dir(&t.join("mojo"))?;
+            crate::tools::forget("mojo")
+        }
         ("tool", name) | ("lsp", name @ "clangd") => {
             if !manifest.contains_key(name) {
-                return Err(format!("{name} wurde nicht von Omega installiert"));
+                return Err(format!("installs:not_ours:{name}"));
             }
             remove_dir(&t.join(name))?;
             crate::tools::forget(name)
         }
         ("lsp", "rust") => {
             if !manifest.contains_key("rust") {
-                return Err("rust-analyzer gehört zur Rust-Installation des Systems".into());
+                return Err("installs:system_rust_analyzer".into());
             }
             run_ok(env::tool("rustup")?.args(["component", "remove", "rust-analyzer"]))
         }
         ("lsp", "python") => remove_dir(&t.join("python")),
         ("lsp", "typescript") => remove_dir(&t.join("typescript")),
+        ("lsp", "scala") => remove_dir(&t.join("metals")),
+        ("lsp", "ocaml") => crate::tools::remove_ocaml_package("ocaml-lsp-server"),
+        ("debug", "earlybird") => crate::tools::remove_ocaml_package("earlybird"),
         ("lsp", "java") => {
             remove_dir(&t.join("jdtls"))?;
             remove_dir(&t.join("jdtls-config"))
@@ -537,7 +642,7 @@ fn uninstall(id: &str) -> Result<(), String> {
         ("debug", "debugpy") => remove_dir(&t.join("debugpy")),
         ("debug", "jsdebug") => remove_dir(&t.join("js-debug")),
         ("debug", "javadebug") => remove_dir(&t.join("java-debug")),
-        _ => Err(format!("Unbekannt: {id}")),
+        _ => Err(format!("installs:unknown:{id}")),
     }
 }
 
@@ -552,7 +657,7 @@ pub async fn installs_remove(id: String) -> Result<(), String> {
 pub async fn installs_update_rust() -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(|| {
         if !crate::tools::manifest().contains_key("rust") {
-            return Err("Rust wurde nicht von Omega installiert".into());
+            return Err("installs:not_ours:Rust".into());
         }
         run_ok(env::tool("rustup")?.arg("update"))
     })
@@ -565,6 +670,68 @@ mod tests {
     use super::*;
 
     #[test]
+    fn scoop_status_table() {
+        let text = "Scoop is up to date.\n\nName   Installed Version Latest Version Missing Dependencies Info\n----   ----------------- -------------- -------------------- ----\nuv     0.4.0             0.5.1\nnodejs 20.0.0            22.1.0                              Held package\ngit    2.40.0                                                Manifest removed\n\n";
+        assert_eq!(parse_scoop_status(text, "uv"), Ok(Some("0.5.1".into())));
+        assert_eq!(parse_scoop_status(text, "nodejs"), Ok(Some("22.1.0".into())));
+        // Listed, but without a newer version (manifest gone): nothing to offer.
+        assert_eq!(parse_scoop_status(text, "git"), Ok(None));
+        assert_eq!(parse_scoop_status(text, "cmake"), Ok(None));
+    }
+
+    #[test]
+    fn scoop_status_other_formats() {
+        assert_eq!(parse_scoop_status("Scoop is up to date.\nEverything is ok!\n", "uv"), Ok(None));
+        let old = "Updates are available for:\n    uv: 0.4.0 -> 0.5.1\n    cmake: 3.30.0 -> 4.1.2\n";
+        assert_eq!(parse_scoop_status(old, "cmake"), Ok(Some("4.1.2".into())));
+        assert_eq!(parse_scoop_status(old, "node"), Ok(None));
+        assert!(parse_scoop_status("", "uv").is_err());
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn scoop_owner_has_an_update_check() {
+        // Before #19, sys_available had no scoop arm ("unknown package manager"), so scoop installs
+        // never got an update entry. Here (no scoop installed) it gets as far as looking for scoop.
+        let o = Owner { manager: "scoop".into(), package: "uv".into() };
+        assert_eq!(sys_available(&o, &None), Err("scoop: not found".to_string()));
+    }
+
+    #[test]
+    fn removing_ocaml_waits_for_a_running_install() {
+        let _one = crate::tools::OPAM_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let install = crate::tools::opam_install_lock();
+        let (tx, rx) = mpsc::channel();
+        let removal = std::thread::spawn(move || tx.send(uninstall("tool:ocaml")).unwrap());
+        assert!(rx.recv_timeout(Duration::from_millis(150)).is_err(), "removal ran during the install");
+        drop(install);
+        // Nothing is installed in the test's tools folder, so it stops before deleting anything.
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), Err("installs:not_ours:ocaml".to_string()));
+        removal.join().unwrap();
+    }
+
+    #[test]
+    fn removing_mojo_never_deletes_during_a_running_install() {
+        let install = crate::tools::mojo_install_lock();
+        let (tx, rx) = mpsc::channel();
+        let removal = std::thread::spawn(move || tx.send(uninstall("tool:mojo")).unwrap());
+        assert!(rx.recv_timeout(Duration::from_millis(150)).is_err(), "removal ran during the install");
+        drop(install);
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), Err("installs:not_ours:mojo".to_string()));
+        removal.join().unwrap();
+    }
+
+    #[test]
+    fn sbt_is_found_and_asked_without_booting_it() {
+        assert_eq!(tool_cmds("sbt"), if cfg!(windows) { &["sbt.bat"] } else { &["sbt"] });
+        assert_eq!(tool_cmds("scala"), &["scala-cli"]);
+        // `--version` would start sbt and create project/ and target/ in the current folder.
+        assert_eq!(version_arg("sbt"), &["--script-version"]);
+        assert_eq!(version_arg("sbt.bat"), &["--script-version"]);
+        assert_eq!(version_arg("scala-cli"), &["--version"]);
+    }
+
+    #[test]
     fn versions() {
         assert_eq!(extract_version("cmake version 4.1.2\n").as_deref(), Some("4.1.2"));
         assert_eq!(extract_version("v22.11.0").as_deref(), Some("22.11.0"));
@@ -572,6 +739,50 @@ mod tests {
         assert_eq!(extract_version("1.44.0.202501221502.jar").as_deref(), Some("1.44.0"));
         assert_eq!(extract_version("tectonic@0.15.0").as_deref(), Some("0.15.0"));
         assert_eq!(extract_version("20241030").as_deref(), Some("20241030"));
+    }
+
+    #[test]
+    fn segment_after_cases() {
+        assert_eq!(segment_after("/x/mise/installs/node/22/bin", "/mise/installs/").as_deref(), Some("node"));
+        assert_eq!(segment_after("/x/mise/installs/node", "/mise/installs/").as_deref(), Some("node"));
+        assert_eq!(segment_after("/x/mise/installs/", "/mise/installs/"), None);
+        assert_eq!(segment_after("/usr/bin/node", "/mise/installs/"), None);
+        assert_eq!(segment_after("", "/mise/installs/"), None);
+    }
+
+    fn owner_of(p: &str) -> Option<(String, String)> {
+        owner_from_path(p).map(|o| (o.manager, o.package))
+    }
+
+    fn pair(m: &str, p: &str) -> Option<(String, String)> {
+        Some((m.into(), p.into()))
+    }
+
+    #[test]
+    fn owner_from_path_cases() {
+        assert_eq!(owner_of("/home/u/.local/share/mise/installs/node/22.11.0/bin/node"), pair("mise", "node"));
+        assert_eq!(owner_of("/opt/homebrew/Cellar/cmake/4.1.2/bin/cmake"), pair("brew", "cmake"));
+        assert_eq!(owner_of("/usr/local/Cellar/node/23.1.0/bin/node"), pair("brew", "node"));
+        assert_eq!(owner_of("C:/Users/U/Scoop/Apps/nodejs/current/node.exe"), pair("scoop", "nodejs"));
+        assert_eq!(owner_of("C:/Users/U/scoop/apps/cmake/current/bin/cmake.exe"), pair("scoop", "cmake"));
+        // Markers are case-sensitive for mise/brew.
+        assert_eq!(owner_of("/opt/homebrew/cellar/cmake/4.1.2/bin/cmake"), None);
+        assert_eq!(owner_of("/usr/bin/node"), None);
+        assert_eq!(owner_of("/x/mise/installs/"), None);
+    }
+
+    #[test]
+    fn update_command_cases() {
+        let o = |m: &str| Owner { manager: m.into(), package: "nodejs".into() };
+        assert_eq!(update_command(&o("pacman")), Some(("sudo pacman -Syu --needed nodejs".to_string(), true)));
+        assert_eq!(update_command(&o("apt")), Some(("sudo apt update && sudo apt install --only-upgrade -y nodejs".to_string(), false)));
+        assert_eq!(update_command(&o("brew")), Some(("brew upgrade nodejs".to_string(), false)));
+        assert_eq!(update_command(&o("rustup")), Some(("rustup update".to_string(), false)));
+        for m in ["dnf", "mise", "scoop"] {
+            let (cmd, full) = update_command(&o(m)).unwrap();
+            assert!(cmd.ends_with(" nodejs") && !full, "{m}: {cmd}");
+        }
+        assert_eq!(update_command(&o("unknown")), None);
     }
 }
 

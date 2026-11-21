@@ -2,14 +2,17 @@
   /** Search Everywhere (PyCharm): tabs All | Files | Symbols | Actions | Text. */
   import { tick, onDestroy } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
-  import { listen } from "@tauri-apps/api/event";
+  import { listen } from "../lib/windowEvents";
   import { palette, availableCommands, keysFor, runCommand, type PaletteTab } from "../lib/commands.svelte";
   import { formatKey } from "../lib/keys";
   import { fuzzy, highlight } from "../lib/fuzzy";
   import { app, openFile, recent } from "../lib/state.svelte";
   import { joinPath, basename } from "../lib/api";
-  import { allClients, uriPath } from "../lib/code/lsp.svelte";
+  import { allClients, workspaceSymbols } from "../lib/code/lsp.svelte";
+  import { remoteLsp } from "../lib/code/remoteLsp";
+  import { collab } from "../lib/collab/collab.svelte";
   import { openFind, find, nextSearchId } from "../lib/search/search.svelte";
+  import { activeRemote } from "../lib/search/remote";
   import * as ed from "../lib/editor";
   import { t, type Key } from "../lib/i18n/index.svelte";
 
@@ -30,7 +33,17 @@
   let textHits = $state<Item[]>([]);
 
   tick().then(() => input?.focus());
-  if (app.root) invoke<string[]>("list_files", { root: app.root }).then((f) => (files = f));
+  /** A guest in a session searches the host's project. */
+  const remote = activeRemote();
+  let limited = $state(false);
+  const listRun = new AbortController();
+  if (remote) {
+    remote.listFiles(listRun.signal).then((r) => {
+      if (!r.ok) return;
+      files = r.value.files;
+      limited = r.value.truncated;
+    });
+  } else if (app.root) invoke<string[]>("list_files", { root: app.root }).then((f) => (files = f));
 
   interface Item {
     kind: "file" | "cmd" | "symbol" | "text";
@@ -56,7 +69,7 @@
     if (!term) {
       // Empty query: recent files first, like PyCharm.
       return recent
-        .filter((p) => !app.root || p.startsWith(app.root))
+        .filter((p) => (remote ? p.startsWith("collab:") : !app.root || p.startsWith(app.root)))
         .slice(0, 20)
         .map((p, i) => ({ kind: "file" as const, key: "r" + p, label: basename(p), detail: rel(p), positions: [], score: 100 - i, path: p }));
     }
@@ -65,7 +78,7 @@
       .map((f) => {
         const m = fuzzy(term, f);
         if (!m) return null;
-        const path = joinPath(app.root!, f);
+        const path = remote ? `collab:${f}` : joinPath(app.root!, f);
         const name = basename(f);
         const off = f.length - name.length;
         return {
@@ -103,19 +116,13 @@
     if (!q) return (symbols = []);
     symTimer = window.setTimeout(async () => {
       const out: Item[] = [];
-      for (const c of allClients()) {
-        const res: any[] = await c.request("workspace/symbol", { query: q }, 4000).catch(() => []);
-        for (const s of res ?? []) {
-          const loc = s.location;
-          const path = loc?.uri ? uriPath(loc.uri) : null;
-          if (!path) continue;
-          const m = fuzzy(q, s.name) ?? { score: 0, positions: [] };
-          out.push({
-            kind: "symbol", key: `${path}:${s.name}:${loc.range?.start?.line}`, label: s.name,
-            detail: `${t(`commands.palette.kind.${SYMBOL_KIND[s.kind] ?? "symbol"}` as Key)}${s.containerName ? " · " + s.containerName : ""} — ${rel(path)}`,
-            positions: m.positions, score: m.score, path, line: (loc.range?.start?.line ?? 0) + 1, col: (loc.range?.start?.character ?? 0) + 1,
-          });
-        }
+      for (const s of (await remoteLsp.symbols?.(q)) ?? (await workspaceSymbols(q))) {
+        const m = fuzzy(q, s.name) ?? { score: 0, positions: [] };
+        out.push({
+          kind: "symbol", key: `${s.path}:${s.name}:${s.line}:${s.character}`, label: s.name,
+          detail: `${t(`commands.palette.kind.${SYMBOL_KIND[s.kind] ?? "symbol"}` as Key)}${s.containerName ? " · " + s.containerName : ""} — ${rel(s.path)}`,
+          positions: m.positions, score: m.score, path: s.path, line: s.line + 1, col: s.character + 1,
+        });
       }
       if (query.trim() === q) symbols = out.sort((a, b) => b.score - a.score).slice(0, 80);
     }, 150);
@@ -129,13 +136,27 @@
       textHits = [...textHits, ...e.payload.hits.map((h) => ({ kind: "text" as const, key: `${h.file}:${h.line}`, label: h.text.trim(), detail: `${basename(h.file)}:${h.line}`, positions: [], score: 0, path: h.file, line: h.line, col: (h.ranges[0]?.[0] ?? 0) + 1 }))].slice(0, 100);
     }),
   ];
-  onDestroy(() => unlisten.forEach((p) => p.then((f) => f())));
+  let textRun: AbortController | null = null;
+  onDestroy(() => {
+    unlisten.forEach((p) => p.then((f) => f()));
+    listRun.abort();
+    textRun?.abort();
+  });
   let textTimer: number | undefined;
   function loadText(q: string) {
     clearTimeout(textTimer);
+    textRun?.abort();
     textHits = [];
-    if (q.length < 2 || !app.root) return;
+    if (q.length < 2 || (!remote && !app.root)) return;
     textTimer = window.setTimeout(async () => {
+      if (remote) {
+        const run = (textRun = new AbortController());
+        const r = await remote.text({ query: q, caseSensitive: false, wholeWord: false, regex: false, mask: "", folder: "", maxResults: 100 }, run.signal);
+        if (run.signal.aborted || !r.ok) return;
+        limited = r.value.truncated;
+        textHits = r.value.hits.map((h) => ({ kind: "text" as const, key: `${h.file}:${h.line}`, label: h.text.trim(), detail: `${basename(h.file.slice("collab:".length))}:${h.line}`, positions: [], score: 0, path: h.file, line: h.line, col: (h.ranges[0]?.[0] ?? 0) + 1 }));
+        return;
+      }
       textId = nextSearchId();
       await invoke<number>("search_text", { id: textId, root: app.root, opts: { query: q, caseSensitive: false, wholeWord: false, regex: false, mask: "", files: [], maxResults: 100 } });
     }, 150);
@@ -176,6 +197,12 @@
     if (!it) return;
     palette.open = false;
     if (it.kind === "cmd") return runCommand(it.cmd!);
+    // A shared file may still have to arrive from the host: it gets the position when it does.
+    if (it.kind === "symbol" && it.path!.startsWith("collab:") && remoteLsp.openAt) return remoteLsp.openAt(it.path!, it.line ?? 1, it.col ?? 1);
+    if (remote && it.path?.startsWith("collab:") && it.line) {
+      const col = (it.col ?? 1) - 1;
+      return remote.reveal(it.path, it.line, [col, col]);
+    }
     await openFile(it.path!);
     const v = ed.getView();
     if (v && it.line) {
@@ -237,11 +264,12 @@
         {/each}
       {:else}
         <p class="empty">
-          {#if !app.root && (palette.tab === "files" || palette.tab === "text")}{t("commands.palette.openFolderFirst")}
-          {:else if palette.tab === "symbols" && !allClients().length}{t("commands.palette.symbolsNeedLsp")}
+          {#if !remote && !app.root && (palette.tab === "files" || palette.tab === "text")}{t("commands.palette.openFolderFirst")}
+          {:else if palette.tab === "symbols" && !allClients().length && collab.role !== "guest"}{t("commands.palette.symbolsNeedLsp")}
           {:else if query}{t("common.noResults")}{:else}{t("commands.palette.typeToSearch")}{/if}
         </p>
       {/each}
+      {#if remote && limited}<p class="empty">{t("commands.palette.limited")}</p>{/if}
     </div>
   </div>
 </div>
@@ -268,7 +296,8 @@
   .name.mono { font-family: var(--mono); font-size: 12.5px; }
   .m { color: var(--accent); font-weight: 650; }
   .detail { color: var(--label-3); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .detail.right { margin-left: auto; }
+  /* Shortcuts and file:line are short: let the name shrink instead (a very long file name still ellipsizes at 50%). */
+  .detail.right { margin-left: auto; flex-shrink: 0; max-width: 50%; }
   .empty { color: var(--label-3); padding: 14px; margin: 0; }
   @keyframes fade { from { opacity: 0; } }
   @keyframes drop { from { opacity: 0; transform: translateY(-10px) scale(0.98); } }

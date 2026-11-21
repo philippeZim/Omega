@@ -4,6 +4,7 @@ import { EditorView, GutterMarker, ViewPlugin, gutter } from "@codemirror/view";
 import { Chunk } from "@codemirror/merge";
 import { invoke } from "@tauri-apps/api/core";
 import { t } from "../i18n/index.svelte";
+import { lineDiff } from "./lineDiff";
 
 type Kind = "added" | "modified" | "deleted";
 
@@ -28,10 +29,12 @@ interface GitData {
   chunks: readonly Chunk[];
 }
 
-function computeChunks(head: Text | null, doc: Text): readonly Chunk[] {
+/** Changed ranges vs. HEAD. Lines first, then characters (#139): the plain character diff is slow on
+ *  large files and gives up into one coarse block when changes are scattered. */
+export function computeChunks(head: Text | null, doc: Text): readonly Chunk[] {
   if (!head) return [];
   try {
-    return Chunk.build(head, doc, { scanLimit: 5000 });
+    return Chunk.build(head, doc, { override: lineDiff });
   } catch {
     return [];
   }
@@ -76,6 +79,12 @@ export function setGitGutterHooks(h: typeof hooks) {
   hooks = h;
 }
 
+/** Code Together guest: HEAD text of a shared file, from the host. */
+let remoteHead: (rel: string) => Promise<string | null> = async () => null;
+export function setRemoteHead(fn: typeof remoteHead) {
+  remoteHead = fn;
+}
+
 /** Views to refresh when HEAD changes (commit, pull, branch switch). */
 const live = new Set<{ reload: () => void }>();
 export function reloadGitHeads() {
@@ -91,9 +100,10 @@ export function gitGutter(path: string): Extension {
         this.reload();
       }
       async reload() {
+        const remote = path.startsWith("collab:");
         const root = hooks.root();
-        if (!root) return;
-        const text = await invoke<string | null>("git_head_file", { root, path }).catch(() => null);
+        if (!remote && !root) return;
+        const text = remote ? await remoteHead(path.slice("collab:".length)).catch(() => null) : await invoke<string | null>("git_head_file", { root, path }).catch(() => null);
         if (!this.alive) return;
         // New (untracked) files: no markers, like PyCharm colours the whole file name instead.
         this.view.dispatch({ effects: setHead.of(text === null ? null : Text.of(text.split("\n"))) });

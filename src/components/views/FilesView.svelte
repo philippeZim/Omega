@@ -1,13 +1,14 @@
 <script lang="ts">
   import TreeNode from "../TreeNode.svelte";
   import RemoteTree from "../RemoteTree.svelte";
-  import { app, openFolder, setRoot, openFile } from "../../lib/state.svelte";
+  import { app, openFolder, setRoot, createEntry } from "../../lib/state.svelte";
   import { ui } from "../../lib/ui.svelte";
-  import { fsApi, joinPath, basename } from "../../lib/api";
+  import { basename } from "../../lib/api";
   import { t } from "../../lib/i18n/index.svelte";
   import { collab } from "../../lib/collab/collab.svelte";
-  import { share } from "../../lib/collab/share.svelte";
+  import { share, remoteCreate } from "../../lib/collab/share.svelte";
   import { fileDrag } from "../../lib/fileDrag.svelte";
+  import { shortcutLabel } from "../../lib/commands.svelte";
 
   const guestView = $derived(collab.role === "guest" && collab.status === "connected");
 
@@ -15,15 +16,18 @@
     if (!app.root) return;
     const name = await ui.prompt(dir ? t("app.newFolder") : t("app.newFile"), "", dir ? t("app.folderNamePlaceholder") : t("app.fileNamePlaceholder"));
     if (!name) return;
-    const p = joinPath(app.root, name);
-    try {
-      if (dir) await fsApi.createDir(p);
-      else await fsApi.createFile(p);
-      app.treeVersion++;
-      if (!dir) openFile(p);
-    } catch (e) {
-      ui.toast(!dir && (await fsApi.exists(p)) ? t("code.existsAlready", { name }) : String(e), "error");
-    }
+    await createEntry(app.root, name, dir);
+  }
+
+  // Empty area of the guest's tree: the only mouse path in an empty project.
+  function guestRootMenu(e: MouseEvent) {
+    if (!share.hostHasRoot) return;
+    ui.openMenu(e, [
+      { label: t("app.newFile"), action: () => remoteCreate("", false) },
+      { label: t("app.newFolder"), action: () => remoteCreate("", true) },
+      { separator: true, label: "" },
+      { label: t("app.refresh"), action: () => share.treeGen++ },
+    ]);
   }
 
   function rootMenu(e: MouseEvent) {
@@ -41,14 +45,25 @@
 <div class="files">
   {#if guestView}
     <div class="head">
-      <span class="label">{t("app.hostLabel", { name: share.hostRoot || t("app.project") })}</span>
+      <span class="label" title={share.hostRoot || undefined}>{t("app.hostLabel", { name: share.hostRoot || t("app.project") })}</span>
+      {#if share.hostHasRoot}
+        <div class="actions">
+          <button title={t("app.newFile")} onclick={() => remoteCreate("", false)} aria-label={t("app.newFile")}>
+            <svg width="14" height="14" viewBox="0 0 14 14"><path d="M7 2.5v9M2.5 7h9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          </button>
+          <button title={t("app.newFolder")} onclick={() => remoteCreate("", true)} aria-label={t("app.newFolder")}>
+            <svg width="15" height="14" viewBox="0 0 15 14"><path d="M1.5 3.5a1 1 0 0 1 1-1h3l1.3 1.5h5.7a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1h-10a1 1 0 0 1-1-1z" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
+          </button>
+        </div>
+      {/if}
     </div>
-    <div class="tree" role="tree">
+    <div class="tree" role="tree" tabindex="-1" oncontextmenu={guestRootMenu}>
       <RemoteTree />
     </div>
   {:else if app.root}
     <div class="head">
-      <span class="label">{basename(app.root)}</span>
+      <!-- Full path on hover: long names are cut off (#40). -->
+      <span class="label" title={app.root}>{basename(app.root)}</span>
       <div class="actions">
         <button title={t("app.newFile")} onclick={() => newEntry(false)} aria-label={t("app.newFile")}>
           <svg width="14" height="14" viewBox="0 0 14 14"><path d="M7 2.5v9M2.5 7h9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
@@ -68,7 +83,7 @@
     <div class="empty">
       <p>{t("app.noFolderOpen")}</p>
       <button class="btn primary" onclick={openFolder}>{t("app.openFolder")}</button>
-      <span class="hint">{t("app.ctrl")}+O</span>
+      {#if shortcutLabel("file.openFolder")}<span class="hint">{shortcutLabel("file.openFolder")}</span>{/if}
     </div>
   {/if}
 </div>
@@ -88,8 +103,6 @@
   .label {
     font-size: 11px;
     font-weight: 600;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
     color: var(--label-2);
     overflow: hidden;
     text-overflow: ellipsis;

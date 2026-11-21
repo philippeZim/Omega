@@ -1,13 +1,14 @@
 <script lang="ts">
   import { app, activeTab } from "../lib/state.svelte";
   import { ui } from "../lib/ui.svelte";
-  import { runner, refreshProject, runAction, editRunCommand, resetRunCommand, chooseVersion } from "../lib/code/runner.svelte";
+  import { runner, runnerRemote, refreshProject, runAction, stopRun, editRunCommand, resetRunCommand, chooseVersion } from "../lib/code/runner.svelte";
   import { startDebugging, stopDebugging } from "../lib/debug/debugger.svelte";
   import { dbg } from "../lib/debug/store.svelte";
-  import { langFor } from "../lib/code/languages";
+  import { effectiveLang, overrideFor } from "../lib/code/langOverride.svelte";
   import { focusTerm } from "../lib/terminal.svelte";
   import { toggleView, isShown } from "../lib/layout.svelte";
   import { t } from "../lib/i18n/index.svelte";
+  import { guestCanStop } from "../lib/collab/guard";
 
   /** Width of the tab bar: below ~640px labels collapse to icons, below ~460px build/test/version move into the "more" menu. */
   let { width = 1000 }: { width?: number } = $props();
@@ -18,11 +19,12 @@
     if (isShown("terminal")) requestAnimationFrame(() => focusTerm());
   }
 
-  const lang = $derived(langFor(activeTab()?.path ?? null));
+  const lang = $derived(effectiveLang(activeTab()?.path ?? null));
   const canDebug = $derived(!!lang?.server);
   const debugging = $derived(dbg.status === "running" || dbg.status === "stopped" || dbg.status === "starting");
 
   $effect(() => {
+    void overrideFor(activeTab()?.path);
     void activeTab()?.path;
     void app.root;
     void app.treeVersion;
@@ -31,7 +33,8 @@
 
   const p = $derived(runner.project);
 
-  const runItems = () => [
+  // A guest can't change the host's run command yet: the entry says so instead of doing nothing.
+  const runItems = () => runnerRemote.project ? [{ label: t("code.rb.runCmdOnHost") }] : [
     { label: t("code.rb.editRunCmd"), action: editRunCommand },
     ...(p?.defaultRun !== undefined ? [{ label: t("code.rb.resetRunCmd"), action: resetRunCommand }] : []),
   ];
@@ -68,6 +71,11 @@
       {#if p.run}
         <button class="gbtn icon run" title="{p.run.pre ? `${p.run.pre} → ` : ""}{p.run.cmd} (⇧F10) · {t('code.rb.runRightClick')}" onclick={() => runAction(p.run)} oncontextmenu={(e) => ui.openMenu(e, runItems())} aria-label={p.run.label}>
           <svg class="ico" width="11" height="12" viewBox="0 0 11 12"><path d="M1.5 1.2v9.6a.6.6 0 0 0 .9.5l7.8-4.8a.6.6 0 0 0 0-1L2.4.7a.6.6 0 0 0-.9.5z" fill="currentColor"/></svg>
+        </button>
+      {/if}
+      {#if runner.remoteTask?.running}
+        <button class="gbtn icon stop hoststop" disabled={!guestCanStop(runner.remoteTask)} title={guestCanStop(runner.remoteTask) ? t("ai.collab.stopOnHost") : t("ai.collab.capMissing", { cap: t("ai.collab.cap.run") })} onclick={stopRun} aria-label={t("ai.collab.stopOnHost")}>
+          <svg class="ico" width="10" height="10" viewBox="0 0 10 10"><rect width="10" height="10" rx="2.4" fill="currentColor"/></svg>
         </button>
       {/if}
       {#if canDebug}
@@ -129,4 +137,7 @@
   .runbar { display: flex; align-items: center; gap: 8px; margin-left: auto; padding-left: 8px; flex-shrink: 0; }
   .ver span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .ver.compact { max-width: 110px; }
+  /* Sits on glass: no transform or opacity animation (WebKitGTK flashes). */
+  .gbtn.stop.hoststop, .gbtn.stop.hoststop::before, .gbtn.stop.hoststop svg { transition: none; }
+  .gbtn.stop.hoststop:active:not(:disabled), .gbtn.stop.hoststop:hover:not(:disabled) svg { transform: none; }
 </style>

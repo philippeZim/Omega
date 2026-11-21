@@ -1,16 +1,21 @@
 <script lang="ts">
   import { onMount, onDestroy, tick } from "svelte";
-  import { open as openDialog } from "@tauri-apps/plugin-dialog";
-  import { EditorState, RangeSetBuilder } from "@codemirror/state";
-  import { EditorView, Decoration, lineNumbers, highlightActiveLine, keymap, drawSelection, ViewPlugin, type DecorationSet } from "@codemirror/view";
+  import { openDialog } from "../lib/native";
+  import { EditorState, type Extension } from "@codemirror/state";
+  import { EditorView, lineNumbers, highlightActiveLine, keymap, drawSelection } from "@codemirror/view";
   import { history, historyKeymap, defaultKeymap } from "@codemirror/commands";
   import { syntaxHighlighting } from "@codemirror/language";
   import { find, runSearch, gotoHit, dockResults, replaceInFile, replaceAll, buildRegex, persistOptions, matchSummary, type Hit } from "../lib/search/search.svelte";
+  import { matchHighlighter, refreshMatches } from "../lib/search/previewMatches";
+  import { previewWriter } from "../lib/search/previewWriter";
+  import { activeRemote } from "../lib/search/remote";
   import { app } from "../lib/state.svelte";
   import { fsApi, basename, normPath } from "../lib/api";
   import * as ed from "../lib/editor";
+  import { runViewAction } from "../lib/editorActions";
   import { detectEol, toDisk, type Eol } from "../lib/eol";
-  import { langFor, indentFor } from "../lib/code/languages";
+  import { indentFor } from "../lib/code/languages";
+  import { effectiveLang } from "../lib/code/langOverride.svelte";
   import { baseTheme, codeHighlight } from "../lib/theme";
   import { formatKey } from "../lib/keys";
   import { t } from "../lib/i18n/index.svelte";
@@ -21,10 +26,13 @@
   let preview: EditorView | null = null;
   let previewFile: string | null = null;
   let previewEol: Eol = "\n";
-  let writeTimer: number | undefined;
+  const writer = previewWriter((f, text) => fsApi.writeFile(f, text).catch(() => {}));
 
   const hit = $derived(find.hits[find.selected] as Hit | undefined);
-  const rel = (f: string) => (app.root && f.startsWith(app.root + "/") ? f.slice(app.root.length + 1) : f);
+  const rel = (f: string) => (f.startsWith("collab:") ? f.slice(7) : app.root && f.startsWith(app.root + "/") ? f.slice(app.root.length + 1) : f);
+  /** A guest in a session: the files are the host's, so the preview only shows them. */
+  const remote = activeRemote();
+  const folderName = (f: string) => (f === "collab:" ? "/" : basename(rel(f)));
 
   tick().then(() => {
     input?.focus();
@@ -34,59 +42,59 @@
   // ---------------------------------------------------------------- preview editor
 
   /** Highlights every match of the current query in the preview. */
-  const matchHighlighter = ViewPlugin.fromClass(
-    class {
-      decorations: DecorationSet;
-      constructor(v: EditorView) {
-        this.decorations = this.build(v);
-      }
-      update(u: { docChanged: boolean; viewportChanged: boolean; view: EditorView }) {
-        if (u.docChanged || u.viewportChanged) this.decorations = this.build(u.view);
-      }
-      build(v: EditorView) {
-        const re = buildRegex();
-        const b = new RangeSetBuilder<Decoration>();
-        if (!re || !find.query) return b.finish();
-        for (const { from, to } of v.visibleRanges) {
-          const text = v.state.sliceDoc(from, to);
-          re.lastIndex = 0;
-          for (let m; (m = re.exec(text)); ) {
-            if (!m[0].length) { re.lastIndex++; continue; }
-            b.add(from + m.index, from + m.index + m[0].length, Decoration.mark({ class: "find-match" }));
-          }
-        }
-        return b.finish();
-      }
-    },
-    { decorations: (v) => v.decorations },
-  );
+  const highlighter = matchHighlighter(() => (find.query ? buildRegex() : null));
 
-  function previewState(text: string, file: string) {
-    const lang = langFor(file);
+  /** Guest: lets go of the shared doc behind the preview. */
+  let releaseDoc: (() => void) | null = null;
+  function detachDoc() {
+    releaseDoc?.();
+    releaseDoc = null;
+  }
+
+  /** Guest with `edit`: from the first focus on, the preview edits the file's shared doc. */
+  function attachDoc() {
+    if (!remote || !preview || !previewFile || releaseDoc || !remote.canEdit()) return;
+    const file = previewFile;
+    releaseDoc = remote.previewDoc(file, (ext, text) => {
+      if (!preview || previewFile !== file) return;
+      if (!ext) releaseDoc = null;
+      const head = Math.min(preview.state.selection.main.head, (ext ? text : preview.state.doc.toString()).length);
+      const focused = preview.hasFocus;
+      preview.setState(previewState(ext ? text : preview.state.doc.toString(), file, ext ?? undefined));
+      preview.dispatch({ selection: { anchor: head } });
+      if (focused) preview.focus();
+    });
+  }
+
+  function previewState(text: string, file: string, shared?: Extension) {
+    const lang = effectiveLang(file);
     return EditorState.create({
       doc: text,
       extensions: [
         lineNumbers(),
         highlightActiveLine(),
         drawSelection(),
-        history(),
-        keymap.of([...defaultKeymap, ...historyKeymap]),
+        // A shared doc has its own undo, the same one its tab uses.
+        shared
+          ? [shared, keymap.of([{ key: "Mod-z", run: (v) => runViewAction(v, "collab.undo") }, { key: "Mod-y", run: (v) => runViewAction(v, "collab.redo") }, { key: "Mod-Shift-z", run: (v) => runViewAction(v, "collab.redo") }, ...defaultKeymap])]
+          : [history(), keymap.of([...defaultKeymap, ...historyKeymap])],
         lang ? lang.ext() : [],
         indentFor(lang),
         syntaxHighlighting(codeHighlight),
         baseTheme,
-        matchHighlighter,
+        highlighter,
         EditorView.editorAttributes.of({ class: "mode-code" }),
+        // Until it's bound to the shared doc. Focus must stay possible for a guest who may edit.
+        remote && !shared ? [EditorState.readOnly.of(true), remote.canEdit() ? [] : EditorView.editable.of(false)] : [],
         EditorView.updateListener.of((u) => {
-          if (!u.docChanged || !previewFile) return;
+          if (!u.docChanged || !previewFile || remote) return;
           // Edits go straight into the file: open tabs get the same changes (undo + autosave),
           // other files are written after a short pause.
           const tab = app.tabs.find((t) => t.path === previewFile);
           for (const tr of u.transactions) if (tab && tr.docChanged) ed.applyChanges(tab.id, { changes: tr.changes });
           if (!tab) {
-            const f = previewFile, doc = u.state.doc, eol = previewEol;
-            clearTimeout(writeTimer);
-            writeTimer = window.setTimeout(() => fsApi.writeFile(f, toDisk(doc.toString(), eol)), 600);
+            const doc = u.state.doc, eol = previewEol;
+            writer.schedule(previewFile, () => toDisk(doc.toString(), eol));
           }
         }),
       ],
@@ -96,15 +104,18 @@
   async function showPreview(h: Hit | undefined) {
     if (!preview || !h) return;
     if (previewFile !== h.file) {
-      clearTimeout(writeTimer);
+      writer.flush(); // an edit in the previous file still goes to disk
       const tab = app.tabs.find((t) => t.path === h.file);
       let text: string;
       try {
-        text = tab ? ed.getText(tab.id) : await fsApi.readFile(h.file);
+        const read = tab ? ed.getText(tab.id) : remote ? await remote.read(h.file) : await fsApi.readFile(h.file);
+        if (read === null) return;
+        text = read;
       } catch {
         return;
       }
       if (hit !== h) return;
+      detachDoc();
       previewFile = h.file;
       previewEol = detectEol(text);
       preview.setState(previewState(text, h.file));
@@ -115,7 +126,7 @@
     const [a, b] = h.ranges[0] ?? [0, 0];
     preview.dispatch({
       selection: { anchor: Math.min(line.to, line.from + a), head: Math.min(line.to, line.from + b) },
-      effects: EditorView.scrollIntoView(line.from, { y: "center" }),
+      effects: [EditorView.scrollIntoView(line.from, { y: "center" }), refreshMatches.of(null)],
     });
   }
 
@@ -123,17 +134,23 @@
     showPreview(hit);
   });
 
+  // A new query (or option) rebuilds the highlights even before (or without) new hits.
+  $effect(() => {
+    void [find.query, find.caseSensitive, find.wholeWord, find.regex];
+    preview?.dispatch({ effects: refreshMatches.of(null) });
+  });
+
   onMount(() => {
     preview = new EditorView({ parent: previewHost!, state: EditorState.create({ doc: "" }) });
     // Re-run the search after editing in the preview (positions may have moved).
     preview.contentDOM.addEventListener("blur", () => runSearch(50));
+    // Not only on focus: an element focused while the window isn't active gets no focus event.
+    for (const type of ["focus", "mousedown", "keydown"]) preview.contentDOM.addEventListener(type, attachDoc);
   });
   onDestroy(() => {
-    clearTimeout(writeTimer);
-    if (previewFile && !app.tabs.some((t) => t.path === previewFile) && preview) {
-      // Flush a pending preview write.
-      fsApi.writeFile(previewFile, toDisk(preview.state.doc.toString(), previewEol)).catch(() => {});
-    }
+    // Only a pending edit is written: an untouched preview must not overwrite a file changed on disk.
+    writer.flush();
+    detachDoc();
     preview?.destroy();
   });
 
@@ -151,6 +168,7 @@
   }
 
   async function chooseFolder() {
+    if (remote) return setScope("folder"); // the folder of the active shared file (see openFind)
     const d = await openDialog({ directory: true, defaultPath: find.folder ?? app.root ?? undefined });
     if (typeof d === "string") {
       find.folder = normPath(d);
@@ -171,6 +189,7 @@
 
   async function replaceCurrent() {
     if (!hit) return;
+    await writer.flush(); // the replacement reads the file: a pending preview edit lands first
     await replaceInFile(hit.file, hit.line);
     previewFile = null;
     runSearch(0);
@@ -245,9 +264,9 @@
       <div class="scopes">
         <button class:on={find.scope === "project"} onclick={() => setScope("project")}>{t("git.search.scopeProject")}</button>
         <button class:on={find.scope === "folder"} onclick={() => (find.folder ? setScope("folder") : chooseFolder())} title={find.folder ?? ""}>
-          {t("git.search.scopeFolder")}{#if find.scope === "folder" && find.folder}: <b>{basename(find.folder)}</b>{/if}
+          {t("git.search.scopeFolder")}{#if find.scope === "folder" && find.folder}: <b>{folderName(find.folder)}</b>{/if}
         </button>
-        {#if find.scope === "folder"}<button class="pick" onclick={chooseFolder} title={t("git.search.chooseFolder")}>…</button>{/if}
+        {#if find.scope === "folder" && !remote}<button class="pick" onclick={chooseFolder} title={t("git.search.chooseFolder")}>…</button>{/if}
         <button class:on={find.scope === "open"} onclick={() => setScope("open")}>{t("git.search.scopeOpen")}</button>
       </div>
     </div>
@@ -256,17 +275,18 @@
       {#each find.hits.slice(0, 1000) as h, i (h.file + ":" + h.line + ":" + i)}
         <button class="hit" class:on={i === find.selected} onclick={() => (find.selected = i)} ondblclick={() => gotoHit(h)} title={rel(h.file)}>
           <span class="text">{#each segments(h) as s, k (k)}<span class:m={s.m}>{s.t}</span>{/each}</span>
-          <span class="loc">{basename(h.file)} <b>{h.line}</b></span>
+          <span class="loc">{basename(rel(h.file))} <b>{h.line}</b></span>
         </button>
       {:else}
         <p class="empty">{find.query ? (find.running ? t("git.search.searching") : t("common.noResults")) : t("git.search.enterQuery")}</p>
       {/each}
+      {#if remote && find.truncated}<p class="empty">{t("git.search.limited")}</p>{/if}
     </div>
 
     <div class="preview-head">
       {#if hit}
         <span class="pfile">{rel(hit.file)}</span>
-        <span class="phint">{t("git.search.previewHint")}</span>
+        <span class="phint">{remote && !remote.canEdit() ? t("git.search.guestPreviewHint") : t("git.search.previewHint")}</span>
       {/if}
     </div>
     <div class="preview" bind:this={previewHost}></div>
@@ -301,11 +321,11 @@
     /* No open animation: fading/scaling glass (backdrop-filter) makes WebKitGTK flash. */
   }
   header { display: flex; align-items: center; gap: 10px; padding: 14px 14px 8px 20px; }
-  .title { font-weight: 700; font-size: 14px; }
-  .count { color: var(--label-3); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .title { font-weight: 700; font-size: 14px; white-space: nowrap; flex-shrink: 0; }
+  .count { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--label-3); font-size: 12px; font-variant-numeric: tabular-nums; }
   .err { color: var(--red); }
   .spacer { flex: 1; }
-  .mask { width: 220px; padding: 5px 12px; font-family: var(--mono); font-size: 12px; }
+  .mask { width: 220px; min-width: 100px; flex-shrink: 1; padding: 5px 12px; font-family: var(--mono); font-size: 12px; }
   .icon { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 50%; color: var(--label-2); }
   .icon:hover { background: var(--fill-hover); color: var(--label); }
   .icon.on { background: rgba(var(--fg-rgb), 0.14); color: var(--label); }
@@ -336,7 +356,9 @@
   .preview :global(.cm-editor) { position: absolute; inset: 0; }
   .preview :global(.find-match) { background: rgba(216, 194, 122, 0.3); border-radius: 2px; }
   footer { display: flex; align-items: center; gap: 8px; padding: 10px 14px 12px 20px; border-top: 1px solid rgba(var(--fg-rgb), 0.05); }
-  .keys { font-size: 11.5px; color: var(--label-3); }
+  .keys { min-width: 0; font-size: 11.5px; color: var(--label-3); }
+  /* Button labels stay on one line; the key hint wraps instead. */
+  footer .btn { white-space: nowrap; flex-shrink: 0; }
   .btn:disabled { opacity: 0.4; }
   @keyframes fade { from { opacity: 0; } }
   @keyframes pop { from { opacity: 0; transform: scale(0.97); } }
