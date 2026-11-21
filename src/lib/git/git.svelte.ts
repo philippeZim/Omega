@@ -380,7 +380,9 @@ export async function fetchNow() {
   git.busy = t("git.busy.fetch");
   let r: Out | null;
   try {
-    r = await (inflight ?? startFetch(async () => ["fetch", "--quiet"]));
+    // After a running background fetch, not instead of it: that one runs without the host's hooks.
+    await fetchSettled();
+    r = await startFetch(async () => ["fetch", "--quiet"]);
   } finally {
     git.busy = "";
     await refresh();
