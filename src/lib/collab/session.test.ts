@@ -17,7 +17,28 @@ vi.mock("./collab.svelte", () => ({
   onCollabMessage: (fn: (peer: string, msg: Msg) => unknown) => void handlers.push(fn),
   sessionEndHooks: endHooks,
 }));
+/** The host's shared docs as the run path sees them: what each guest has open, what's unsaved. */
+const shared = {
+  open: new Map<string, Set<string>>(),
+  unsaved: new Set<string>(),
+  refused: new Set<string>(),
+  arrived: true,
+  flush: vi.fn(async () => true),
+  clock: null as { client: number; clock: number } | null,
+};
 vi.mock("./share.svelte", () => ({
+  REMOTE: "collab:",
+  flushSharedDocs: shared.flush,
+  guestDocClock: () => shared.clock,
+  guestScope: () => ({
+    root: "/home/g",
+    live: () => app.root === "/home/g",
+    check: async (rel: string) => !shared.refused.has(rel) && !rel.split("/").some((s) => s === ".." || s === ".git"),
+    abs: (rel: string) => `/home/g/${rel}`,
+  }),
+  hostDocHasClock: () => shared.arrived,
+  hostDocKeyFor: (rel: string, peer: string) => (shared.open.get(rel)?.has(peer) && !rel.startsWith("tab:") ? rel : null),
+  sharedDocUnsaved: (rel: string) => shared.unsaved.has(rel),
   share: { hostRoot: "", hostHasRoot: true, hostTabs: [], treeGen: 0 },
   // Like the real one: Untitled by id, project files by relative path, anything else hidden.
   hostKeyChecked: async (tab: { id: string; path: string | null }) =>
@@ -55,7 +76,16 @@ vi.mock("../state.svelte", () => ({
   setMode: vi.fn(),
   setRoot: (r: string | null) => void (app.root = r),
 }));
-vi.mock("../code/runner.svelte", () => ({ runner: { project: null }, runAction: vi.fn(), refreshProject: vi.fn(), runnerRemote: { project: null, run: null } }));
+vi.mock("../code/runner.svelte", () => ({
+  runner: { project: null },
+  runAction: vi.fn(),
+  refreshProject: vi.fn(),
+  runnerRemote: { project: null, run: null },
+  fileDependent: (a: { usesFile?: boolean; cmd?: string }) => !!a.usesFile || !!a.cmd?.includes("{file}"),
+  projectFor: vi.fn(),
+  saveForGuestRun: vi.fn(async () => true),
+  runGuestAction: vi.fn(),
+}));
 const task = { state: { running: false, kind: null, taskId: null, status: null } as Record<string, unknown>, interrupt: vi.fn((_id: number) => true) };
 vi.mock("../terminal.svelte", () => ({
   remoteTerminal: vi.fn(() => "remote"),
@@ -81,7 +111,7 @@ await import("./session.svelte");
 // Registered once on load; later tests clear the mock's call list.
 const { setRunEcho: registerEcho } = await import("../terminal.svelte");
 const runEcho = vi.mocked(registerEcho).mock.calls[0][0]!;
-const { runner, runAction, runnerRemote } = await import("../code/runner.svelte");
+const { runner, runAction, runnerRemote, projectFor, saveForGuestRun, runGuestAction } = await import("../code/runner.svelte");
 const { guestGuard } = await import("./guard");
 
 async function receive(peer: string, msg: Msg) {
@@ -525,4 +555,239 @@ test("host: what the Run terminal mirrors to guests passes the debugger's filter
   }
   const sent = broadcast.mock.calls.map((c) => c[0] as Msg).filter((m) => m.t === "term.data");
   expect(sent.flatMap((m) => m.chunks as string[]).map(dec).join("")).toBe("held $ python main.py");
+});
+
+// ------------------------------------------------------------------ Run acts on the guest's file
+
+const fileRun = (file: string | null) => ({ id: "run", label: "Run", cmd: `uv run ${file}`, usesFile: true });
+const uvProject = (file: string | null) => ({ kind: "uv", label: "uv", run: file ? fileRun(file) : null, build: { id: "build", label: "Build", cmd: "uv build" }, test: null, more: [], needs: [], root: "/home/g" });
+
+/** The host has long.py active; g1 has `open` open as shared docs. */
+function hostOnLongPy(...open: string[]) {
+  hostWith(["run", "edit"]);
+  (runner as { project: unknown }).project = uvProject("long.py");
+  addTab("/home/g/long.py", "long.py", "long\n");
+  shared.open = new Map(open.map((rel) => [rel, new Set(["g1"])]));
+  shared.unsaved.clear();
+  shared.refused.clear();
+  shared.arrived = true;
+  shared.flush.mockClear();
+  ui.toast.mockClear();
+  vi.mocked(projectFor).mockReset().mockImplementation(async (file) => uvProject(file && file.slice("/home/g/".length)) as never);
+  vi.mocked(saveForGuestRun).mockReset().mockResolvedValue(true);
+  vi.mocked(runGuestAction).mockReset();
+}
+const runReq = (id: number, params: Msg) => receive("g1", { t: "rpc.req", id, method: "run.start", params: { action: "run", ...params } });
+const answered = (id: number) => vi.waitFor(() => { const r = replyTo("g1", id); expect(r).toBeDefined(); return r!; });
+const nothingRan = () => {
+  expect(runGuestAction).not.toHaveBeenCalled();
+  expect(runAction).not.toHaveBeenCalled();
+};
+
+test("host: Run acts on the guest's file, not the host's, and the host's tab stays active", async () => {
+  hostOnLongPy("app.py");
+  const active = app.activeId;
+  await runReq(100, { file: "app.py" });
+  expect(await answered(100)).toMatchObject({ ok: true });
+  expect(projectFor).toHaveBeenCalledWith("/home/g/app.py", "/home/g");
+  const [a, , file] = vi.mocked(runGuestAction).mock.calls[0];
+  expect(a.cmd).toBe("uv run app.py");
+  expect(file).toBe("/home/g/app.py");
+  expect(runAction).not.toHaveBeenCalled();
+  expect(app.activeId).toBe(active);
+  expect((runner as unknown as { project: { run: { cmd: string } } }).project.run.cmd).toBe("uv run long.py");
+});
+
+test("host: Build for a guest's file comes from that file's project", async () => {
+  hostOnLongPy("sub/app.py");
+  await receive("g1", { t: "rpc.req", id: 101, method: "run.start", params: { action: "build", file: "sub/app.py" } });
+  expect(await answered(101)).toMatchObject({ ok: true });
+  expect(vi.mocked(runGuestAction).mock.calls[0][0].id).toBe("build");
+  expect(vi.mocked(runGuestAction).mock.calls[0][2]).toBe("/home/g/sub/app.py");
+});
+
+test.each([
+  ["../secret.py"],
+  ["a/../../secret.py"],
+  [".git/hooks/pre-commit"],
+  ["sub/.git/config"],
+  ["/etc/passwd"],
+  ["not-open.py"],
+  ["tab:t1"],
+])("host: the path %s is refused and nothing falls back to the host's file", async (file) => {
+  hostOnLongPy("app.py");
+  if (file.includes("..") || file.includes(".git")) shared.open.set(file, new Set(["g1"]));
+  await runReq(102, { file });
+  expect(await answered(102)).toMatchObject({ ok: false, error: { code: "run_path_refused" } });
+  nothingRan();
+  expect(saveForGuestRun).not.toHaveBeenCalled();
+});
+
+test("host: a file another guest has open, or a symlink out of the project, is refused", async () => {
+  hostOnLongPy();
+  shared.open.set("other.py", new Set(["g2"]));
+  await runReq(103, { file: "other.py" });
+  expect(await answered(103)).toMatchObject({ ok: false, error: { code: "run_path_refused" } });
+
+  hostOnLongPy("link.py");
+  shared.refused.add("link.py");
+  await runReq(104, { file: "link.py" });
+  expect(await answered(104)).toMatchObject({ ok: false, error: { code: "run_path_refused" } });
+  nothingRan();
+});
+
+test.each([["a\nrm -rf x.py"], ["a\u0003.py"], ["a\x7f.py"], ["a\u009b.py"]])("host: the name %j can't go into a command", async (file) => {
+  hostOnLongPy(file);
+  await runReq(105, { file });
+  expect(await answered(105)).toMatchObject({ ok: false, error: { code: "run_path_refused" } });
+  nothingRan();
+});
+
+test("host: a name that is odd but quotable runs", async () => {
+  const file = "it's $(id) `x` ; & a.py";
+  hostOnLongPy(file);
+  await runReq(106, { file });
+  expect(await answered(106)).toMatchObject({ ok: true });
+  expect(vi.mocked(runGuestAction).mock.calls[0][2]).toBe(`/home/g/${file}`);
+});
+
+test.each([[{ file: 5 }], [{ file: "app.py", client: 1 }], [{ file: "app.py", client: "1", clock: 2 }], [{ file: "x".repeat(4097) }]])("host: malformed run params %j do nothing", async (params) => {
+  hostOnLongPy("app.py");
+  await runReq(107, params);
+  expect(await answered(107)).toMatchObject({ ok: false, error: { code: "invalid_params" } });
+  nothingRan();
+});
+
+test("host: the shared text is on disk before the project is detected from the file", async () => {
+  hostOnLongPy("app.py");
+  const order: string[] = [];
+  vi.mocked(saveForGuestRun).mockImplementation(async () => (order.push("tabs"), true));
+  shared.flush.mockImplementationOnce(async () => (order.push("docs"), true));
+  vi.mocked(projectFor).mockImplementation(async (file) => (order.push("detect"), uvProject(file!.slice("/home/g/".length)) as never));
+  await runReq(108, { file: "app.py" });
+  expect(await answered(108)).toMatchObject({ ok: true });
+  expect(saveForGuestRun).toHaveBeenCalledWith("/home/g/app.py");
+  expect(order).toEqual(["tabs", "docs", "detect"]);
+});
+
+test("host: text that couldn't be saved doesn't run an old copy", async () => {
+  hostOnLongPy("app.py");
+  shared.unsaved.add("app.py");
+  await runReq(109, { file: "app.py" });
+  expect(await answered(109)).toMatchObject({ ok: false, error: { code: "run_not_saved" } });
+
+  hostOnLongPy("app.py");
+  vi.mocked(saveForGuestRun).mockResolvedValue(false);
+  await runReq(110, { file: "app.py" });
+  expect(await answered(110)).toMatchObject({ ok: false, error: { code: "run_not_saved" } });
+  nothingRan();
+});
+
+test("host: Run waits for the guest's last edit, and doesn't run without it", async () => {
+  hostOnLongPy("app.py");
+  shared.arrived = false;
+  const run = runReq(111, { file: "app.py", client: 7, clock: 3 });
+  await new Promise((r) => setTimeout(r, 60));
+  expect(saveForGuestRun).not.toHaveBeenCalled();
+  shared.arrived = true;
+  await run;
+  expect(await answered(111)).toMatchObject({ ok: true });
+  expect(runGuestAction).toHaveBeenCalled();
+
+  hostOnLongPy("app.py");
+  shared.arrived = false;
+  vi.useFakeTimers({ toFake: ["Date", "setTimeout"] });
+  const late = runReq(112, { file: "app.py", client: 7, clock: 3 });
+  await vi.advanceTimersByTimeAsync(2100);
+  vi.useRealTimers();
+  await late;
+  expect(await answered(112)).toMatchObject({ ok: false, error: { code: "run_not_saved" } });
+  nothingRan();
+});
+
+test("host: without a guest file, a file-bound Run never uses the host's active file", async () => {
+  hostOnLongPy();
+  (runner as { project: { run: unknown } }).project.run = fileRun("long.py");
+  vi.mocked(projectFor).mockResolvedValue({ ...uvProject(null), run: { id: "run", label: "Run", cmd: "uv run main.py", usesFile: true } } as never);
+  await runReq(113, {});
+  expect(await answered(113)).toMatchObject({ ok: true });
+  expect(projectFor).toHaveBeenCalledWith(null, "/home/g");
+  expect(vi.mocked(runGuestAction).mock.calls[0][0].cmd).toBe("uv run main.py");
+  expect(vi.mocked(runGuestAction).mock.calls[0][2]).toBeNull();
+
+  hostOnLongPy();
+  vi.mocked(projectFor).mockResolvedValue(uvProject(null) as never);
+  await runReq(114, {});
+  expect(await answered(114)).toMatchObject({ ok: false, error: { code: "run_needs_file" } });
+  nothingRan();
+
+  hostOnLongPy();
+  (runner as { project: { run: unknown } }).project.run = { id: "run", label: "Run", cmd: "python {file}" };
+  vi.mocked(projectFor).mockResolvedValue({ ...uvProject(null), run: { id: "run", label: "Run", cmd: "python {file}" } } as never);
+  await runReq(115, {});
+  expect(await answered(115)).toMatchObject({ ok: false, error: { code: "run_needs_file" } });
+  nothingRan();
+});
+
+test("host: an action that doesn't follow a file runs as before without a guest file", async () => {
+  hostOnLongPy();
+  await receive("g1", { t: "rpc.req", id: 116, method: "run.start", params: { action: "build" } });
+  expect(await answered(116)).toMatchObject({ ok: true });
+  expect(runAction).toHaveBeenCalledTimes(1);
+  expect(projectFor).not.toHaveBeenCalled();
+});
+
+test("host: the package check uses the project of the guest's file", async () => {
+  hostOnLongPy("sub/x.py");
+  vi.mocked(projectFor).mockResolvedValue({ ...uvProject("sub/x.py"), more: [{ id: "sync", label: "sync", cmd: "uv sync" }] } as never);
+  await receive("g1", { t: "rpc.req", id: 117, method: "run.start", params: { action: "sync", file: "sub/x.py" } });
+  expect(await answered(117)).toMatchObject({ ok: false, error: { code: "forbidden" } });
+  nothingRan();
+});
+
+test("host: an action the guest's file doesn't have is refused", async () => {
+  hostOnLongPy("notes.md");
+  vi.mocked(projectFor).mockResolvedValue(null as never);
+  await runReq(118, { file: "notes.md" });
+  expect(await answered(118)).toMatchObject({ ok: false, error: { code: "run_no_action" } });
+  nothingRan();
+});
+
+test("guest: Run sends its active shared file with its edit clock; an Untitled tab sends none", async () => {
+  collab.role = "guest";
+  guestGuard.can = () => true;
+  await join();
+  const run = runnerRemote.run!;
+  shared.clock = { client: 9, clock: 4 };
+  addTab("collab:src/app.py", "app.py", "x\n");
+  send.mockClear();
+  run({ id: "run", label: "Run" });
+  await vi.waitFor(() => expect(send).toHaveBeenCalledWith("host-peer", expect.objectContaining({ t: "rpc.req", method: "run.start", params: { action: "run", file: "src/app.py", client: 9, clock: 4 } })));
+
+  addTab("collab:tab:t9", "Untitled", "");
+  send.mockClear();
+  run({ id: "run", label: "Run" });
+  await vi.waitFor(() => expect(send).toHaveBeenCalledWith("host-peer", expect.objectContaining({ t: "rpc.req", method: "run.start", params: { action: "run" } })));
+  shared.clock = null;
+  for (const h of endHooks) await h(true);
+});
+
+test.each([
+  ["run_path_refused", "isn't shared"],
+  ["run_needs_file", "Open a shared file"],
+  ["run_not_saved", "couldn't save"],
+  ["run_no_action", "isn't available"],
+])("guest: the refusal %s is explained", async (code, text) => {
+  collab.role = "guest";
+  guestGuard.can = () => true;
+  await join();
+  addTab("collab:app.py", "app.py", "x\n");
+  send.mockClear();
+  ui.toast.mockClear();
+  runnerRemote.run!({ id: "run", label: "Run" });
+  await vi.waitFor(() => expect(send.mock.calls.some((c) => c[1].method === "run.start")).toBe(true));
+  const id = send.mock.calls.find((c) => c[1].method === "run.start")![1].id;
+  await receive("host-peer", { t: "rpc.res", id, ok: false, error: { code } });
+  await vi.waitFor(() => expect(ui.toast).toHaveBeenCalledWith(expect.stringContaining(text), "error"));
+  for (const h of endHooks) await h(true);
 });

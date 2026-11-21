@@ -860,6 +860,18 @@ export function hostCompileTexts(key: string, peer: string) {
   return { key: d.rel, text: d.ytext.toString(), overlays: [...overlays].map(([rel, text]) => ({ rel, text })) };
 }
 
+/** Host: the current key of a project file this guest has open in the session, also after a rename. */
+export function hostDocKeyFor(rel: string, peer: string) {
+  const d = hostDocAt(rel);
+  return d && d.root === app.root && d.subscribers.has(peer) && !d.rel.startsWith("tab:") ? d.rel : null;
+}
+
+/** Guest: identifies this guest's latest edit of a doc, for `hostDocHasClock`. */
+export function guestDocClock(rel: string) {
+  const d = docs.get(rel);
+  return d ? { client: d.ydoc.clientID, clock: Y.getState(d.ydoc.store, d.ydoc.clientID) } : null;
+}
+
 /** Guest: whether this file is open here as a shared doc. */
 export const guestHasDoc = (rel: string) => docs.has(rel);
 

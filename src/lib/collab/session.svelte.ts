@@ -10,13 +10,13 @@
 import { untrack } from "svelte";
 import { listen } from "@tauri-apps/api/event";
 import { collab, broadcast, onCollabMessage, sessionEndHooks } from "./collab.svelte";
-import { share, hostKeyChecked, syncSharedTabs, openRemote, isRemote } from "./share.svelte";
+import { REMOTE, share, flushSharedDocs, guestDocClock, guestScope, hostDocHasClock, hostDocKeyFor, hostKeyChecked, sharedDocUnsaved, syncSharedTabs, openRemote, isRemote } from "./share.svelte";
 import { blockedByCapability, guestCanStop } from "./guard";
 import { noteGuestChange } from "./guestChanges";
 import { termOut } from "./debugMirror";
 import { call, hasCapability, isObj, publish, registerMethod, registerTopic, rpcErrorText, RpcFail, subscribe } from "./rpc.svelte";
 import { app, activeTab, activate, closeTab, flushAutosave, newFile, openFile, setMode, setRoot } from "../state.svelte";
-import { runner, runAction, refreshProject, runnerRemote } from "../code/runner.svelte";
+import { fileDependent, projectFor, runner, runAction, runGuestAction, refreshProject, runnerRemote, saveForGuestRun } from "../code/runner.svelte";
 import type { Action, Project } from "../code/projects";
 import { packageAction, PACKAGE_LIMITS, quotePackageArg, splitPackages, validPackages } from "../code/packageInput";
 import { pythonRemoveFlags, type Suggestion } from "../code/packages";
@@ -25,6 +25,7 @@ import { typeIntoHostRun } from "./runInput.svelte";
 import { showView } from "../layout.svelte";
 import * as ed from "../editor";
 import { fsApi, basename } from "../api";
+import { quotablePath } from "../platform";
 import { ui } from "../ui.svelte";
 import { t } from "../i18n/index.svelte";
 import type { Mode } from "../modes";
@@ -111,15 +112,70 @@ $effect.root(() => {
 
 const guestName = (peer: string) => collab.participants.find((p) => p.peer === peer)?.name ?? t("ai.collab.guest");
 
+const actionIn = (p: Project | null, id: string): Action | null => (p && [p.run, p.build, p.test, ...p.more].find((a) => a?.id === id && !a.ask && a.cmd)) || null;
+
 function findAction(id: string): Action | null {
   const p = runner.project;
   if (!p) return null;
   return [p.run, p.build, p.test, ...p.more].find((a) => a?.id === id && !a.ask) ?? null;
 }
 
+/** How long the host waits for a guest's last edit, which can arrive just after its Run. */
+const EDIT_WAIT_MS = 2000;
+
+async function editArrived(rel: string, client: number, clock: number, signal: AbortSignal) {
+  for (const end = Date.now() + EDIT_WAIT_MS; !hostDocHasClock(rel, client, clock); await new Promise((r) => setTimeout(r, 25))) {
+    if (signal.aborted || Date.now() > end) return false;
+  }
+  return true;
+}
+
+interface GuestRun {
+  file?: string;
+  client?: number;
+  clock?: number;
+}
+
+/**
+ * Host: a guest's action for the file the guest has open. The path must be a shared file this guest
+ * has open and survive quoting. Its shared text is on disk before the project is detected, because
+ * detection reads the file. Refuses rather than fall back to the host's active file.
+ */
+async function resolveForGuestFile(id: string, { file, client, clock }: GuestRun & { file: string }, peer: string, signal: AbortSignal) {
+  const scope = guestScope();
+  const key = hostDocKeyFor(file, peer);
+  if (!scope || !key || !quotablePath(key) || !(await scope.check(key))) throw new RpcFail("run_path_refused");
+  if (client !== undefined && hasCapability(peer, "edit") && !(await editArrived(key, client, clock!, signal))) throw new RpcFail("run_not_saved");
+  const abs = scope.abs(key);
+  const saved = await saveForGuestRun(abs);
+  await flushSharedDocs();
+  if (signal.aborted) throw new RpcFail("cancelled");
+  if (!scope.live() || hostDocKeyFor(key, peer) !== key) throw new RpcFail("run_path_refused");
+  if (!saved || sharedDocUnsaved(key)) throw new RpcFail("run_not_saved");
+  const project = await projectFor(abs, scope.root);
+  // Last check before the path goes into a command: a folder may have become a symlink meanwhile.
+  if (signal.aborted) throw new RpcFail("cancelled");
+  if (!scope.live() || !(await scope.check(key))) throw new RpcFail("run_path_refused");
+  const action = actionIn(project, id);
+  if (!project || !action) throw new RpcFail("run_no_action");
+  return { action, project, file: abs };
+}
+
+/** Host: a file-bound action for a guest without a file: what the project runs on its own, if anything. */
+async function resolveWithoutFile(id: string, root: string, signal: AbortSignal) {
+  await saveForGuestRun(null);
+  await flushSharedDocs();
+  if (signal.aborted) throw new RpcFail("cancelled");
+  const project = await projectFor(null, root);
+  if (signal.aborted) throw new RpcFail("cancelled");
+  const action = actionIn(project, id);
+  if (!project || !action || action.cmd!.includes("{file}")) throw new RpcFail("run_needs_file");
+  return { action, project, file: null };
+}
+
 declare module "./rpc.svelte" {
   interface RpcMethods {
-    "run.start": { params: { action: string }; result: null };
+    "run.start": { params: { action: string; file?: string; client?: number; clock?: number }; result: null };
     "run.stop": { params: { taskId: number }; result: { stopped: boolean } };
     "packages.run": { params: { action: string; packages: string[] }; result: null };
     "packages.suggest": { params: { action: string; query: string }; result: Suggestion[] };
@@ -129,20 +185,38 @@ declare module "./rpc.svelte" {
   }
 }
 
+const isShortString = (v: unknown, max: number): v is string => typeof v === "string" && v.length <= max;
+
 registerMethod({
   name: "run.start",
   capability: "run",
-  validate: (raw) => (isObj(raw) && typeof raw.action === "string" ? { action: raw.action } : null),
-  handle: ({ action }, { peer }) => {
-    const a = findAction(action);
-    if (!a) throw new RpcFail("unavailable");
-    if (packageAction(runner.project!.kind, a.id) && !hasCapability(peer, "packages")) throw new RpcFail("forbidden");
+  validate: (raw) => {
+    if (!isObj(raw) || typeof raw.action !== "string") return null;
+    if (raw.file === undefined) return { action: raw.action };
+    if (!isShortString(raw.file, 4096)) return null;
+    if (raw.client === undefined && raw.clock === undefined) return { action: raw.action, file: raw.file };
+    if (!Number.isSafeInteger(raw.client) || !Number.isSafeInteger(raw.clock)) return null;
+    return { action: raw.action, file: raw.file, client: raw.client as number, clock: raw.clock as number };
+  },
+  handle: async ({ action, file, client, clock }, { peer, signal }) => {
+    const known = file === undefined ? findAction(action) : null;
+    if (file === undefined && !known) throw new RpcFail("unavailable");
+    // Actions that don't follow a file run as they are; the others never use the host's active file.
+    const target =
+      file !== undefined
+        ? await resolveForGuestFile(action, { file, client, clock }, peer, signal)
+        : fileDependent(known!)
+          ? await resolveWithoutFile(action, runner.project!.root, signal)
+          : null;
+    const a = target?.action ?? known!;
+    const project = target?.project ?? runner.project!;
+    if (packageAction(project.kind, a.id) && !hasCapability(peer, "packages")) throw new RpcFail("forbidden");
     // A package action changes project files. (`run` is required above, so this only counts if that
     // ever changes; packages.run is the path for guests without it.)
-    if (packageAction(runner.project!.kind, a.id)) noteGuestChange(peer, app.root ?? runner.project!.root);
+    if (packageAction(project.kind, a.id)) noteGuestChange(peer, app.root ?? project.root);
     ui.toast(t("ai.collab.guestRuns", { name: guestName(peer), action: a.label }));
     // Not awaited: it can wait for the host (missing tools), and the guest sees the run state anyway.
-    void Promise.resolve(runAction(a)).catch((e) => console.error("guest run", e));
+    void Promise.resolve(target ? runGuestAction(a, project, target.file) : runAction(a)).catch((e) => console.error("guest run", e));
     return null;
   },
 });
@@ -156,8 +230,6 @@ registerMethod({
     return { stopped: interruptTask(taskId) };
   },
 });
-
-const isShortString = (v: unknown, max: number): v is string => typeof v === "string" && v.length <= max;
 
 /** The current project's package action with this id. */
 function findPackageAction(id: string) {
@@ -397,8 +469,20 @@ async function runOnHost(a: Action) {
   if (kind && packageAction(kind, a.id)) return packagesOnHost(a, kind);
   if (blockedByCapability("run")) return;
   showRemoteRun();
-  const r = await call("run.start", { action: a.id });
-  if (!r.ok) ui.toast(rpcErrorText(r.error.code), "error");
+  const path = activeTab()?.path;
+  const rel = path && isRemote(path) ? path.slice(REMOTE.length) : null;
+  // An Untitled tab has no file on the host, so it counts as no file.
+  const file = rel && !rel.startsWith("tab:") ? rel : null;
+  const r = await call("run.start", file ? { action: a.id, file, ...guestDocClock(file) } : { action: a.id });
+  if (!r.ok) ui.toast(runErrorText(r.error.code), "error");
+}
+
+function runErrorText(code: string) {
+  if (code === "run_path_refused") return t("ai.collab.run.pathRefused");
+  if (code === "run_needs_file") return t("ai.collab.run.needsFile");
+  if (code === "run_not_saved") return t("ai.collab.run.notSaved");
+  if (code === "run_no_action") return t("ai.collab.run.noAction");
+  return rpcErrorText(code);
 }
 
 const decoder = new TextDecoder();
