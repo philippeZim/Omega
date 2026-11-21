@@ -5,7 +5,7 @@
   import { openUrl } from "../lib/native";
   import * as pdfjs from "pdfjs-dist";
   import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
-  import { latex, setDark, reverseSync, forwardSync, installLatex } from "../lib/latex/controller.svelte";
+  import { latex, setDark, reverseSync, forwardSync, installLatex, remoteLatex, remotePdfBytes } from "../lib/latex/controller.svelte";
   import { app, activeTab, openFile } from "../lib/state.svelte";
   import * as ed from "../lib/editor";
   import { t } from "../lib/i18n/index.svelte";
@@ -31,8 +31,9 @@
 
   async function load(path: string) {
     const seq = ++renderSeq;
-    const url = convertFileSrc(path) + "?v=" + latex.pdfVersion;
-    const next = await pdfjs.getDocument({ url, isEvalSupported: false }).promise.catch(() => null);
+    const data = remotePdfBytes();
+    const source = data ? { data } : { url: convertFileSrc(path) + "?v=" + latex.pdfVersion };
+    const next = await pdfjs.getDocument({ ...source, isEvalSupported: false }).promise.catch(() => null);
     if (!next) return;
     if (seq !== renderSeq) return void next.destroy();
     const old = doc;
@@ -175,11 +176,12 @@
   /** A diagnostic from another file than the active one (e.g. an \input chapter). */
   const otherFile = (file: string) => !!file && file !== activeTab()?.path && !file.endsWith("untitled.tex");
   /** Path relative to the project folder, else the file name. */
-  const shortName = (file: string) => (app.root && file.startsWith(app.root + "/") ? file.slice(app.root.length + 1) : file.split("/").pop());
+  const shortName = (file: string) => (file.startsWith("collab:") ? file.slice(7) : app.root && file.startsWith(app.root + "/") ? file.slice(app.root.length + 1) : file.split("/").pop());
 
   /** Opens `file` (if it isn't the active tab) and jumps to `line` there; nothing if it failed to open. */
   async function openAt(file: string, line: number) {
     if (otherFile(file)) {
+      if (file.startsWith("collab:")) return remoteLatex.openAt(file, line); // opens asynchronously
       await openFile(file);
       if (activeTab()?.path !== file) return;
     }

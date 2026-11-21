@@ -23,7 +23,7 @@ export interface SyncBox {
   w: number;
   h: number;
 }
-interface CompileResult {
+export interface CompileResult {
   ok: boolean;
   pdf: string | null;
   diagnostics: TexDiagnostic[];
@@ -73,11 +73,37 @@ function estimate(phase: LatexProgress["phase"], downloads: number): number {
   }
 }
 
-listen<{ phase: LatexProgress["phase"]; downloads: number; file: string | null }>("latex-progress", ({ payload: p }) => {
+/** One progress step of the running compile. */
+export function applyProgress(p: { phase: LatexProgress["phase"]; downloads: number; file: string | null }) {
   if (latex.status !== "compiling") return;
   const percent = Math.max(latex.progress?.percent ?? 0, estimate(p.phase, p.downloads));
   latex.progress = { ...p, percent };
-});
+}
+
+listen<{ phase: LatexProgress["phase"]; downloads: number; file: string | null }>("latex-progress", ({ payload: p }) => applyProgress(p));
+
+/** A Code Together guest's tabs ("collab:…") compile on the host, see collab/latexRemote.svelte.ts. */
+export const remoteLatex = {
+  compile: null as ((path: string) => Promise<{ result: CompileResult; bytes: Uint8Array | null }>) | null,
+  cancel: () => {},
+  openAt: (_file: string, _line: number): Promise<void> | void => {},
+};
+/** Code Together: changes that must not start a compile here (set by collab/latexRemote.svelte.ts). */
+export const autoCompileGate = {
+  /** Changes on disk can't be told apart from such a guest's. */
+  fileChangeBlocked: () => false,
+};
+let remotePdf: Uint8Array | null = null;
+/** The PDF of a guest's compile (`latex.pdf` is then only a marker). A copy: pdf.js takes it over. */
+export const remotePdfBytes = () => (latex.pdf === "collab:pdf" && remotePdf ? remotePdf.slice() : null);
+const isRemoteJob = (path: string | null) => !!path && path.startsWith("collab:");
+
+/** The host's files changed: a guest's document may depend on them. */
+export function recompileRemote() {
+  if (!current || !isRemoteJob(current.path)) return;
+  clearTimeout(timer);
+  timer = window.setTimeout(run, 300);
+}
 
 let sync: SyncBox[] = [];
 let timer: number | undefined;
@@ -99,10 +125,11 @@ export async function checkAvailable() {
 }
 
 /** Called whenever the active LaTeX buffer changes or becomes active. */
-export function schedule(id: string, path: string | null, delay = 900) {
+export function schedule(id: string, path: string | null, delay = 900, compile = true) {
   const switched = current?.id !== id;
   current = { id, path };
   if (switched) {
+    remoteLatex.cancel();
     latex.pdf = null;
     latex.diagnostics = [];
     latex.status = "idle";
@@ -110,6 +137,7 @@ export function schedule(id: string, path: string | null, delay = 900) {
   }
   clearTimeout(outlineTimer);
   outlineTimer = window.setTimeout(() => (latex.outline = outline(ed.getText(id))), switched ? 0 : 300);
+  if (!compile) return;
   clearTimeout(timer);
   timer = window.setTimeout(run, switched ? 0 : delay);
 }
@@ -118,7 +146,7 @@ export function schedule(id: string, path: string | null, delay = 900) {
 // another tab, by git or by an external tool. The active buffer itself is already compiled on edit.
 const DEPENDENCY = /\.(tex|bib|sty|cls|bst|png|jpe?g|pdf|eps|svg)$/i;
 onFilesChanged((files) => {
-  if (!current || !latex.available) return;
+  if (!current || !latex.available || autoCompileGate.fileChangeBlocked()) return;
   if (!files.some((f) => f !== current!.path && DEPENDENCY.test(f))) return;
   clearTimeout(timer);
   timer = window.setTimeout(run, 300);
@@ -130,20 +158,30 @@ async function run() {
     again = true;
     return;
   }
-  if (latex.available === null) await checkAvailable();
-  if (!latex.available) return;
+  // A shared tab never compiles here: its text is the host's, and it could read this machine's files.
+  const remote = isRemoteJob(current.path);
+  if (remote && !remoteLatex.compile) return;
+  if (remote) latex.available = true; // the host's Tectonic counts
+  else {
+    if (latex.available === null) await checkAvailable();
+    if (!latex.available) return;
+  }
   running = true;
   latex.status = "compiling";
   latex.progress = null;
   const job = current;
   try {
-    const r = await invoke<CompileResult>("latex_compile", { path: job.path, content: ed.getText(job.id) });
+    let bytes: Uint8Array | null = null;
+    let r: CompileResult;
+    if (remote) ({ result: r, bytes } = await remoteLatex.compile!(job.path!));
+    else r = await invoke<CompileResult>("latex_compile", { path: job.path, content: ed.getText(job.id) });
     if (current?.id !== job.id) return;
     latex.millis = r.millis;
     latex.log = r.log;
     latex.diagnostics = r.diagnostics;
     latex.status = r.ok ? "ok" : "error";
     if (r.pdf && (r.ok || r.sync.length)) {
+      remotePdf = bytes;
       latex.pdf = r.pdf;
       latex.pdfVersion++;
       sync = r.sync;

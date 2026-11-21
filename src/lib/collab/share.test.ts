@@ -1571,4 +1571,39 @@ test("guest: a refused hook is reported for its file, the other files still go t
   expect(report.errors).toHaveLength(1);
   expect(report.errors[0].file).toBe(".husky/x");
   expect(report.errors[0].message).toBe(t("git.guestErr.hooks"));
+
+test("an edit counts against compiling only while it comes from a guest without run", async () => {
+  hostFs({ "/p/a.tex": "one\n" });
+  await receive("g1", { t: "doc.open", path: "a.tex" });
+  await receive("g2", { t: "doc.open", path: "a.tex" });
+  const doc = share.sharedDocs().find((d) => d.rel === "a.tex")!;
+  const seen: boolean[] = [];
+  doc.ytext.observe(() => seen.push(share.applyingEditWithoutRun()));
+  const edit = async (peer: string, text: string) => {
+    const g = new Y.Doc();
+    Y.applyUpdate(g, Y.encodeStateAsUpdate(doc.ytext.doc!));
+    const before = Y.encodeStateVector(g);
+    g.getText("content").insert(0, text);
+    await receive(peer, { t: "doc.update", path: "a.tex", update: b64(Y.encodeStateAsUpdate(g, before)) });
+  };
+  await edit("g1", "with run\n");
+  (collab.participants[1] as { caps: string[] }).caps = ["edit"];
+  await edit("g2", "without run\n");
+  doc.ytext.insert(0, "host\n");
+  expect(seen).toEqual([false, true, false]);
+  expect(share.applyingEditWithoutRun()).toBe(false);
+});
+
+test("a compile takes the current shared text, only for a guest who has the doc open", async () => {
+  hostFs({ "/p/main.tex": "saved\n", "/p/ch.tex": "chapter\n", "/p/dirty.tex": "disk\n" });
+  await receive("g1", { t: "doc.open", path: "main.tex" });
+  await receive("g1", { t: "doc.open", path: "ch.tex" });
+  share.sharedDocs().find((d) => d.rel === "ch.tex")!.ytext.insert(0, "unsaved ");
+  app.tabs.push({ id: "t9", path: "/p/dirty.tex", name: "dirty.tex", dirty: true });
+  texts.set("t9", "host buffer\n");
+  expect(share.hostCompileTexts("main.tex", "g2")).toBeNull();
+  expect(share.hostCompileTexts("nope.tex", "g1")).toBeNull();
+  const r = share.hostCompileTexts("main.tex", "g1")!;
+  expect(r.text).toBe("saved\n");
+  expect(Object.fromEntries(r.overlays.map((o) => [o.rel, o.text]))).toEqual({ "ch.tex": "unsaved chapter\n", "dirty.tex": "host buffer\n" });
 });

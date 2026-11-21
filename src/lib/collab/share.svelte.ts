@@ -57,6 +57,25 @@ interface SharedDoc {
 }
 
 const docs = new Map<string, SharedDoc>();
+/** Host: runs after every change of a shared doc, with the guest who made it (null: the host). */
+export const docEditListeners = new Set<(peer: string | null) => void>();
+/** Who the update being applied right now is from. Editors update synchronously inside it. */
+let applyingFrom: string | null = null;
+
+function applyFrom(d: SharedDoc, update: Uint8Array, origin: string) {
+  applyingFrom = origin;
+  try {
+    Y.applyUpdate(d.ydoc, update, origin);
+  } finally {
+    applyingFrom = null;
+  }
+}
+
+/**
+ * Whether the edit being applied may not start a compile here. Host: it's from a guest without
+ * `run`. Guest: it's from anyone else, and the host says when it's fine (`latex.changed`).
+ */
+export const applyingEditWithoutRun = () => applyingFrom !== null && (collab.role !== "host" || !hasCapability(applyingFrom, "run"));
 /** Host: old key → new key of renamed docs, for guest messages still sent under the old name. */
 const renamed = new Map<string, string>();
 const hostDocAt = (path: string) => docs.get(path) ?? docs.get(renamed.get(path) ?? "");
@@ -107,6 +126,7 @@ function makeDoc(rel: string, isHost: boolean): SharedDoc {
     if (isHost) {
       for (const p of d.subscribers) if (p !== origin) send(p, msg);
       scheduleHostWrite(d);
+      for (const fn of docEditListeners) fn(typeof origin === "string" ? origin : null);
     } else if (origin !== "remote") send(collab.hostPeer!, msg);
   };
   ydoc.on("update", onUpdate);
@@ -772,6 +792,23 @@ function dropPreview(rel: string) {
   sub.onDoc(null, "");
 }
 
+/**
+ * Host: the current text for a guest's compile of `key`, which that guest must have open, and the
+ * text of everything else that differs from disk: shared docs and the host's unsaved tabs.
+ */
+export function hostCompileTexts(key: string, peer: string) {
+  const d = hostDocAt(key);
+  if (!d || !d.subscribers.has(peer)) return null;
+  const overlays = new Map<string, string>();
+  for (const t of app.tabs) {
+    const rel = t.path && t.dirty ? shareableRel(t.path) : null;
+    if (rel) overlays.set(rel, ed.getText(t.id));
+  }
+  for (const o of docs.values()) if (!o.rel.startsWith("tab:") && o.root === app.root) overlays.set(o.rel, o.ytext.toString());
+  overlays.delete(d.rel);
+  return { key: d.rel, text: d.ytext.toString(), overlays: [...overlays].map(([rel, text]) => ({ rel, text })) };
+}
+
 /** Guest: whether this file is open here as a shared doc. */
 export const guestHasDoc = (rel: string) => docs.has(rel);
 
@@ -1141,7 +1178,7 @@ onCollabMessage(async (peer, msg) => {
       const d = hostDocAt(msg.path);
       if (d?.subscribers.has(peer) && hasCapability(peer, "edit")) {
         if (hookLocked(peer, d.root, d.rel)) return refuseHookEdit(peer, d);
-        Y.applyUpdate(d.ydoc, unb64(msg.update), peer);
+        applyFrom(d, unb64(msg.update), peer);
       }
     } else if (msg.t === "aw") {
       const d = hostDocAt(msg.path);
@@ -1214,7 +1251,7 @@ onCollabMessage(async (peer, msg) => {
     share.treeGen++;
   } else if (msg.t === "doc.update") {
     const d = docs.get(msg.path);
-    if (d) Y.applyUpdate(d.ydoc, unb64(msg.update), "remote");
+    if (d) applyFrom(d, unb64(msg.update), "remote");
   } else if (msg.t === "aw") {
     const d = docs.get(msg.path);
     if (d) applyAwarenessUpdate(d.awareness, unb64(msg.update), "remote");

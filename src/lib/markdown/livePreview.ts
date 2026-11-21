@@ -19,6 +19,7 @@ import type { SyntaxNode } from "@lezer/common";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { CalloutFoldWidget, CalloutHeadWidget, parseCalloutHead } from "./callout";
 import { TableWidget } from "./table";
+import { ASSET_PREFIX, remoteRel } from "../collab/guestAssets";
 import { BulletWidget, CheckboxWidget, CodeHeaderWidget, HrWidget, ImageWidget, MathWidget, renderMath } from "./widgets";
 import "./markdown.css";
 
@@ -67,6 +68,8 @@ export function linkDest(raw: string) {
 
 function imageSrc(url: string, fromPath: string | null) {
   if (/^(https?|data):/i.test(url)) return url;
+  // A guest's shared doc: the host resolves it. Nothing here may touch this machine's files.
+  if (fromPath?.startsWith("collab:")) return ASSET_PREFIX + (remoteRel(url, fromPath) ?? "");
   const abs = resolvePath(url, fromPath);
   return abs ? convertFileSrc(abs) : url;
 }
