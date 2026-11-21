@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { fsApi, basename, dirname, joinPath } from "../api";
 import { langFor } from "../code/languages";
 import { detectProject, pythonEntry, cmakeConfigure, cmakeExecutable } from "../code/projects";
-import { duneProjectIssue, duneTarget, findDuneExecutables, pickExecutable, sameToolchain } from "../code/dune";
+import { duneProjectIssue, duneSourcePath, duneTarget, findDuneExecutables, pickExecutable, sameToolchain } from "../code/dune";
 import { toolsDir, clientFor, fileUri, javaDebugBundles, metalsPausedFor, ocamlPausedFor } from "../code/lsp.svelte";
 import { t } from "../i18n/index.svelte";
 import { exe, tmpPath, venvPython, IS_WIN, OS } from "../platform";
@@ -19,6 +19,8 @@ export interface Plan {
     | { kind: "tcp"; cmd: string; args: string[]; env?: Record<string, string> }
     | { kind: "port"; port: number };
   launch: Json;
+  /** The file to show for a path the adapter reports (a build copy → its source). */
+  sourcePath?: (path: string) => Promise<string>;
 }
 
 export interface Ctx {
@@ -327,6 +329,11 @@ export async function planFor(ctx: Ctx): Promise<Plan> {
         cwd: root,
         adapter: { kind: "stdio", cmd: adapter, args: ["debug"] },
         launch: { type: "ocaml.earlybird", request: "launch", name: "OCaml", program: joinPath(root, `_build/default/${bc.slice(2)}`), cwd: root, stopOnEntry: false, console: "integratedTerminal" },
+        // Earlybird reports dune's copies. Generated files have no source, so they stay as they are.
+        sourcePath: async (p) => {
+          const source = duneSourcePath(root, p);
+          return source !== p && (await exists(source)) ? source : p;
+        },
       };
     }
   }

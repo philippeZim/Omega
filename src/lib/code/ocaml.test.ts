@@ -62,7 +62,7 @@ import "../state.svelte"; // first: the app's modules import each other in a cyc
 import { modeForExtension } from "../modes";
 import { indentFor, langFor, ocamlOpensBlock } from "./languages";
 import { detectProject, TEMPLATES } from "./projects";
-import { duneExecutables, duneProjectIssue, duneTarget, findDuneExecutables, parseSexps, pickExecutable, sameToolchain } from "./dune";
+import { duneExecutables, duneProjectIssue, duneSourcePath, duneTarget, findDuneExecutables, parseSexps, pickExecutable, sameToolchain } from "./dune";
 import { allClients, clientFor, lspState, neverInstall, restartServer, stopServers } from "./lsp.svelte";
 import { noteGuestChange, resumeCompiling, resumeMetals, metalsChangeCount, metalsPausedBy, resumeTool, toolChangeCount, toolPausedBy, toolsBeforeSave } from "../collab/guestChanges";
 import { planFor } from "../debug/adapters";
@@ -253,6 +253,14 @@ describe("Debugging OCaml", () => {
     expect(ipc.builds).toEqual([["dune", "build", "./bin/main.bc"]]);
     expect(plan.adapter).toEqual({ kind: "stdio", cmd: "/sw/bin/ocamlearlybird", args: ["debug"] });
     expect(plan.launch).toMatchObject({ type: "ocaml.earlybird", request: "launch", program: "/d/_build/default/bin/main.bc", cwd: "/d" });
+  });
+
+  test("a stop in dune's build copy shows the source file, a generated file stays", async () => {
+    expect(duneSourcePath("/d", "/d/_build/default/bin/main.ml")).toBe("/d/bin/main.ml");
+    expect(duneSourcePath("/d", "/other/_build/default/a.ml")).toBe("/other/_build/default/a.ml");
+    const plan = await planFor(ctx());
+    expect(await plan.sourcePath!("/d/_build/default/bin/main.ml")).toBe("/d/bin/main.ml");
+    expect(await plan.sourcePath!("/d/_build/default/bin/parser.ml")).toBe("/d/_build/default/bin/parser.ml");
   });
 
   test("a project without a bytecode target gets a hint and its files stay as they are", async () => {

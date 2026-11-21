@@ -130,5 +130,8 @@ export function duneProjectIssue(text: string): "lang" | "map" | null {
   return off ? null : "map";
 }
 
+/** The source file behind dune's build copy, which is read-only and overwritten by every build. */
+export const duneSourcePath = (root: string, path: string) => (path.startsWith(`${root}/_build/default/`) ? `${root}/${path.slice(root.length + 16)}` : path);
+
 /** A debugger only understands bytecode from its own compiler: both must come from one switch. */
 export const sameToolchain = (adapter: string, compiler: string | null) => !!compiler && dirname(adapter) === dirname(compiler);

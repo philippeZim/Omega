@@ -22,6 +22,7 @@ let sessions: DapSession[] = [];
 let tcpPort: number | null = null;
 let serverProcId: string | null = null;
 let lastPlan: { file: string; byGuest: boolean } | null = null;
+let sourcePath: Plan["sourcePath"];
 /** Bumped by every start and stop: a start that is no longer the newest ends itself. */
 let startGen = 0;
 /** A start is between its first step and a connected adapter. */
@@ -199,6 +200,7 @@ async function runStart(gen: number, file: string, actor: string, byGuest: boole
   }
   if (stale()) return;
 
+  sourcePath = plan.sourcePath;
   dbg.label = plan.label;
   log(t("code.dbg.starting", { label: plan.label }));
   const s = newSession(plan.label);
@@ -537,6 +539,12 @@ async function loadStack() {
     frames = (await active.request("stackTrace", { threadId: dbg.threadId, startFrame: 0, levels: 60 })).stackFrames ?? [];
   } catch (e) {
     log(String(e), "error");
+  }
+  if (sourcePath) {
+    const map = sourcePath;
+    await Promise.all(frames.map(async (f) => {
+      if (f.source?.path) f.source.path = await map(f.source.path);
+    }));
   }
   dbg.frames = frames.map(
     (f): Frame => ({

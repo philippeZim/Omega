@@ -224,6 +224,13 @@ describe("debugger controller with a fake adapter", () => {
     expect(fake.commands()).toContain("configurationDone");
   });
 
+  test("a frame in a build copy shows the source file the plan maps it to", async () => {
+    m.plan = { ...m.plan, sourcePath: async (p: string) => p.replace("/p/main.py", "/p/src/main.py") };
+    await startAndStop();
+    expect(S.dbg.frames[1].path).toBe("/p/src/main.py");
+    expect(S.dbg.exec?.path).toBe("/p/src/main.py");
+  });
+
   test("restart stops and starts a new session even if the adapter supports restart (#101)", async () => {
     const init = fake.replies.initialize;
     fake.replies.initialize = (a, r) => ({ ...init(a, r), supportsRestartRequest: true });
