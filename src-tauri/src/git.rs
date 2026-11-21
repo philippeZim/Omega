@@ -68,11 +68,19 @@ fn inside_bare_repo(path: &Path) -> bool {
     false
 }
 
-/// The folders a `git <args>` run in `root` would initialize; empty if it isn't `git init`. Every
-/// plain argument after `init` counts, so an option's value can only make the check stricter.
+/// Whether a `-c` / `--config-env` value defines a git alias (section names ignore case).
+fn defines_alias(setting: &str) -> bool {
+    setting.get(..6).is_some_and(|s| s.eq_ignore_ascii_case("alias."))
+}
+
+/// The folders a `git <args>` run in `root` could initialize; empty if it can't. That is `init`, its
+/// synonym `init-db`, and any command when the arguments define an alias, since it may expand to
+/// init. Every plain argument after the command counts, so an option's value can only make the
+/// check stricter.
 fn init_targets(root: &str, args: &[String]) -> Vec<PathBuf> {
     let mut cwd = PathBuf::from(root);
     let mut named = Vec::new();
+    let mut alias = false;
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -82,20 +90,24 @@ fn init_targets(root: &str, args: &[String]) -> Vec<PathBuf> {
                 }
             }
             "--git-dir" | "--work-tree" => named.extend(it.next().cloned()),
-            "-c" | "--namespace" | "--config-env" | "--attr-source" => {
+            "-c" | "--config-env" => alias |= it.next().is_some_and(|v| defines_alias(v)),
+            "--namespace" | "--attr-source" => {
                 it.next();
             }
-            "init" => {
+            other if other.starts_with("--config-env=") => alias |= defines_alias(&other["--config-env=".len()..]),
+            other if other.starts_with("--git-dir=") || other.starts_with("--work-tree=") => {
+                named.extend(other.split_once('=').map(|(_, dir)| dir.to_string()));
+            }
+            other if other.starts_with('-') => {}
+            command => {
+                if !alias && command != "init" && command != "init-db" {
+                    return Vec::new();
+                }
                 named.extend(it.filter(|a| !a.starts_with('-')).cloned());
                 let mut targets = vec![cwd.clone()];
                 targets.extend(named.iter().map(|dir| cwd.join(dir)));
                 return targets;
             }
-            other if other.starts_with("--git-dir=") || other.starts_with("--work-tree=") => {
-                named.extend(other.split_once('=').map(|(_, dir)| dir.to_string()));
-            }
-            other if other.starts_with('-') => {}
-            _ => return Vec::new(),
         }
     }
     Vec::new()
@@ -478,7 +490,7 @@ mod tests {
         std::fs::create_dir_all(dir.join("objects")).unwrap();
         std::fs::create_dir_all(dir.join("refs")).unwrap();
         std::fs::write(dir.join("HEAD"), "ref: refs/heads/main\n").unwrap();
-        std::fs::write(dir.join("config"), format!("[core]\n\tbare = false\n\tworktree = .\n\tfsmonitor = \"touch {}; false\"\n", marker.display())).unwrap();
+        std::fs::write(dir.join("config"), format!("[core]\n\trepositoryformatversion = 0\n\tbare = false\n\tworktree = .\n\tfsmonitor = \"touch {}; false\"\n", marker.display())).unwrap();
     }
 
     #[cfg(unix)]
@@ -492,7 +504,7 @@ mod tests {
         run_git(&tmp, &["clone", "-q", "--bare", "src", "real.git"]);
         std::os::unix::fs::symlink(&planted, tmp.join("link")).unwrap();
 
-        let refused: [(std::path::PathBuf, &[&str]); 9] = [
+        let refused: [(std::path::PathBuf, &[&str]); 16] = [
             (planted.clone(), &["init", "-q"]),
             (tmp.join("real.git"), &["init", "-q"]),
             (tmp.join("link"), &["init"]),
@@ -502,6 +514,13 @@ mod tests {
             (tmp.clone(), &["init", "-q", "planted"]),
             (tmp.clone(), &["--git-dir=planted", "init"]),
             (tmp.clone(), &["--git-dir", "planted", "init"]),
+            (planted.clone(), &["init-db", "-q"]),
+            (planted.clone(), &["-c", "alias.i=init", "i"]),
+            (planted.clone(), &["-c", "ALIAS.i=init", "i", "-q"]),
+            (planted.clone(), &["-c", "alias.i=!git init", "i"]),
+            (planted.clone(), &["--config-env=alias.i=SOME_VAR", "i"]),
+            (planted.clone(), &["--config-env", "alias.i=SOME_VAR", "i"]),
+            (tmp.clone(), &["-C", "planted", "-c", "alias.i=init", "i"]),
         ];
         for (root, args) in &refused {
             let out = init_via_omega(root, args);
@@ -545,6 +564,9 @@ mod tests {
         // Initializing again and a repository that lives below a bare-looking folder stay possible.
         new_repo(&tmp.join("existing"));
         assert_eq!(init_via_omega(&tmp.join("existing"), &["init", "-q"]).code, 0);
+        // An alias in a normal repository just runs.
+        let aliased = init_via_omega(&tmp.join("existing"), &["-c", "alias.st=status --short", "st"]);
+        assert_eq!((aliased.code, aliased.stderr.as_str()), (0, ""));
         let outer = tmp.join("outer");
         plant_bare(&outer, &tmp.join("EXECUTED"));
         new_repo(&outer.join("inner"));
@@ -559,6 +581,8 @@ mod tests {
         assert!(init_targets("/r", &args(&["status"])).is_empty());
         assert!(init_targets("/r", &args(&["commit", "-m", "init"])).is_empty());
         assert!(init_targets("/r", &args(&["-c", "init", "log"])).is_empty());
+        assert!(init_targets("/r", &args(&["-c", "user.name=alias.x", "status"])).is_empty());
+        assert_eq!(init_targets("/r", &args(&["-c", "alias.s=status", "s"])), [PathBuf::from("/r")]);
         assert_eq!(init_targets("/r", &args(&["-C", "a", "init", "-q", "b"])), [PathBuf::from("/r/a"), PathBuf::from("/r/a/b")]);
     }
 
