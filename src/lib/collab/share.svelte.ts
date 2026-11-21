@@ -234,6 +234,88 @@ export function guestScope(): GuestScope | null {
   };
 }
 
+/** Host: the text of every project file open in the session, which can be ahead of the disk. */
+export function hostLiveTexts(scope: GuestScope): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const tab of app.tabs) {
+    const rel = tab.path ? scope.rel(tab.path) : null;
+    if (rel) out[rel] = ed.getText(tab.id);
+  }
+  // A shared doc is the newest copy, also of a file with a tab.
+  for (const d of docs.values()) if (d.root === scope.root && !d.rel.startsWith("tab:")) out[d.rel] = d.ytext.toString();
+  return out;
+}
+
+export interface ReplacePlan {
+  /** (from, to, text) in UTF-16 offsets, ascending. */
+  edits: [number, number, string][];
+  count: number;
+}
+
+/** Applied by the host for a guest: a string origin, so it reaches every guest and background tab. */
+const REPLACE_ORIGIN = "search-replace";
+
+/**
+ * Host: replaces in one file for a guest. A file open in the session changes in its shared doc, so
+ * everybody sees it live and unsaved text is kept; only a file nobody has open is written to disk.
+ * Throws an `RpcFail` if nothing was changed.
+ */
+export async function hostReplaceIn(scope: GuestScope, rel: string, plan: (text: string) => Promise<ReplacePlan>, signal: AbortSignal): Promise<number> {
+  const stop = () => {
+    if (signal.aborted) throw new RpcFail("cancelled");
+    if (!scope.live()) throw new RpcFail("unavailable");
+  };
+  if (!safeRel(rel) || !(await scope.check(rel))) throw new RpcFail("unavailable");
+  const abs = scope.abs(rel);
+  const isOpen = () => docs.has(rel) || app.tabs.some((x) => x.path === abs);
+  // The text can change while the plan is computed: then plan again on the new text.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    stop();
+    if (isOpen()) {
+      const d = await hostDoc(rel);
+      stop();
+      if (!d || d.root !== scope.root) throw new RpcFail("unavailable");
+      const text = d.ytext.toString();
+      const { edits, count } = await plan(text);
+      stop();
+      if (!count) return 0;
+      if (docs.get(rel) !== d || !d.cleanup.length || d.ytext.toString() !== text) continue;
+      d.ydoc.transact(() => {
+        for (let i = edits.length - 1; i >= 0; i--) {
+          const [from, to, insert] = edits[i];
+          d.ytext.delete(from, to - from);
+          if (insert) d.ytext.insert(from, insert);
+        }
+      }, REPLACE_ORIGIN);
+      return count;
+    }
+    const read = () => invoke<string | null>("guest_read_text", { root: scope.root, rel });
+    const text = await read();
+    if (text === null) throw new RpcFail("unreadable");
+    const { edits, count } = await plan(text);
+    stop();
+    if (!count) return 0;
+    if (isOpen()) continue;
+    // Last look before writing: still allowed, and nobody changed the file meanwhile.
+    if (!(await scope.check(rel))) throw new RpcFail("unavailable");
+    const now = await read();
+    stop();
+    if (isOpen() || now !== text) continue;
+    let out = "";
+    let pos = 0;
+    for (const [from, to, insert] of edits) {
+      out += text.slice(pos, from) + insert;
+      pos = to;
+    }
+    await fsApi.writeFile(abs, out + text.slice(pos)).catch((e) => {
+      console.error("guest replace", e);
+      throw new RpcFail("write_failed");
+    });
+    return count;
+  }
+  throw new RpcFail("busy");
+}
+
 function scheduleHostWrite(d: SharedDoc) {
   // Open tabs are saved by the host's autosave; background docs are written here.
   if (d.tabId || !d.root) return;
@@ -451,26 +533,30 @@ export function onHostTabOpened(tabId: string, abs: string) {
 
 // ------------------------------------------------------------------ guest
 
-const pendingOpens = new Map<string, { line?: number }>();
+const pendingOpens = new Map<string, { line?: number; range?: [number, number] }>();
 
-/** Guest: open a host file (relative path) as a shared tab. */
-export async function openRemote(rel: string, line?: number) {
+/**
+ * Guest: open a host file (relative path) as a shared tab, optionally at a line. `range` selects
+ * those columns of the line (a search hit).
+ */
+export async function openRemote(rel: string, line?: number, range?: [number, number]) {
   const existing = docs.get(rel);
   if (existing?.tabId && app.tabs.some((t) => t.id === existing.tabId)) {
     const { activate } = await import("../state.svelte");
     activate(existing.tabId);
-    if (line) scrollToLine(line);
+    if (line) scrollToLine(line, range);
     return;
   }
-  pendingOpens.set(rel, { line });
+  pendingOpens.set(rel, { line, range });
   send(collab.hostPeer!, { t: "doc.open", path: rel });
 }
 
-function scrollToLine(line: number) {
+function scrollToLine(line: number, range?: [number, number]) {
   const v = ed.getView();
   if (!v || line < 1) return;
   const l = v.state.doc.line(Math.min(line, v.state.doc.lines));
-  v.dispatch({ effects: EditorView.scrollIntoView(l.from, { y: "center" }) });
+  const selection = range ? { anchor: Math.min(l.to, l.from + range[0]), head: Math.min(l.to, l.from + range[1]) } : undefined;
+  v.dispatch({ selection, effects: EditorView.scrollIntoView(l.from, { y: "center" }) });
 }
 
 async function guestReceiveState(rel: string, update: Uint8Array, name?: string) {
@@ -497,7 +583,7 @@ async function guestReceiveState(rel: string, update: Uint8Array, name?: string)
   ed.setCollab(tabId, binding(d));
   const p = pendingOpens.get(rel);
   pendingOpens.delete(rel);
-  if (p?.line) setTimeout(() => scrollToLine(p.line!), 50);
+  if (p?.line) setTimeout(() => scrollToLine(p.line!, p.range), 50);
 }
 
 /** Guest closed a shared tab. */
