@@ -286,7 +286,7 @@ export const en = {
   "code.lang.needsFile": "Open a saved file to choose its language.",
   "code.lang.noCustomRun": "This file runs on its own in the language you chose, so the folder's custom command doesn't apply.",
   "code.lang.copyFailed": "Could not prepare the file for running: {error}",
-  "code.lang.noDebugAlone": "{lang} can only be debugged inside a project of that language. Run works for this file.",
+  "code.ad.javaNeedsJdk": "Debugging Java needs a full JDK (javac and its debug interface), not just a JRE.",
 };
 export const de: Record<keyof typeof en, string> = {
   "code.key.ctrl": "Strg",
@@ -565,7 +565,7 @@ export const de: Record<keyof typeof en, string> = {
   "code.lang.needsFile": "Öffne eine gespeicherte Datei, um ihre Sprache zu wählen.",
   "code.lang.noCustomRun": "Diese Datei läuft für sich in der gewählten Sprache, der eigene Befehl des Ordners gilt hier nicht.",
   "code.lang.copyFailed": "Die Datei konnte nicht zum Ausführen vorbereitet werden: {error}",
-  "code.lang.noDebugAlone": "{lang} lässt sich nur in einem Projekt dieser Sprache debuggen. Ausführen funktioniert für diese Datei.",
+  "code.ad.javaNeedsJdk": "Zum Debuggen von Java braucht es ein vollständiges JDK (javac und seine Debug-Schnittstelle), nicht nur eine JRE.",
 };
 export const fr: Record<keyof typeof en, string> = {
   "code.key.ctrl": "Ctrl",
@@ -844,5 +844,5 @@ export const fr: Record<keyof typeof en, string> = {
   "code.lang.needsFile": "Ouvrez un fichier enregistré pour choisir son langage.",
   "code.lang.noCustomRun": "Ce fichier s’exécute seul dans le langage choisi : la commande personnalisée du dossier ne s’applique pas.",
   "code.lang.copyFailed": "Impossible de préparer le fichier pour l’exécution : {error}",
-  "code.lang.noDebugAlone": "{lang} ne peut être débogué que dans un projet de ce langage. L’exécution fonctionne pour ce fichier.",
+  "code.ad.javaNeedsJdk": "Le débogage Java nécessite un JDK complet (javac et son interface de débogage), pas seulement un JRE.",
 };

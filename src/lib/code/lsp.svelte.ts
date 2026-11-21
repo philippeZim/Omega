@@ -343,9 +343,13 @@ const shadows = new Map<string, string>();
 /** Folder of such a copy -> the real file. */
 const shadowRoots = new Map<string, string>();
 
-export function registerShadow(real: string, copy: string) {
+/** Private copy -> its real file and the folder its server runs in (above it for a Java package). */
+const copies = new Map<string, { real: string; root: string }>();
+
+export function registerShadow(real: string, copy: string, root = dirname(copy)) {
   shadows.set(real, copy);
-  shadowRoots.set(dirname(copy), real);
+  copies.set(copy, { real, root });
+  shadowRoots.set(root, real);
   lspState.routes[real] = "shadow";
 }
 
@@ -355,10 +359,7 @@ export const setLspRoute = (path: string, route: LspRoute) => void (lspState.rou
 export const shadowOf = (file: string) => shadows.get(file) ?? file;
 
 /** The real file behind a path a language server reported. */
-export function realPathOf(path: string) {
-  const real = shadowRoots.get(dirname(path));
-  return real && shadows.get(real) === path ? real : path;
-}
+export const realPathOf = (path: string) => copies.get(path)?.real ?? path;
 
 /** Guest pauses are about the real project, also for a server working on a private copy. */
 const pauseRootOf = (root: string) => {
@@ -390,15 +391,17 @@ export function closeLspDoc(path: string) {
   shadows.delete(path);
   delete lspState.routes[path];
   if (!copy) return;
-  stopPrivate(dirname(copy));
-  shadowRoots.delete(dirname(copy));
+  const root = copies.get(copy)?.root ?? dirname(copy);
+  stopPrivate(root);
+  copies.delete(copy);
+  shadowRoots.delete(root);
 }
 
 /** The file was saved: a private copy is refreshed first, since servers re-read the disk on save. */
 export async function saveLspDoc(path: string, text: string) {
   const copy = shadows.get(path);
   if (copy) {
-    await invoke("lang_copy", { file: path, part: "lsp", name: copy.slice(copy.lastIndexOf("/") + 1), link: false }).catch(() => {});
+    await invoke("lang_copy", { file: path, part: "lsp", name: copy.slice((copies.get(copy)?.root ?? dirname(copy)).length + 1), link: false }).catch(() => {});
     if (shadows.get(path) !== copy) return;
   }
   const uri = fileUri(copy ?? path);
@@ -504,10 +507,12 @@ async function resolveCommand(kind: ServerKind, root: string): Promise<{ cmd: st
     case "java": {
       let h = 0;
       for (const c of root) h = (h * 31 + c.charCodeAt(0)) | 0;
-      // A private copy's index stays with the copy and goes when the app exits.
-      const data = shadowRoots.has(root) ? `${root}/.jdtls` : `${tools}/jdtls-workspace/${(h >>> 0).toString(16)}`;
+      // A private copy's index stays beside it (not in it: jdtls would import its own data) and goes when the app exits.
+      const data = shadowRoots.has(root) ? `${dirname(root)}/jdtls-data` : `${tools}/jdtls-workspace/${(h >>> 0).toString(16)}`;
       const bundles = await javaDebugBundles();
-      const init = bundles.length ? { bundles } : undefined;
+      // jdtls would take the file's folder for the source root, and a package's folder is not one.
+      const sources = shadowRoots.has(root) ? { settings: { java: { project: { sourcePaths: ["."] } } } } : {};
+      const init = bundles.length || shadowRoots.has(root) ? { ...(bundles.length ? { bundles } : {}), ...sources } : undefined;
       // Omega's own jdtls is started with `java -jar` directly (its bin/jdtls wrapper needs Python).
       const home = `${tools}/jdtls`;
       const launcher = (await fsApi.listDir(`${home}/plugins`).catch(() => [])).find((e) => /^org\.eclipse\.equinox\.launcher_.*\.jar$/.test(e.name));
@@ -659,7 +664,8 @@ export async function clientFor(
   if (!kind) return null;
   stopIdle();
   // A private copy is on its own: no project, and no marker file in a folder above it counts.
-  const shadow = shadowRoots.has(dirname(file));
+  const shadowRoot = copies.get(file)?.root;
+  const shadow = shadowRoot !== undefined;
   if (shadow) workspace = null;
   // A file outside the open folder (Go to Definition into a library, the Rust std sources, system
   // headers) is served by the server already running for the folder, not a new one rooted there.
@@ -669,7 +675,7 @@ export async function clientFor(
     // Never index the toolchain itself (rust-analyzer's flycheck writes target/ into it).
     if (kind === "rust" && /\/lib\/rustlib\/src\//.test(file)) return null;
   }
-  const root = shadow ? dirname(file) : await findRoot(file, ROOT_MARKERS[kind], workspace);
+  const root = shadowRoot ?? (await findRoot(file, ROOT_MARKERS[kind], workspace));
   const key = `${kind}|${root}`;
   if (serverHeld(kind, key, root)) return null;
   if (askInstall !== neverInstall) guestServers.delete(key); // the host wants this one itself
@@ -831,7 +837,7 @@ export async function restartServer(
     }
   }
   file = shadowOf(file);
-  const root = shadowRoots.has(dirname(file)) ? dirname(file) : await findRoot(file, ROOT_MARKERS[kind], workspace);
+  const root = copies.get(file)?.root ?? (await findRoot(file, ROOT_MARKERS[kind], workspace));
   const key = `${kind}|${root}`;
   if (starting.has(key)) return starting.get(key)!;
   const pausable = PAUSABLE[kind];

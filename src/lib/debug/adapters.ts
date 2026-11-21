@@ -2,14 +2,14 @@
 import { invoke } from "@tauri-apps/api/core";
 import { fsApi, basename, dirname, joinPath } from "../api";
 import { effectiveLang } from "../code/langOverride.svelte";
-import { refreshRunCopy, runCopyName, workDir } from "../code/langRun";
+import { refreshBinCopy, refreshRunCopy, runCopyName, shadowForLsp, workDir } from "../code/langRun";
 import { detectProject, runsAlone, pythonEntry, cmakeConfigure, cmakeExecutable } from "../code/projects";
 import { duneProjectIssue, duneSourcePath, nearestDuneProject, duneTarget, findDuneExecutables, pickExecutable, sameToolchain } from "../code/dune";
 import { OCAML_PROGRAM_ENV, managedOcaml } from "../code/ocamlTools";
 import { mojoCompiles, mojoStem } from "../code/mojo";
-import { toolsDir, clientFor, fileUri, javaDebugBundles, metalsPausedFor, ocamlPauseRoot } from "../code/lsp.svelte";
+import { toolsDir, clientFor, fileUri, javaDebugBundles, metalsPausedFor, ocamlPauseRoot, registerShadow } from "../code/lsp.svelte";
 import { onGuestChange, toolPausedBy } from "../collab/guestChanges";
-import { t } from "../i18n/index.svelte";
+import { t, type Key } from "../i18n/index.svelte";
 import { exe, tmpPath, venvPython, IS_WIN, OS } from "../platform";
 import { ensureTools, mojoInstallHint, withInstallProgress, type ToolId } from "../tools.svelte";
 
@@ -142,8 +142,8 @@ let buildRuns = 0;
  * A build that a guest change stops at once. The kill is repeated until the build has ended,
  * because a change can arrive before the backend has registered the process.
  */
-export async function buildUnlessPaused(cmd: string, args: string[], cwd: string, ctx: Pick<Ctx, "log">, paused: () => boolean) {
-  const stopped = () => new Error(t("code.lsp.ocamlPaused"));
+export async function buildUnlessPaused(cmd: string, args: string[], cwd: string, ctx: Pick<Ctx, "log">, paused: () => boolean, pausedText: Key = "code.lsp.ocamlPaused") {
+  const stopped = () => new Error(t(pausedText));
   if (paused()) throw stopped();
   const id = `ocaml-build-${++buildRuns}`;
   const kill = () => void invoke("proc_kill", { id }).catch(() => {});
@@ -222,12 +222,16 @@ export async function planFor(ctx: Ctx): Promise<Plan> {
   const root = project?.root ?? dirname(ctx.file);
   const tools = await toolsDir();
   const alone = await runsAlone(ctx.file, ctx.workspace);
-  // These debuggers need a build or language server project around the file.
-  if (alone && (lang === "java" || lang === "scala" || lang === "ocaml")) throw new Error(t("code.lang.noDebugAlone", { lang: info!.label }));
   const ownCopy = async () => {
     const name = runCopyName(lang!, await fsApi.readFile(ctx.file))!;
     const copy = await refreshRunCopy(ctx.file, name);
     return { file: ctx.file, copy };
+  };
+  /** The language server's private copy: jdtls and Metals debug what they have compiled. */
+  const ownServerCopy = async () => {
+    const { copy, root: serverRoot } = await shadowForLsp(ctx.file, info!);
+    registerShadow(ctx.file, copy, serverRoot);
+    return copy;
   };
   const ownProgram = async () => `${await workDir(ctx.file, "bin")}/${exe("omega_dbg")}`;
 
@@ -347,13 +351,16 @@ export async function planFor(ctx: Ctx): Promise<Plan> {
     case "java": {
       const dir = `${tools}/java-debug`;
       await need(["jdk"]);
+      // jdtls compiles with its own compiler, but the debugger attaches through the JDK's JDI.
+      if (alone && !(await which("javac"))) throw new Error(t("code.ad.javaNeedsJdk"));
       const hasJar = (await javaDebugBundles()).length > 0;
       if (!hasJar) await ensure("javadebug", `${dir}/__missing__`, t("code.ad.javadebug"), ctx);
-      const lsp = await clientFor(info!, ctx.file, ctx.workspace, async () => ctx.askInstall("Eclipse JDT Language Server"), true);
+      const javaFile = alone ? await ownServerCopy() : ctx.file;
+      const lsp = await clientFor(info!, javaFile, ctx.workspace, async () => ctx.askInstall("Eclipse JDT Language Server"), true);
       if (!lsp) throw new Error(t("code.ad.noJavaLsp"));
       ctx.log(t("code.ad.resolvingMain"));
       const mains: Json[] = (await lsp.request("workspace/executeCommand", { command: "vscode.java.resolveMainClass", arguments: [] }, 60000)) ?? [];
-      const main = mains.find((m) => m.filePath === ctx.file) ?? mains[0];
+      const main = mains.find((m) => m.filePath === javaFile) ?? mains[0];
       if (!main) throw new Error(t("code.ad.noMain"));
       const [modulePaths, classPaths] = await lsp.request("workspace/executeCommand", { command: "vscode.java.resolveClasspath", arguments: [main.mainClass, main.projectName] }, 60000);
       const port: number = await lsp.request("workspace/executeCommand", { command: "vscode.java.startDebugSession", arguments: [] }, 30000);
@@ -362,6 +369,7 @@ export async function planFor(ctx: Ctx): Promise<Plan> {
         cwd: root,
         adapter: { kind: "port", port },
         launch: { type: "java", request: "launch", name: "Java", mainClass: main.mainClass, projectName: main.projectName, modulePaths, classPaths, cwd: root, console: "integratedTerminal" },
+        shadow: alone ? { file: ctx.file, copy: javaFile } : undefined,
       };
     }
 
@@ -369,8 +377,8 @@ export async function planFor(ctx: Ctx): Promise<Plan> {
       await need(["jdk"]);
       // Metals' debugger attaches through the JDK's debug interface (JDI), which a JRE lacks.
       if (!(await which("javac"))) throw new Error(t("code.ad.scalaNeedsJdk"));
-      const lsp = await clientFor(info!, ctx.file, ctx.workspace, async () => ctx.askInstall("Metals"));
       const paused = () => metalsPausedFor(ctx.file, ctx.workspace);
+      const lsp = await clientFor(info!, ctx.file, ctx.workspace, async () => ctx.askInstall("Metals"));
       if (!lsp) throw new Error(t((await paused()) ? "code.lsp.metalsPaused" : "code.ad.noScalaLsp"));
       const session = await startScalaSession(
         () => lsp.request<{ name: string; uri: string }>("workspace/executeCommand", { command: "debug-adapter-start", arguments: [{ path: fileUri(ctx.file), runType: "run" }] }, 60000),

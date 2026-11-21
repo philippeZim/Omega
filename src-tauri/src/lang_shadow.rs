@@ -84,7 +84,7 @@ fn is_base_name(name: &str) -> bool {
 }
 
 /// Whether `dir` is a leftover of a process that is gone. Anything uncertain counts as in use: a
-/// missing or young lock file, another owner, a link, or a lock someone holds.
+/// young folder or lock file, another owner, a link, or a lock someone holds.
 #[cfg(unix)]
 fn is_stale(dir: &Path, uid: u32, min_age: Duration) -> bool {
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
@@ -92,7 +92,16 @@ fn is_stale(dir: &Path, uid: u32, min_age: Duration) -> bool {
     if !meta.file_type().is_dir() || meta.uid() != uid {
         return false;
     }
-    let Ok(lock) = OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW).open(dir.join(LOCK)) else { return false };
+    let lock = match OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW).open(dir.join(LOCK)) {
+        Ok(lock) => lock,
+        // An exiting Omega removed its lock, and a language server wrote into the folder after
+        // that. A start creates the lock right after the folder, so an old folder without one is
+        // nobody's.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return meta.modified().ok().and_then(|m| m.elapsed().ok()).is_some_and(|age| age >= min_age);
+        }
+        Err(_) => return false,
+    };
     let Ok(info) = lock.metadata() else { return false };
     if !info.file_type().is_file() || info.uid() != uid {
         return false;
@@ -141,6 +150,11 @@ fn valid_name(name: &str) -> bool {
     !name.is_empty() && name.len() <= 128 && !name.starts_with(['.', '-']) && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-')
 }
 
+/// A plain file name, or one below folders of plain names (a Java copy sits in its package path).
+fn valid_rel(rel: &str) -> bool {
+    rel.len() <= 255 && rel.split('/').all(valid_name)
+}
+
 fn part_name(part: &str) -> Result<&str, String> {
     if matches!(part, "run" | "bin" | "lsp") { Ok(part) } else { Err("invalid folder".into()) }
 }
@@ -174,16 +188,19 @@ fn link_siblings(dir: &Path, source: &Path, copy_name: &str) {
 fn link_siblings(_dir: &Path, _source: &Path, _copy_name: &str) {}
 
 fn copy_into(dir: &Path, file: &str, name: &str, link: bool) -> Result<PathBuf, String> {
-    if !valid_name(name) {
+    // Links only ever go next to a flat copy in `run`, so a package path never passes through one.
+    if !(valid_name(name) || (!link && valid_rel(name))) {
         return Err("invalid file name".into());
     }
     let data = fs::read(file).map_err(|e| e.to_string())?;
     let target = dir.join(name);
+    let parent = target.parent().ok_or("invalid file name")?;
+    fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     // A new file under a random name (`create_new` never follows a link), then a rename, which
     // replaces a link at the target instead of writing through it.
     let mut id = [0u8; 16];
     getrandom::fill(&mut id).map_err(|e| e.to_string())?;
-    let tmp = dir.join(format!(".omega-tmp-{}", hex(&id)));
+    let tmp = parent.join(format!(".omega-tmp-{}", hex(&id)));
     let mut out = OpenOptions::new().write(true).create_new(true).open(&tmp).map_err(|e| e.to_string())?;
     if let Err(e) = out.write_all(&data).and_then(|()| fs::rename(&tmp, &target)) {
         let _ = fs::remove_file(&tmp);
@@ -193,6 +210,29 @@ fn copy_into(dir: &Path, file: &str, name: &str, link: bool) -> Result<PathBuf, 
         link_siblings(dir, Path::new(file), name);
     }
     Ok(target)
+}
+
+/// A language server indexes its whole folder: an earlier copy (the public class was renamed, the
+/// language changed) would be a duplicate of this one. Hidden state and clangd's flags stay.
+fn drop_other_sources(dir: &Path, keep: &str) {
+    drop_sources_in(dir, &dir.join(keep), true);
+}
+
+fn drop_sources_in(dir: &Path, keep: &Path, top: bool) {
+    let Ok(entries) = fs::read_dir(dir) else { return };
+    for e in entries.flatten() {
+        let name = e.file_name();
+        if name.as_encoded_bytes().first() == Some(&b'.') {
+            continue;
+        }
+        let Ok(kind) = e.file_type() else { continue };
+        if kind.is_dir() {
+            drop_sources_in(&e.path(), keep, false);
+            let _ = fs::remove_dir(e.path()); // only if it's empty now
+        } else if kind.is_file() && e.path() != keep && !(top && (name == "compile_flags.txt" || name == "project.scala")) {
+            let _ = fs::remove_file(e.path());
+        }
+    }
 }
 
 /// The private folder for `file` (`part`: "run", "bin" or "lsp").
@@ -206,7 +246,11 @@ pub fn lang_workdir(file: String, part: String) -> Result<String, String> {
 #[tauri::command]
 pub fn lang_copy(file: String, part: String, name: String, link: bool) -> Result<String, String> {
     let dir = file_dir(&base()?, &file, part_name(&part)?)?;
-    Ok(norm(copy_into(&dir, &file, &name, link)?))
+    let copy = copy_into(&dir, &file, &name, link)?;
+    if part == "lsp" {
+        drop_other_sources(&dir, &name);
+    }
+    Ok(norm(copy))
 }
 
 pub fn cleanup() {
@@ -313,6 +357,51 @@ mod tests {
         assert!(dir.join(".scala-build").symlink_metadata().is_err());
     }
 
+    #[test]
+    fn an_earlier_server_copy_is_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        for n in ["Old.java", "New.java", "compile_flags.txt", ".bsp"] {
+            fs::write(dir.path().join(n), "").unwrap();
+        }
+        drop_other_sources(dir.path(), "New.java");
+        assert!(!dir.path().join("Old.java").exists());
+        for n in ["New.java", "compile_flags.txt", ".bsp"] {
+            assert!(dir.path().join(n).exists());
+        }
+    }
+
+    #[test]
+    fn a_java_copy_sits_in_its_package_path_and_replaces_the_old_one() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("prog");
+        fs::write(&source, "x").unwrap();
+        let dir = root.path().join("lsp");
+        fs::create_dir(&dir).unwrap();
+        fs::create_dir_all(dir.join("old/pkg")).unwrap();
+        fs::write(dir.join("old/pkg/Old.java"), "").unwrap();
+        let copy = copy_into(&dir, source.to_str().unwrap(), "demo/app/Hello.java", false).unwrap();
+        drop_other_sources(&dir, "demo/app/Hello.java");
+        assert_eq!(copy, dir.join("demo/app/Hello.java"));
+        assert!(copy.exists());
+        assert!(!dir.join("old").exists());
+    }
+
+    #[test]
+    fn a_package_path_cannot_leave_the_folder() {
+        for bad in ["../x/A.java", "a/../../A.java", "/etc/A.java", "a//A.java", "a/.hidden/A.java", "a/-x/A.java"] {
+            assert!(!valid_rel(bad), "{bad:?}");
+        }
+        assert!(valid_rel("demo/app/Hello.java"));
+    }
+
+    #[test]
+    fn a_run_copy_stays_flat() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("prog");
+        fs::write(&source, "x").unwrap();
+        assert!(copy_into(root.path(), source.to_str().unwrap(), "a/B.java", true).is_err());
+    }
+
     #[cfg(unix)]
     mod sweep {
         use super::*;
@@ -348,15 +437,23 @@ mod tests {
         }
 
         #[test]
-        fn a_young_lock_or_none_counts_as_in_use() {
+        fn a_young_lock_or_young_folder_without_one_counts_as_in_use() {
             let parent = tempfile::tempdir().unwrap();
             let young = base_in(parent.path(), ID);
             let unlocked = parent.path().join("omega-lang-fedcba9876543210fedcba9876543210");
             fs::create_dir(&unlocked).unwrap();
             sweep_in(parent.path(), Duration::from_secs(3600));
             assert!(young.exists());
-            sweep_in(parent.path(), Duration::ZERO);
             assert!(unlocked.exists());
+        }
+
+        #[test]
+        fn an_old_folder_whose_lock_went_at_exit_is_removed() {
+            let parent = tempfile::tempdir().unwrap();
+            let left = parent.path().join("omega-lang-fedcba9876543210fedcba9876543210");
+            fs::create_dir(&left).unwrap();
+            sweep_in(parent.path(), Duration::ZERO);
+            assert!(!left.exists());
         }
 
         #[test]

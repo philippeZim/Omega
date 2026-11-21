@@ -37,10 +37,16 @@ export function runCopyName(lang: LangId, text: string): string | null {
   }
 }
 
-/** Name of the language server's copy. javac wants a public class in a file of its name. */
+/** Path of the language server's copy in its folder. javac wants a public class in a file of its name. */
 export function lspCopyName(lang: LangInfo, text: string): string {
   const ext: Record<LangId, string> = { python: "py", c: "c", cpp: "cpp", java: "java", javascript: "js", typescript: "ts", rust: "rs", json: "json", toml: "toml", scala: "scala", ocaml: "ml", mojo: "mojo" };
-  if (lang.id === "java") return `${/^\s*public\s+(?:(?:final|abstract|sealed|strictfp)\s+)*(?:class|interface|enum|record)\s+([A-Za-z_]\w*)/m.exec(text)?.[1] ?? "OmegaMain"}.java`;
+  if (lang.id === "scala") return runCopyName("scala", text)!; // a script needs .sc, a program .scala
+  if (lang.id === "java") {
+    const cls = /^\s*public\s+(?:(?:final|abstract|sealed|strictfp)\s+)*(?:class|interface|enum|record)\s+([A-Za-z_]\w*)/m.exec(text)?.[1] ?? "OmegaMain";
+    // The compiler wants a package's file in the matching folder.
+    const pkg = /^\s*package\s+([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*;/m.exec(text)?.[1];
+    return `${pkg ? `${pkg.replace(/\./g, "/")}/` : ""}${cls}.java`;
+  }
   return `omega_main.${ext[lang.id]}`;
 }
 
@@ -48,6 +54,9 @@ export const workDir = (file: string, part: "run" | "bin") => invoke<string>("la
 
 /** Refreshes the run copy from the saved file and returns its path. */
 export const refreshRunCopy = (file: string, name: string) => invoke<string>("lang_copy", { file, part: "run", name, link: true });
+
+/** A copy next to the build output, for compilers that write their files beside the source. */
+export const refreshBinCopy = (file: string, name: string) => invoke<string>("lang_copy", { file, part: "bin", name, link: false });
 
 /** The command that runs `file` alone as `lang`. Null for a language that doesn't run (JSON, TOML). */
 export async function overrideRun(lang: LangId, file: string, tsx: string): Promise<OverrideRun | null> {
@@ -100,13 +109,15 @@ export function clangdFlags(lang: LangId, file: string): string | null {
  */
 export const clangdCommand = (lang: LangId, file: string) => (lang === "cpp" ? ["clang++", "-x", "c++", "-std=c++20", file] : ["clang", "-x", "c", file]);
 
-/** Writes the language server's copy of `file` and returns its path. */
-export async function shadowForLsp(file: string, lang: LangInfo): Promise<string> {
+/** Writes the language server's copy of `file`. `root` is the folder the server is started in. */
+export async function shadowForLsp(file: string, lang: LangInfo): Promise<{ copy: string; root: string }> {
   const text = await fsApi.readFile(file);
-  const copy = await invoke<string>("lang_copy", { file, part: "lsp", name: lspCopyName(lang, text), link: false });
+  const name = lspCopyName(lang, text);
+  const copy = await invoke<string>("lang_copy", { file, part: "lsp", name, link: false });
+  const root = copy.slice(0, copy.length - name.length - 1);
   if (lang.server === "clangd") {
     const flags = clangdFlags(lang.id, file);
-    if (flags) await fsApi.writeFile(`${dirname(copy)}/compile_flags.txt`, flags);
+    if (flags) await fsApi.writeFile(`${root}/compile_flags.txt`, flags);
   }
-  return copy;
+  return { copy, root };
 }
