@@ -14,6 +14,7 @@ import { EditorView } from "@codemirror/view";
 import { collab, send, broadcast, onCollabMessage } from "./collab.svelte";
 import { app, openFile, activeTab, activate, collabHooks, setMode, pathMoved, type Tab } from "../state.svelte";
 import type { Mode } from "../modes";
+import { MODES } from "../modeList";
 import { onFilesChanged } from "../fsWatch.svelte";
 import * as ed from "../editor";
 import { fsApi, joinPath, basename } from "../api";
@@ -151,21 +152,44 @@ function binding(d: SharedDoc) {
 
 const relOf = (abs: string) => (app.root && abs.startsWith(app.root + "/") ? abs.slice(app.root.length + 1) : null);
 
+/** A file name that means the git folder, also as Windows/macOS spell it (see is_git_name in collab.rs). */
+const isGitName = (name: string) => {
+  const base = name.replace(/[\u200c-\u200f\u202a-\u202e\u206a-\u206f\ufeff]/g, "").split(":")[0].replace(/[. ]+$/, "").toLowerCase();
+  return base === ".git" || base === "git~1";
+};
+
+/** The checks on a guest path that need no file system: relative, no "..", no git folder. */
+const relAllowed = (rel: unknown): rel is string =>
+  typeof rel === "string" && !rel.includes("\0") && !/^([\\/]|[a-zA-Z]:)/.test(rel) && !rel.split(/[\\/]/).some((seg) => seg === ".." || isGitName(seg));
+
+/** A project file's relative path, if guests may see it. */
+const shareableRel = (abs: string) => {
+  const rel = relOf(abs);
+  return rel && relAllowed(rel) ? rel : null;
+};
+
 /**
- * Host: the key a tab is shared under. Files in the project folder use their relative path (so the
- * guest's file tree finds them); everything else – unsaved "Untitled" tabs, files outside the
- * folder, or no folder open at all – is shared by tab id ("tab:<id>").
+ * Host: the key a tab is shared under, or null if guests must not see it. Project files use their
+ * relative path (so the guest's file tree finds them), unsaved "Untitled" tabs their id
+ * ("tab:<id>"). Files on disk outside the project and in a git folder aren't shared.
  */
-export const hostKey = (tab: Tab) => (tab.path && relOf(tab.path)) || `tab:${tab.id}`;
+export const hostKey = (tab: Tab): string | null => (tab.path ? shareableRel(tab.path) : `tab:${tab.id}`);
+
+/** Like `hostKey`, but also resolves symlinks. Use it before telling guests about a tab. */
+export async function hostKeyChecked(tab: Tab): Promise<string | null> {
+  const key = hostKey(tab);
+  return key && !key.startsWith("tab:") && !(await guestPathOk(key)) ? null : key;
+}
 
 // ------------------------------------------------------------------ host
 
 /**
- * Host: whether a relative path a guest asked for stays inside the shared folder, also after
- * resolving symlinks (#138: `ext -> /` in the project must not open the whole disk).
+ * Host: the one check for every path a guest names. True if it stays inside the shared folder and
+ * out of any git folder, also after resolving symlinks (#138: `ext -> /` in the project must not
+ * open the whole disk; git config can run commands on the host). "" is the project root.
  */
-async function guestPathOk(rel: string): Promise<boolean> {
-  if (!app.root || rel.startsWith("/") || rel.split(/[\\/]/).includes("..")) return false;
+export async function guestPathOk(rel: string): Promise<boolean> {
+  if (!app.root || !relAllowed(rel)) return false;
   return invoke<boolean>("collab_path_inside", { root: app.root, path: rel ? joinPath(app.root, rel) : app.root }).catch(() => false);
 }
 
@@ -196,6 +220,7 @@ async function hostWrite(d: SharedDoc) {
 /** Host: a background doc's file changed on disk → everybody gets the new content. */
 async function hostReload(d: SharedDoc) {
   if (d.tabId || !app.root) return;
+  if (!(await guestPathOk(d.rel))) return docs.get(d.rel) === d ? hostUnshare(d) : undefined; // e.g. now a symlink
   const abs = joinPath(app.root, d.rel);
   const text = await fsApi.readFile(abs).catch(() => undefined);
   if (d.tabId || docs.get(d.rel) !== d) return;
@@ -221,17 +246,20 @@ function applyDisk(d: SharedDoc, text: string) {
 }
 
 async function hostDoc(rel: string): Promise<SharedDoc | null> {
-  const existing = docs.get(rel);
-  if (existing) return existing;
   if (rel.startsWith("tab:")) {
+    // Only unsaved tabs are shared by id: a path here would be a file outside the project.
     const tab = app.tabs.find((t) => t.id === rel.slice(4));
-    if (!tab || isRemote(tab.path)) return null;
+    if (!tab || tab.path) return null;
+    const shared = docs.get(rel);
+    if (shared) return shared;
     const d = makeDoc(rel, true);
     d.ytext.insert(0, ed.getText(tab.id));
     bindHostTab(d, tab.id);
     return d;
   }
   if (!app.root || !(await guestPathOk(rel))) return null;
+  const existing = docs.get(rel);
+  if (existing) return existing;
   const abs = joinPath(app.root, rel);
   const tab = app.tabs.find((t) => t.path === abs);
   let text: string;
@@ -286,6 +314,30 @@ function hostFileGone(d: SharedDoc) {
   docs.delete(d.rel);
 }
 
+/** Host: guests lose a doc they may no longer see; their tab closes and keeps no copy. */
+function hostUnshare(d: SharedDoc) {
+  for (const p of d.subscribers) send(p, { t: "doc.gone", path: d.rel });
+  clearTimeout(d.writeTimer);
+  if (d.tabId) ed.setCollab(d.tabId, null);
+  dispose(d);
+  docs.delete(d.rel);
+}
+
+/**
+ * Host: docs follow their tab's path. An Untitled tab saved into the project moves to its relative
+ * path; one saved outside it (or a tab left behind by a folder change) stops being shared.
+ */
+export function syncSharedTabs() {
+  if (collab.role !== "host") return;
+  for (const d of [...docs.values()]) {
+    const tab = d.tabId ? app.tabs.find((t) => t.id === d.tabId) : null;
+    if (!tab) continue;
+    const key = hostKey(tab);
+    if (key === null) hostUnshare(d);
+    else if (key !== d.rel) hostRename(d, key);
+  }
+}
+
 /** Host: a file or folder was deleted (`to` null) or renamed in the explorer. */
 function onHostPathMoved(from: string, to: string | null) {
   if (collab.role !== "host") return;
@@ -293,7 +345,7 @@ function onHostPathMoved(from: string, to: string | null) {
   if (!rel) return;
   for (const d of [...docs.values()]) {
     if (d.rel !== rel && !d.rel.startsWith(rel + "/")) continue;
-    const dest = to === null ? null : relOf(to + d.rel.slice(rel.length));
+    const dest = to === null ? null : shareableRel(to + d.rel.slice(rel.length));
     if (dest === null) hostFileGone(d);
     else hostRename(d, dest);
   }
@@ -401,6 +453,8 @@ async function hostFsOp(peer: string, op: FsOp, rel: unknown, toRel: unknown): P
   if (!(await guestPathOk(rel)) || (op === "rename" && !(await guestPathOk(toRel as string)))) return "invalid";
   const abs = joinPath(app.root, rel);
   const to = op === "rename" ? joinPath(app.root, toRel as string) : null;
+  // Moving or deleting a folder would take a nested repository's git folder with it.
+  if ((op === "rename" || op === "delete") && (await invoke<boolean>("collab_tree_has_git", { path: abs }).catch(() => true))) return "invalid";
   const who = collab.participants.find((p) => p.peer === peer)?.name ?? t("ai.collab.guest");
   try {
     if ((op === "create" || op === "mkdir" || op === "rename") && (await fsApi.exists(to ?? abs))) return "exists";
@@ -471,15 +525,19 @@ export async function remoteDelete(rel: string) {
 // ------------------------------------------------------------------ presence & follow
 
 let lastPresence = "";
-export function publishPresence() {
+let presenceSeq = 0;
+export async function publishPresence() {
   if (!collab.role || (collab.role === "guest" && collab.status !== "connected")) return;
   const tab = activeTab();
   const v = ed.getView();
-  const file = tab ? (isRemote(tab.path) ? tab.path!.slice(REMOTE.length) : collab.role === "host" ? hostKey(tab) : null) : null;
+  let file = tab ? (isRemote(tab.path) ? tab.path!.slice(REMOTE.length) : collab.role === "host" ? hostKey(tab) : null) : null;
   const line = v && tab ? v.state.doc.lineAt(v.state.selection.main.head).number : 1;
   const key = `${file}:${line}:${app.mode}`;
   if (key === lastPresence) return;
   lastPresence = key;
+  const seq = ++presenceSeq;
+  if (collab.role === "host" && tab && file && !isRemote(tab.path)) file = await hostKeyChecked(tab);
+  if (seq !== presenceSeq || !collab.role) return;
   const msg = { t: "presence", peer: collab.role === "host" ? "host" : null, file, line, name: collab.me.name, color: collab.me.color, mode: app.mode };
   if (collab.role === "host") broadcast(msg);
   else send(collab.hostPeer!, msg);
@@ -499,12 +557,38 @@ async function applyFollow() {
   if (collab.role === "guest") await openRemote(p.file, p.line);
   else if (p.file.startsWith("tab:")) {
     const id = p.file.slice(4);
-    if (app.tabs.some((t) => t.id === id)) activate(id);
+    if (app.tabs.some((t) => t.id === id && !t.path)) activate(id);
     scrollToLine(p.line);
-  } else if (app.root) {
+  } else if (app.root && (await guestPathOk(p.file))) {
     await openFile(joinPath(app.root, p.file));
     scrollToLine(p.line);
   }
+}
+
+const presenceOrder = new Map<string, number>();
+
+/**
+ * Host: a guest's presence with only values that are safe to store, pass on and follow, or null if
+ * a newer message overtook it during the path check. Name and color are the ones the host assigned.
+ */
+async function cleanPresence(peer: string, msg: Record<string, unknown>) {
+  const seq = (presenceOrder.get(peer) ?? 0) + 1;
+  presenceOrder.set(peer, seq);
+  const raw = msg.file;
+  let file: string | null = null;
+  if (typeof raw === "string" && raw) {
+    if (raw.startsWith("tab:")) file = app.tabs.some((x) => x.id === raw.slice(4) && !x.path) ? raw : null;
+    else file = (await guestPathOk(raw)) ? raw : null;
+  }
+  if (presenceOrder.get(peer) !== seq) return null;
+  const who = collab.participants.find((x) => x.peer === peer);
+  return {
+    file,
+    line: Number.isSafeInteger(msg.line) && (msg.line as number) >= 1 ? (msg.line as number) : 1,
+    name: who?.name ?? t("ai.collab.guest"),
+    color: who?.color ?? "#888888",
+    mode: MODES.some((m) => m.id === msg.mode) ? (msg.mode as Mode) : undefined,
+  };
 }
 
 // ------------------------------------------------------------------ messages
@@ -512,6 +596,7 @@ async function applyFollow() {
 onCollabMessage(async (peer, msg) => {
   // --- host side
   if (collab.role === "host") {
+    syncSharedTabs(); // before any guest message can reach a tab that just left the project
     if (msg.t === "doc.open") {
       const d = await hostDoc(String(msg.path));
       if (!d) return send(peer, { t: "doc.error", path: msg.path, error: "unavailable" });
@@ -536,16 +621,17 @@ onCollabMessage(async (peer, msg) => {
       let entries: { name: string; rel: string; is_dir: boolean }[] = [];
       if (app.root && (await guestPathOk(rel))) {
         try {
-          entries = (await fsApi.listDir(rel ? joinPath(app.root, rel) : app.root)).map((e) => ({ name: e.name, rel: rel ? `${rel}/${e.name}` : e.name, is_dir: e.is_dir }));
+          entries = (await fsApi.listDir(rel ? joinPath(app.root, rel) : app.root)).filter((e) => !isGitName(e.name)).map((e) => ({ name: e.name, rel: rel ? `${rel}/${e.name}` : e.name, is_dir: e.is_dir }));
         } catch {
           /* ignore */
         }
       }
       send(peer, { t: "fs.list.res", req: msg.req, entries });
     } else if (msg.t === "presence") {
-      const info = { file: msg.file, line: msg.line, name: msg.name, color: msg.color, mode: msg.mode };
+      const info = await cleanPresence(peer, msg);
+      if (!info) return;
       share.presence[peer] = info;
-      broadcast({ ...msg, peer }, peer);
+      broadcast({ t: "presence", peer, ...info }, peer);
       if (share.following === peer) applyFollow();
     } else if (msg.t === "hello-ready") {
       lastPresence = "";
@@ -627,6 +713,7 @@ export async function teardownShare() {
   }
   docs.clear();
   renamed.clear();
+  presenceOrder.clear();
   share.presence = {};
   share.following = null;
   share.hostRoot = "";
