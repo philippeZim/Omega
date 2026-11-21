@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 // @ts-expect-error No Node types in this project; the test runs under Node.
 import { spawnSync } from "node:child_process";
 // @ts-expect-error No Node types in this project; the test runs under Node.
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 // @ts-expect-error No Node types in this project; the test runs under Node.
 import { tmpdir } from "node:os";
 // @ts-expect-error No Node types in this project; the test runs under Node.
@@ -22,6 +22,7 @@ const h = vi.hoisted(() => ({
   shared: { flush: true, unsaved: false, kept: [] as string[] },
   argv: [] as string[][],
   tabText: new Map<string, string>(),
+  bounded: [] as string[],
 }));
 
 vi.mock("./collab.svelte", () => ({
@@ -58,7 +59,10 @@ vi.mock("../api", async () => {
     joinPath: (a: string, b: string) => `${a}/${b}`,
     basename: (p: string) => p.split("/").pop() ?? p,
     fsApi: {
-      readFile: async (p: string) => fs.readFileSync(p, "utf8"),
+      readFile: async (p: string) => {
+        h.order.push("readFile");
+        return fs.readFileSync(p, "utf8");
+      },
       exists: async (p: string) => fs.existsSync(p),
       remove: async (p: string) => fs.rmSync(p),
     },
@@ -96,6 +100,13 @@ vi.mock("@tauri-apps/api/core", () => ({
     }
     if (cmd === "git_status") return statusOf(a.root);
     if (cmd === "collab_tree_has_git") return false;
+    if (cmd === "collab_read_bounded") {
+      h.bounded.push(a.path);
+      if (!existsSync(a.path)) return { kind: "missing" };
+      if (statSync(a.path).size > a.max) return { kind: "too_large" };
+      const text = readFileSync(a.path, "utf8");
+      return text.includes("\0") ? { kind: "binary" } : { kind: "text", text };
+    }
     if (cmd === "git_blame") return { commits: [], lines: [], noTextconv: a.noTextconv };
     throw new Error(`unexpected ${cmd}`);
   },
@@ -123,7 +134,9 @@ function statusOf(root: string) {
     const x = p[0];
     changes.push({ path: p.slice(3), x, y: p[1], orig: x === "R" ? out[++i] : null });
   }
-  return { repo: true, top: top.stdout.trim(), branch, upstream, ahead: 0, behind: 0, changes, operation: null };
+  const gitDir = gitRun(root, ["rev-parse", "--absolute-git-dir"]).stdout.trim();
+  const operation = existsSync(join(gitDir, "rebase-merge")) ? "rebase" : existsSync(join(gitDir, "rebase-apply")) ? "rebase-apply" : existsSync(join(gitDir, "MERGE_HEAD")) ? "merge" : null;
+  return { repo: true, top: top.stdout.trim(), branch, upstream, ahead: 0, behind: 0, changes, operation };
 }
 
 const { RPC_LIMITS } = await import("./rpc.svelte");
@@ -143,7 +156,7 @@ const write = (rel: string, text: string) => {
   writeFileSync(join(repo, rel), text);
 };
 
-async function rpc(method: string, params: unknown, caps: string[] = ["git", "git-remote"]) {
+async function rpc(method: string, params: unknown, caps: string[] = ["git", "git-remote", "edit"]) {
   h.collab.participants = [{ peer: "p1", role: "guest", name: "Guest Ann", caps }];
   const id = nextId++;
   await Promise.all(h.handlers.map((fn) => fn("p1", { t: "rpc.req", id, method, params })));
@@ -157,6 +170,8 @@ async function rpc(method: string, params: unknown, caps: string[] = ["git", "gi
 const code = async (method: string, params: unknown, caps?: string[]) => (await rpc(method, params, caps)).error?.code;
 
 beforeEach(() => {
+  // The host's own background fetch (git.svelte.ts) is not a guest's command and has its own rules.
+  vi.spyOn(document, "hasFocus").mockReturnValue(false);
   dir = realpathSync(mkdtempSync(join(tmpdir(), "omega-guest-git-")));
   repo = join(dir, "repo");
   mkdirSync(repo);
@@ -173,6 +188,7 @@ beforeEach(() => {
   h.order.length = 0;
   h.argv.length = 0;
   h.tabText.clear();
+  h.bounded.length = 0;
   ui.toast.mockClear();
 });
 afterEach(async () => {
@@ -185,7 +201,7 @@ describe("what a guest can name", () => {
     expect(validPath(p)).toBe(false);
   });
   test.each(["a.txt", "dir/b c.txt", "ünï/côdé.md", ".gitignore", ".github/workflows/x.yml"])("path %j is fine", (p) => expect(validPath(p)).toBe(true));
-  test.each(["--orphan", "-b", "-", "@{-1}", "HEAD~1", "HEAD^", "a..b", "x^{commit}", "HEAD", "@", "a b", "a:b", "a?b", "a*b", "a[b", "a\\b", ".hidden", "a/.b", "a.lock", "a/", "/a", "a//b", "a.", "x/-y", "a\nb"])("branch %j is refused", (b) => {
+  test.each(["--orphan", "-b", "-", "@{-1}", "HEAD~1", "HEAD^", "a..b", "x^{commit}", "HEAD", "@", "+main", "+refs/heads/main", "@main", "a b", "a:b", "a?b", "a*b", "a[b", "a\\b", ".hidden", "a/.b", "a.lock", "a/", "/a", "a//b", "a.", "x/-y", "a\nb"])("branch %j is refused", (b) => {
     expect(validBranch(b)).toBe(false);
   });
   test.each(["main", "feat/thing-1", "release-1.2", "user@work"])("branch %j is fine", (b) => expect(validBranch(b)).toBe(true));
@@ -202,7 +218,7 @@ describe("what a guest can name", () => {
 
 describe("the command lines", () => {
   test("every one carries the guard, and values never sit in an option's place", () => {
-    const all = [gitArgv.stage(["a"]), gitArgv.unstage(["a"]), gitArgv.commit("m", ["a"]), gitArgv.discard(["a"]), gitArgv.forget("a"), gitArgv.createBranch("b"), gitArgv.switchLocal("b"), gitArgv.switchTrack("origin/b"), gitArgv.fetch([]), gitArgv.pull([]), gitArgv.push([], "b"), gitArgv.blob("HEAD:a")];
+    const all = [gitArgv.stage(["a"]), gitArgv.unstage(["a"]), gitArgv.commit("m", ["a"]), gitArgv.discard(["a"]), gitArgv.forget("a"), gitArgv.createBranch("b"), gitArgv.switchLocal("b"), gitArgv.switchTrack("origin/b"), gitArgv.fetch([]), gitArgv.pull([]), gitArgv.push([], "origin", "b", "refs/heads/b", true), gitArgv.blob("HEAD:a")];
     for (const argv of all) expect(argv.slice(0, GIT_GUARD.length)).toEqual([...GIT_GUARD]);
     expect(GIT_GUARD).toContain("core.hooksPath=/dev/null");
     expect(GIT_GUARD).toContain("--literal-pathspecs");
@@ -430,11 +446,240 @@ describe("open shared documents", () => {
     expect(ui.toast.mock.calls.some((c: any[]) => String(c[0]).includes("Guest Ann"))).toBe(true);
   });
 
-  test("text typed while git ran is reported", async () => {
-    branchWithOtherText();
-    h.shared.kept = ["a.txt"];
-    await rpc("git.switch", { name: "other", remote: false });
-    expect(ui.toast.mock.calls.some((c: any[]) => String(c[0]).includes("a.txt"))).toBe(true);
+});
+
+/** A bare remote, plus a second clone with its own identity that pushes real commits to it. */
+function withRemote() {
+  const bare = join(dir, "remote.git");
+  const other = join(dir, "other");
+  sh("init", "-q", "--bare", "-b", "main", bare);
+  sh("remote", "add", "origin", bare);
+  sh("push", "-q", "-u", "origin", "main");
+  sh("clone", "-q", bare, other);
+  const inOther = (...args: string[]) => {
+    const r = gitRun(other, args);
+    if (r.code !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`);
+    return r.stdout.trim();
+  };
+  const commitOther = (file: string, text: string, msg: string) => {
+    writeFileSync(join(other, file), text);
+    inOther("add", "-A");
+    inOther("commit", "-q", "-m", msg);
+    inOther("push", "-q", "origin", "main");
+  };
+  const remoteHead = () => gitRun(bare, ["rev-parse", "refs/heads/main"]).stdout.trim();
+  return { bare, commitOther, remoteHead };
+}
+const commitHere = (file: string, text: string, msg: string) => {
+  write(file, text);
+  sh("add", "-A");
+  sh("commit", "-q", "-m", msg);
+};
+const conflict = () => gitRun(repo, ["status", "--porcelain"]).stdout.includes("UU a.txt");
+
+describe("push never forces", () => {
+  test("a guest can't create a branch whose name is a forced refspec", async () => {
+    withRemote();
+    expect(await code("git.createBranch", { name: "+main" })).toBe("invalid_params");
+    expect(sh("branch", "--list", "+main")).toBe("");
+  });
+
+  test("a +main branch that already exists on the host doesn't overwrite the remote's main", async () => {
+    const { commitOther, remoteHead } = withRemote();
+    commitOther("theirs.txt", "theirs\n", "theirs");
+    const before = remoteHead();
+    commitHere("mine.txt", "mine\n", "diverged");
+    sh("branch", "+main");
+    sh("switch", "-q", "+main");
+    expect(await code("git.push", {})).toBe("invalid");
+    expect(remoteHead()).toBe(before);
+    expect(gitRun(join(dir, "remote.git"), ["for-each-ref", "--format=%(refname)"]).stdout.trim()).toBe("refs/heads/main");
+  });
+
+  test("a forcing refspec in the host's config doesn't apply, a diverged push is rejected", async () => {
+    const { commitOther, remoteHead } = withRemote();
+    commitOther("theirs.txt", "theirs\n", "theirs");
+    const before = remoteHead();
+    commitHere("mine.txt", "mine\n", "diverged");
+    sh("config", "remote.origin.push", "+refs/heads/*:refs/heads/*");
+    expect(await code("git.push", {})).toBe("rejected");
+    expect(remoteHead()).toBe(before);
+  });
+
+  test("the refspec is explicit, also for a new branch, which then tracks the remote", async () => {
+    const { bare } = withRemote();
+    sh("switch", "-q", "-c", "topic");
+    commitHere("t.txt", "t\n", "topic");
+    expect((await rpc("git.push", {})).ok).toBe(true);
+    expect(h.argv.find((a) => a.includes("push"))).toContain("refs/heads/topic:refs/heads/topic");
+    expect(gitRun(bare, ["rev-parse", "refs/heads/topic"]).stdout.trim()).toBe(sh("rev-parse", "HEAD"));
+    expect(sh("rev-parse", "--abbrev-ref", "@{u}")).toBe("origin/topic");
+  });
+
+  test("a remote that isn't configured is never contacted", async () => {
+    sh("config", "branch.main.remote", "gone");
+    expect(await code("git.push", {})).toBe("no_upstream");
+    expect(h.argv.some((a) => a.includes("push"))).toBe(false);
+  });
+});
+
+describe("a shared subfolder of a larger repository", () => {
+  const shareSub = () => {
+    write("sub/in.txt", "in\n");
+    sh("add", "-A");
+    sh("commit", "-q", "-m", "sub");
+    h.app.root = join(repo, "sub");
+  };
+
+  test.each([
+    ["git.switch", { name: "other", remote: false }],
+    ["git.pull", {}],
+    ["git.abort", {}],
+    ["git.continue", { message: "", paths: [] }],
+  ])("%s is refused and touches nothing outside it", async (m, params) => {
+    shareSub();
+    sh("branch", "other");
+    write("a.txt", "the host's unsaved work outside\n");
+    const head = sh("rev-parse", "HEAD");
+    h.argv.length = 0;
+    expect(await code(m, params)).toBe("whole_repo");
+    expect(h.argv.some((a) => a.some((x) => ["switch", "pull", "--abort", "--continue"].includes(x)))).toBe(false);
+    expect(readFileSync(join(repo, "a.txt"), "utf8")).toBe("the host's unsaved work outside\n");
+    expect(sh("rev-parse", "HEAD")).toBe(head);
+    expect(sh("branch", "--show-current")).toBe("main");
+    expect(h.order).not.toContain("save");
+  });
+
+  test("stage, commit and discard stay inside it", async () => {
+    shareSub();
+    write("a.txt", "outside change\n");
+    write("sub/in.txt", "changed\n");
+    expect((await rpc("git.stage", { paths: ["in.txt"] })).ok).toBe(true);
+    expect((await rpc("git.commit", { message: "inside", paths: ["in.txt"] })).ok).toBe(true);
+    expect(sh("show", "--name-only", "--format=", "HEAD")).toBe("sub/in.txt");
+    write("sub/in.txt", "again\n");
+    expect((await rpc("git.discard", { path: "in.txt" })).ok).toBe(true);
+    expect(readFileSync(join(repo, "sub/in.txt"), "utf8")).toBe("changed\n");
+    expect(readFileSync(join(repo, "a.txt"), "utf8")).toBe("outside change\n");
+  });
+});
+
+describe("rewriting files needs edit", () => {
+  test.each([
+    ["git.discard", { path: "n.txt" }],
+    ["git.switch", { name: "other", remote: false }],
+    ["git.pull", {}],
+    ["git.abort", {}],
+    ["git.continue", { message: "", paths: [] }],
+  ])("%s without edit is forbidden", async (m, params) => {
+    sh("branch", "other");
+    write("n.txt", "untracked\n");
+    expect(await code(m, params, ["git", "git-remote"])).toBe("forbidden");
+    expect(readFileSync(join(repo, "n.txt"), "utf8")).toBe("untracked\n");
+    expect(sh("branch", "--show-current")).toBe("main");
+  });
+
+  test("stage and commit don't need it", async () => {
+    write("a.txt", "changed\n");
+    expect((await rpc("git.commit", { message: "m", paths: ["a.txt"] }, ["git"])).ok).toBe(true);
+  });
+});
+
+describe("the size of a compared file", () => {
+  test("a file over the limit is never read whole", async () => {
+    write("big.txt", "x".repeat(2 * 1024 * 1024 + 1));
+    h.order.length = 0;
+    expect((await rpc("git.diff", { path: "big.txt" })).result).toMatchObject({ head: null, current: null, tooLarge: true });
+    expect(h.bounded).toContain(join(repo, "big.txt"));
+    expect(h.order).not.toContain("readFile");
+  });
+});
+
+describe("pull, conflicts and hooks, on real clones", () => {
+  const HOOKS = ["pre-commit", "commit-msg", "post-commit", "pre-merge-commit", "post-merge", "pre-rebase", "post-rewrite", "post-checkout", "pre-push", "reference-transaction"];
+  /** Every hook git could run, in the folder core.hooksPath names. */
+  function plantHooks() {
+    mkdirSync(join(repo, ".git", "planted"), { recursive: true });
+    for (const hook of HOOKS) {
+      const p = join(repo, ".git", "planted", hook);
+      writeFileSync(p, `#!/bin/sh\necho ${hook} >> "${join(dir, "hooks-ran")}"\n`);
+      chmodSync(p, 0o755);
+    }
+    sh("config", "core.hooksPath", join(repo, ".git", "planted"));
+    rmSync(join(dir, "hooks-ran"), { force: true });
+  }
+  const hooksRan = () => (existsSync(join(dir, "hooks-ran")) ? readFileSync(join(dir, "hooks-ran"), "utf8") : "");
+
+  test("a clean pull brings the commit and reloads the docs, with no hook", async () => {
+    const { commitOther, remoteHead } = withRemote();
+    commitOther("theirs.txt", "theirs\n", "theirs");
+    plantHooks();
+    h.order.length = 0;
+    const r = await rpc("git.pull", {});
+    expect(r.result).toEqual({ upToDate: false, conflict: false });
+    expect(sh("rev-parse", "HEAD")).toBe(remoteHead());
+    expect(h.order).toContain("reload");
+    expect(hooksRan()).toBe("");
+  });
+
+  test("a merge conflict: pull reports it, markers are refused, continue finishes it, no hook", async () => {
+    const { commitOther } = withRemote();
+    commitOther("a.txt", "theirs\n", "theirs");
+    commitHere("a.txt", "mine\n", "mine");
+    sh("config", "pull.rebase", "false");
+    plantHooks();
+    expect((await rpc("git.pull", {})).result).toEqual({ upToDate: false, conflict: true });
+    expect(conflict()).toBe(true);
+    expect(await code("git.continue", { message: "", paths: ["a.txt"] })).toBe("conflict");
+    write("a.txt", "resolved\n");
+    expect((await rpc("git.continue", { message: "merged by guest", paths: ["a.txt"] })).result).toEqual({ done: true, conflict: false });
+    expect(sh("log", "-1", "--format=%s|%an|%p").split("|").slice(0, 2)).toEqual(["merged by guest", "Host Person"]);
+    expect(sh("log", "-1", "--format=%p").split(" ")).toHaveLength(2);
+    expect(sh("status", "--porcelain")).toBe("");
+    expect(hooksRan()).toBe("");
+  });
+
+  test("a rebase conflict: continue finishes it, no hook", async () => {
+    const { commitOther, remoteHead } = withRemote();
+    commitOther("a.txt", "theirs\n", "theirs");
+    commitHere("a.txt", "mine\n", "mine");
+    sh("config", "pull.rebase", "true");
+    plantHooks();
+    expect((await rpc("git.pull", {})).result).toEqual({ upToDate: false, conflict: true });
+    expect(existsSync(join(repo, ".git", "rebase-merge"))).toBe(true);
+    write("a.txt", "resolved\n");
+    expect((await rpc("git.continue", { message: "", paths: ["a.txt"] })).result).toEqual({ done: true, conflict: false });
+    expect(existsSync(join(repo, ".git", "rebase-merge"))).toBe(false);
+    expect(sh("rev-parse", "HEAD~1")).toBe(remoteHead());
+    expect(sh("log", "-1", "--format=%s")).toBe("mine");
+    expect(readFileSync(join(repo, "a.txt"), "utf8")).toBe("resolved\n");
+    expect(hooksRan()).toBe("");
+  });
+
+  test.each(["false", "true"])("abort returns to the state before the pull (pull.rebase=%s)", async (rebase) => {
+    const { commitOther } = withRemote();
+    commitOther("a.txt", "theirs\n", "theirs");
+    commitHere("a.txt", "mine\n", "mine");
+    const head = sh("rev-parse", "HEAD");
+    sh("config", "pull.rebase", rebase);
+    plantHooks();
+    expect((await rpc("git.pull", {})).result.conflict).toBe(true);
+    expect((await rpc("git.abort", {})).ok).toBe(true);
+    expect(sh("rev-parse", "HEAD")).toBe(head);
+    expect(sh("branch", "--show-current")).toBe("main");
+    expect(readFileSync(join(repo, "a.txt"), "utf8")).toBe("mine\n");
+    expect(sh("status", "--porcelain")).toBe("");
+    expect(hooksRan()).toBe("");
+  });
+
+  test("pull keeps uncommitted work through its autostash", async () => {
+    const { commitOther } = withRemote();
+    commitOther("theirs.txt", "theirs\n", "theirs");
+    sh("config", "pull.rebase", "true");
+    write("a.txt", "work in progress\n");
+    expect((await rpc("git.pull", {})).ok).toBe(true);
+    expect(readFileSync(join(repo, "a.txt"), "utf8")).toBe("work in progress\n");
+    expect(existsSync(join(repo, "theirs.txt"))).toBe(true);
   });
 });
 

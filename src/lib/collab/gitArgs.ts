@@ -68,7 +68,8 @@ export function validPaths(raw: unknown): string[] | null {
 export function validBranch(name: unknown): name is string {
   if (typeof name !== "string" || !name || name.length > GIT_LIMITS.maxBranch) return false;
   if (CONTROL.test(name) || /[\s~^:?*[\\]/.test(name) || name.includes("..") || name.includes("@{") || name.includes("//")) return false;
-  if (name.startsWith("-") || name.startsWith("/") || name.endsWith("/") || name.endsWith(".") || name === "@" || name === "HEAD") return false;
+  // A leading "+" is a forced refspec to `git push`, "@" is shorthand for HEAD.
+  if (name.startsWith("-") || name.startsWith("+") || name.startsWith("@") || name.startsWith("/") || name.endsWith("/") || name.endsWith(".") || name === "HEAD") return false;
   return name.split("/").every((seg) => !seg.startsWith(".") && !seg.startsWith("-") && !seg.endsWith(".lock"));
 }
 
@@ -100,10 +101,18 @@ export const gitArgv = {
   stagedAny: () => guarded("diff", "--cached", "--quiet", "--no-ext-diff", "--no-textconv"),
   blobSize: (spec: string) => guarded("cat-file", "-s", spec),
   blob: (spec: string) => guarded("cat-file", "blob", spec),
-  /** No remote or refspec parameter exists: guests only reach what the host has configured. */
+  remotes: () => guarded("remote"),
+  configGet: (key: string) => guarded("config", "--get", key),
+  /** No remote or refspec comes from a guest: they only reach what the host has configured. */
   fetch: (ssh: readonly string[]) => [...GIT_GUARD, ...ssh, "fetch", "--quiet", "--no-recurse-submodules"],
   pull: (ssh: readonly string[]) => [...GIT_GUARD, ...ssh, "pull", "--autostash", "--no-edit", "--no-stat", "--no-recurse-submodules"],
-  push: (ssh: readonly string[], newBranch: string | null) => [...GIT_GUARD, ...ssh, "push", "--no-verify", "--recurse-submodules=no", ...(newBranch ? ["-u", "origin", newBranch] : [])],
+  /**
+   * Always one full refspec, never a bare name: a name could read as `+forced`, and without a refspec
+   * the remote's configured ones apply, which may force. `to` is a full ref.
+   */
+  push: (ssh: readonly string[], remote: string, branch: string, to: string, track: boolean) => [
+    ...GIT_GUARD, ...ssh, "push", "--no-verify", "--no-follow-tags", "--recurse-submodules=no", ...(track ? ["-u"] : []), remote, `refs/heads/${branch}:${to}`,
+  ],
 };
 
 export interface GitChange {

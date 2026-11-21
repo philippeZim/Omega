@@ -194,6 +194,7 @@ export const en = {
   "git.guestErr.unavailable": "The host's project is no longer available.",
   "git.guestErr.failed": "Git failed on the host.",
   "git.guestKeptTyped": "Your text in {file} was kept: it was typed while Git changed the file.",
+  "git.guestErr.wholeRepo": "This would also change files outside the shared folder, so only the host can do it.",
 };
 export const de: Record<keyof typeof en, string> = {
   "git.noFolderOpen": "Kein Ordner geöffnet",
@@ -390,6 +391,7 @@ export const de: Record<keyof typeof en, string> = {
   "git.guestErr.unavailable": "Das Projekt des Hosts ist nicht mehr verfügbar.",
   "git.guestErr.failed": "Git ist beim Host fehlgeschlagen.",
   "git.guestKeptTyped": "Dein Text in {file} wurde behalten: Er wurde getippt, während Git die Datei geändert hat.",
+  "git.guestErr.wholeRepo": "Das würde auch Dateien außerhalb des geteilten Ordners ändern, deshalb kann das nur der Host.",
 };
 export const fr: Record<keyof typeof en, string> = {
   "git.noFolderOpen": "Aucun dossier ouvert",
@@ -586,4 +588,5 @@ export const fr: Record<keyof typeof en, string> = {
   "git.guestErr.unavailable": "Le projet de l’hôte n’est plus disponible.",
   "git.guestErr.failed": "Git a échoué chez l’hôte.",
   "git.guestKeptTyped": "Votre texte dans {file} a été conservé : il a été saisi pendant que Git modifiait le fichier.",
+  "git.guestErr.wholeRepo": "Cela modifierait aussi des fichiers hors du dossier partagé : seul l’hôte peut le faire.",
 };

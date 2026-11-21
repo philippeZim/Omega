@@ -11,7 +11,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { collab, sessionEndHooks } from "./collab.svelte";
 import { blockedByCapability, guestCan } from "./guard";
-import { call, isObj, publish, registerMethod, registerTopic, rpcErrorText, RpcFail, subscribe, type RpcResult } from "./rpc.svelte";
+import { call, hasCapability, isObj, publish, registerMethod, registerTopic, rpcErrorText, RpcFail, subscribe, type RpcResult } from "./rpc.svelte";
 import { flushSharedDocs, guestScope, reloadSharedDocs, sharedDocUnsaved, type GuestScope } from "./share.svelte";
 import { GIT_LIMITS, SSH_BATCH, gitArgv, gitFailCode, scopeChanges, validBranch, validMessage, validPath, validPaths, type GitChange } from "./gitArgs";
 import { app, pathMoved, save, syncFromDisk } from "../state.svelte";
@@ -182,6 +182,11 @@ async function headBlob(scope: GuestScope, rel: string): Promise<{ text: string 
   return { text: blob.code === 0 ? blob.stdout : null, tooLarge: false };
 }
 
+type BoundedRead = { kind: "text"; text: string } | { kind: "too_large" | "binary" | "missing" };
+
+/** A project file, read only up to the limit (see collab_read_bounded). */
+const readBounded = (scope: GuestScope, rel: string) => invoke<BoundedRead>("collab_read_bounded", { root: scope.root, path: scope.abs(rel), max: GIT_LIMITS.maxFile });
+
 const pathParam = (raw: unknown) => (isObj(raw) && validPath(raw.path) ? { path: raw.path } : null);
 const noParams = (raw: unknown): Record<string, never> | null => (raw === null || raw === undefined || (isObj(raw) && !Object.keys(raw).length) ? {} : null);
 
@@ -215,14 +220,17 @@ registerMethod({
     let current: string | null = null;
     let deleted = false;
     let binary = false;
-    try {
-      current = tab ? ed.getText(tab.id) : await fsApi.readFile(abs);
-    } catch {
-      if (await fsApi.exists(abs).catch(() => false)) binary = true;
+    let large = false;
+    if (tab) current = ed.getText(tab.id);
+    else {
+      const read = await readBounded(scope, path);
+      if (read.kind === "text") current = read.text;
+      else if (read.kind === "too_large") large = true;
+      else if (read.kind === "binary") binary = true;
       else deleted = true;
     }
     if (!scope.live()) throw new RpcFail("unavailable");
-    const tooLarge = base.tooLarge || (current?.length ?? 0) > GIT_LIMITS.maxFile;
+    const tooLarge = large || base.tooLarge || (current?.length ?? 0) > GIT_LIMITS.maxFile;
     if (tooLarge) return { head: null, current: null, orig, binary: false, deleted, tooLarge: true };
     binary ||= !!base.text?.includes("\0") || !!current?.includes("\0");
     return binary ? { head: null, current: null, orig, binary, deleted, tooLarge: false } : { head: base.text, current, orig, binary, deleted, tooLarge: false };
@@ -258,21 +266,37 @@ registerMethod({
 // ------------------------------------------------------------------ host: writing
 
 let locked = false;
+
+interface WriteOpts {
+  /** Deletes or rewrites working-tree files, so it needs `edit` on top of the method's capability. */
+  rewrites?: boolean;
+  /** Acts on the whole repository, so it's refused while only a subfolder of it is shared. */
+  wholeRepo?: boolean;
+}
+const REPLACES_FILES: WriteOpts = { rewrites: true, wholeRepo: true };
 const who = (peer: string) => collab.participants.find((p) => p.peer === peer)?.name ?? t("ai.collab.guest");
 
 /** One git write at a time, and never next to one of the host's. Everybody sees the result. */
-async function writeOp<T>(peer: string, signal: AbortSignal, busy: Key, announce: Key | null, fn: (scope: GuestScope, step: () => void) => Promise<T>): Promise<T> {
+async function writeOp<T>(peer: string, signal: AbortSignal, busy: Key, announce: Key | null, fn: (scope: GuestScope, step: () => void) => Promise<T>, opts: WriteOpts = {}): Promise<T> {
   const scope = guestScope();
   if (!scope) throw new RpcFail("unavailable");
+  if (opts.rewrites && !hasCapability(peer, "edit")) throw new RpcFail("forbidden");
   if (locked || git.busy) throw new RpcFail("busy");
   locked = true;
   git.busy = t(busy);
   const step = () => {
     if (signal.aborted || !scope.live()) throw new RpcFail("unavailable");
+    if (opts.rewrites && !hasCapability(peer, "edit")) throw new RpcFail("forbidden");
   };
   try {
     await fetchSettled();
     step();
+    if (opts.wholeRepo) {
+      const prefix = await repoPrefix(scope);
+      if (prefix === null) throw new RpcFail("unavailable");
+      if (prefix) throw new RpcFail("whole_repo");
+      step();
+    }
     const value = await fn(scope, step);
     if (announce) ui.toast(t("git.guestDid", { name: who(peer), what: t(announce) }));
     return value;
@@ -290,8 +314,7 @@ async function settle(scope: GuestScope) {
   app.treeVersion++;
   await refresh();
   await syncFromDisk();
-  const kept = await reloadSharedDocs();
-  for (const file of kept) ui.toast(t("git.guestKeptTyped", { file }));
+  await reloadSharedDocs(); // says itself if it had to keep text typed meanwhile
   await publishNow();
 }
 
@@ -396,8 +419,8 @@ registerMethod({
       // Like the host: markers left in a file, or a file that isn't text, are not resolved.
       for (const c of found) {
         if (kind(c as Change) !== "conflict") continue;
-        const text = await fsApi.readFile(scope.abs(c.path)).catch(() => null);
-        if (text === null || (/^<{7}(?: |$)/m.test(text) && /^>{7}(?: |$)/m.test(text))) throw new RpcFail("conflict");
+        const read = await readBounded(scope, c.path);
+        if (read.kind !== "text" || (/^<{7}(?: |$)/m.test(read.text) && /^>{7}(?: |$)/m.test(read.text))) throw new RpcFail("conflict");
       }
       step();
       if (argv.length) await must(scope, gitArgv.stage(argv));
@@ -413,7 +436,7 @@ registerMethod({
       if (after?.raw.operation) return { done: false, conflict: after.changes.some((c) => kind(c as Change) === "conflict") };
       if (r.code !== 0) throw new RpcFail(gitFailCode(r.stderr));
       return { done: true, conflict: false };
-    }),
+    }, REPLACES_FILES),
 });
 
 registerMethod({
@@ -429,7 +452,7 @@ registerMethod({
       step();
       await must(scope, gitArgv.abort(op === "merge" ? "merge" : "rebase"));
       return null;
-    }),
+    }, REPLACES_FILES),
 });
 
 registerMethod({
@@ -452,7 +475,7 @@ registerMethod({
         pathMoved(abs, null); // host tabs and shared docs keep the text as unsaved
       } else await must(scope, gitArgv.discard(argv));
       return null;
-    }),
+    }, { rewrites: true }),
 });
 
 registerMethod({
@@ -480,12 +503,28 @@ registerMethod({
       step();
       await must(scope, remote ? gitArgv.switchTrack(name) : gitArgv.switchLocal(name));
       return null;
-    }),
+    }, REPLACES_FILES),
 });
 
 /** Batch-mode SSH, unless the host set up its own command. */
 async function sshOpts(scope: GuestScope) {
   return (await runIn(scope, gitArgv.ownSsh())).code === 0 ? [] : SSH_BATCH;
+}
+
+/** Where this branch pushes to, by the host's configuration. Only a remote that really exists. */
+async function pushTarget(scope: GuestScope, branch: string) {
+  const get = async (key: string) => {
+    const r = await runIn(scope, gitArgv.configGet(key));
+    return r.code === 0 ? r.stdout.trim() : "";
+  };
+  const upstream = await get(`branch.${branch}.remote`);
+  const merge = await get(`branch.${branch}.merge`);
+  const remote = (await get(`branch.${branch}.pushRemote`)) || (await get("remote.pushDefault")) || upstream || "origin";
+  const known = (await runIn(scope, gitArgv.remotes())).stdout.split("\n").map((x) => x.trim());
+  if (!known.includes(remote)) throw new RpcFail("no_upstream");
+  // Pushing to another remote than the upstream's (a fork) keeps the branch's own name.
+  const tracked = remote === upstream && merge.startsWith("refs/heads/") && validBranch(merge.slice("refs/heads/".length));
+  return { remote, ref: tracked ? merge : `refs/heads/${branch}`, track: !upstream };
 }
 
 registerMethod({
@@ -512,7 +551,7 @@ registerMethod({
       if (r.code === 0) return { upToDate: /Already up to date/.test(r.stdout), conflict: false };
       if ((await readStatus(scope))?.raw.operation) return { upToDate: false, conflict: true };
       throw new RpcFail(gitFailCode(r.stderr));
-    }),
+    }, REPLACES_FILES),
 });
 
 registerMethod({
@@ -524,15 +563,14 @@ registerMethod({
       const s = await readStatus(scope);
       if (!s) throw new RpcFail("unavailable");
       if (s.raw.operation) throw new RpcFail("conflict");
-      const upstream = s.raw.upstream;
-      if (!upstream) {
-        if (!validBranch(s.raw.branch)) throw new RpcFail("failed");
-        if ((await runIn(scope, gitArgv.origin())).code !== 0) throw new RpcFail("no_upstream");
-      }
+      const branch = s.raw.branch;
+      // Also a branch that already exists on the host: its name goes into a refspec below.
+      if (!validBranch(branch)) throw new RpcFail("invalid");
+      const target = await pushTarget(scope, branch);
       const ssh = await sshOpts(scope);
       step();
-      await must(scope, gitArgv.push(ssh, upstream ? null : s.raw.branch));
-      return { ref: upstream ?? `origin/${s.raw.branch}` };
+      await must(scope, gitArgv.push(ssh, target.remote, branch, target.ref, target.track));
+      return { ref: `${target.remote}/${target.ref.slice("refs/heads/".length)}` };
     }),
 });
 
@@ -559,6 +597,7 @@ const ERRORS: Record<string, Key> = {
   invalid_params: "git.guestErr.invalid",
   unavailable: "git.guestErr.unavailable",
   failed: "git.guestErr.failed",
+  whole_repo: "git.guestErr.wholeRepo",
 };
 const errorText = (code: string) => (ERRORS[code] ? t(ERRORS[code]) : rpcErrorText(code));
 
@@ -592,7 +631,7 @@ const guestPush = async () => {
 };
 
 const guestContinue = async (andPush: boolean) => {
-  if (blockedByCapability("git") || (andPush && blockedByCapability("git-remote"))) return;
+  if (blockedByCapability("git") || blockedByCapability("edit") || (andPush && blockedByCapability("git-remote"))) return;
   const op = git.operation;
   if (!op) return;
   const r = await act("git.busy.commit", "git.op.continue", () => call("git.continue", { message: git.message.trim(), paths: selected() }, { timeoutMs: LOCAL_MS }));
@@ -624,7 +663,7 @@ setGuestGit({
   },
   push: guestPush,
   async pull() {
-    if (blockedByCapability("git-remote") || !git.repo) return;
+    if (blockedByCapability("git-remote") || blockedByCapability("edit") || !git.repo) return;
     const r = await act("git.busy.pull", "git.op.pull", () => call("git.pull", {}, { timeoutMs: NETWORK_MS }));
     if (!r) return;
     if (r.value.conflict) ui.toast(t("git.pullConflict", { files: conflictFiles(), op: opLabel() }), "error");
@@ -639,7 +678,7 @@ setGuestGit({
   },
   continueOperation: guestContinue,
   async abortOperation() {
-    if (blockedByCapability("git")) return;
+    if (blockedByCapability("git") || blockedByCapability("edit")) return;
     const op = git.operation;
     if (!op) return;
     if (!(await ui.confirm(t(op === "merge" ? "git.abortMergeTitle" : "git.abortRebaseTitle"), t("git.abortBody"), t("git.op.abort"), true))) return;
@@ -647,7 +686,7 @@ setGuestGit({
     if (r) ui.toast(t(op === "merge" ? "git.mergeAborted" : "git.rebaseAborted"));
   },
   async rollback(c) {
-    if (blockedByCapability("git")) return;
+    if (blockedByCapability("git") || blockedByCapability("edit")) return;
     const fresh = kind(c) === "new";
     const ok = fresh
       ? await ui.confirm(t("git.deleteNewTitle", { path: c.path }), t("git.deleteNewBody"), t("common.delete"), true)
@@ -660,7 +699,7 @@ setGuestGit({
     return r.ok ? r.value : { local: [], remote: [] };
   },
   async switchBranch(name, remote) {
-    if (blockedByCapability("git")) return;
+    if (blockedByCapability("git") || blockedByCapability("edit")) return;
     const r = await act("git.busy.switch", "git.op.switchBranch", () => call("git.switch", { name, remote }, { timeoutMs: LOCAL_MS }));
     if (r) ui.toast(t("git.branchToast", { name: remote ? name.slice(name.indexOf("/") + 1) : name }));
   },
