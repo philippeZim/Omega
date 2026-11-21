@@ -2,7 +2,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { detectProject, type Action, type Project, TEMPLATES } from "./projects";
 import { versionSettings, type VersionSetting } from "./versions";
-import { runCommand, runTask, cancelTask, interruptRun } from "../terminal.svelte";
+import { runCommand, runTask, cancelTask, interruptRun, type TaskState } from "../terminal.svelte";
 import { app, activeTab, save, setRoot, openFile, setMode } from "../state.svelte";
 import { ui } from "../ui.svelte";
 import { fsApi, joinPath, basename } from "../api";
@@ -17,6 +17,8 @@ export const runner = $state({
   /** Language/runtime versions of the current project (see versions.ts). */
   versions: [] as VersionSetting[],
   newProject: false,
+  /** Collab guest: the host's Build/Run state, so the Run bar can offer Stop. */
+  remoteTask: null as TaskState | null,
 });
 
 /**
@@ -26,6 +28,7 @@ export const runner = $state({
 export const runnerRemote = {
   project: null as (() => Project | null) | null,
   run: null as ((a: Action) => void) | null,
+  stop: null as (() => void) | null,
 };
 
 /** Opens the New Project dialog (not during a guest session: it would replace the shared project). */
@@ -180,7 +183,7 @@ export async function runAction(action: Action | null | undefined) {
   if (a.ask) setTimeout(refreshProject, 3000);
 }
 
-export const stopRun = interruptRun;
+export const stopRun = () => (runnerRemote.stop ? runnerRemote.stop() : interruptRun());
 
 export async function createProject(templateId: string, parent: string, name: string) {
   const tpl = TEMPLATES.find((x) => x.id === templateId);

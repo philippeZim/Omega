@@ -21,7 +21,7 @@ import { setTerminalKeyFilter } from "./terminal.svelte";
 import { toggleZone, toggleFocus, showView, moveFocused, resetLayout } from "./layout.svelte";
 import { forwardSync } from "./latex/controller.svelte";
 import { openFind } from "./search/search.svelte";
-import { blockedAsGuest } from "./collab/guard";
+import { blockedAsGuest, blockedWhileHosting } from "./collab/guard";
 import { collab, startHosting, joinFromClipboard, approveNext, leave as leaveCollab } from "./collab/collab.svelte";
 import { git, push as gitPush, pull as gitPull, newBranch, cloneRepo, publishGitHub, refresh as gitRefresh, connectRemote, initRepo } from "./git/git.svelte";
 import { activeTab } from "./state.svelte";
@@ -104,8 +104,8 @@ const APP_COMMANDS: CommandDef[] = [
   { id: "git.publish", group: "git", keys: [], run: () => publishGitHub() },
   { id: "git.blame", group: "git", keys: [], run: () => setGitBlame(!blameSettings.enabled) },
   { id: "collab.open", group: "collab", keys: ["Mod-Shift-c"], run: () => (collab.open = !collab.open), inTerminal: false },
-  { id: "collab.host", group: "collab", keys: [], run: () => { if (blockedAsGuest()) return; collab.open = true; startHosting(); } },
-  { id: "collab.join", group: "collab", keys: [], run: () => { if (!blockedAsGuest()) return joinFromClipboard(); } },
+  { id: "collab.host", group: "collab", keys: [], run: () => { if (blockedAsGuest()) return; collab.open = true; if (!blockedWhileHosting()) startHosting(); } },
+  { id: "collab.join", group: "collab", keys: [], run: () => { if (!blockedAsGuest() && !blockedWhileHosting()) return joinFromClipboard(); } },
   { id: "collab.approve", group: "collab", keys: [], run: () => approveNext(), when: () => collab.requests.length > 0 },
   { id: "ai.claude", group: "ai", keys: [], run: async () => (await import("./ai/ide.svelte")).startAgent("claude") },
   { id: "ai.codex", group: "ai", keys: [], run: async () => (await import("./ai/ide.svelte")).startAgent("codex") },

@@ -29,6 +29,8 @@ export interface TermTab {
   /** build/run: state and exit code of the last command. */
   status?: TaskStatus;
   code?: number | null;
+  /** build/run: identifies the current command, a higher number is a later start. */
+  taskId?: number;
 }
 
 // Where and whether the terminal view is shown is managed by layout.svelte.ts.
@@ -346,7 +348,9 @@ export function runTask(kind: "build" | "run", cmd: string, cwd: string | null, 
   terms.active = tab.id;
   showView("terminal");
   inst.spawned = true;
-  const pty = `${tab.id}.${counter++}`;
+  const taskId = counter++;
+  tab.taskId = taskId;
+  const pty = `${tab.id}.${taskId}`;
   inst.pty = pty;
   ptyTab.set(pty, tab.id);
   const id = tab.id;
@@ -411,13 +415,38 @@ export function writeRun(data: string) {
   if (id) invoke("pty_write", { id: ptyOf(id), data }).catch(() => {});
 }
 
+/** The command Stop applies to: a running Build first, then Run. */
+const runningTaskTab = () => terms.tabs.find((x) => x.kind === "build" && x.status === "running") ?? terms.tabs.find((x) => x.kind === "run" && x.status === "running");
+
 /** Stop: Ctrl+C to the running Build or Run command (the result line then says "stopped"). */
 export function interruptRun() {
-  const tab = terms.tabs.find((x) => x.kind === "build" && x.status === "running") ?? terms.tabs.find((x) => x.kind === "run" && x.status === "running");
+  const tab = runningTaskTab();
   const inst = tab && instances.get(tab.id);
   if (!inst?.task) return;
   inst.task.stopRequested = true;
   invoke("pty_write", { id: inst.pty, data: "\x03" }).catch(() => {});
+}
+
+/** Stops the running command only if it still is `taskId`, so a late Stop can't hit a newer run. */
+export function interruptTask(taskId: number): boolean {
+  if (runningTaskTab()?.taskId !== taskId) return false;
+  interruptRun();
+  return true;
+}
+
+export interface TaskState {
+  running: boolean;
+  kind: "build" | "run" | null;
+  taskId: number | null;
+  status: TaskStatus | null;
+}
+
+/** The command Stop would hit, or else the latest one. Reactive. */
+export function taskState(): TaskState {
+  const latest = terms.tabs.filter((x) => (x.kind === "build" || x.kind === "run") && x.taskId !== undefined).sort((a, b) => b.taskId! - a.taskId!)[0];
+  const tab = runningTaskTab() ?? latest;
+  if (!tab) return { running: false, kind: null, taskId: null, status: null };
+  return { running: tab.status === "running", kind: tab.kind as "build" | "run", taskId: tab.taskId ?? null, status: tab.status ?? null };
 }
 
 /** Quotes for the Run terminal's shell (POSIX sh, or cmd.exe on Windows). */

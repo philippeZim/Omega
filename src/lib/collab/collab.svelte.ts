@@ -7,7 +7,7 @@ import { listen } from "@tauri-apps/api/event";
 import { ui } from "../ui.svelte";
 import { t } from "../i18n/index.svelte";
 import { collabErrorText } from "./collabError";
-import { guestGuard } from "./guard";
+import { guestGuard, CAPABILITIES, DEFAULT_CAPABILITIES, type Capability } from "./guard";
 import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
 
 export const PEER_COLORS = ["#6b9be0", "#7bbf8e", "#d6a35f", "#cf8fb4", "#86b9cc", "#a996cf", "#df7067", "#c8b77e"];
@@ -21,12 +21,19 @@ export interface Participant {
   direct?: boolean;
   rtt?: number;
   addr?: string;
+  /** Host only, never sent to other guests: what this guest may do. */
+  caps?: Capability[];
+  /** Host: being removed; nothing from this peer counts any more. */
+  removing?: boolean;
 }
 
 export interface JoinRequest {
   peer: string;
   name: string;
 }
+
+/** Bump when guests and hosts of different builds can no longer work together. */
+export const PROTOCOL_VERSION = 2;
 
 /** Longest name the host accepts (it cuts longer ones). */
 export const MAX_NAME = 40;
@@ -42,11 +49,17 @@ export const collab = $state({
   hostPeer: null as string | null,
   /** Guest: my peer id as the host knows it (from "welcome"), to find myself in the list. */
   myPeer: null as string | null,
+  /** Guest: what the host allows me. */
+  myCaps: [] as Capability[],
+  /** Host: what guests approved from now on start with, for this hosting session. */
+  startCaps: [...DEFAULT_CAPABILITIES] as Capability[],
   open: false,
 });
 
 /** Whether a participant row is me (host: "self"; guest: the id the host gave me). */
 guestGuard.status = () => (collab.role !== "guest" ? "none" : collab.status === "connected" ? "connected" : "pending");
+guestGuard.hosting = () => collab.role === "host" && collab.status !== "error";
+guestGuard.can = (cap) => collab.role !== "guest" || collab.myCaps.includes(cap);
 
 export const isMe = (p: { peer: string; name: string; color: string }) =>
   collab.role === "host" ? p.peer === "self" : collab.myPeer ? p.peer === collab.myPeer : p.name === collab.me.name && p.color === collab.me.color;
@@ -87,11 +100,17 @@ export function setMyName(name: string) {
 
 // ------------------------------------------------------------------ host
 
+/** A session is running or being set up (a failed start can be tried again). */
+const inSession = () => !!collab.role && collab.status !== "error";
+
 export async function startHosting() {
-  await defaultName();
+  // Claimed before the first await, so a second call can't start another session.
+  if (inSession()) return;
   collab.role = "host";
   collab.status = "starting";
   collab.error = "";
+  await defaultName();
+  if (collab.role !== "host" || collab.status !== "starting") return;
   try {
     collab.ticket = await invoke<string>("collab_host");
     collab.status = "hosting";
@@ -111,11 +130,19 @@ function nextColor() {
 
 export function approve(req: JoinRequest) {
   collab.requests = collab.requests.filter((r) => r.peer !== req.peer);
-  const p: Participant = { peer: req.peer, name: req.name, color: nextColor(), role: "guest" };
+  const p: Participant = { peer: req.peer, name: req.name, color: nextColor(), role: "guest", caps: [...collab.startCaps] };
   collab.participants.push(p);
-  send(req.peer, { t: "welcome", you: { peer: p.peer, name: p.name, color: p.color }, participants: collab.participants.map(publicInfo) });
+  send(req.peer, { t: "welcome", you: { peer: p.peer, name: p.name, color: p.color }, version: PROTOCOL_VERSION, caps: p.caps, participants: collab.participants.map(publicInfo) });
   broadcast({ t: "participants", participants: collab.participants.map(publicInfo) });
   ui.toast(t("ai.collab.joined", { name: req.name }));
+}
+
+/**
+ * Host: the rights of guests approved from now on; guests already here keep theirs. Guests have no
+ * identity that survives a rejoin, so this is what limits someone who leaves and comes back.
+ */
+export function setStartCapability(cap: Capability, on: boolean) {
+  collab.startCaps = CAPABILITIES.filter((c) => (c === cap ? on : collab.startCaps.includes(c)));
 }
 
 /** Approves the oldest pending request (command palette). */
@@ -147,6 +174,10 @@ export function deny(req: JoinRequest) {
 }
 
 export function kick(peer: string) {
+  // Refused from now on, not only once the connection is closed below.
+  const p = collab.participants.find((x) => x.peer === peer);
+  if (p) p.removing = true;
+  void import("./share.svelte").then((m) => m.forgetPeer(peer));
   send(peer, { t: "kicked" });
   setTimeout(() => invoke("collab_kick", { peer }), 200);
 }
@@ -156,15 +187,17 @@ const publicInfo = (p: Participant) => ({ peer: p.peer === "self" ? "host" : p.p
 // ------------------------------------------------------------------ guest
 
 export async function join(ticket: string) {
-  await defaultName();
+  if (inSession()) return;
   collab.role = "guest";
   collab.status = "joining";
   collab.error = "";
+  await defaultName();
+  if (collab.role !== "guest" || collab.status !== "joining") return;
   try {
     const host = await invoke<string>("collab_join", { ticket });
     collab.hostPeer = host;
     collab.status = "waiting";
-    await send(host, { t: "hello", name: collab.me.name, version: 1 });
+    await send(host, { t: "hello", name: collab.me.name, version: PROTOCOL_VERSION });
   } catch (e) {
     collab.status = "error";
     collab.error = collabErrorText(e);
@@ -185,10 +218,19 @@ export async function leave() {
   if (collab.role === "host") broadcast({ t: "ended" });
   // Mark as idle first so the connection-closed events of our own leave don't show an error.
   collab.status = "idle";
-  await invoke("collab_stop");
-  const { teardownShare } = await import("./share.svelte");
-  await teardownShare();
-  Object.assign(collab, { role: null, status: "idle", ticket: "", participants: [], requests: [], hostPeer: null, myPeer: null, error: "" });
+  // Whatever fails here, the session state below is still reset, or Leave would stop working.
+  try {
+    await invoke("collab_stop");
+  } catch (e) {
+    console.error("collab stop", e);
+  }
+  try {
+    const { teardownShare } = await import("./share.svelte");
+    await teardownShare();
+  } catch (e) {
+    console.error("collab teardown", e);
+  }
+  Object.assign(collab, { role: null, status: "idle", ticket: "", participants: [], requests: [], hostPeer: null, myPeer: null, myCaps: [], startCaps: [...DEFAULT_CAPABILITIES], error: "" });
   for (const h of sessionEndHooks) {
     try {
       await h(wasGuest);
@@ -212,6 +254,10 @@ listen<{ peer: string; msg: string }>("collab-msg", (e) => {
 
   if (collab.role === "host") {
     if (msg.t === "hello") {
+      if (msg.version !== PROTOCOL_VERSION) {
+        void send(peer, { t: "version", version: PROTOCOL_VERSION }).then(() => setTimeout(() => invoke("collab_kick", { peer }).catch(() => {}), 300));
+        return;
+      }
       // Unknown peers must be approved first (the code alone is not enough).
       if (!collab.requests.some((r) => r.peer === peer) && !collab.participants.some((p) => p.peer === peer))
         collab.requests.push({ peer, name: String(msg.name || t("ai.collab.guest")).slice(0, MAX_NAME) });
@@ -219,12 +265,20 @@ listen<{ peer: string; msg: string }>("collab-msg", (e) => {
       return;
     }
     // Ignore everything from guests that weren't approved.
-    if (!collab.participants.some((p) => p.peer === peer)) return;
+    if (!collab.participants.some((p) => p.peer === peer && !p.removing)) return;
   } else if (collab.role === "guest") {
+    // A host from before versions has none in its welcome: it counts as older.
+    if (msg.t === "version" || (msg.t === "welcome" && msg.version !== PROTOCOL_VERSION)) {
+      const hostNewer = typeof msg.version === "number" && msg.version > PROTOCOL_VERSION;
+      ui.toast(t(hostNewer ? "ai.collab.versionUpdateYou" : "ai.collab.versionUpdateHost"), "error");
+      leave();
+      return;
+    }
     if (msg.t === "welcome") {
       collab.status = "connected";
       collab.me.color = msg.you.color;
       collab.myPeer = msg.you.peer ?? null;
+      collab.myCaps = Array.isArray(msg.caps) ? msg.caps : [];
       collab.participants = msg.participants;
       ui.toast(t("ai.collab.connected"));
     } else if (msg.t === "participants") collab.participants = msg.participants;

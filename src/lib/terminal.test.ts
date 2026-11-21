@@ -107,6 +107,30 @@ describe("Build/Run tasks", () => {
     expect(written()).toContain("Failed with code 2 · 2 min 5 s");
   });
 
+  test("taskState follows the run; interruptTask only stops the task it names", async () => {
+    expect(T.taskState()).toEqual({ running: false, kind: null, taskId: null, status: null });
+    T.runTask("run", "sleep 100", null, "Run", { focus: false });
+    await settle();
+    const first = T.taskState();
+    expect(first).toMatchObject({ running: true, kind: "run", status: "running" });
+    const pty = spawns()[0].id;
+
+    T.runTask("run", "sleep 200", null, "Run", { focus: false });
+    await settle();
+    const second = T.taskState();
+    expect(second.taskId).not.toBe(first.taskId);
+    const pty2 = spawns()[1].id;
+    expect(pty2).not.toBe(pty);
+
+    // A Stop for the replaced run must not hit the new one.
+    expect(T.interruptTask(first.taskId!)).toBe(false);
+    expect(calls.some(([c, a]) => c === "pty_write" && a.id === pty2)).toBe(false);
+    expect(T.interruptTask(second.taskId!)).toBe(true);
+    expect(calls.at(-1)).toEqual(["pty_write", { id: pty2, data: "\x03" }]);
+    await emit("pty-exit", { id: pty2, code: 130 });
+    expect(T.taskState()).toMatchObject({ running: false, kind: "run", taskId: second.taskId, status: "stopped" });
+  });
+
   test("cancelTask / interruptRun end as stopped and report null", async () => {
     const onExit = vi.fn();
     T.runTask("run", "sleep 100", null, "Run", { focus: false, onExit });
