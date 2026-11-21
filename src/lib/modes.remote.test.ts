@@ -1,4 +1,4 @@
-// A shared file on a guest gets the host's language features, and still no path-based extensions.
+// A shared file on a guest gets the host's language features, and the path-based ones under its shared path.
 import { afterEach, expect, test, vi } from "vitest";
 
 const h = vi.hoisted(() => ({ lsp: vi.fn(() => []), debug: vi.fn(() => []), blame: vi.fn(() => []), gutter: vi.fn(() => []) }));
@@ -23,12 +23,12 @@ test("a shared Python file uses the guest's language extension with its relative
   expect(h.lsp).not.toHaveBeenCalled();
 });
 
-test("shared files get the debug gutter under their shared path, and still no git extensions", () => {
+test("shared files get the debug gutter and the git extensions under their shared path", () => {
   remoteLsp.extension = vi.fn(() => []);
   modeExtensions("code", "collab:src/a.py");
   expect(h.debug).toHaveBeenCalledWith("collab:src/a.py");
-  expect(h.blame).not.toHaveBeenCalled();
-  expect(h.gutter).not.toHaveBeenCalled();
+  expect(h.blame).toHaveBeenCalledWith("collab:src/a.py");
+  expect(h.gutter).toHaveBeenCalledWith("collab:src/a.py");
 });
 
 test("a shared file without a language server doesn't ask for one", () => {

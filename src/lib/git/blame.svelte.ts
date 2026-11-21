@@ -14,7 +14,7 @@ interface Commit {
   time: number;
   summary: string;
 }
-interface Blame {
+export interface Blame {
   commits: Commit[];
   lines: number[];
 }
@@ -32,6 +32,12 @@ export function setGitBlame(on: boolean) {
 let rootHook: () => string | null = () => null;
 export function setBlameRoot(fn: () => string | null) {
   rootHook = fn;
+}
+
+/** Code Together guest: blame of a shared file, from the host. */
+let remoteBlame: (rel: string, contents: string) => Promise<Blame | null> = async () => null;
+export function setRemoteBlame(fn: typeof remoteBlame) {
+  remoteBlame = fn;
 }
 
 const live = new Set<{ reload: () => void }>();
@@ -157,13 +163,14 @@ export function gitBlame(path: string): Extension {
       }
       async reload() {
         const seq = ++this.seq;
+        const remote = path.startsWith("collab:");
         const root = rootHook();
-        if (!blameSettings.enabled || !root) {
+        if (!blameSettings.enabled || (!remote && !root)) {
           this.show(null);
           return;
         }
         const contents = this.view.state.doc.toString();
-        const r = await invoke<Blame | null>("git_blame", { root, path, contents }).catch(() => null);
+        const r = await (remote ? remoteBlame(path.slice("collab:".length), contents) : invoke<Blame | null>("git_blame", { root, path, contents })).catch(() => null);
         if (!this.alive || seq !== this.seq) return;
         // The buffer changed while git was running → the result no longer lines up; the debounced
         // re-blame will follow.

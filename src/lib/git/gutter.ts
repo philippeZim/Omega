@@ -79,6 +79,12 @@ export function setGitGutterHooks(h: typeof hooks) {
   hooks = h;
 }
 
+/** Code Together guest: HEAD text of a shared file, from the host. */
+let remoteHead: (rel: string) => Promise<string | null> = async () => null;
+export function setRemoteHead(fn: typeof remoteHead) {
+  remoteHead = fn;
+}
+
 /** Views to refresh when HEAD changes (commit, pull, branch switch). */
 const live = new Set<{ reload: () => void }>();
 export function reloadGitHeads() {
@@ -94,9 +100,10 @@ export function gitGutter(path: string): Extension {
         this.reload();
       }
       async reload() {
+        const remote = path.startsWith("collab:");
         const root = hooks.root();
-        if (!root) return;
-        const text = await invoke<string | null>("git_head_file", { root, path }).catch(() => null);
+        if (!remote && !root) return;
+        const text = remote ? await remoteHead(path.slice("collab:".length)).catch(() => null) : await invoke<string | null>("git_head_file", { root, path }).catch(() => null);
         if (!this.alive) return;
         // New (untracked) files: no markers, like PyCharm colours the whole file name instead.
         this.view.dispatch({ effects: setHead.of(text === null ? null : Text.of(text.split("\n"))) });
