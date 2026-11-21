@@ -13,7 +13,7 @@ import { ChangeSet, EditorState, type ChangeSpec } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { collab, send, broadcast, onCollabMessage } from "./collab.svelte";
 import { blockedByCapability, guestCan } from "./guard";
-import { call, forgetRpcPeer, hasCapability, isObj, onCapabilitiesChanged, registerMethod, rpcErrorText, RpcFail } from "./rpc.svelte";
+import { call, fits, forgetRpcPeer, hasCapability, isApproved, isObj, onCapabilitiesChanged, registerMethod, rpcErrorText, RpcFail } from "./rpc.svelte";
 import { app, openFile, activeTab, activate, collabHooks, setMode, pathMoved, type Tab } from "../state.svelte";
 import type { Mode } from "../modes";
 import { MODES } from "../modeList";
@@ -521,8 +521,10 @@ interface FsEntry {
 
 export async function listRemote(rel: string): Promise<FsEntry[]> {
   const r = await call("fs.list", { path: rel }, { timeoutMs: 8000 });
-  return r.ok ? r.value : [];
+  return r.ok && Array.isArray(r.value) ? r.value.filter(isFsEntry) : [];
 }
+
+const isFsEntry = (e: unknown): e is FsEntry => isObj(e) && typeof e.name === "string" && typeof e.rel === "string" && typeof e.is_dir === "boolean";
 
 // ------------------------------------------------------------------ file operations (guest → host)
 
@@ -748,10 +750,15 @@ onCollabMessage(async (peer, msg) => {
     void syncSharedTabs(); // before any guest message can reach a tab that just left the project
     if (msg.t === "doc.open") {
       const d = await hostDoc(String(msg.path));
+      // Removed while the file was being checked or read: nothing of it goes out.
+      if (!isApproved(peer)) return;
       if (!d) return send(peer, { t: "doc.error", path: msg.path, error: "unavailable" });
-      d.subscribers.add(peer);
       const tab = d.tabId ? app.tabs.find((t) => t.id === d.tabId) : null;
-      send(peer, { t: "doc.state", path: d.rel, name: tab?.name ?? basename(d.rel), update: b64(Y.encodeStateAsUpdate(d.ydoc)) });
+      const state = { t: "doc.state", path: d.rel, name: tab?.name ?? basename(d.rel), update: b64(Y.encodeStateAsUpdate(d.ydoc)) };
+      // Over the transport's limit the whole connection would drop.
+      if (!fits(JSON.stringify(state))) return send(peer, { t: "doc.error", path: msg.path, error: "too_large" });
+      d.subscribers.add(peer);
+      send(peer, state);
       const states = [...d.awareness.getStates().keys()];
       if (states.length) send(peer, { t: "aw", path: d.rel, update: b64(encodeAwarenessUpdate(d.awareness, states)) });
     } else if (msg.t === "doc.update") {
@@ -823,7 +830,8 @@ onCollabMessage(async (peer, msg) => {
     const d = docs.get(msg.path);
     if (d) applyAwarenessUpdate(d.awareness, unb64(msg.update), "remote");
   } else if (msg.t === "doc.error") {
-    ui.toast(`${msg.path}: ${msg.error === "unavailable" ? t("ai.collab.fileUnavailable") : msg.error}`, "error");
+    pendingOpens.delete(msg.path);
+    ui.toast(`${msg.path}: ${msg.error === "unavailable" ? t("ai.collab.fileUnavailable") : msg.error === "too_large" ? rpcErrorText("too_large") : msg.error}`, "error");
   } else if (msg.t === "participants") {
     // Someone left: their cursor label and follow target go too.
     const here = new Set((msg.participants as { peer: string }[]).map((p) => p.peer));

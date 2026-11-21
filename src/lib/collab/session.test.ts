@@ -213,3 +213,11 @@ test("guest: pushed run state reaches the Run bar, Stop calls the host, leaving 
   expect(runner.remoteTask).toBeNull();
   expect(runnerRemote.stop).toBeNull();
 });
+
+test("guest: a malformed run state from the host is ignored", async () => {
+  collab.role = "guest";
+  for (const payload of ["x", 5, [], { running: "yes", kind: "run", taskId: 1, status: "running" }, { running: true, kind: "evil", taskId: 1, status: "running" }, { running: true, kind: "run", taskId: "1", status: "running" }, { running: true, kind: "run", taskId: 1, status: "boom" }]) {
+    await receive("host-peer", { t: "rpc.pub", topic: "run.state", payload });
+    expect(runner.remoteTask).toBeNull();
+  }
+});

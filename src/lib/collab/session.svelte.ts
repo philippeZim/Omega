@@ -272,8 +272,15 @@ function showRemoteStatus() {
   if (tab) tab.status = runner.remoteTask?.status ?? undefined;
 }
 
+const isTaskState = (s: unknown): s is TaskState =>
+  isObj(s) &&
+  typeof s.running === "boolean" &&
+  (s.kind === null || s.kind === "build" || s.kind === "run") &&
+  (s.taskId === null || Number.isSafeInteger(s.taskId)) &&
+  (s.status === null || s.status === "running" || s.status === "ok" || s.status === "fail" || s.status === "stopped");
+
 subscribe("run.state", (state) => {
-  runner.remoteTask = state;
+  runner.remoteTask = isTaskState(state) ? state : null;
   showRemoteStatus();
 });
 

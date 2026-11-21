@@ -762,3 +762,63 @@ test("guest without edit: the editor refuses local changes, also direct ones, an
     guestGuard.can = () => true;
   }
 });
+
+test("a guest removed while its doc.open is being checked gets neither the state nor later updates", async () => {
+  const fs = hostFs({ "/p/a.txt": "secret\n" });
+  const other = fs.other;
+  fs.other = (cmd, args) => {
+    if (cmd === "collab_path_inside") {
+      collab.participants = (collab.participants as { peer: string }[]).filter((p) => p.peer !== "g1");
+      share.forgetPeer("g1");
+    }
+    return other(cmd, args);
+  };
+  await receive("g1", { t: "doc.open", path: "a.txt" });
+  fs.other = other;
+  await receive("g2", { t: "doc.open", path: "a.txt" });
+  await guestInsert("a.txt", 0, "later ");
+  expect(sent.filter((s) => s.peer === "g1")).toEqual([]);
+});
+
+test("removing a guest takes it off every shared doc", async () => {
+  hostFs({ "/p/a.txt": "a\n", "/p/b.txt": "b\n" });
+  await receive("g1", { t: "doc.open", path: "a.txt" });
+  await receive("g1", { t: "doc.open", path: "b.txt" });
+  share.forgetPeer("g1");
+  sent.length = 0;
+  await receive("g2", { t: "doc.open", path: "a.txt" });
+  await guestInsert("a.txt", 0, "x");
+  expect(sent.filter((s) => s.peer === "g1")).toEqual([]);
+});
+
+test("a file too large for the transport gives the guest a clear error and keeps the connection", async () => {
+  const { RPC_LIMITS } = await import("./rpc.svelte");
+  hostFs({ "/p/big.txt": "x".repeat(5000), "/p/small.txt": "s\n" });
+  const cap = RPC_LIMITS.maxBytes;
+  RPC_LIMITS.maxBytes = 1000;
+  try {
+    await receive("g1", { t: "doc.open", path: "big.txt" });
+    expect(sent.map((s) => s.msg)).toEqual([{ t: "doc.error", path: "big.txt", error: "too_large" }]);
+    await receive("g1", { t: "doc.open", path: "small.txt" });
+    expect(guestCopy("small.txt")).toBe("s\n");
+  } finally {
+    RPC_LIMITS.maxBytes = cap;
+  }
+  collab.role = "guest";
+  await receive("host-peer", { t: "doc.error", path: "big.txt", error: "too_large" });
+  expect(ui.toasts.at(-1)?.text).toContain("too much data");
+});
+
+test("guest: a malformed folder listing from the host is an empty or filtered list", async () => {
+  collab.role = "guest";
+  for (const [result, expected] of [
+    ["nope", []],
+    [{ length: 3 }, []],
+    [[{ name: 1, rel: "a", is_dir: false }, null, { name: "ok", rel: "ok", is_dir: true }], [{ name: "ok", rel: "ok", is_dir: true }]],
+  ] as const) {
+    sent.length = 0;
+    const p = share.listRemote("");
+    await receive("host-peer", { t: "rpc.res", id: sent.at(-1)!.msg.id, ok: true, result });
+    expect(await p).toEqual(expected);
+  }
+});
