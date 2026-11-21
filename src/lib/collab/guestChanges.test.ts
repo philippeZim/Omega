@@ -79,3 +79,67 @@ test("the pause follows a moved folder, and a file moved out of the project", ()
   mod.moveGuestChange("/elsewhere/a", "/elsewhere/b");
   expect(mod.pausedBy("t", "/elsewhere/b")).toBeNull();
 });
+
+test("Compile doesn't release Metals, and allowing Metals doesn't resume LaTeX", () => {
+  mod.noteGuestChange("g", "/p", "main.tex");
+  expect(mod.metalsPausedBy("/p")).toBe("name-g");
+  mod.resumeCompiling("t1", "/p/main.tex");
+  expect(mod.pausedBy("t1", "/p/main.tex")).toBeNull();
+  expect(mod.metalsPausedBy("/p")).toBe("name-g");
+
+  mod.noteGuestChange("g", "/p", "main.tex");
+  expect(mod.resumeMetals("/p", mod.metalsChangeCount())).toBe(true);
+  expect(mod.metalsPausedBy("/p")).toBeNull();
+  expect(mod.pausedBy("t1", "/p/main.tex")).toBe("name-g");
+});
+
+test("the Metals pause survives a restart and leaves LaTeX's stored data alone", async () => {
+  mod.noteGuestChange("g", "/p", "a.scala");
+  const latex = localStorage.getItem("latex.guestChanged");
+  mod.resumeMetals("/p", mod.metalsChangeCount());
+  expect(localStorage.getItem("latex.guestChanged")).toBe(latex);
+  mod.noteGuestChange("g", "/p", "b.scala");
+  vi.resetModules();
+  const again = await import("./guestChanges");
+  expect(again.metalsPausedBy("/p")).toBe("name-g");
+});
+
+test("a project LaTeX paused before Metals had a store counts, also after a later Compile", async () => {
+  localStorage.setItem("latex.guestChanged", JSON.stringify({ "/old": "name-g" }));
+  localStorage.removeItem("metals.guestChanged");
+  vi.resetModules();
+  const first = await import("./guestChanges");
+  expect(first.metalsPausedBy("/old")).toBe("name-g");
+  first.resumeCompiling("t1", "/old/main.tex");
+  vi.resetModules();
+  expect((await import("./guestChanges")).metalsPausedBy("/old")).toBe("name-g");
+});
+
+test("the Metals pause follows a move", async () => {
+  mod.noteGuestChange("g", "/p/sub", "a.scala");
+  mod.moveGuestChange("/p/sub", "/q/sub");
+  expect(mod.metalsPausedBy("/q/sub")).toBe("name-g");
+  expect(mod.metalsPausedBy("/p/sub")).toBeNull();
+  vi.resetModules();
+  expect((await import("./guestChanges")).metalsPausedBy("/q/sub")).toBe("name-g");
+});
+
+test("the Metals pause covers folders around and inside the changed one", () => {
+  mod.noteGuestChange("g", "/p/sub", "a.scala");
+  expect(mod.metalsPausedBy("/p")).toBe("name-g");
+  expect(mod.metalsPausedBy("/p/sub/deep")).toBe("name-g");
+  expect(mod.metalsPausedBy("/p/other")).toBeNull();
+});
+
+test("allowing Metals doesn't cover a change made after the question", () => {
+  mod.noteGuestChange("g", "/p", "a.scala");
+  const seen = mod.metalsChangeCount();
+  mod.noteGuestChange("g", "/p", "build.sbt");
+  expect(mod.resumeMetals("/p", seen)).toBe(false);
+  expect(mod.metalsPausedBy("/p")).toBe("name-g");
+});
+
+test("a guest with run doesn't pause Metals", () => {
+  mod.noteGuestChange("trusted", "/p", "a.scala");
+  expect(mod.metalsPausedBy("/p")).toBeNull();
+});

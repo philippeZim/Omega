@@ -7,7 +7,7 @@ import { ui } from "../ui.svelte";
 import { fsApi, dirname, joinPath, isRoot } from "../api";
 import { IS_WIN, OS, platform } from "../platform";
 import { ensureTools, withInstallProgress, serverProgressId, type ToolId } from "../tools.svelte";
-import { onGuestChange, pausedBy, resumeCompiling } from "../collab/guestChanges";
+import { metalsChangeCount, metalsPausedBy, onGuestChange, resumeMetals } from "../collab/guestChanges";
 import type { LangInfo } from "./languages";
 
 type Json = any;
@@ -206,7 +206,7 @@ export class LspClient {
       if (msg.method === "workspace/configuration") result = (msg.params?.items ?? []).map((it: Json) => serverSetting(this.kind, it.section));
       else if (msg.method === "workspace/workspaceFolders") result = [{ uri: fileUri(this.root), name: this.root }];
       else if (msg.method === "workspace/applyEdit") result = { applied: false };
-      else if (msg.method === "window/showMessageRequest" && this.kind === "scala") result = metalsAnswer(msg.params);
+      else if (msg.method === "window/showMessageRequest" && this.kind === "scala") result = this.stopping || metalsPausedBy(this.root) !== null ? null : metalsAnswer(msg.params);
       this.send({ id: msg.id, result });
       return;
     }
@@ -502,16 +502,24 @@ async function guestMayStart(kind: ServerKind, root: string, key: string) {
   return !!cmd;
 }
 
-/** Who changed this project without `run`: Metals would execute that text, so it stays off. */
-const metalsPausedBy = (root: string) => pausedBy("", root);
+/** A guest without `run` changed this project: Metals would execute that text, so it stays off. */
+function metalsHeld(key: string, root: string) {
+  if (metalsPausedBy(root) === null) return false;
+  lspState.status[key] = "stopped";
+  lspState.message[key] = t("code.lsp.metalsPaused");
+  return true;
+}
+
+/** Whether Metals is paused for this file's project. */
+export const metalsPausedFor = async (file: string, workspace: string | null) => metalsPausedBy(await findRoot(file, ROOT_MARKERS.scala, workspace)) !== null;
 
 onGuestChange(() => {
   for (const [key, c] of clients) {
-    if (c.kind !== "scala" || metalsPausedBy(c.root) === null) continue;
-    c.stop();
+    if (c.kind !== "scala" || !metalsHeld(key, c.root)) continue;
+    // Killed, not shut down: it must not get to import the change during a graceful stop.
+    c.failed = c.stopping = true;
     clients.delete(key);
-    lspState.status[key] = "stopped";
-    lspState.message[key] = t("code.lsp.metalsPaused");
+    invoke("proc_kill", { id: c.id }).catch(() => {});
   }
 });
 
@@ -553,11 +561,7 @@ export async function clientFor(
   }
   const root = await findRoot(file, ROOT_MARKERS[kind], workspace);
   const key = `${kind}|${root}`;
-  if (kind === "scala" && metalsPausedBy(root) !== null) {
-    lspState.status[key] = "stopped";
-    lspState.message[key] = t("code.lsp.metalsPaused");
-    return null;
-  }
+  if (kind === "scala" && metalsHeld(key, root)) return null;
   if (askInstall !== neverInstall) guestServers.delete(key); // the host wants this one itself
   else if (!clients.has(key) && !starting.has(key) && !(await guestMayStart(kind, root, key))) return null;
   const existing = clients.get(key);
@@ -597,6 +601,8 @@ export async function clientFor(
       if (!cmd) return null;
     }
     const waitInstall = kind === "typescript" && (await tsInstallMissing(root));
+    // Last check, with no await before the process starts: the steps above can take minutes.
+    if (kind === "scala" && metalsHeld(key, root)) return null;
     const c = new LspClient(kind, root, cmd.cmd, cmd.args, cmd.init);
     c.quiet = waitInstall;
     clients.set(key, c);
@@ -605,6 +611,7 @@ export async function clientFor(
       c.quiet = false;
       return c;
     } catch (e) {
+      if (c.failed) return null; // killed by the guest pause, which has set the status
       if (c.quiet) {
         // node_modules/typescript is missing (e.g. a new project's `pnpm add` still runs): wait for it.
         if (c.alive) invoke("proc_kill", { id: c.id }).catch(() => {});
@@ -699,9 +706,13 @@ export async function restartServer(
   if (starting.has(key)) return starting.get(key)!;
   const by = kind === "scala" ? metalsPausedBy(root) : null;
   if (by !== null) {
-    // The host's explicit decision, like Compile for LaTeX.
+    // The host's explicit decision. It covers what it was asked about, not a change during the dialog.
+    const seen = metalsChangeCount();
     if (!(await ui.confirm(t("code.lsp.metalsResumeTitle"), t("code.lsp.metalsResumeMsg", { name: by }), t("code.lsp.metalsResumeOk")))) return null;
-    resumeCompiling("", root);
+    if (!resumeMetals(root, seen)) {
+      metalsHeld(key, root);
+      return null;
+    }
   }
   declined.delete(kind);
   failed.delete(key);
