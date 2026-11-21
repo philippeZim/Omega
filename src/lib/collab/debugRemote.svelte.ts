@@ -16,7 +16,7 @@ import { collab, onCollabMessage, sessionEndHooks } from "./collab.svelte";
 import { blockedByCapability } from "./guard";
 import { call, hasCapability, isObj, publish, registerMethod, registerTopic, rpcErrorText, RpcFail, subscribe, type RpcResult } from "./rpc.svelte";
 import { flushBackgroundDocs, guestScope, isRemote, openRemote, REMOTE, type GuestScope } from "./share.svelte";
-import { cleanBreakpoints, cleanRel, clip, DEBUG_LIMITS, isId, RefTable, scrubPaths, shareableBreakpoints, StreamScrubber, termOut, type SharedBreakpoint } from "./debugMirror";
+import { cleanBreakpoints, cleanRel, clip, DEBUG_LIMITS, isId, RefTable, scrubPaths, shareableBreakpoints, StreamScrubber, termOut, b64ToBytes, textToB64, type SharedBreakpoint } from "./debugMirror";
 import { applyGuestBreakpoints, dbg, dbgHooks, dbgRemote, endGuestBreakpoints, revertGuestBreakpoints, SHARED_BP, type DebugRemote, type DebugStatus, type Frame, type VarNode } from "../debug/store.svelte";
 import { hostDebug, stopLocal } from "../debug/debugger.svelte";
 import { app, activeTab, setMode } from "../state.svelte";
@@ -270,40 +270,78 @@ dbgHooks.logged = (line) => {
   if (!consoleTimer) consoleTimer = window.setTimeout(flushConsole, 80);
 };
 
-// The debuggee runs in the host's Run terminal, which guests see: its launcher line and output name
-// absolute paths. Only while debugging (and shortly after, for the last lines).
-const TERM_GRACE_MS = 2000;
-let termUntil = 0;
+// Everything in the host's Run and Build terminals reaches guests: command lines, tracebacks and the
+// debuggee's launcher name absolute paths. The host's own terminal never passes through here.
+/** How long text that may still become a path waits for its rest. */
+const TERM_HOLD_MS = 1000;
+/** Output kept while the home folder is still being looked up. */
+const TERM_WAIT_CHARS = 256 * 1024;
 let termScrubber: StreamScrubber | null = null;
+let termScrubRoot: string | null = null;
 let termTimer = 0;
-
-const toB64 = (text: string) => {
-  let bin = "";
-  for (const b of new TextEncoder().encode(text)) bin += String.fromCharCode(b);
-  return btoa(bin);
-};
+let termWaiting: string[] = [];
+let termWaitingChars = 0;
+let homeLoading = false;
+/** The lookup failed: asked once per session, and until it ends nothing is mirrored. */
+let homeFailed = false;
 
 function endTermScrub(later: (b64: string) => void) {
   clearTimeout(termTimer);
   const rest = termScrubber?.flush();
   termScrubber = null;
-  if (rest) later(toB64(rest));
+  if (rest) later(textToB64(rest));
 }
 
-export function filterTerminal(b64: string, later: (b64: string) => void): string {
-  if (collab.role !== "host" || !(isLive() || performance.now() < termUntil)) {
-    endTermScrub(later);
-    return b64;
-  }
+function scrubChunk(b64: string, later: (b64: string) => void): string {
+  if (termScrubber && termScrubRoot !== app.root) endTermScrub(later);
+  termScrubRoot = app.root;
   termScrubber ??= new StreamScrubber(app.root, home);
-  const text = termScrubber.push(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)));
+  const text = termScrubber.push(b64ToBytes(b64));
   // A path that never completes must still show up.
   clearTimeout(termTimer);
   termTimer = window.setTimeout(() => {
     const rest = termScrubber?.drain();
-    if (rest) later(toB64(rest));
-  }, 120);
-  return text ? toB64(text) : "";
+    if (rest) later(textToB64(rest));
+  }, TERM_HOLD_MS);
+  return text ? textToB64(text) : "";
+}
+
+/** Output from before the home folder is known goes out once it is; without it, none does. */
+function loadHomeForTerminal(later: (b64: string) => void) {
+  if (homeLoading) return;
+  homeLoading = true;
+  void fsApi
+    .homeDir()
+    .then((h) => (home = h))
+    .catch((e) => {
+      homeFailed = true;
+      console.error("collab home folder", e);
+    })
+    .finally(() => {
+      homeLoading = false;
+      const waiting = termWaiting;
+      termWaiting = [];
+      termWaitingChars = 0;
+      if (home === null || collab.role !== "host") return;
+      for (const chunk of waiting) {
+        const out = scrubChunk(chunk, later);
+        if (out) later(out);
+      }
+    });
+}
+
+export function filterTerminal(b64: string, later: (b64: string) => void): string {
+  if (collab.role !== "host") return "";
+  if (home === null) {
+    if (homeFailed) return "";
+    if (termWaitingChars + b64.length <= TERM_WAIT_CHARS) {
+      termWaiting.push(b64);
+      termWaitingChars += b64.length;
+    }
+    loadHomeForTerminal(later);
+    return "";
+  }
+  return scrubChunk(b64, later);
 }
 termOut.filter = filterTerminal;
 
@@ -317,8 +355,6 @@ $effect.root(() => {
     if (home === null) void fsApi.homeDir().then((h) => (home = h)).catch(() => {});
     void [dbg.status, dbg.label, dbg.stopReason, dbg.actor, dbg.threads, dbg.threadId, dbg.frames, dbg.frameId, dbg.exec, dbg.version, app.root];
     void dbg.scopes.map((s) => s.expanded);
-    if (isLive()) termUntil = Infinity;
-    else if (termUntil === Infinity) termUntil = performance.now() + TERM_GRACE_MS;
     untrack(schedulePublish);
   });
   // Tabs keep their own editor state: re-read breakpoints changed while another tab was showing.
@@ -992,9 +1028,11 @@ sessionEndHooks.push((wasGuest) => {
   hostDebug.forgetGuestPlan();
   endGuestBreakpoints();
   guestStarted = false;
-  termUntil = 0;
   clearTimeout(termTimer);
   termScrubber = null;
+  termWaiting = [];
+  termWaitingChars = 0;
+  homeFailed = false;
   refs.clear();
   relCache.clear();
   relCacheKey = "";

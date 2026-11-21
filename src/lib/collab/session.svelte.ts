@@ -364,7 +364,7 @@ setRunEcho((text) => {
   queueOut(btoa(bin));
 });
 function queueOut(b64: string) {
-  const out = termOut.filter ? termOut.filter(b64, queueRaw) : b64;
+  const out = termOut.filter?.(b64, queueRaw);
   if (out) queueRaw(out);
 }
 function queueRaw(b64: string) {
