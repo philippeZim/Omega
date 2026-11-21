@@ -143,3 +143,56 @@ test("a guest with run doesn't pause Metals", () => {
   mod.noteGuestChange("trusted", "/p", "a.scala");
   expect(mod.metalsPausedBy("/p")).toBeNull();
 });
+
+test("a guest's edit of an unsaved tab pauses Metals for the tab's project", () => {
+  const fired = vi.fn();
+  mod.onGuestChange(fired);
+  const before = mod.metalsChangeCount();
+  mod.noteGuestChange("g", "/p", "tab:u1");
+  expect(mod.metalsPausedBy("/p")).toBe("name-g");
+  expect(mod.metalsChangeCount()).toBeGreaterThan(before);
+  expect(fired).toHaveBeenCalled();
+  // LaTeX: still only that tab, and nothing stored.
+  expect(mod.isPaused("/p", null)).toBe(false);
+  expect(mod.pausedBy("u2", "/p/main.tex")).toBeNull();
+  expect(localStorage.getItem("latex.guestChanged")).toBeNull();
+});
+
+test("without a folder, the pause moves to where the host saves the tab, before the write", () => {
+  mod.noteGuestChange("g", null, "tab:u1");
+  expect(mod.metalsPausedBy("/w")).toBeNull();
+  const fired = vi.fn();
+  mod.onGuestChange(fired);
+  mod.metalsBeforeSave("u1", null, "/w/project/plugins.sbt");
+  expect(mod.metalsPausedBy("/w")).toBe("name-g"); // the Metals root around that folder
+  expect(fired).toHaveBeenCalled();
+});
+
+test("a failed save keeps the tab's pending pause for the next target", () => {
+  mod.noteGuestChange("g", null, "tab:u1");
+  mod.metalsBeforeSave("u1", null, "/bad/build.sbt")();
+  mod.metalsBeforeSave("u1", null, "/w/build.sbt");
+  expect(mod.metalsPausedBy("/w")).toBe("name-g");
+});
+
+test("saving a tab without guest text pauses nothing, and an allowed tab isn't paused again", () => {
+  mod.metalsBeforeSave("clean", null, "/w/build.sbt");
+  expect(mod.metalsPausedBy("/w")).toBeNull();
+  mod.noteGuestChange("g", null, "tab:u1");
+  mod.metalsBeforeSave("u1", null, "/w/build.sbt");
+  mod.resumeMetals("/w", mod.metalsChangeCount());
+  mod.metalsBeforeSave("u1", "/w/build.sbt", "/w/build.sbt");
+  expect(mod.metalsPausedBy("/w")).toBeNull();
+});
+
+test("Save As of a paused project's file pauses the target folder too", () => {
+  mod.noteGuestChange("g", "/p", "build.sbt");
+  mod.metalsBeforeSave("t1", "/p/build.sbt", "/other/build.sbt");
+  expect(mod.metalsPausedBy("/other")).toBe("name-g");
+});
+
+test("a guest with run doesn't pause Metals through a tab", () => {
+  mod.noteGuestChange("trusted", null, "tab:u1");
+  mod.metalsBeforeSave("u1", null, "/w/build.sbt");
+  expect(mod.metalsPausedBy("/w")).toBeNull();
+});

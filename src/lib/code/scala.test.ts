@@ -34,7 +34,7 @@ import { modeForExtension } from "../modes";
 import { langFor, scalaOpensBlock, indentFor } from "./languages";
 import { detectProject, scalaCliRun, scalaScriptMain, TEMPLATES } from "./projects";
 import { allClients, clientFor, lspState, metalsAnswer, neverInstall, restartServer, stopServers, type LspClient } from "./lsp.svelte";
-import { isPaused, metalsChangeCount, metalsPausedBy, noteGuestChange, resumeCompiling, resumeMetals } from "../collab/guestChanges";
+import { isPaused, metalsBeforeSave, metalsChangeCount, metalsPausedBy, noteGuestChange, resumeCompiling, resumeMetals } from "../collab/guestChanges";
 import { ui } from "../ui.svelte";
 import { dropScalaSession, metalsDebugPort, planFor, startScalaSession } from "../debug/adapters";
 import { t } from "../i18n/index.svelte";
@@ -266,6 +266,20 @@ describe("Metals in Code Together", () => {
     noteGuestChange("peer", root);
     c.stopping = false; // the pause alone must be enough
     expect(answerTo(c)).toBeNull();
+  });
+
+  test.each([
+    ["with a folder", () => root],
+    ["without a folder", () => null],
+  ])("a guest's unsaved tab saved as build.sbt (%s) stops it and gets no Import", async (_n, tabRoot) => {
+    const c = await started();
+    noteGuestChange("peer", tabRoot(), "tab:u9");
+    metalsBeforeSave("u9", null, `${root}/build.sbt`);
+    expect(running()).toHaveLength(0);
+    expect(ipc.calls).toContain("proc_kill");
+    c.stopping = false; // the pause alone must be enough
+    expect(answerTo(c)).toBeNull();
+    expect(metalsPausedBy(root)).not.toBeNull();
   });
 
   test("restart asks, then starts it and leaves LaTeX paused", async () => {

@@ -54,6 +54,14 @@ function loadMetalsRoots() {
 const metalsRoots = loadMetalsRoots();
 /** Counts guest changes, so a confirmation only covers what the host was asked about. */
 let metalsChanges = 0;
+/** Unsaved tab -> who wrote text in it that no folder's Metals pause covers yet (see `metalsBeforeSave`). */
+const metalsTabs = new Map<string, string>();
+
+function pauseMetals(root: string, name: string) {
+  metalsRoots.set(root, name);
+  store(METALS_KEY, metalsRoots);
+  metalsChanges++;
+}
 
 /** Set by the session. Until then nobody counts as trusted. */
 export const guestChangeHooks = {
@@ -70,13 +78,16 @@ export function onGuestChange(fn: () => void) {
 export function noteGuestChange(peer: string, root: string | null, rel?: string) {
   if (guestChangeHooks.mayRun(peer)) return;
   const name = guestChangeHooks.name(peer);
-  if (rel?.startsWith("tab:")) tabs.set(rel.slice(4), name);
-  else if (root) {
+  if (rel?.startsWith("tab:")) {
+    tabs.set(rel.slice(4), name);
+    // The host can save this tab as build.sbt. Without a folder yet, the pause waits for that save.
+    metalsTabs.set(rel.slice(4), name);
+    metalsChanges++;
+    if (root) pauseMetals(root, name);
+  } else if (root) {
     roots.set(root, name);
     saveRoots();
-    metalsRoots.set(root, name);
-    store(METALS_KEY, metalsRoots);
-    metalsChanges++;
+    pauseMetals(root, name);
   } else return;
   for (const fn of listeners) fn();
 }
@@ -146,6 +157,23 @@ const related = (a: string, b: string) => within(a, b) || within(b, a);
 export function metalsPausedBy(root: string): string | null {
   for (const [r, name] of metalsRoots) if (related(root, r)) return name;
   return null;
+}
+
+/**
+ * The host is about to write a tab to `path`. Guest text in it, or a copy of a paused project's
+ * file saved elsewhere, pauses Metals for the target folder first (a running Metals is killed by
+ * the listeners before the file exists). Returns what to call if the write fails.
+ */
+export function metalsBeforeSave(tabId: string, oldPath: string | null, path: string): () => void {
+  const pending = metalsTabs.get(tabId);
+  const name = pending ?? (oldPath && oldPath !== path ? metalsPausedBy(oldPath) : null);
+  if (name === null || name === undefined) return () => {};
+  metalsTabs.delete(tabId);
+  pauseMetals(path.replace(/\/[^/]*$/, "") || "/", name);
+  for (const fn of listeners) fn();
+  return () => {
+    if (pending !== undefined && !metalsTabs.has(tabId)) metalsTabs.set(tabId, pending);
+  };
 }
 
 /** Read before asking the host, and handed to `resumeMetals`. */
