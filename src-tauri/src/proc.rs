@@ -349,26 +349,64 @@ pub async fn run_capture(cmd: String, args: Vec<String>, cwd: Option<String>) ->
 /// One shared tool install at a time, across all windows.
 static SHARED_INSTALL: Mutex<()> = Mutex::new(());
 
-/// `run_capture` for installing into a folder all windows share: one at a time, and nothing to do
-/// if `done` appeared while waiting for another window's install.
+/// A hung install is ended after this.
+const SHARED_INSTALL_LIMIT: std::time::Duration = std::time::Duration::from_secs(300);
+/// How long a window waits for another window's install, which ends within the limit.
+const SHARED_INSTALL_WAIT: std::time::Duration = std::time::Duration::from_secs(320);
+
+/// `run_capture` for installing into a folder all windows share: one at a time, ended if it hangs.
+/// `done` is written after a successful install, so a half-finished one is never taken for done.
 #[tauri::command]
 pub async fn run_shared_install(cmd: String, args: Vec<String>, cwd: Option<String>, done: String) -> Result<Captured, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        run_once(&SHARED_INSTALL, Path::new(&done), || {
-            let out = command(&cmd, &args, cwd, None)?.output().map_err(|e| e.to_string())?;
-            Ok(Captured { code: out.status.code().unwrap_or(-1), stdout: String::from_utf8_lossy(&out.stdout).into(), stderr: String::from_utf8_lossy(&out.stderr).into() })
-        })
+        run_once(&SHARED_INSTALL, Path::new(&done), SHARED_INSTALL_WAIT, || output_limited(&mut command(&cmd, &args, cwd, None)?, SHARED_INSTALL_LIMIT))
     })
     .await
     .map_err(|e| e.to_string())?
 }
 
-fn run_once(lock: &Mutex<()>, done: &Path, run: impl FnOnce() -> Result<Captured, String>) -> Result<Captured, String> {
-    let _one = lock.lock().unwrap_or_else(|e| e.into_inner());
+fn run_once(lock: &Mutex<()>, done: &Path, wait: std::time::Duration, run: impl FnOnce() -> Result<Captured, String>) -> Result<Captured, String> {
+    let deadline = std::time::Instant::now() + wait;
+    let _one = loop {
+        match lock.try_lock() {
+            Ok(g) => break g,
+            Err(std::sync::TryLockError::Poisoned(e)) => break e.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) if std::time::Instant::now() >= deadline => return Err("install_busy".into()),
+            Err(std::sync::TryLockError::WouldBlock) => std::thread::sleep(std::time::Duration::from_millis(50)),
+        }
+    };
     if done.exists() {
         return Ok(Captured { code: 0, stdout: String::new(), stderr: String::new() });
     }
-    run()
+    let out = run()?;
+    if out.code == 0 {
+        std::fs::write(done, "").map_err(|e| e.to_string())?;
+    }
+    Ok(out)
+}
+
+/// Runs a command to its end, or ends it and what it started after `limit`.
+fn output_limited(c: &mut Command, limit: std::time::Duration) -> Result<Captured, String> {
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(c, 0);
+    let mut child = c.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| e.to_string())?;
+    let stdout = drain(child.stdout.take().unwrap());
+    let stderr = drain(child.stderr.take().unwrap());
+    let deadline = std::time::Instant::now() + limit;
+    let code = loop {
+        if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
+            break status.code().unwrap_or(-1);
+        }
+        if std::time::Instant::now() >= deadline {
+            kill_tree(&child);
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("install_timeout".into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    let wait = std::time::Duration::from_secs(2);
+    Ok(Captured { code, stdout: stdout.recv_timeout(wait).unwrap_or_default(), stderr: stderr.recv_timeout(wait).unwrap_or_default() })
 }
 
 /// Reads a pipe to its end on its own thread, so a full pipe can't block the child.
@@ -766,16 +804,43 @@ mod window_tests {
         let threads: Vec<_> = (0..2).map(|_| {
             let (done, lock, runs) = (done.clone(), lock.clone(), runs.clone());
             std::thread::spawn(move || {
-                run_once(&lock, &done, || {
+                run_once(&lock, &done, std::time::Duration::from_secs(5), || {
                     runs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     std::thread::sleep(std::time::Duration::from_millis(50));
-                    std::fs::write(&*done, "x").unwrap();
                     Ok(Captured { code: 0, stdout: String::new(), stderr: String::new() })
                 }).unwrap();
             })
         }).collect();
         for th in threads { th.join().unwrap(); }
         assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_failed_install_is_not_marked_done() {
+        let t = tempfile::tempdir().unwrap();
+        let done = t.path().join("done");
+        let lock = Mutex::new(());
+        let run = |code| Ok(Captured { code, stdout: String::new(), stderr: String::new() });
+        run_once(&lock, &done, std::time::Duration::from_secs(1), || run(1)).unwrap();
+        assert!(!done.exists());
+        run_once(&lock, &done, std::time::Duration::from_secs(1), || run(0)).unwrap();
+        assert!(done.exists());
+    }
+
+    #[test]
+    fn a_hung_install_ends_and_a_waiting_window_gives_up() {
+        let start = std::time::Instant::now();
+        let e = output_limited(Command::new("sleep").arg("30"), std::time::Duration::from_millis(150)).err();
+        assert_eq!(e.as_deref(), Some("install_timeout"));
+        assert!(start.elapsed() < std::time::Duration::from_secs(5));
+        let ok = output_limited(Command::new("sh").args(["-c", "echo hi"]), std::time::Duration::from_secs(5)).unwrap();
+        assert_eq!((ok.code, ok.stdout.as_str()), (0, "hi\n"));
+
+        let t = tempfile::tempdir().unwrap();
+        let lock = Mutex::new(());
+        let _held = lock.lock().unwrap();
+        let r = run_once(&lock, &t.path().join("done"), std::time::Duration::from_millis(100), || panic!("must not run"));
+        assert_eq!(r.err().as_deref(), Some("install_busy"));
     }
 
     #[test]

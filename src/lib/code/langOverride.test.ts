@@ -11,7 +11,7 @@ vi.mock("@tauri-apps/api/core", async (orig) => ({
     if (cmd === "lang_workdir") return `/private/x/${args.part}`;
     if (cmd === "lang_copy") return `/private/x/${args.part}/${args.name}`;
     if (cmd === "which_cmd") return ipc.which.has(args.cmd) ? (args.cmd.startsWith("/") ? args.cmd : `/bin/${args.cmd}`) : null;
-    if (cmd === "run_capture" || cmd === "run_killable") return { code: 0, stdout: "", stderr: "" };
+    if (cmd === "run_capture" || cmd === "run_killable" || cmd === "run_shared_install") return { code: 0, stdout: "", stderr: "" };
     return null;
   },
 }));
@@ -19,7 +19,7 @@ vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ onCloseReq
 vi.mock("../tools.svelte", async (orig) => ({ ...(await orig<typeof import("../tools.svelte")>()), ensureTools: async () => true }));
 vi.mock("../api", async (orig) => ({
   ...(await orig<typeof import("../api")>()),
-  fsApi: {
+  fsApi: { createDir: async () => {},
     exists: async (p: string) => files.has(p),
     readFile: async (p: string) => {
       if (!files.has(p)) throw new Error("not found");
@@ -318,6 +318,9 @@ describe("Debug for a file set to another language", () => {
     const plan = await planFor(ctx(`${PY}/prog`));
     expect(plan.launch.runtimeExecutable).toBe("/bin/node");
     expect(plan.launch.runtimeArgs).toEqual(["--import", "file:///tools/tsx/node_modules/tsx/dist/loader.mjs"]);
+    // A loader on disk can be half-installed: the shared install decides, by its own mark.
+    const install = ipc.calls.find((c) => c.cmd === "run_shared_install")!.args;
+    expect(install.done).toBe("/tools/tsx/.omega-installed");
     expect(plan.launch.program).toBe("/private/x/run/omega_main.ts");
   });
 
