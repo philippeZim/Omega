@@ -541,6 +541,158 @@ describe("a stop or a second start during a start", () => {
     expect(spawns()).toBe(spawned);
   });
 
+  describe("the adapter sends terminated while it is disconnected", () => {
+    const launches = () => fake.commands().filter((c) => c === "launch").length;
+    const disconnects = () => fake.commands().filter((c) => c === "disconnect").length;
+    const terminateOnDisconnect = () => {
+      fake.replies.disconnect = () => {
+        void fake.event("terminated");
+        return {};
+      };
+    };
+    /** Holds the disconnect open, with `terminated` already delivered. */
+    async function holdDisconnect() {
+      fake.noReply.add("disconnect");
+      await vi.waitFor(() => expect(fake.commands()).toContain("disconnect"));
+      await fake.event("terminated");
+    }
+    const newSessionStopped = async (first: string | null) => {
+      await vi.waitFor(() => {
+        expect(fake.id).not.toBe(first);
+        expect(S.dbg.status).toBe("stopped");
+      });
+    };
+
+    test("host restart ends the old session and starts one new session at the breakpoint", async () => {
+      await startAndStop();
+      const first = fake.id;
+      terminateOnDisconnect();
+      await D.restartDebugging();
+      await newSessionStopped(first);
+      expect(spawns()).toBe(2);
+      expect(launches()).toBe(2);
+      expect(disconnects()).toBe(1);
+      expect(ipc.some(([c, a]) => c === "proc_kill" && a.id === first)).toBe(true);
+      expect(fake.requests.filter((r) => r.command === "setBreakpoints")).toHaveLength(2);
+      expect(fake.last("launch").arguments.program).toBe("/p/main.py");
+      expect(S.dbg.stopReason).toBe("breakpoint");
+      expect(D.hostDebug.starting()).toBe(false);
+    });
+
+    test("guest restart starts one new session for the same file, under the guest's name", async () => {
+      await D.hostDebug.start("/p/main.py", "Bob");
+      await vi.waitFor(() => expect(S.dbg.status).toBe("stopped"));
+      const first = fake.id;
+      terminateOnDisconnect();
+      await D.hostDebug.restart("/p/main.py", "Bob");
+      await newSessionStopped(first);
+      expect(spawns()).toBe(2);
+      expect(disconnects()).toBe(1);
+      expect(S.dbg.actor).toBe("Bob");
+      expect(D.hostDebug.planFile()).toBe("/p/main.py");
+      expect(m.openFile).not.toHaveBeenCalled();
+    });
+
+    test("a Stop during a restart wins", async () => {
+      await startAndStop();
+      const restart = D.restartDebugging();
+      await holdDisconnect();
+      const stop = D.stopDebugging();
+      await fake.exit();
+      await Promise.all([restart, stop]);
+      await settle();
+      expect(spawns()).toBe(1);
+      expect(S.dbg.status).toBe("terminated");
+      expect(D.hostDebug.starting()).toBe(false);
+    });
+
+    test("a Start during a restart leaves exactly one new session", async () => {
+      await startAndStop();
+      const first = fake.id;
+      fake.noReply.add("disconnect");
+      const restart = D.restartDebugging();
+      await vi.waitFor(() => expect(fake.commands()).toContain("disconnect"));
+      const start = D.startDebugging();
+      await fake.event("terminated"); // must not cancel the Start that is waiting for the teardown
+      fake.noReply.delete("disconnect");
+      await fake.exit();
+      await Promise.all([restart, start]);
+      await newSessionStopped(first);
+      expect(spawns()).toBe(2);
+      expect(launches()).toBe(2);
+    });
+
+    test("Start on a running session replaces it", async () => {
+      await startAndStop();
+      const first = fake.id;
+      terminateOnDisconnect();
+      await D.startDebugging();
+      await newSessionStopped(first);
+      expect(spawns()).toBe(2);
+      expect(disconnects()).toBe(1);
+    });
+
+    test("a guest's Start on a running session replaces it", async () => {
+      await startAndStop();
+      const first = fake.id;
+      terminateOnDisconnect();
+      await D.hostDebug.start("/p/main.py", "Bob");
+      await newSessionStopped(first);
+      expect(spawns()).toBe(2);
+      expect(S.dbg.actor).toBe("Bob");
+    });
+
+    test("a session that ends on its own is cleaned up and not started again", async () => {
+      await startAndStop();
+      await fake.event("terminated");
+      await vi.waitFor(() => expect(S.dbg.status).toBe("terminated"));
+      await settle();
+      expect(disconnects()).toBe(1);
+      expect(ipc.some(([c, a]) => c === "proc_kill" && a.id === fake.id)).toBe(true);
+      expect(spawns()).toBe(1);
+      expect(S.dbg.frames).toEqual([]);
+    });
+
+    test("a late terminated from the old session leaves the new one alone", async () => {
+      await startAndStop();
+      const first = fake.id;
+      await D.restartDebugging();
+      await newSessionStopped(first);
+      const n = disconnects();
+      await emit("proc-msg", { id: first, msg: JSON.stringify({ seq: 5000, type: "event", event: "terminated", body: {} }) });
+      await settle();
+      expect(S.dbg.status).toBe("stopped");
+      expect(disconnects()).toBe(n);
+    });
+
+    test("a guest's restart can still be cancelled while the old session closes", async () => {
+      await D.hostDebug.start("/p/main.py", "Bob");
+      await vi.waitFor(() => expect(S.dbg.status).toBe("stopped"));
+      const restart = D.hostDebug.restart("/p/main.py", "Bob");
+      await holdDisconnect();
+      expect(D.hostDebug.starting()).toBe(true);
+      const cancel = D.hostDebug.cancelStart();
+      await fake.exit();
+      await Promise.all([restart, cancel]);
+      await settle();
+      expect(spawns()).toBe(1);
+      expect(D.hostDebug.starting()).toBe(false);
+    });
+
+    test("a guest's restart doesn't launch a plan forgotten while the old session closes", async () => {
+      await D.hostDebug.start("/p/main.py", "Bob");
+      await vi.waitFor(() => expect(S.dbg.status).toBe("stopped"));
+      const restart = D.hostDebug.restart("/p/main.py", "Bob");
+      await holdDisconnect();
+      D.hostDebug.forgetGuestPlan();
+      await fake.exit();
+      await restart;
+      await settle();
+      expect(spawns()).toBe(1);
+      expect(D.hostDebug.starting()).toBe(false);
+    });
+  });
+
   test("a start that throws doesn't count as in progress afterwards", async () => {
     S.dbgHooks.beforeStart = async () => {
       throw new Error("save failed");
