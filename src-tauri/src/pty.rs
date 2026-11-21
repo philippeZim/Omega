@@ -163,6 +163,14 @@ fn single_command(id: &str, command: &str) -> Result<CommandBuilder, String> {
     Ok(c)
 }
 
+/// Shell prompts run git by themselves in whatever folder the terminal is in.
+fn apply_git_guard(cmd: &mut CommandBuilder) {
+    for (k, v) in crate::env::git_guard_env() {
+        cmd.env(k, v);
+    }
+    cmd.env_remove(crate::env::GIT_PARAMETERS);
+}
+
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub fn pty_spawn(app: AppHandle, id: String, cwd: Option<String>, cols: u16, rows: u16, kind: Option<String>, shell: Option<String>, command: Option<String>) -> Result<(), String> {
@@ -178,6 +186,7 @@ pub fn pty_spawn(app: AppHandle, id: String, cwd: Option<String>, cols: u16, row
     };
     cmd.cwd(&dir);
     cmd.env("PATH", crate::env::path());
+    apply_git_guard(&mut cmd);
     // Don't leak a parent Claude Code session's markers (e.g. Omega started from `claude`) into
     // the user's shells; the login shell re-reads the user's own profile anyway.
     for (k, _) in std::env::vars() {
@@ -204,8 +213,8 @@ pub fn pty_spawn(app: AppHandle, id: String, cwd: Option<String>, cols: u16, row
     }
     if cfg!(windows) {
         // Forward Omega's variables into WSL shells (Windows → Linux env bridging).
-        let fwd = "TERM_PROGRAM:COLORTERM:CLAUDE_CODE_SSE_PORT:ENABLE_IDE_INTEGRATION:FORCE_CODE_TERMINAL:OMEGA_MCP_TOKEN";
-        let wslenv = std::env::var("WSLENV").map(|v| format!("{v}:{fwd}")).unwrap_or(fwd.into());
+        let fwd = format!("TERM_PROGRAM:COLORTERM:CLAUDE_CODE_SSE_PORT:ENABLE_IDE_INTEGRATION:FORCE_CODE_TERMINAL:OMEGA_MCP_TOKEN:{}", crate::env::git_guard_wslenv());
+        let wslenv = std::env::var("WSLENV").map(|v| format!("{v}:{fwd}")).unwrap_or(fwd);
         cmd.env("WSLENV", wslenv);
     }
     let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
@@ -282,6 +291,16 @@ pub fn pty_kill(app: AppHandle, id: String) {
 
 #[cfg(test)]
 mod tests {
+    use super::{apply_git_guard, CommandBuilder};
+
+    #[test]
+    fn terminals_get_the_git_guard_without_inherited_parameters() {
+        let mut c = CommandBuilder::new("sh");
+        c.env(crate::env::GIT_PARAMETERS, "'safe.bareRepository=all'");
+        apply_git_guard(&mut c);
+        assert!(c.get_env(crate::env::GIT_PARAMETERS).is_none());
+        assert!(c.get_env("GIT_CONFIG_COUNT").is_some());
+    }
     #[test]
     fn lists_shells() {
         let shells = super::list_shells();

@@ -1,7 +1,10 @@
 // Code Together session state (collab.svelte.ts) with the transport events mocked.
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import { mockIPC } from "@tauri-apps/api/mocks";
 import { emit } from "@tauri-apps/api/event";
+
+const forgetPeer = vi.hoisted(() => vi.fn());
+vi.mock("./share.svelte", () => ({ forgetPeer, teardownShare: async () => {} }));
 
 const NAME = "Gäste-Testerin Ümlaut mit sehr langem Namen"; // 43 characters
 
@@ -22,4 +25,23 @@ test("a guest with a long name finds itself in the participant list (#130)", asy
   await emit("collab-msg", { peer: "hostpeer", msg: JSON.stringify({ t: "welcome", you: { peer: "me123", name: cut, color: "#333333" }, participants }) });
   expect(collab.status).toBe("connected");
   expect(collab.participants.filter(isMe).map((p) => p.peer)).toEqual(["me123"]);
+});
+
+test("host: a guest whose connection closed is forgotten by the shared-docs layer", async () => {
+  // A fresh module, so its transport listeners register on this test's event mock.
+  vi.resetModules();
+  mockIPC(() => null, { shouldMockEvents: true });
+  const { collab } = await import("./collab.svelte");
+  await new Promise((r) => setTimeout(r));
+  Object.assign(collab, {
+    role: "host",
+    status: "hosting",
+    participants: [
+      { peer: "self", name: "Host", color: "#111111", role: "host" },
+      { peer: "g1", name: "Gast", color: "#222222", role: "guest" },
+    ],
+  });
+  await emit("collab-closed", { peer: "g1", reason: "closed" });
+  await vi.waitFor(() => expect(forgetPeer).toHaveBeenCalledWith("g1"));
+  Object.assign(collab, { role: null, status: "idle", participants: [] });
 });

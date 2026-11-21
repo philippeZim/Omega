@@ -157,6 +157,7 @@ export const en = {
   "git.diff.renamedFrom": "Renamed from {orig}",
   "git.diff.binary": "Binary file",
   "git.diff.binaryHint": "Binary file – no text diff. Use \"Discard Changes\" in the Changes list to restore the committed version.",
+  "git.initBareRepo": "This folder is a bare Git repository or inside one, so no new repository can be created here.",
 };
 export const de: Record<keyof typeof en, string> = {
   "git.noFolderOpen": "Kein Ordner geöffnet",
@@ -316,6 +317,7 @@ export const de: Record<keyof typeof en, string> = {
   "git.diff.renamedFrom": "Umbenannt von {orig}",
   "git.diff.binary": "Binärdatei",
   "git.diff.binaryHint": "Binärdatei – kein Textvergleich. Mit „Änderungen verwerfen“ in der Änderungsliste stellst du die committete Version wieder her.",
+  "git.initBareRepo": "Dieser Ordner ist ein Bare-Git-Repository oder liegt darin, daher kann hier kein neues Repository angelegt werden.",
 };
 export const fr: Record<keyof typeof en, string> = {
   "git.noFolderOpen": "Aucun dossier ouvert",
@@ -475,4 +477,5 @@ export const fr: Record<keyof typeof en, string> = {
   "git.diff.renamedFrom": "Renommé depuis {orig}",
   "git.diff.binary": "Fichier binaire",
   "git.diff.binaryHint": "Fichier binaire – pas de comparaison de texte. Utilisez « Abandonner les modifications » dans la liste des modifications pour restaurer la version validée.",
+  "git.initBareRepo": "Ce dossier est un dépôt Git nu ou se trouve dans l’un d’eux : impossible d’y créer un nouveau dépôt.",
 };

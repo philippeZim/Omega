@@ -7,17 +7,21 @@ type Msg = Record<string, any>;
 const handlers: ((peer: string, msg: Msg) => unknown)[] = [];
 const endHooks: ((wasGuest: boolean) => unknown)[] = [];
 const collab = { role: "guest" as "host" | "guest" | null, status: "connected", hostPeer: "host-peer", participants: [] as unknown[] };
+const broadcast = vi.fn();
 vi.mock("@tauri-apps/api/event", () => ({ listen: async () => () => {} }));
 vi.mock("./collab.svelte", () => ({
   collab,
   send: vi.fn(),
-  broadcast: vi.fn(),
+  broadcast,
   onCollabMessage: (fn: (peer: string, msg: Msg) => unknown) => void handlers.push(fn),
   sessionEndHooks: endHooks,
 }));
 vi.mock("./share.svelte", () => ({
   share: { hostRoot: "", hostHasRoot: true, hostTabs: [], treeGen: 0 },
-  hostKey: (tab: { id: string }) => `tab:${tab.id}`,
+  // Like the real one: Untitled by id, project files by relative path, anything else hidden.
+  hostKeyChecked: async (tab: { id: string; path: string | null }) =>
+    !tab.path ? `tab:${tab.id}` : tab.path.startsWith("/home/g/") ? tab.path.slice("/home/g/".length) : null,
+  syncSharedTabs: vi.fn(),
   openRemote: vi.fn(),
   isRemote: (p: string | null) => !!p && p.startsWith("collab:"),
 }));
@@ -105,4 +109,22 @@ test("unsaved edits of a file that is gone after leaving come back in a new tab 
   expect(app.tabs).toHaveLength(1);
   expect(app.tabs[0]).toMatchObject({ path: null, name: "ro.txt", dirty: true });
   expect(texts.get(app.tabs[0].id)).toBe("my edits\n");
+});
+
+test("host announces project files and Untitled tabs, not files outside the project", async () => {
+  collab.role = "host";
+  broadcast.mockClear();
+  addTab("/home/g/a.txt", "a.txt", "a\n");
+  const untitled = addTab(null, "Untitled", "");
+  addTab("/etc/secret.conf", "secret.conf", "secret\n");
+  await receive("g1", { t: "hello-ready" });
+  await vi.waitFor(() => expect(broadcast).toHaveBeenCalled());
+  const s = broadcast.mock.calls.at(-1)![0];
+  expect(s.tabs).toEqual([
+    { key: "a.txt", name: "a.txt" },
+    { key: `tab:${untitled}`, name: "Untitled" },
+  ]);
+  // The outside file is the active tab: neither its name nor a key goes out.
+  expect(s.active).toBeNull();
+  expect(JSON.stringify(s)).not.toContain("secret");
 });

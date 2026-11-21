@@ -10,7 +10,7 @@
  */
 import { listen } from "@tauri-apps/api/event";
 import { collab, send, broadcast, onCollabMessage, sessionEndHooks } from "./collab.svelte";
-import { share, hostKey, openRemote, isRemote } from "./share.svelte";
+import { share, hostKeyChecked, syncSharedTabs, openRemote, isRemote } from "./share.svelte";
 import { app, activeTab, activate, closeTab, flushAutosave, newFile, openFile, setMode, setRoot } from "../state.svelte";
 import { runner, runAction, refreshProject, runnerRemote } from "../code/runner.svelte";
 import type { Action, Project } from "../code/projects";
@@ -46,15 +46,18 @@ const info = (a: Action | null | undefined): ActionInfo | null => (a?.cmd ? { id
 
 // ------------------------------------------------------------------ host
 
-function hostSession(): SessionInfo {
+/** What guests get to see: tabs outside the project are left out entirely. */
+async function hostSession(): Promise<SessionInfo> {
   const p = runner.project;
-  const tabs = app.tabs.filter((tab) => !isRemote(tab.path)).map((tab) => ({ key: hostKey(tab), name: tab.name }));
+  const listed = await Promise.all(app.tabs.filter((tab) => !isRemote(tab.path)).map(async (tab) => ({ key: await hostKeyChecked(tab), name: tab.name })));
+  const tabs = listed.filter((tab): tab is { key: string; name: string } => tab.key !== null);
   const a = activeTab();
+  const active = a && !isRemote(a.path) ? await hostKeyChecked(a) : null;
   return {
     root: app.root ? basename(app.root) : null,
     mode: app.mode,
     tabs,
-    active: a && !isRemote(a.path) ? hostKey(a) : null,
+    active,
     project: p
       ? {
           kind: p.kind,
@@ -71,9 +74,12 @@ function hostSession(): SessionInfo {
 
 let lastSent = "";
 let sendTimer = 0;
-function announce(force = false) {
+let announceSeq = 0;
+async function announce(force = false) {
   if (collab.role !== "host") return;
-  const s = hostSession();
+  const seq = ++announceSeq;
+  const s = await hostSession();
+  if (seq !== announceSeq || collab.role !== "host") return; // a newer announcement is on its way
   const json = JSON.stringify(s);
   if (!force && json === lastSent) return;
   lastSent = json;
@@ -90,6 +96,7 @@ $effect.root(() => {
     void app.root;
     void app.mode;
     void runner.project;
+    void syncSharedTabs();
     clearTimeout(sendTimer);
     sendTimer = window.setTimeout(() => announce(), 150);
   });

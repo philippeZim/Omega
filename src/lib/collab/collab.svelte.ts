@@ -248,6 +248,7 @@ listen<{ peer: string; reason: string }>("collab-closed", (e) => {
     collab.participants = collab.participants.filter((x) => x.peer !== peer);
     collab.requests = collab.requests.filter((x) => x.peer !== peer);
     if (p) {
+      void import("./share.svelte").then((m) => m.forgetPeer(peer));
       ui.toast(t("ai.collab.left", { name: p.name }));
       broadcast({ t: "participants", participants: collab.participants.map(publicInfo) });
     }

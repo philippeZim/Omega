@@ -95,6 +95,8 @@ fn user_path() -> OsString {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| if cfg!(target_os = "macos") { "/bin/zsh".into() } else { "/bin/bash".into() });
     let child = Command::new(&shell)
         .args(["-l", "-c", "printf '__OMEGA_PATH__%s__END__' \"$PATH\""])
+        .envs(git_guard_env())
+        .env_remove(GIT_PARAMETERS)
         .stdin(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -215,6 +217,8 @@ pub fn which(cmd: &str) -> Option<PathBuf> {
 pub fn command(program: impl AsRef<OsStr>) -> Command {
     let mut c = Command::new(program);
     c.env("PATH", path());
+    c.envs(git_guard_env());
+    c.env_remove(GIT_PARAMETERS);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -222,6 +226,44 @@ pub fn command(program: impl AsRef<OsStr>) -> Command {
         c.creation_flags(CREATE_NO_WINDOW);
     }
     c
+}
+
+pub const GIT_PARAMETERS: &str = "GIT_CONFIG_PARAMETERS";
+
+/// Environment that makes every git started by Omega (or by a tool, shell prompt or language server
+/// it starts) refuse a bare repository it merely discovered. Otherwise a folder holding `HEAD`,
+/// `config`, `objects/` and `refs/` is a repository whose `core.fsmonitor` runs on the next
+/// `git status`, and a Code Together guest can create those files. Normal repositories, worktrees
+/// and submodules aren't affected. Added after the user's own GIT_CONFIG_* entries.
+///
+/// Spawns must also remove `GIT_PARAMETERS`: git reads it after GIT_CONFIG_*, so an inherited
+/// `safe.bareRepository=all` would win. Git sets it again itself for the children of a `git -c`.
+pub fn git_guard_env() -> Vec<(String, String)> {
+    git_guard_after(std::env::var("GIT_CONFIG_COUNT").ok().as_deref())
+}
+
+fn git_config_count(existing: Option<&str>) -> u32 {
+    existing.and_then(|v| v.parse::<u32>().ok()).filter(|n| *n < i32::MAX as u32).unwrap_or(0)
+}
+
+fn git_guard_after(existing: Option<&str>) -> Vec<(String, String)> {
+    let n = git_config_count(existing);
+    vec![
+        ("GIT_CONFIG_COUNT".into(), (n + 1).to_string()),
+        (format!("GIT_CONFIG_KEY_{n}"), "safe.bareRepository".into()),
+        (format!("GIT_CONFIG_VALUE_{n}"), "explicit".into()),
+    ]
+}
+
+/// The GIT_CONFIG_* names a WSL shell needs forwarded for `git_guard_env` to hold there.
+pub fn git_guard_wslenv() -> String {
+    let n = git_config_count(std::env::var("GIT_CONFIG_COUNT").ok().as_deref());
+    let mut names = vec!["GIT_CONFIG_COUNT".to_string()];
+    for i in 0..=n {
+        names.push(format!("GIT_CONFIG_KEY_{i}"));
+        names.push(format!("GIT_CONFIG_VALUE_{i}"));
+    }
+    names.join(":")
 }
 
 /// `command` for a tool resolved via `which` (clear error if it isn't installed).
@@ -271,6 +313,28 @@ pub fn pid_alive(pid: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn git_guard_comes_after_the_users_own_git_config() {
+        let pairs = |v: Vec<(String, String)>| v.into_iter().map(|(a, b)| format!("{a}={b}")).collect::<Vec<_>>();
+        assert_eq!(pairs(git_guard_after(None)), ["GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=safe.bareRepository", "GIT_CONFIG_VALUE_0=explicit"]);
+        assert_eq!(pairs(git_guard_after(Some("2"))), ["GIT_CONFIG_COUNT=3", "GIT_CONFIG_KEY_2=safe.bareRepository", "GIT_CONFIG_VALUE_2=explicit"]);
+        assert_eq!(pairs(git_guard_after(Some("junk")))[0], "GIT_CONFIG_COUNT=1");
+    }
+
+    #[test]
+    fn commands_carry_the_git_guard() {
+        let c = command("anything");
+        let keys: Vec<_> = c.get_envs().filter_map(|(k, v)| Some(format!("{}={}", k.to_str()?, v?.to_str()?))).collect();
+        assert!(keys.iter().any(|k| k.ends_with("=safe.bareRepository")), "{keys:?}");
+        assert!(keys.iter().any(|k| k.ends_with("=explicit")), "{keys:?}");
+    }
+
+    #[test]
+    fn commands_drop_inherited_git_parameters() {
+        let c = command("anything");
+        assert!(c.get_envs().any(|(k, v)| k == GIT_PARAMETERS && v.is_none()), "must be removed, an inherited value beats the guard");
+    }
 
     #[test]
     fn which_empty_is_none() {
