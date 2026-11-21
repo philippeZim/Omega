@@ -31,6 +31,12 @@ pub fn run() {
         .manage(mcp_control::McpControlState::default())
         .manage(ide_ws::IdeState::default())
         .manage(codex_ipc::CodexState::default())
+        .on_page_load(|webview, payload| {
+            use tauri::Manager;
+            if payload.event() == tauri::webview::PageLoadEvent::Started {
+                collab::frontend_loading(webview.app_handle());
+            }
+        })
         .setup(|app| {
             use tauri::Manager;
             let tools = app.path().app_data_dir().map(|d| d.join("tools")).unwrap_or_else(|_| env::home().join(".omega-tools"));
