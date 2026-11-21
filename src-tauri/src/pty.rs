@@ -671,7 +671,7 @@ mod tests {
     fn a_guest_shell_that_exits_by_itself_takes_its_detached_jobs_along() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("pid");
-        let s = session(PtyKind::GuestShell, &format!("nohup sleep 9999 >/dev/null 2>&1 </dev/null & echo $! > {0}.tmp; mv {0}.tmp {0}; exit 3", file.display()));
+        let s = session(PtyKind::GuestShell, &format!("trap '' HUP; nohup sleep 9999 >/dev/null 2>&1 </dev/null & echo $! > {0}.tmp; mv {0}.tmp {0}; exit 3", file.display()));
         let mut reader = s.master.try_clone_reader().unwrap();
         // As in the reader thread: until the PTY reports its end.
         let mut buf = [0u8; 1024];
@@ -691,7 +691,7 @@ mod tests {
     fn a_commands_exit_leaves_its_detached_jobs_alone() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("pid");
-        let s = session(PtyKind::Command, &format!("nohup sleep 30 >/dev/null 2>&1 </dev/null & echo $! > {0}.tmp; mv {0}.tmp {0}", file.display()));
+        let s = session(PtyKind::Command, &format!("trap '' HUP; nohup sleep 30 >/dev/null 2>&1 </dev/null & echo $! > {0}.tmp; mv {0}.tmp {0}", file.display()));
         let mut reader = s.master.try_clone_reader().unwrap();
         let mut buf = [0u8; 1024];
         while matches!(reader.read(&mut buf), Ok(n) if n > 0) {}
@@ -717,6 +717,7 @@ mod tests {
         end_session(granted);
 
         let mut own = session(PtyKind::Shell, "exec sleep 30");
+        assert!(wait_until(|| own.master.process_group_leader().and_then(process_args).is_some_and(|a| a[0] == "sleep")));
         assert!(!guest_may_write(&mut own, "task"));
         assert!(!guest_may_write(&mut own, "shell"));
         end_session(own);
