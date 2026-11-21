@@ -66,6 +66,11 @@ export const en = {
   "ai.collab.guestRenamed": "{name} renamed {file} to {to}",
   "ai.collab.guestDeleted": "{name} deleted {file}",
   "ai.collab.fileOpTimeout": "The host didn't answer",
+  "ai.collab.leaveFirst": "You're a guest in a session. Leave it first to open another project or session.",
+  "ai.collab.localFileHint": "The host has no folder open: this new tab stays on your computer.",
+  "ai.collab.saveCopyTitle": "Save a copy in the host's project",
+  "ai.collab.saveCopyFailed": "{name} was created, but the copy couldn't be opened",
+  "ai.collab.saveCopyNoFolder": "The host has no folder open, so there's nowhere to save a copy.",
 };
 export const de: Record<keyof typeof en, string> = {
   "ai.noActiveFile": "Keine Datei aktiv",
@@ -133,6 +138,11 @@ export const de: Record<keyof typeof en, string> = {
   "ai.collab.guestRenamed": "{name} hat {file} in {to} umbenannt",
   "ai.collab.guestDeleted": "{name} hat {file} gelöscht",
   "ai.collab.fileOpTimeout": "Der Host hat nicht geantwortet",
+  "ai.collab.leaveFirst": "Du bist Gast in einer Sitzung. Verlasse sie zuerst, um ein anderes Projekt oder eine andere Sitzung zu öffnen.",
+  "ai.collab.localFileHint": "Der Host hat keinen Ordner geöffnet: Dieser neue Tab bleibt auf deinem Computer.",
+  "ai.collab.saveCopyTitle": "Kopie im Projekt des Hosts speichern",
+  "ai.collab.saveCopyFailed": "{name} wurde angelegt, die Kopie ließ sich aber nicht öffnen",
+  "ai.collab.saveCopyNoFolder": "Der Host hat keinen Ordner geöffnet, daher kann keine Kopie gespeichert werden.",
 };
 export const fr: Record<keyof typeof en, string> = {
   "ai.noActiveFile": "Aucun fichier actif",
@@ -200,4 +210,9 @@ export const fr: Record<keyof typeof en, string> = {
   "ai.collab.guestRenamed": "{name} a renommé {file} en {to}",
   "ai.collab.guestDeleted": "{name} a supprimé {file}",
   "ai.collab.fileOpTimeout": "L’hôte n’a pas répondu",
+  "ai.collab.leaveFirst": "Vous êtes invité dans une session. Quittez-la d’abord pour ouvrir un autre projet ou une autre session.",
+  "ai.collab.localFileHint": "L’hôte n’a aucun dossier ouvert : ce nouvel onglet reste sur votre ordinateur.",
+  "ai.collab.saveCopyTitle": "Enregistrer une copie dans le projet de l’hôte",
+  "ai.collab.saveCopyFailed": "{name} a été créé, mais la copie n’a pas pu être ouverte",
+  "ai.collab.saveCopyNoFolder": "L’hôte n’a aucun dossier ouvert : impossible d’enregistrer une copie.",
 };

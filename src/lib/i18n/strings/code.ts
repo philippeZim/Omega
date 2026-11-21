@@ -248,6 +248,9 @@ export const en = {
   "code.pdf.line": "Ln {n}",
   "code.pdf.noMessages": "No messages.",
   "code.pdf.fullLog": "Full log",
+  "code.rb.runCmdOnHost": "The run command is set on the host",
+  "code.term.newLocal": "New local terminal (on your computer, not the host)",
+  "code.term.localTitle": "Local (not host)",
 };
 export const de: Record<keyof typeof en, string> = {
   "code.key.ctrl": "Strg",
@@ -488,6 +491,9 @@ export const de: Record<keyof typeof en, string> = {
   "code.pdf.line": "Z. {n}",
   "code.pdf.noMessages": "Keine Meldungen.",
   "code.pdf.fullLog": "Vollständiges Log",
+  "code.rb.runCmdOnHost": "Der Run-Befehl wird beim Host festgelegt",
+  "code.term.newLocal": "Neues lokales Terminal (auf deinem Computer, nicht beim Host)",
+  "code.term.localTitle": "Lokal (nicht Host)",
 };
 export const fr: Record<keyof typeof en, string> = {
   "code.key.ctrl": "Ctrl",
@@ -728,4 +734,7 @@ export const fr: Record<keyof typeof en, string> = {
   "code.pdf.line": "l. {n}",
   "code.pdf.noMessages": "Aucun message.",
   "code.pdf.fullLog": "Journal complet",
+  "code.rb.runCmdOnHost": "La commande d’exécution se règle chez l’hôte",
+  "code.term.newLocal": "Nouveau terminal local (sur votre ordinateur, pas chez l’hôte)",
+  "code.term.localTitle": "Local (pas l’hôte)",
 };

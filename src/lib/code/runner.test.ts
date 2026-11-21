@@ -76,3 +76,30 @@ describe("runAction uses the project as saved (#79)", () => {
     expect(h.runCommand.mock.calls[0][0]).toBe("echo x");
   });
 });
+
+test("a guest's Edit Run command stores nothing and says where it is set", async () => {
+  const { editRunCommand, runnerRemote } = await import("./runner.svelte");
+  const { ui } = await import("../ui.svelte");
+  const set = vi.spyOn(Storage.prototype, "setItem");
+  runner.project = { kind: "cmake", root: "collab:", label: "x", run: { id: "run", label: "Run", cmd: "on host" }, build: null, test: null, more: [], needs: [] };
+  runnerRemote.project = () => runner.project;
+  await editRunCommand();
+  runnerRemote.project = null;
+  expect(ui.prompt).not.toHaveBeenCalled();
+  expect(set).not.toHaveBeenCalled();
+  expect(ui.toast).toHaveBeenCalled();
+  set.mockRestore();
+});
+
+test("New Project stays closed during a guest session", async () => {
+  const { openNewProject } = await import("./runner.svelte");
+  const { guestGuard } = await import("../collab/guard");
+  runner.newProject = false;
+  guestGuard.status = () => "connected";
+  openNewProject();
+  guestGuard.status = () => "none";
+  expect(runner.newProject).toBe(false);
+  openNewProject();
+  expect(runner.newProject).toBe(true);
+  runner.newProject = false;
+});

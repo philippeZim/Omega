@@ -3,6 +3,7 @@ import { ensureTools } from "../tools.svelte";
 import { invoke } from "@tauri-apps/api/core";
 import { openDialog } from "../native";
 import { app, setRoot, openFile, save, syncFromDisk } from "../state.svelte";
+import { blockedAsGuest } from "../collab/guard";
 import { ui } from "../ui.svelte";
 import { joinPath, fsApi } from "../api";
 import { t, type Key } from "../i18n/index.svelte";
@@ -426,6 +427,7 @@ export async function cloneInto(url: string, dest: string): Promise<string | nul
 
 /** Project menu / command: opens the new-project dialog on its "Clone from Git" tab. */
 export async function cloneRepo() {
+  if (blockedAsGuest()) return;
   const { runner } = await import("../code/runner.svelte");
   cloneTabRequested.value = true;
   runner.newProject = true;

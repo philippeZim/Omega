@@ -91,3 +91,13 @@ describe("git error toasts (#71)", () => {
     expect(err).not.toContain("hint");
   });
 });
+
+test("Clone doesn't open during a guest session", async () => {
+  const { guestGuard } = await import("../collab/guard");
+  const { cloneRepo, cloneTabRequested } = await import("./git.svelte");
+  cloneTabRequested.value = false;
+  guestGuard.status = () => "connected";
+  await cloneRepo();
+  guestGuard.status = () => "none";
+  expect(cloneTabRequested.value).toBe(false);
+});

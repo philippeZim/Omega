@@ -33,7 +33,7 @@
     const recents = recentFolders.filter((f) => f !== app.root).slice(0, 8);
     ui.openMenu(new MouseEvent("contextmenu", { clientX: r.left, clientY: r.bottom + 8 }), [
       { label: t("app.openFolder") + "…", shortcut: shortcutLabel("file.openFolder"), action: openFolder },
-      { label: t("app.newProject") + "…", action: () => (runner.newProject = true) },
+      { label: t("app.newProject") + "…", action: openNewProject },
       { label: t("app.cloneRepo"), action: cloneRepo },
       ...(app.root && !git.repo ? [{ label: t("app.initRepo"), action: initRepo }] : []),
       ...(app.root ? [{ label: t("app.publishGitHub"), action: publishGitHub }] : []),
@@ -47,7 +47,7 @@
   import { MODES } from "../lib/modes";
   import { shortcutLabel, withShortcut } from "../lib/commands.svelte";
   import { basename } from "../lib/api";
-  import { runner } from "../lib/code/runner.svelte";
+  import { openNewProject } from "../lib/code/runner.svelte";
   import { settings } from "../lib/settings.svelte";
   import { collab } from "../lib/collab/collab.svelte";
   import { share } from "../lib/collab/share.svelte";
@@ -109,7 +109,7 @@
     <button class="ghost extra" title={withShortcut(t("app.openFolder"), "file.openFolder")} onclick={openFolder} aria-label={t("app.openFolder")}>
       <svg width="15" height="14" viewBox="0 0 15 14"><path d="M1.5 3.5a1 1 0 0 1 1-1h3l1.3 1.5h5.7a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1h-10a1 1 0 0 1-1-1z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>
     </button>
-    <button class="ghost extra" title={t("app.newProject")} onclick={() => (runner.newProject = true)} aria-label={t("app.newProject")}>
+    <button class="ghost extra" title={t("app.newProject")} onclick={openNewProject} aria-label={t("app.newProject")}>
       <svg width="14" height="14" viewBox="0 0 14 14"><path d="M7 2.5v9M2.5 7h9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
     </button>
   </div>

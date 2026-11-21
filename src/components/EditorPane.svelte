@@ -2,7 +2,7 @@
   import { IS_MAC } from "../lib/platform";
   import { onMount } from "svelte";
   import * as ed from "../lib/editor";
-  import { app, newFile, openFolder } from "../lib/state.svelte";
+  import { app, newFileInSession, openFolder } from "../lib/state.svelte";
   import { MODES } from "../lib/modes";
 
   import { ui, type MenuItem } from "../lib/ui.svelte";
@@ -11,7 +11,7 @@
   import { misspelledAt, suggest, addToDictionary, ignoreWord, refreshSpell } from "../lib/spell";
   import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
   import { selectAll } from "@codemirror/commands";
-  import { runner } from "../lib/code/runner.svelte";
+  import { openNewProject } from "../lib/code/runner.svelte";
   import { t } from "../lib/i18n/index.svelte";
   import { modeSwitchLabel, shortcutLabel } from "../lib/commands.svelte";
 
@@ -76,9 +76,9 @@
       <div class="inner">
       <h1>{modeLabel}</h1>
       <div class="actions">
-        <button class="btn" onclick={newFile}>{t("code.ed.newFile")}{#if newKey} <kbd>{newKey}</kbd>{/if}</button>
+        <button class="btn" onclick={() => newFileInSession()}>{t("code.ed.newFile")}{#if newKey} <kbd>{newKey}</kbd>{/if}</button>
         <button class="btn" onclick={openFolder}>{t("code.ed.openFolder")}{#if openKey} <kbd>{openKey}</kbd>{/if}</button>
-        {#if app.mode === "code"}<button class="btn primary" onclick={() => (runner.newProject = true)}>{t("code.np.newProject")}</button>{/if}
+        {#if app.mode === "code"}<button class="btn primary" onclick={openNewProject}>{t("code.np.newProject")}</button>{/if}
       </div>
       {#if hint}<p class="hint">{hint}</p>{/if}
       </div>

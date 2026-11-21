@@ -9,6 +9,7 @@ import { onFilesChanged } from "../fsWatch.svelte";
 import { t } from "../i18n/index.svelte";
 import { ensureTools } from "../tools.svelte";
 import { cd, q } from "../platform";
+import { blockedAsGuest } from "../collab/guard";
 
 export const runner = $state({
   project: null as Project | null,
@@ -25,6 +26,11 @@ export const runnerRemote = {
   project: null as (() => Project | null) | null,
   run: null as ((a: Action) => void) | null,
 };
+
+/** Opens the New Project dialog (not during a guest session: it would replace the shared project). */
+export function openNewProject() {
+  if (!blockedAsGuest()) runner.newProject = true;
+}
 
 // Editing a project file outside the editor (or git) can change the actions too.
 const PROJECT_FILES = new Set(["Cargo.toml", "pyproject.toml", "package.json", "CMakeLists.txt", "settings.gradle.kts", "settings.gradle", "build.gradle.kts", "build.gradle"]);
@@ -70,6 +76,8 @@ function withCustomRun(p: Project): Project {
 export async function editRunCommand() {
   const p = runner.project;
   if (!p) return;
+  // A guest's project is the host's: a command stored here would never run.
+  if (runnerRemote.project) return ui.toast(t("code.rb.runCmdOnHost"));
   const v = await ui.prompt(t("code.rb.runCmdTitle"), p.run?.cmd ?? "", t("code.rb.runCmdPlaceholder"), undefined, undefined, true);
   if (v === null) return;
   try {

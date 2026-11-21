@@ -7,6 +7,7 @@ import { listen } from "@tauri-apps/api/event";
 import { ui } from "../ui.svelte";
 import { t } from "../i18n/index.svelte";
 import { collabErrorText } from "./collabError";
+import { guestGuard } from "./guard";
 import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
 
 export const PEER_COLORS = ["#6b9be0", "#7bbf8e", "#d6a35f", "#cf8fb4", "#86b9cc", "#a996cf", "#df7067", "#c8b77e"];
@@ -45,6 +46,8 @@ export const collab = $state({
 });
 
 /** Whether a participant row is me (host: "self"; guest: the id the host gave me). */
+guestGuard.status = () => (collab.role !== "guest" ? "none" : collab.status === "connected" ? "connected" : "pending");
+
 export const isMe = (p: { peer: string; name: string; color: string }) =>
   collab.role === "host" ? p.peer === "self" : collab.myPeer ? p.peer === collab.myPeer : p.name === collab.me.name && p.color === collab.me.color;
 
