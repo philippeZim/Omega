@@ -330,6 +330,40 @@ function stopIdle() {
     }
 }
 
+// ---------------------------------------------------------- files set to another language
+
+/** Real file -> the private copy its language server works on (see langRun.ts). */
+const shadows = new Map<string, string>();
+/** Folder of such a copy -> the real file. */
+const shadowRoots = new Map<string, string>();
+
+export function registerShadow(real: string, copy: string) {
+  shadows.set(real, copy);
+  shadowRoots.set(dirname(copy), real);
+}
+
+/** The file the language server sees for `file`. */
+export const shadowOf = (file: string) => shadows.get(file) ?? file;
+
+/** The real file behind a path a language server reported. */
+export function realPathOf(path: string) {
+  const real = shadowRoots.get(dirname(path));
+  return real && shadows.get(real) === path ? real : path;
+}
+
+/** Guest pauses are about the real project, also for a server working on a private copy. */
+const pauseRootOf = (root: string) => {
+  const real = shadowRoots.get(root);
+  return real ? dirname(real) : root;
+};
+
+/** The file's language changed: no server keeps it open under the old one. */
+export function forgetLspDoc(path: string) {
+  const uris = [fileUri(path), fileUri(shadowOf(path))];
+  for (const c of clients.values()) for (const uri of uris) c.close(uri);
+  shadows.delete(path);
+}
+
 const ROOT_MARKERS: Record<ServerKind, string[]> = {
   python: ["pyproject.toml", "setup.py", "requirements.txt", ".git"],
   clangd: ["compile_commands.json", "CMakeLists.txt", "Makefile", ".git"],
@@ -429,7 +463,8 @@ async function resolveCommand(kind: ServerKind, root: string): Promise<{ cmd: st
     case "java": {
       let h = 0;
       for (const c of root) h = (h * 31 + c.charCodeAt(0)) | 0;
-      const data = `${tools}/jdtls-workspace/${(h >>> 0).toString(16)}`;
+      // A private copy's index stays with the copy and goes when the app exits.
+      const data = shadowRoots.has(root) ? `${root}/.jdtls` : `${tools}/jdtls-workspace/${(h >>> 0).toString(16)}`;
       const bundles = await javaDebugBundles();
       const init = bundles.length ? { bundles } : undefined;
       // Omega's own jdtls is started with `java -jar` directly (its bin/jdtls wrapper needs Python).
@@ -532,7 +567,7 @@ const PAUSABLE: Partial<Record<ServerKind, { tool: PausedTool; paused: Key; titl
 /** A guest without `run` changed this project: the server would execute that text, so it stays off. */
 function serverHeld(kind: ServerKind, key: string, root: string) {
   const p = PAUSABLE[kind];
-  if (!p || toolPausedBy(p.tool, root) === null) return false;
+  if (!p || toolPausedBy(p.tool, pauseRootOf(root)) === null) return false;
   lspState.status[key] = "stopped";
   lspState.message[key] = t(p.paused);
   return true;
@@ -582,6 +617,9 @@ export async function clientFor(
   const kind = lang.server;
   if (!kind) return null;
   stopIdle();
+  // A private copy is on its own: no project, and no marker file in a folder above it counts.
+  const shadow = shadowRoots.has(dirname(file));
+  if (shadow) workspace = null;
   // A file outside the open folder (Go to Definition into a library, the Rust std sources, system
   // headers) is served by the server already running for the folder, not a new one rooted there.
   if (workspace && !within(file, workspace)) {
@@ -590,7 +628,7 @@ export async function clientFor(
     // Never index the toolchain itself (rust-analyzer's flycheck writes target/ into it).
     if (kind === "rust" && /\/lib\/rustlib\/src\//.test(file)) return null;
   }
-  const root = await findRoot(file, ROOT_MARKERS[kind], workspace);
+  const root = shadow ? dirname(file) : await findRoot(file, ROOT_MARKERS[kind], workspace);
   const key = `${kind}|${root}`;
   if (serverHeld(kind, key, root)) return null;
   if (askInstall !== neverInstall) guestServers.delete(key); // the host wants this one itself
@@ -643,7 +681,9 @@ export async function clientFor(
     const waitInstall = kind === "typescript" && (await tsInstallMissing(root));
     // Last check, with no await before the process starts: the steps above can take minutes.
     if (serverHeld(kind, key, root)) return null;
-    const c = new LspClient(kind, root, cmd.cmd, cmd.args, cmd.init);
+    // rust-analyzer needs a Cargo.toml unless it's told which lone files to look at.
+    const init = shadow && kind === "rust" ? { checkOnSave: true, detachedFiles: [file] } : cmd.init;
+    const c = new LspClient(kind, root, cmd.cmd, cmd.args, init);
     c.quiet = waitInstall;
     clients.set(key, c);
     try {
@@ -741,16 +781,17 @@ export async function restartServer(
 ): Promise<LspClient | null> {
   const kind = lang.server;
   if (!kind) return null;
-  const root = await findRoot(file, ROOT_MARKERS[kind], workspace);
+  file = shadowOf(file);
+  const root = shadowRoots.has(dirname(file)) ? dirname(file) : await findRoot(file, ROOT_MARKERS[kind], workspace);
   const key = `${kind}|${root}`;
   if (starting.has(key)) return starting.get(key)!;
   const pausable = PAUSABLE[kind];
-  const by = pausable ? toolPausedBy(pausable.tool, root) : null;
+  const by = pausable ? toolPausedBy(pausable.tool, pauseRootOf(root)) : null;
   if (pausable && by !== null) {
     // The host's explicit decision. It covers what it was asked about, not a change during the dialog.
     const seen = toolChangeCount(pausable.tool);
     if (!(await ui.confirm(t(pausable.title), t(pausable.msg, { name: by }), t(pausable.ok)))) return null;
-    if (!resumeTool(pausable.tool, root, seen)) {
+    if (!resumeTool(pausable.tool, pauseRootOf(root), seen)) {
       serverHeld(kind, key, root);
       return null;
     }
@@ -805,6 +846,7 @@ export async function workspaceSymbols(query: string): Promise<WorkspaceSymbol[]
 
 export function statusFor(lang: LangInfo | null, file: string | null): { status: ServerStatus | null; message?: string } {
   if (!lang?.server || !file) return { status: null };
+  file = shadowOf(file);
   // Find the client whose root contains the file (most specific).
   let best: string | null = null;
   for (const key of Object.keys(lspState.status)) {

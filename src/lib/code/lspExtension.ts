@@ -6,8 +6,10 @@ import { autocompletion, insertCompletionText, snippet, type Completion, type Co
 import { setDiagnostics, forEachDiagnostic, type Diagnostic, type Action } from "@codemirror/lint";
 import { ui } from "../ui.svelte";
 import { t } from "../i18n/index.svelte";
-import { clientFor, fileUri, restartListeners, restartServer, setLspWorkspace, uriPath, type LspClient, type ServerKind } from "./lsp.svelte";
+import { clientFor, fileUri, realPathOf, registerShadow, restartListeners, restartServer, setLspWorkspace, uriPath, type LspClient, type ServerKind } from "./lsp.svelte";
 import type { LangInfo } from "./languages";
+import { isForeignLang } from "./langOverride.svelte";
+import { shadowForLsp } from "./langRun";
 
 // ---------------------------------------------------------- app hooks
 
@@ -150,10 +152,11 @@ export function completionOptions(items: any[], total: number, resolve: (item: a
   });
 }
 
-function completionSource(getClient: () => LspClient | null, uri: string, flush: () => void) {
+function completionSource(getClient: () => LspClient | null, getUri: () => string, flush: () => void) {
   return async (ctx: CompletionContext): Promise<CompletionResult | null> => {
     const client = getClient();
     if (!client) return null;
+    const uri = getUri();
     const word = ctx.matchBefore(/[\w$]*/);
     const triggers: string[] = client.capabilities.completionProvider?.triggerCharacters ?? [".", ":", ">"];
     const charBefore = ctx.state.sliceDoc(ctx.pos - 1, ctx.pos);
@@ -244,7 +247,8 @@ export const lspTheme = EditorView.baseTheme({
 const RECONNECT_MS = 1000;
 
 export function lspExtension(path: string, lang: LangInfo): Extension {
-  const uri = fileUri(path);
+  // A file set to another language is served through a private copy with the right extension.
+  let uri = fileUri(path);
   let client: LspClient | null = null;
   let viewRef: EditorView | null = null;
   let changeTimer: number | undefined;
@@ -318,7 +322,16 @@ export function lspExtension(path: string, lang: LangInfo): Extension {
         this.connect(view);
       }
       connect(view: EditorView) {
-        clientFor(lang, path, hooks.workspace(), hooks.askInstall).then((c) => {
+        if (!isForeignLang(path)) return this.attach(view, path);
+        shadowForLsp(path, lang).then((copy) => {
+          if (viewRef !== view) return; // the language changed again meanwhile
+          registerShadow(path, copy);
+          uri = fileUri(copy);
+          this.attach(view, copy);
+        }).catch(() => {}); // the file is gone or unreadable: highlighting still works
+      }
+      attach(view: EditorView, file: string) {
+        clientFor(lang, file, hooks.workspace(), hooks.askInstall).then((c) => {
           if (!c || viewRef !== view) return;
           client = c;
           c.open(uri, lang.lspId, view.state.doc.toString());
@@ -366,7 +379,7 @@ export function lspExtension(path: string, lang: LangInfo): Extension {
     if (!loc) return false;
     const target = loc.targetUri ?? loc.uri;
     const range = loc.targetSelectionRange ?? loc.range;
-    await hooks.navigate(uriPath(target), range.start.line, range.start.character);
+    await hooks.navigate(realPathOf(uriPath(target)), range.start.line, range.start.character);
     return true;
   }
 
@@ -382,7 +395,7 @@ export function lspExtension(path: string, lang: LangInfo): Extension {
 
   return [
     plugin,
-    autocompletion({ override: [completionSource(() => client, uri, flush)], icons: true, activateOnTypingDelay: 60 }),
+    autocompletion({ override: [completionSource(() => client, () => uri, flush)], icons: true, activateOnTypingDelay: 60 }),
     hover,
     viewActions.of({
       "lsp.gotoDefinition": (v) => (gotoDefinition(v), true),
