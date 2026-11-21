@@ -619,7 +619,7 @@ export const TEMPLATES: Template[] = [
   // Plain folder, no tooling: created directly via the fs API (see createProject).
   { id: "empty", get label() { return t("code.tpl.empty"); }, get tool() { return t("code.tpl.folderOnly"); }, needs: [], marker: "", open: [], create: async () => ({ cmds: [] }) },
   { id: "rust", label: "Rust", tool: "cargo new", needs: ["rust"], marker: "Cargo.toml", open: ["src/main.rs"], create: async (n) => ({ inParent: true, cmds: [`cargo new ${q(n)}`] }) },
-  { id: "python", label: "Python", tool: "uv init", needs: ["uv"], marker: "pyproject.toml", open: ["main.py", "src/{name}/__init__.py", "hello.py"], create: async (n) => ({ inParent: true, cmds: [`uv init --app --no-package ${q(n)}`, cd(n), "uv sync"] }) },
+  { id: "python", label: "Python", tool: "uv init", needs: ["uv"], marker: "pyproject.toml", open: ["main.py", "src/{name}/__init__.py", "hello.py"], create: async (n) => ({ inParent: true, cmds: [`uv init ${q(n)}`, cd(n), "uv sync"] }) },
   {
     id: "typescript",
     label: "TypeScript",
