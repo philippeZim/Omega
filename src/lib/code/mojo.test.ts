@@ -133,6 +133,14 @@ describe("highlighting and indentation", () => {
     expect(mojoIndentStep("    returned = 1")).toBe(0);
   });
 
+  test.each(['    """text:', "    '''text:", '    """Args:""" ', '    x = """a:'])("a docstring doesn't open a block: %s", (line) => {
+    expect(mojoIndentStep(line)).toBe(0);
+  });
+
+  test("code after a closed docstring still counts", () => {
+    expect(mojoIndentStep('    """doc"""; if x:')).toBe(1);
+  });
+
   test("uses four spaces by default", () => {
     expect(indentFor(langFor("/p/a.mojo"))).toBeTruthy();
   });
@@ -170,6 +178,17 @@ describe("project detection", () => {
     const project = await detectProject("/p/main.mojo", "/p");
     expect(project).toMatchObject({ kind: "mojo", label: "pixi", needs: ["cc"] });
     expect(project!.run!.cmd).toBe("pixi run mojo run main.mojo");
+  });
+
+  test("with pixi on an unsupported system, Run leads to the hint instead of pixi", async () => {
+    ipc.which.pixi = "/usr/bin/pixi";
+    ipc.installable = ["uv", "cc"];
+    disk.set("/p/pixi.toml", PIXI_MOJO);
+    disk.set("/p/main.mojo", "");
+    const project = await detectProject("/p/main.mojo", "/p");
+    expect(project).toMatchObject({ kind: "mojo", label: "Mojo", needs: ["mojo", "cc"] });
+    expect(project!.run!.cmd).toBe("mojo run main.mojo");
+    expect(JSON.stringify([project!.build!.cmd, ...project!.more.map((a) => a.cmd)])).not.toContain("pixi");
   });
 
   test("Python in a pixi folder is left alone", async () => {
