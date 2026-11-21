@@ -18,6 +18,7 @@ mod instance;
 mod lang_shadow;
 mod windows;
 mod cli;
+mod launcher;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -125,6 +126,8 @@ pub fn run() {
             collab::collab_read_bounded,
             collab::collab_hooks_check,
             instance::instance_info,
+            launcher::cli_status,
+            launcher::cli_install,
             windows::window_new,
             windows::window_boot,
             windows::window_labels,
