@@ -168,6 +168,23 @@ test("names that can't be quoted safely for the Run terminal", async () => {
   expect(quotablePath("100%.py", false)).toBe(true);
   expect(quotablePath("100%.py", true)).toBe(false);
   expect(quotablePath('a".py', true)).toBe(false);
+  expect(quotablePath("a!b.py", false)).toBe(true);
+  expect(quotablePath("!PATH!.py", true)).toBe(false);
+});
+
+test("a command with a refused name starts nothing, not even its build step (#149)", async () => {
+  const refused = "﷐"; // what q() returns on Windows for such a name
+  await refreshProject();
+  vi.mocked(ui.toast).mockClear();
+  for (const a of [
+    { id: "run", label: "Run", cmd: `app ${refused}`, pre: "cmake --build build" },
+    { id: "run", label: "Run", cmd: "./app", pre: `cc ${refused}` },
+    { id: "run", label: "Run", cmd: "./app", setup: { cmd: `cmake ${refused}`, unless: "build" } },
+  ] as Action[]) await runAction(a);
+  expect(h.runTask).not.toHaveBeenCalled();
+  expect(h.runCommand).not.toHaveBeenCalled();
+  expect(ui.toast).toHaveBeenCalledTimes(3);
+  expect(vi.mocked(ui.toast).mock.calls[0][1]).toBe("error");
 });
 
 test("only actions tied to a file count as file-dependent", async () => {

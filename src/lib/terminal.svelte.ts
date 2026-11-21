@@ -7,7 +7,7 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { openUrl } from "./native";
 import "@xterm/xterm/css/xterm.css";
 import { t, i18n } from "./i18n/index.svelte";
-import { q, IS_MAC } from "./platform";
+import { hasUnquotable, q, IS_MAC } from "./platform";
 import { showView, hideView, toggleView } from "./layout.svelte";
 
 /** Set by the command registry: true if the key is an app shortcut that should bypass the shell. */
@@ -398,13 +398,16 @@ export function runTask(kind: "build" | "run", cmd: string, cwd: string | null, 
   inst.task = { cmd, started: Date.now(), stopRequested: false, onExit: opts.onExit };
   delete inst.el.dataset.guestText;
   inst.term.reset();
-  echo(inst, `${DIM}$ ${cmd.replace(/\r?\n/g, " ")}${RESET}\r\n`);
+  const refused = hasUnquotable(cmd);
+  echo(inst, refused ? `\x1b[31m${t("code.rb.unsafeName")}${RESET}\r\n` : `${DIM}$ ${cmd.replace(/\r?\n/g, " ")}${RESET}\r\n`);
   // Started for a Code Together guest: the host's panel and terminal tab stay as they are.
   if (!opts.background) {
     terms.active = tab.id;
     showView("terminal");
   }
+  // Also when refused: otherwise showing the tab would start an interactive shell in it.
   inst.spawned = true;
+  if (refused) return finishTask(tab, inst, 127);
   const taskId = counter++;
   tab.taskId = taskId;
   tab.packageTask = !!opts.packageTask;
