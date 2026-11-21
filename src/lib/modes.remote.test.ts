@@ -23,10 +23,10 @@ test("a shared Python file uses the guest's language extension with its relative
   expect(h.lsp).not.toHaveBeenCalled();
 });
 
-test("git and debug extensions stay off for shared files", () => {
+test("shared files get the debug gutter under their shared path, and still no git extensions", () => {
   remoteLsp.extension = vi.fn(() => []);
   modeExtensions("code", "collab:src/a.py");
-  expect(h.debug).not.toHaveBeenCalled();
+  expect(h.debug).toHaveBeenCalledWith("collab:src/a.py");
   expect(h.blame).not.toHaveBeenCalled();
   expect(h.gutter).not.toHaveBeenCalled();
 });
