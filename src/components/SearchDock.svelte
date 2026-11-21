@@ -41,7 +41,7 @@
       {#each groups as [file, hits] (file)}
         <button class="file" onclick={() => (collapsed[file] = !collapsed[file])}>
           <span class="chev" class:open={!collapsed[file]}><Glyph name="chevron" size={8} /></span>
-          <span class="fname">{basename(file)}</span>
+          <span class="fname">{basename(rel(file))}</span>
           <span class="fpath">{rel(file)}</span>
           <span class="n">{hits.length}</span>
         </button>

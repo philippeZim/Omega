@@ -152,7 +152,7 @@
         const r = await remote.text({ query: q, caseSensitive: false, wholeWord: false, regex: false, mask: "", folder: "", maxResults: 100 }, run.signal);
         if (run.signal.aborted || !r.ok) return;
         limited = r.value.truncated;
-        textHits = r.value.hits.map((h) => ({ kind: "text" as const, key: `${h.file}:${h.line}`, label: h.text.trim(), detail: `${basename(h.file)}:${h.line}`, positions: [], score: 0, path: h.file, line: h.line, col: (h.ranges[0]?.[0] ?? 0) + 1 }));
+        textHits = r.value.hits.map((h) => ({ kind: "text" as const, key: `${h.file}:${h.line}`, label: h.text.trim(), detail: `${basename(h.file.slice("collab:".length))}:${h.line}`, positions: [], score: 0, path: h.file, line: h.line, col: (h.ranges[0]?.[0] ?? 0) + 1 }));
         return;
       }
       textId = nextSearchId();

@@ -274,7 +274,7 @@
       {#each find.hits.slice(0, 1000) as h, i (h.file + ":" + h.line + ":" + i)}
         <button class="hit" class:on={i === find.selected} onclick={() => (find.selected = i)} ondblclick={() => gotoHit(h)} title={rel(h.file)}>
           <span class="text">{#each segments(h) as s, k (k)}<span class:m={s.m}>{s.t}</span>{/each}</span>
-          <span class="loc">{basename(h.file)} <b>{h.line}</b></span>
+          <span class="loc">{basename(rel(h.file))} <b>{h.line}</b></span>
         </button>
       {:else}
         <p class="empty">{find.query ? (find.running ? t("git.search.searching") : t("common.noResults")) : t("git.search.enterQuery")}</p>
