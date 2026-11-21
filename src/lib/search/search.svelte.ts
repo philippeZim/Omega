@@ -224,15 +224,50 @@ export function buildRegex(global = true): RegExp | null {
   }
 }
 
-function replaceText(text: string, re: RegExp): { text: string; count: number } {
-  if (!find.regex) {
-    let count = 0;
-    const out = text.replace(re, () => (count++, find.replacement));
-    return { text: out, count };
-  }
-  // Regex mode: the native replacement string handles $1, $<name>, $&, $$ etc. correctly.
-  const count = [...text.matchAll(re)].length;
-  return { text: count ? text.replace(re, find.replacement) : text, count };
+/** Expands a replacement string as `String.replace` does; a callback doesn't get that for free. */
+function expandReplacement(template: string, match: string, rest: unknown[], line: string): string {
+  const named = typeof rest.at(-1) === "object" ? (rest.at(-1) as Record<string, string | undefined>) : undefined;
+  const groups = rest.length - (named ? 3 : 2);
+  const offset = rest[groups] as number;
+  return template.replace(/\$(?:([$&`'])|(\d\d?)|<([^>]*)>)/g, (all, sign?: string, digits?: string, name?: string) => {
+    if (sign === "$") return "$";
+    if (sign === "&") return match;
+    if (sign === "`") return line.slice(0, offset);
+    if (sign === "'") return line.slice(offset + match.length);
+    if (name !== undefined) return named ? (named[name] ?? "") : all;
+    const n = Number(digits);
+    if (n >= 1 && n <= groups) return (rest[n - 1] as string | undefined) ?? "";
+    // "$12" with one group is group 1 and a literal 2.
+    const first = Number(digits![0]);
+    if (digits!.length === 2 && n > groups && first >= 1 && first <= groups) return ((rest[first - 1] as string | undefined) ?? "") + digits![1];
+    return all;
+  });
+}
+
+/** Replaces the non-empty matches of one line, the ones the search shows, in one pass. */
+function replaceInLine(line: string, re: RegExp): { text: string; count: number } {
+  let count = 0;
+  const text = line.replace(re, (match: string, ...rest: unknown[]) => {
+    if (!match) return "";
+    count++;
+    return find.regex ? expandReplacement(find.replacement, match, rest, line) : find.replacement;
+  });
+  return { text, count };
+}
+
+/** Replaces line by line like the backend search, so `^` and `$` mean the same and a CRLF stays. */
+function replaceText(text: string, re: RegExp, onlyLine?: number): { text: string; count: number } {
+  const lines = text.split("\n");
+  let count = 0;
+  lines.forEach((raw, i) => {
+    if (onlyLine !== undefined && i !== onlyLine - 1) return;
+    const cr = i < lines.length - 1 && raw.endsWith("\r");
+    const r = replaceInLine(cr ? raw.slice(0, -1) : raw, re);
+    if (!r.count) return;
+    lines[i] = r.text + (cr ? "\r" : "");
+    count += r.count;
+  });
+  return { text: count ? lines.join("\n") : text, count };
 }
 
 /** Replaces in one file (open tabs are edited in the editor, so undo works). Returns replacement count. */
@@ -252,13 +287,7 @@ export async function replaceInFile(file: string, onlyLine?: number): Promise<nu
   let original: string;
   if (tab) original = ed.getText(tab.id);
   else original = await fsApi.readFile(file);
-  let result: { text: string; count: number };
-  if (onlyLine !== undefined) {
-    const lines = original.split("\n");
-    const r = replaceText(lines[onlyLine - 1] ?? "", re);
-    lines[onlyLine - 1] = r.text;
-    result = { text: lines.join("\n"), count: r.count };
-  } else result = replaceText(original, re);
+  const result = replaceText(original, re, onlyLine);
   if (!result.count) return 0;
   if (tab) ed.replaceDocText(tab.id, result.text);
   else await fsApi.writeFile(file, result.text);
