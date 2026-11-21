@@ -538,3 +538,86 @@ test("host rejects an unknown file operation instead of deleting", async () => {
   expect(fs.files.get("/p/a.txt")).toBe("a\n");
   expect(fs.calls.filter((c) => c.cmd !== "collab_path_inside")).toEqual([]);
 });
+
+test("host opens another folder: a pending guest edit lands in the old one, the new one is untouched", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    const fs = hostFs({ "/p/a.txt": "old\n", "/q/a.txt": "new root\n" });
+    await receive("g1", { t: "doc.open", path: "a.txt" });
+    await guestInsert("a.txt", 0, "pending ");
+
+    app.root = "/q";
+    await share.syncSharedTabs();
+    expect(fs.files.get("/p/a.txt")).toBe("pending old\n");
+    expect(sent.find((s) => s.msg.t === "doc.gone")).toEqual({ peer: "g1", msg: { t: "doc.gone", path: "a.txt", reason: "folder" } });
+
+    await vi.advanceTimersByTimeAsync(800);
+    expect(fs.files.get("/q/a.txt")).toBe("new root\n");
+    expect(fs.files.get("/p/a.txt")).toBe("pending old\n");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("a late edit of the old folder's doc can't reach the same-named file of the new folder", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    const fs = hostFs({ "/p/a.txt": "old\n", "/q/a.txt": "new root\n" });
+    await receive("g1", { t: "doc.open", path: "a.txt" });
+    app.root = "/q";
+    await share.syncSharedTabs();
+
+    await receive("g2", { t: "doc.open", path: "a.txt" });
+    const opened = new Y.Doc();
+    Y.applyUpdate(opened, unb64(sent.find((s) => s.peer === "g2" && s.msg.t === "doc.state")!.msg.update));
+    expect(opened.getText("content").toString()).toBe("new root\n");
+
+    // Self-contained on purpose: an update that depends on the old doc would just stay pending.
+    const late = new Y.Doc();
+    late.getText("content").insert(0, "late ");
+    await receive("g1", { t: "doc.update", path: "a.txt", update: b64(Y.encodeStateAsUpdate(late)) });
+    await vi.advanceTimersByTimeAsync(800);
+    expect(sent.filter((s) => s.peer === "g2" && s.msg.t === "doc.update")).toEqual([]);
+    expect(fs.files.get("/q/a.txt")).toBe("new root\n");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("host opens another folder: a tab left outside is unshared, Untitled stays, a tab still inside moves", async () => {
+  hostFs({ "/p/a.txt": "a\n", "/p/sub/b.txt": "b\n" });
+  app.tabs.push({ id: "t1", path: "/p/a.txt", name: "a.txt" }, { id: "t2", path: "/p/sub/b.txt", name: "b.txt" }, { id: "u1", path: null, name: "Untitled" });
+  texts.set("t1", "a\n");
+  texts.set("t2", "b\n");
+  texts.set("u1", "draft\n");
+  for (const path of ["a.txt", "sub/b.txt", "tab:u1"]) await receive("g1", { t: "doc.open", path });
+
+  app.root = "/p/sub";
+  sent.length = 0;
+  await share.syncSharedTabs();
+  expect(sent.map((s) => s.msg)).toEqual([
+    { t: "doc.gone", path: "a.txt", reason: "folder" },
+    { t: "doc.moved", path: "sub/b.txt", to: "b.txt", name: "b.txt" },
+  ]);
+  expect(bindings.has("t1")).toBe(false);
+  expect(bindings.has("t2")).toBe(true);
+  expect(bindings.has("u1")).toBe(true);
+  expect(texts.get("t1")).toBe("a\n");
+});
+
+test("guest: after the host changed folder the tab stays as an unsaved copy", async () => {
+  collab.role = "guest";
+  const h = new Y.Doc();
+  h.getText("content").insert(0, "my text\n");
+  await receive("host-peer", { t: "doc.state", path: "a.txt", name: "a.txt", update: b64(Y.encodeStateAsUpdate(h)) });
+  const tab = await vi.waitFor(() => {
+    const x = app.tabs.find((y) => y.path === "collab:a.txt");
+    if (!x || !bindings.has(x.id)) throw new Error("not open yet");
+    return x;
+  });
+  await receive("host-peer", { t: "doc.gone", path: "a.txt", reason: "folder" });
+  expect(app.tabs).toContainEqual({ id: tab.id, path: null, name: "a.txt", dirty: true });
+  expect(bindings.has(tab.id)).toBe(false);
+  expect(closeTab).not.toHaveBeenCalled();
+  expect(ui.toasts.at(-1)?.text).toContain("switched folders");
+});

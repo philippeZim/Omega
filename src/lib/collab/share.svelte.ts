@@ -34,6 +34,8 @@ const unb64 = (s: string) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
 
 interface SharedDoc {
   rel: string;
+  /** Host: the project folder `rel` belongs to. The host can open another one during a session. */
+  root: string | null;
   ydoc: Y.Doc;
   ytext: Y.Text;
   awareness: Awareness;
@@ -42,6 +44,8 @@ interface SharedDoc {
   /** Host: guests that opened this doc. */
   subscribers: Set<string>;
   writeTimer?: number;
+  /** Host, background docs: the write in progress, so writes land in order. */
+  writing?: Promise<void>;
   /** Host, background docs: the file content as last read or written, to notice outside changes. */
   disk?: string;
   cleanup: (() => void)[];
@@ -76,7 +80,7 @@ function makeDoc(rel: string, isHost: boolean): SharedDoc {
   // Undo only covers edits made in this editor (yCollab adds its origin when bound): not the
   // initial load of the text (origin null), which would otherwise be the first undo step (#126).
   const undo = new Y.UndoManager(ytext, { trackedOrigins: new Set() });
-  const d: SharedDoc = { rel, ydoc, ytext, awareness, undo, tabId: null, subscribers: new Set(), cleanup: [] };
+  const d: SharedDoc = { rel, root: app.root, ydoc, ytext, awareness, undo, tabId: null, subscribers: new Set(), cleanup: [] };
 
   // Local Yjs changes → network. Origin = peer id for remote updates, so they aren't echoed back.
   const onUpdate = (update: Uint8Array, origin: unknown) => {
@@ -188,27 +192,34 @@ export async function hostKeyChecked(tab: Tab): Promise<string | null> {
  * out of any git folder, also after resolving symlinks (#138: `ext -> /` in the project must not
  * open the whole disk; git config can run commands on the host). "" is the project root.
  */
-export async function guestPathOk(rel: string): Promise<boolean> {
-  if (!app.root || !relAllowed(rel)) return false;
-  return invoke<boolean>("collab_path_inside", { root: app.root, path: rel ? joinPath(app.root, rel) : app.root }).catch(() => false);
+export async function guestPathOk(rel: string, root: string | null = app.root): Promise<boolean> {
+  if (!root || !relAllowed(rel)) return false;
+  return invoke<boolean>("collab_path_inside", { root, path: rel ? joinPath(root, rel) : root }).catch(() => false);
 }
 
 function scheduleHostWrite(d: SharedDoc) {
   // Open tabs are saved by the host's autosave; background docs are written here.
-  if (d.tabId || !app.root) return;
+  if (d.tabId || !d.root) return;
   clearTimeout(d.writeTimer);
   d.writeTimer = window.setTimeout(() => void hostWrite(d), 700);
 }
 
-async function hostWrite(d: SharedDoc) {
-  if (d.tabId || !app.root) return;
-  const abs = joinPath(app.root, d.rel);
+/** Writes a background doc to its own folder; one write at a time, so the newest text lands last. */
+function hostWrite(d: SharedDoc) {
+  d.writing = (d.writing ?? Promise.resolve()).then(() => writeBackgroundDoc(d)).catch(() => {});
+  return d.writing;
+}
+
+async function writeBackgroundDoc(d: SharedDoc) {
+  if (d.tabId || !d.root || !d.cleanup.length) return;
+  const abs = joinPath(d.root, d.rel);
   const text = d.ytext.toString();
   if (text === d.disk) return;
-  if (!(await guestPathOk(d.rel))) return; // e.g. a folder was swapped for a symlink meanwhile
+  if (!(await guestPathOk(d.rel, d.root))) return; // e.g. a folder was swapped for a symlink meanwhile
   // The file changed outside Omega and the watcher hasn't told us yet: take that change instead of
   // overwriting it (#128).
   const now = await fsApi.readFile(abs).catch(() => undefined);
+  if (!d.cleanup.length) return;
   if (now !== undefined && d.disk !== undefined && now !== d.disk) return applyDisk(d, now);
   // Deleted meanwhile: don't bring the file back (#134).
   if (now === undefined && d.disk !== undefined && !(await fsApi.exists(abs).catch(() => true))) return hostFileGone(d);
@@ -219,9 +230,9 @@ async function hostWrite(d: SharedDoc) {
 
 /** Host: a background doc's file changed on disk → everybody gets the new content. */
 async function hostReload(d: SharedDoc) {
-  if (d.tabId || !app.root) return;
-  if (!(await guestPathOk(d.rel))) return docs.get(d.rel) === d ? hostUnshare(d) : undefined; // e.g. now a symlink
-  const abs = joinPath(app.root, d.rel);
+  if (d.tabId || !d.root) return;
+  if (!(await guestPathOk(d.rel, d.root))) return docs.get(d.rel) === d ? hostUnshare(d) : undefined; // e.g. now a symlink
+  const abs = joinPath(d.root, d.rel);
   const text = await fsApi.readFile(abs).catch(() => undefined);
   if (d.tabId || docs.get(d.rel) !== d) return;
   if (text !== undefined) applyDisk(d, text);
@@ -257,10 +268,11 @@ async function hostDoc(rel: string): Promise<SharedDoc | null> {
     bindHostTab(d, tab.id);
     return d;
   }
-  if (!app.root || !(await guestPathOk(rel))) return null;
+  const root = app.root;
+  if (!root || !(await guestPathOk(rel, root)) || app.root !== root) return null;
   const existing = docs.get(rel);
   if (existing) return existing;
-  const abs = joinPath(app.root, rel);
+  const abs = joinPath(root, rel);
   const tab = app.tabs.find((t) => t.path === abs);
   let text: string;
   try {
@@ -268,6 +280,7 @@ async function hostDoc(rel: string): Promise<SharedDoc | null> {
   } catch {
     return null;
   }
+  if (app.root !== root) return null; // the host opened another folder meanwhile
   const d = makeDoc(rel, true);
   d.ytext.insert(0, text);
   if (tab) bindHostTab(d, tab.id);
@@ -311,36 +324,64 @@ function hostFileGone(d: SharedDoc) {
   clearTimeout(d.writeTimer);
   if (d.tabId) ed.setCollab(d.tabId, null);
   dispose(d);
-  docs.delete(d.rel);
-}
-
-/** Host: guests lose a doc they may no longer see; their tab closes and keeps no copy. */
-function hostUnshare(d: SharedDoc) {
-  for (const p of d.subscribers) send(p, { t: "doc.gone", path: d.rel });
-  clearTimeout(d.writeTimer);
-  if (d.tabId) ed.setCollab(d.tabId, null);
-  dispose(d);
-  docs.delete(d.rel);
+  if (docs.get(d.rel) === d) docs.delete(d.rel);
 }
 
 /**
- * Host: docs follow their tab's path. An Untitled tab saved into the project moves to its relative
- * path; one saved outside it (or a tab left behind by a folder change) stops being shared.
+ * Host: guests lose a doc they may no longer see. Normally their tab closes; with reason "folder"
+ * (the host opened another folder) they keep their text as an unsaved tab.
  */
-export function syncSharedTabs() {
+function hostUnshare(d: SharedDoc, reason?: "folder") {
+  for (const p of d.subscribers) send(p, { t: "doc.gone", path: d.rel, ...(reason ? { reason } : {}) });
+  clearTimeout(d.writeTimer);
+  if (d.tabId) ed.setCollab(d.tabId, null);
+  dispose(d);
+  if (docs.get(d.rel) === d) docs.delete(d.rel);
+}
+
+/**
+ * Host: a background doc of the previous folder. It leaves the doc list at once, so its name is
+ * free for the new folder, and pending edits are written to the old location before it goes.
+ */
+async function retireBackgroundDoc(d: SharedDoc) {
+  for (const p of d.subscribers) send(p, { t: "doc.gone", path: d.rel, reason: "folder" });
+  d.subscribers.clear();
+  docs.delete(d.rel);
+  clearTimeout(d.writeTimer);
+  await hostWrite(d);
+  clearTimeout(d.writeTimer);
+  if (d.cleanup.length && d.ytext.toString() !== d.disk) ui.toast(t("ai.collab.flushFailed", { file: d.rel }), "error");
+  dispose(d);
+}
+
+/**
+ * Host: docs follow their tab's path and the open folder. An Untitled tab saved into the project
+ * moves to its relative path; one saved outside it (or a tab left behind by a folder change) stops
+ * being shared. Background docs of a previous folder are written there and retired.
+ */
+export async function syncSharedTabs() {
   if (collab.role !== "host") return;
-  for (const d of [...docs.values()]) {
+  const all = [...docs.values()];
+  if (all.some((d) => d.root !== app.root)) renamed.clear(); // old names mean nothing in a new folder
+  // Background docs first: a tab moving to the same name must not count as replacing them.
+  const flushes = all.filter((d) => !d.tabId && d.root !== app.root).map(retireBackgroundDoc);
+  for (const d of all) {
     const tab = d.tabId ? app.tabs.find((t) => t.id === d.tabId) : null;
     if (!tab) continue;
     const key = hostKey(tab);
-    if (key === null) hostUnshare(d);
-    else if (key !== d.rel) hostRename(d, key);
+    if (key === null) hostUnshare(d, d.root !== app.root ? "folder" : undefined);
+    else {
+      if (key !== d.rel) hostRename(d, key);
+      d.root = app.root;
+    }
   }
+  await Promise.all(flushes);
 }
 
 /** Host: a file or folder was deleted (`to` null) or renamed in the explorer. */
 function onHostPathMoved(from: string, to: string | null) {
   if (collab.role !== "host") return;
+  void syncSharedTabs();
   const rel = relOf(from);
   if (!rel) return;
   for (const d of [...docs.values()]) {
@@ -368,7 +409,7 @@ export function onHostTabOpened(tabId: string, abs: string) {
   if (collab.role !== "host") return;
   const rel = relOf(abs);
   const d = rel ? docs.get(rel) : null;
-  if (d && !d.tabId) bindHostTab(d, tabId);
+  if (d && !d.tabId && d.root === app.root) bindHostTab(d, tabId);
 }
 
 // ------------------------------------------------------------------ guest
@@ -599,7 +640,7 @@ async function cleanPresence(peer: string, msg: Record<string, unknown>) {
 onCollabMessage(async (peer, msg) => {
   // --- host side
   if (collab.role === "host") {
-    syncSharedTabs(); // before any guest message can reach a tab that just left the project
+    void syncSharedTabs(); // before any guest message can reach a tab that just left the project
     if (msg.t === "doc.open") {
       const d = await hostDoc(String(msg.path));
       if (!d) return send(peer, { t: "doc.error", path: msg.path, error: "unavailable" });
@@ -609,11 +650,13 @@ onCollabMessage(async (peer, msg) => {
       const states = [...d.awareness.getStates().keys()];
       if (states.length) send(peer, { t: "aw", path: d.rel, update: b64(encodeAwarenessUpdate(d.awareness, states)) });
     } else if (msg.t === "doc.update") {
+      // Only from guests that have this doc open: a late edit to a same-named file of the previous
+      // folder must not land in this one.
       const d = hostDocAt(msg.path);
-      if (d) Y.applyUpdate(d.ydoc, unb64(msg.update), peer);
+      if (d?.subscribers.has(peer)) Y.applyUpdate(d.ydoc, unb64(msg.update), peer);
     } else if (msg.t === "aw") {
       const d = hostDocAt(msg.path);
-      if (d) applyAwarenessUpdate(d.awareness, unb64(msg.update), peer);
+      if (d?.subscribers.has(peer)) applyAwarenessUpdate(d.awareness, unb64(msg.update), peer);
     } else if (msg.t === "doc.close") {
       hostDocAt(msg.path)?.subscribers.delete(peer);
     } else if (msg.t === "fs.op") {
@@ -659,9 +702,9 @@ onCollabMessage(async (peer, msg) => {
     docs.set(msg.to, d);
     const tab = d.tabId ? app.tabs.find((x) => x.id === d.tabId) : null;
     if (tab) Object.assign(tab, { path: REMOTE + msg.to, name: msg.name || basename(msg.to) });
-  } else if (msg.t === "doc.gone" && msg.reason === "deleted") {
-    // The host deleted the file: keep the text as an unsaved local tab instead of editing into
-    // nothing (#134).
+  } else if (msg.t === "doc.gone" && (msg.reason === "deleted" || msg.reason === "folder")) {
+    // The host deleted the file or left its folder: keep the text as an unsaved local tab instead
+    // of editing into nothing (#134).
     const d = docs.get(msg.path);
     if (!d) return;
     const tab = d.tabId ? app.tabs.find((x) => x.id === d.tabId) : null;
@@ -669,7 +712,7 @@ onCollabMessage(async (peer, msg) => {
       ed.setCollab(tab.id, null);
       tab.path = null;
       tab.dirty = true;
-      ui.toast(t("ai.collab.fileDeleted", { name: tab.name }), "error");
+      ui.toast(t(msg.reason === "folder" ? "ai.collab.folderChanged" : "ai.collab.fileDeleted", { name: tab.name }), "error");
     }
     dispose(d);
     docs.delete(msg.path);
@@ -739,7 +782,7 @@ let fsTimer = 0;
 onFilesChanged((files) => {
   if (collab.role === "host" && app.root) {
     const changed = new Set(files);
-    for (const d of docs.values()) if (!d.tabId && changed.has(joinPath(app.root, d.rel))) void hostReload(d);
+    for (const d of docs.values()) if (!d.tabId && d.root && changed.has(joinPath(d.root, d.rel))) void hostReload(d);
   }
   if (collab.role !== "host" || collab.participants.length < 2) return;
   clearTimeout(fsTimer);

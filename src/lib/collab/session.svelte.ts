@@ -96,7 +96,7 @@ $effect.root(() => {
     void app.root;
     void app.mode;
     void runner.project;
-    syncSharedTabs();
+    void syncSharedTabs();
     clearTimeout(sendTimer);
     sendTimer = window.setTimeout(() => announce(), 150);
   });
