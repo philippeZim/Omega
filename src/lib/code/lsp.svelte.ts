@@ -5,7 +5,7 @@ import { onRpc } from "../rpc";
 import { t } from "../i18n/index.svelte";
 import { ui } from "../ui.svelte";
 import { fsApi, dirname, joinPath, isRoot } from "../api";
-import { OS, platform } from "../platform";
+import { IS_WIN, OS, platform } from "../platform";
 import { ensureTools, withInstallProgress, serverProgressId, type ToolId } from "../tools.svelte";
 import type { LangInfo } from "./languages";
 
@@ -39,6 +39,19 @@ export function exitReason(tail: string[]): string {
   const line = [...tail].reverse().find((l) => /\b(error|panic|panicked|fatal|exception|failed|cannot|could not|abort(ed)?)\b/i.test(l))?.trim();
   if (!line) return "";
   return ": " + (line.length > 200 ? line.slice(0, 199) + "…" : line);
+}
+
+/** Metals starts a JVM and may fetch its presentation compiler before it answers `initialize`. */
+const METALS_INIT_MS = 120_000;
+
+/**
+ * Answers Metals' prompts: import the build (without it an sbt project has no build target, so
+ * no completion and no debugging), and prefer sbt when a folder also looks like a scala-cli
+ * project, as Run does. Anything else (Doctor, HTTP server hints) stays unanswered.
+ */
+export function metalsAnswer(params: Json): Json {
+  const actions: { title: string }[] = params?.actions ?? [];
+  return actions.find((a) => /^(import build|import changes)$/i.test(a.title)) ?? actions.find((a) => a.title.toLowerCase() === "sbt") ?? null;
 }
 
 export class LspClient {
@@ -146,7 +159,7 @@ export class LspClient {
         window: { workDoneProgress: true },
       },
       initializationOptions: this.initOptions ?? (this.kind === "rust" ? { checkOnSave: true } : undefined),
-    });
+    }, this.kind === "scala" ? METALS_INIT_MS : undefined);
     this.capabilities = res?.capabilities ?? {};
     this.notify("initialized", {});
     if (this.current) lspState.status[this.key] = "ready";
@@ -192,6 +205,7 @@ export class LspClient {
       if (msg.method === "workspace/configuration") result = (msg.params?.items ?? []).map((it: Json) => serverSetting(this.kind, it.section));
       else if (msg.method === "workspace/workspaceFolders") result = [{ uri: fileUri(this.root), name: this.root }];
       else if (msg.method === "workspace/applyEdit") result = { applied: false };
+      else if (msg.method === "window/showMessageRequest" && this.kind === "scala") result = metalsAnswer(msg.params);
       this.send({ id: msg.id, result });
       return;
     }
@@ -321,6 +335,7 @@ const ROOT_MARKERS: Record<ServerKind, string[]> = {
   java: ["settings.gradle", "settings.gradle.kts", "build.gradle", "build.gradle.kts", "pom.xml", ".git"],
   typescript: ["tsconfig.json", "jsconfig.json", "package.json", ".git"],
   rust: ["Cargo.toml"],
+  scala: ["build.sbt", "project.scala", ".bsp", ".scala-build", ".git"],
 };
 
 const within = (path: string, dir: string) => path === dir || path.startsWith(dir.endsWith("/") ? dir : dir + "/");
@@ -365,6 +380,7 @@ export const lspSettings = $state({ strictPython: localStorage.getItem("strictPy
 function serverSetting(kind: ServerKind, section?: string): Json {
   if (kind === "python" && (section === "basedpyright" || section === "python"))
     return { analysis: { typeCheckingMode: lspSettings.strictPython ? "recommended" : "standard" } };
+  if (kind === "scala") return {}; // Metals reads its section as an object
   return null;
 }
 
@@ -441,6 +457,10 @@ async function resolveCommand(kind: ServerKind, root: string): Promise<{ cmd: st
       const cmd = await first("jdtls");
       return cmd ? { cmd, args: ["-data", data], init } : null;
     }
+    case "scala": {
+      const cmd = await first(`${tools}/metals/${IS_WIN ? "metals.bat" : "metals"}`, "metals");
+      return cmd ? { cmd, args: [] } : null;
+    }
   }
 }
 
@@ -449,13 +469,14 @@ export const INSTALLABLE: Partial<Record<ServerKind, string>> = {
   clangd: "clangd (C/C++)",
   typescript: "typescript-language-server (JS/TS)",
   java: "Eclipse JDT Language Server (Java)",
+  scala: "Metals (Scala)",
   get rust() {
     return t("code.lsp.rustAnalyzer");
   },
 };
 
 /** Tools a language server installation builds on. */
-const PREREQ: Partial<Record<ServerKind, ToolId[]>> = { python: ["node"], typescript: ["node"], java: ["jdk"], rust: ["rust"] };
+const PREREQ: Partial<Record<ServerKind, ToolId[]>> = { python: ["node"], typescript: ["node"], java: ["jdk"], rust: ["rust"], scala: ["jdk", "scala"] };
 
 /** `askInstall` for work the host didn't start itself: never prompts, and doesn't count as declining. */
 export const neverInstall = async (_kind: ServerKind, _name: string) => false;
