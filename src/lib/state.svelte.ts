@@ -1,4 +1,5 @@
 import { openDialog, saveDialog, openUrl } from "./native";
+import { onGlobalChange } from "./windowStorage";
 import { basename, dirname, extname, fsApi, joinPath, normPath, wellFormed } from "./api";
 import * as ed from "./editor";
 import { modeForExtension, type Mode } from "./modes";
@@ -109,6 +110,16 @@ export function setSpellLang(lang: SpellLang) {
   localStorage.setItem("spellEnabled", "true");
   ed.configure(cfg());
 }
+
+// Changed in another window.
+onGlobalChange(["spellEnabled", "spellDefault", "spellLangs"], () => {
+  app.spellEnabled = localStorage.getItem("spellEnabled") === "true";
+  app.spellDefault = (localStorage.getItem("spellDefault") as SpellLang) || "de";
+  const langs: Record<string, SpellLang> = JSON.parse(localStorage.getItem("spellLangs") || "{}");
+  for (const k of Object.keys(spellLangs)) delete spellLangs[k];
+  Object.assign(spellLangs, langs);
+  ed.configure(cfg());
+});
 
 export function toggleSpell() {
   app.spellEnabled = !app.spellEnabled;
@@ -372,6 +383,7 @@ function touchRecent(path: string | null | undefined) {
   if (recent.length > 50) recent.length = 50;
   localStorage.setItem("recentFiles", JSON.stringify(recent));
 }
+onGlobalChange("recentFiles", (v) => void recent.splice(0, recent.length, ...(JSON.parse(v || "[]") as string[])));
 
 export function activate(id: string) {
   if (app.activeId !== id) autosave(app.activeId);
@@ -576,6 +588,8 @@ export async function openFolder() {
 
 /** Recently opened folders (most recent first). */
 export const recentFolders = $state<string[]>(JSON.parse(localStorage.getItem("recentFolders") || "[]"));
+
+onGlobalChange("recentFolders", (v) => void recentFolders.splice(0, recentFolders.length, ...(JSON.parse(v || "[]") as string[])));
 
 export function setRoot(dir: string | null) {
   // Clearing stays allowed: joining puts the own folder aside that way.

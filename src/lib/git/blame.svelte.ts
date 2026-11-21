@@ -3,6 +3,7 @@
  * the last change for every line, details on hover. Optional, toggled in Settings → Code.
  */
 import { Compartment, RangeSet, StateEffect, StateField, type Extension } from "@codemirror/state";
+import { onGlobalChange } from "../windowStorage";
 import { EditorView, GutterMarker, ViewPlugin, gutter, type ViewUpdate } from "@codemirror/view";
 import { invoke } from "@tauri-apps/api/core";
 import { i18n } from "../i18n/index.svelte";
@@ -28,6 +29,10 @@ export function setGitBlame(on: boolean) {
   localStorage.setItem("gitBlame", String(on));
   for (const p of live) p.reload();
 }
+
+onGlobalChange("gitBlame", (v) => {
+  if ((v === "true") !== blameSettings.enabled) setGitBlame(v === "true");
+});
 
 let rootHook: () => string | null = () => null;
 export function setBlameRoot(fn: () => string | null) {

@@ -1,5 +1,6 @@
 /** Terminal sessions (PTY in Rust, xterm.js in the UI). Sessions survive mode switches. */
 import { invoke } from "@tauri-apps/api/core";
+import { onGlobalChange } from "./windowStorage";
 import { listen } from "./windowEvents";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -65,6 +66,7 @@ export function setDefaultShell(id: string) {
   shellPref.id = id;
   localStorage.setItem("terminalShell", id);
 }
+onGlobalChange("terminalShell", (v) => (shellPref.id = v ?? ""));
 
 interface Instance {
   kind: TermKind;

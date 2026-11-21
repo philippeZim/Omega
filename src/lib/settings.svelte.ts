@@ -3,6 +3,7 @@ import { themeById, themeVars } from "./syntaxThemes";
 import { setTerminalPalette, setTerminalFontSize } from "./terminal.svelte";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import * as ed from "./editor";
+import { onGlobalChange } from "./windowStorage";
 
 const num = (k: string, d: number) => Number(localStorage.getItem(k)) || d;
 
@@ -89,3 +90,21 @@ export function setMaterial(m: Material) {
 setAppearance(settings.appearance);
 setMaterial(settings.material);
 applySizes();
+
+// Changed in another window.
+onGlobalChange("appearance", (v) => setAppearance(v === "light" ? "light" : "dark"));
+onGlobalChange("material", (v) => setMaterial(v === "liquid" ? "liquid" : "solid"));
+onGlobalChange(["syntaxThemeDark", "syntaxThemeLight"], () => {
+  settings.syntaxThemeDark = localStorage.getItem("syntaxThemeDark") || settings.syntaxThemeDark;
+  settings.syntaxThemeLight = localStorage.getItem("syntaxThemeLight") || settings.syntaxThemeLight;
+  applySyntaxTheme(settings.appearance === "light" ? settings.syntaxThemeLight : settings.syntaxThemeDark);
+});
+for (const k of ["codeFontSize", "proseFontSize", "proseWidth", "terminalFontSize", "uiScale"] as const) {
+  onGlobalChange(k, (v) => {
+    const n = Number(v);
+    if (n > 0 && n !== settings[k]) {
+      settings[k] = n;
+      applySizes();
+    }
+  });
+}

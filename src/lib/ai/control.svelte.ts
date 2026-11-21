@@ -3,6 +3,7 @@
  * clicking, typing, screenshots, console, terminal). Executed here, transported by mcp_control.rs.
  */
 import { invoke } from "@tauri-apps/api/core";
+import { onGlobalChange } from "../windowStorage";
 import { listen } from "../windowEvents";
 import { snapshotPng } from "./snapshot";
 import { app, activeTab, openFile, save, setMode, setRoot } from "../state.svelte";
@@ -672,6 +673,13 @@ export async function setControlPort(p: number) {
   localStorage.setItem("mcp.port", String(p));
   if (control.enabled) await startControl();
 }
+
+// Changed in another window; the server itself is shared, so only the display follows.
+onGlobalChange("mcp.control", (v) => (control.enabled = v === "true"));
+onGlobalChange("mcp.port", (v) => (control.port = Number(v) || control.port));
+onGlobalChange("mcp.token", (v) => {
+  if (v) control.token = v;
+});
 
 const url = () => `http://127.0.0.1:${control.boundPort || control.port}/mcp`;
 /** Command that registers the control MCP in each agent (run once in a terminal). */

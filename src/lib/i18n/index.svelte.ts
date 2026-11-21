@@ -8,6 +8,7 @@
  * config) must call `t()` lazily (getter / at render time) or react to `onLocaleChange`.
  */
 import { dictionaries } from "./strings";
+import { onGlobalChange } from "../windowStorage";
 
 export type Locale = "en" | "de" | "fr";
 export const LOCALES: { id: Locale; label: string }[] = [
@@ -42,6 +43,9 @@ export function setLocale(l: Locale) {
   for (const fn of listeners) fn(l);
 }
 document.documentElement.lang = i18n.locale;
+onGlobalChange("uiLanguage", (v) => {
+  if ((v === "en" || v === "de" || v === "fr") && v !== i18n.locale) setLocale(v);
+});
 
 export type Key = keyof typeof dictionaries.en;
 

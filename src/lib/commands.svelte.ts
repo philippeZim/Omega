@@ -4,6 +4,7 @@
  * the command palette and the Shortcuts cheat sheet.
  */
 import type { EditorView } from "@codemirror/view";
+import { onGlobalChange } from "./windowStorage";
 import { candidates, formatKey, normalize } from "./keys";
 import { EDITOR_COMMANDS, type CommandGroup } from "./editorCommands";
 import { KEYMAPS, type KeymapId } from "./keymaps";
@@ -221,6 +222,10 @@ export function defaultKeysFor(id: string): string[] {
 export function keysFor(id: string): string[] {
   return (keymapState.overrides[id] ?? defaultKeysFor(id)).map(normalize);
 }
+
+// Changed in another window.
+onGlobalChange("keybindings", () => (keymapState.overrides = loadOverrides()));
+onGlobalChange("keymap.preset", () => (keymapState.preset = loadPreset()));
 
 function saveOverrides() {
   if (Object.keys(keymapState.overrides).length) localStorage.setItem("keybindings", JSON.stringify(keymapState.overrides));

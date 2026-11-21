@@ -3,6 +3,7 @@
  * Host = the person whose project is shared; guests join with an invite code and need approval.
  */
 import { invoke } from "@tauri-apps/api/core";
+import { onGlobalChange } from "../windowStorage";
 import { listen } from "../windowEvents";
 import { ui } from "../ui.svelte";
 import { t } from "../i18n/index.svelte";
@@ -102,6 +103,12 @@ export function setMyName(name: string) {
   collab.me.name = name.trim().slice(0, MAX_NAME).trim() || collab.me.name;
   localStorage.setItem("collab.name", collab.me.name);
 }
+onGlobalChange("collab.name", (v) => {
+  if (v) collab.me.name = v.slice(0, MAX_NAME);
+});
+onGlobalChange("collab.color", (v) => {
+  if (v) collab.me.color = v;
+});
 
 // ------------------------------------------------------------------ host
 
