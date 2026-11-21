@@ -1,25 +1,35 @@
+// @ts-ignore -- the project has no @types/node; this test only runs under Node.
+import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 
-// Vitest stubs every .css import (even ?raw) to "", so read the files through Node (no @types/node here).
-type Fs = { readFileSync(path: string, enc: "utf8"): string };
-const proc = (globalThis as unknown as { process: { getBuiltinModule(id: string): unknown; cwd(): string } }).process;
-const fs = proc.getBuiltinModule("node:fs") as Fs;
-const read = (path: string) => fs.readFileSync(`${proc.cwd()}/src/${path}`, "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+// Vitest stubs every .css import (even ?raw) to "", so the files are read from disk.
+const read = (path: string) => (readFileSync(`src/${path}`, "utf8") as string).replace(/\/\*[\s\S]*?\*\//g, "");
 
-// Keyframes that run on or inside glass panels.
+// Files whose styles run on or inside glass panels.
 const onGlass = [
   "app.css",
+  "lib/markdown/markdown.css",
   "components/views/TerminalTabs.svelte",
-  "components/DebugPanel.svelte",
-  "components/LspStatus.svelte",
-  "components/KeybindingEditor.svelte",
+  "components/ChangesPanel.svelte",
   "components/CollabPanel.svelte",
-  "components/ToolProgress.svelte",
+  "components/CommandPalette.svelte",
+  "components/DebugPanel.svelte",
+  "components/DiffView.svelte",
+  "components/DockZone.svelte",
+  "components/FindInFiles.svelte",
+  "components/KeybindingEditor.svelte",
+  "components/LspStatus.svelte",
   "components/PdfPanel.svelte",
+  "components/Select.svelte",
+  "components/Toasts.svelte",
+  "components/ToolProgress.svelte",
+  "components/Tooltip.svelte",
 ];
 
-function keyframes(source: string): { name: string; body: string }[] {
-  const found: { name: string; body: string }[] = [];
+const forbidden = /(^|[\s;{])(transform|opacity)\s*:/;
+
+function keyframes(source: string): { name: string; body: string; start: number; end: number }[] {
+  const found: { name: string; body: string; start: number; end: number }[] = [];
   for (const m of source.matchAll(/@keyframes\s+([\w-]+)\s*\{/g)) {
     let depth = 1;
     let i = m.index + m[0].length;
@@ -28,10 +38,28 @@ function keyframes(source: string): { name: string; body: string }[] {
       if (source[i] === "{") depth++;
       else if (source[i] === "}") depth--;
     }
-    found.push({ name: m[1], body: source.slice(start, i - 1) });
+    found.push({ name: m[1], body: source.slice(start, i - 1), start: m.index, end: i });
   }
   return found;
 }
+
+/** Keyframes some `animation` or `animation-name` declaration refers to. */
+function usedKeyframes(source: string) {
+  const frames = keyframes(source);
+  let rest = "";
+  let at = 0;
+  for (const f of frames) {
+    rest += source.slice(at, f.start);
+    at = f.end;
+  }
+  rest += source.slice(at);
+  const values = [...rest.matchAll(/(?<![\w-])animation(?:-name)?\s*:\s*([^;}]*)/g)].map((m) => m[1]);
+  return frames.filter((f) => values.some((v) => v.split(/[\s,]+/).includes(f.name)));
+}
+
+/** Values of every `transition` and `transition-property` declaration. */
+const transitions = (source: string) =>
+  [...source.matchAll(/(?<![\w-])transition(?:-property)?\s*:\s*([^;}]*)/g)].map((m) => m[1]);
 
 // A rule's declarations, for every selector list that names exactly this selector.
 function declarations(source: string, selector: string): string {
@@ -43,10 +71,22 @@ function declarations(source: string, selector: string): string {
 }
 
 describe("no transform or opacity animation on glass (#151)", () => {
-  test.each(onGlass)("%s: keyframes leave transform and opacity alone", (file) => {
-    for (const { name, body } of keyframes(read(file))) {
-      expect(body, `${file} @keyframes ${name}`).not.toMatch(/(^|[\s;{])(transform|opacity)\s*:/);
+  test.each(onGlass)("%s: used keyframes leave transform and opacity alone", (file) => {
+    for (const { name, body } of usedKeyframes(read(file))) {
+      expect(body, `${file} @keyframes ${name}`).not.toMatch(forbidden);
     }
+  });
+
+  test.each(onGlass)("%s: no transition on transform, opacity or all", (file) => {
+    for (const value of transitions(read(file))) {
+      expect(value, file).not.toMatch(/(?<![\w-])(transform|opacity|all)(?![\w-])/);
+    }
+  });
+
+  test("finds a used keyframe and a transition in the scanned syntax", () => {
+    const sample = ".a { animation: spin 1s; transition: opacity 0.1s; } @keyframes spin { to { opacity: 0; } } @keyframes idle { to { opacity: 0; } }";
+    expect(usedKeyframes(sample).map((f) => f.name)).toEqual(["spin"]);
+    expect(transitions(sample)).toEqual(["opacity 0.1s"]);
   });
 
   test.each([
@@ -61,6 +101,8 @@ describe("no transform or opacity animation on glass (#151)", () => {
   });
 
   test(".gbtn glow does not fade through opacity", () => {
-    expect(declarations(read("app.css"), ".gbtn::before")).not.toMatch(/transition[^;]*opacity/);
+    const rule = declarations(read("app.css"), ".gbtn::before");
+    expect(rule).not.toBe("");
+    expect(rule).not.toMatch(/transition[^;]*opacity/);
   });
 });
