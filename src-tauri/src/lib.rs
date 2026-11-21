@@ -137,6 +137,7 @@ pub fn run() {
             windows::windows_cancel_exit,
             mcp_control::mcp_control_start,
             mcp_control::mcp_control_stop,
+            mcp_control::mcp_control_info,
             mcp_control::mcp_reply,
             ide_ws::ide_start,
             ide_ws::ide_set_folders,

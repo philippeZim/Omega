@@ -674,11 +674,32 @@ export async function setControlPort(p: number) {
   if (control.enabled) await startControl();
 }
 
-// Changed in another window; the server itself is shared, so only the display follows.
-onGlobalChange("mcp.control", (v) => (control.enabled = v === "true"));
-onGlobalChange("mcp.port", (v) => (control.port = Number(v) || control.port));
+/** Shows what the shared server is doing now, after another window changed it. */
+export async function syncControl() {
+  const info = await invoke<{ running: boolean; port: number | null }>("mcp_control_info").catch(() => null);
+  if (!info) return;
+  control.running = control.enabled && info.running;
+  if (info.port) control.boundPort = info.port;
+  if (control.running || !control.enabled) control.error = "";
+}
+
+// The other window starts or moves the server right after storing: look again shortly after.
+function followControl() {
+  clearTimeout(retryTimer);
+  void syncControl();
+  for (const ms of [400, 1500]) setTimeout(() => void syncControl(), ms);
+}
+onGlobalChange("mcp.control", (v) => {
+  control.enabled = v === "true";
+  followControl();
+});
+onGlobalChange("mcp.port", (v) => {
+  control.port = Number(v) || control.port;
+  followControl();
+});
 onGlobalChange("mcp.token", (v) => {
   if (v) control.token = v;
+  followControl();
 });
 
 const url = () => `http://127.0.0.1:${control.boundPort || control.port}/mcp`;

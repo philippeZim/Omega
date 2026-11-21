@@ -243,6 +243,14 @@ pub fn mcp_control_stop(app: AppHandle) {
     app.state::<McpControlState>().enabled.store(false, Ordering::SeqCst);
 }
 
+/// What the shared server is doing, for windows that didn't start it.
+#[tauri::command]
+pub fn mcp_control_info(app: AppHandle) -> Value {
+    let state = app.state::<McpControlState>();
+    let port = state.server.lock().unwrap().as_ref().map(|(p, _)| *p);
+    json!({ "running": state.enabled.load(Ordering::SeqCst) && port.is_some(), "port": port })
+}
+
 /// Frontend answer to an `mcp-call` event.
 #[tauri::command]
 pub fn mcp_reply(app: AppHandle, window: tauri::WebviewWindow, call: u64, result: Value) {
