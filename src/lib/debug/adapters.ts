@@ -171,6 +171,7 @@ async function earlybird(ctx: Ctx): Promise<string> {
   const find = () => (managed ? managedOcaml("ocamlearlybird") : which("ocamlearlybird"));
   let cmd = await find();
   if (!cmd) {
+    if (IS_WIN) throw new Error(t("tools.ocamlWindows"));
     const name = "Earlybird";
     if (!(await ctx.askInstall(name))) throw new Error(t("code.ad.required", { name }));
     ctx.log(t("code.ad.installing", { name }));

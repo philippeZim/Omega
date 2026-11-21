@@ -79,6 +79,7 @@ export const en = {
   "tools.err.tools.ocaml_missing": "OCaml setup needs these programs: {detail}. Install them with your system's package manager, then try again.",
   "tools.err.tools.ocaml_not_managed": "{detail} can only be installed in Omega's own OCaml. You use a system OCaml: run opam install {detail} in your own switch.",
   "tools.err.tools.ocaml_failed": "OCaml setup failed: {detail}",
+  "tools.ocamlWindows": "On Windows, Omega can't set up OCaml by itself. Install OCaml with opam, including dune, ocaml-lsp-server and earlybird, and put them on the PATH. Omega then uses them.",
 };
 
 export const de: typeof en = {
@@ -161,6 +162,7 @@ export const de: typeof en = {
   "tools.err.tools.ocaml_missing": "Die OCaml-Einrichtung braucht diese Programme: {detail}. Installiere sie mit dem Paketmanager deines Systems und versuche es erneut.",
   "tools.err.tools.ocaml_not_managed": "{detail} lässt sich nur in Omegas eigenem OCaml installieren. Du nutzt ein System-OCaml: Führe opam install {detail} in deinem eigenen Switch aus.",
   "tools.err.tools.ocaml_failed": "OCaml-Einrichtung fehlgeschlagen: {detail}",
+  "tools.ocamlWindows": "Unter Windows kann Omega OCaml nicht selbst einrichten. Installiere OCaml mit opam, samt dune, ocaml-lsp-server und earlybird, und lege sie in den PATH. Omega nutzt sie dann.",
 };
 
 export const fr: typeof en = {
@@ -243,4 +245,5 @@ export const fr: typeof en = {
   "tools.err.tools.ocaml_missing": "L’installation d’OCaml nécessite ces programmes : {detail}. Installez-les avec le gestionnaire de paquets de votre système, puis réessayez.",
   "tools.err.tools.ocaml_not_managed": "{detail} ne peut être installé que dans l’OCaml d’Omega. Vous utilisez un OCaml système : lancez opam install {detail} dans votre propre switch.",
   "tools.err.tools.ocaml_failed": "Échec de l’installation d’OCaml : {detail}",
+  "tools.ocamlWindows": "Sous Windows, Omega ne peut pas installer OCaml lui-même. Installez OCaml avec opam, avec dune, ocaml-lsp-server et earlybird, et ajoutez-les au PATH. Omega les utilisera ensuite.",
 };

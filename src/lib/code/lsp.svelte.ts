@@ -479,7 +479,8 @@ export const INSTALLABLE: Partial<Record<ServerKind, string>> = {
   typescript: "typescript-language-server (JS/TS)",
   java: "Eclipse JDT Language Server (Java)",
   scala: "Metals (Scala)",
-  ocaml: "ocaml-lsp-server (OCaml)",
+  // On Windows it can only come from the user's own opam: there is nothing to offer.
+  ocaml: IS_WIN ? undefined : "ocaml-lsp-server (OCaml)",
   get rust() {
     return t("code.lsp.rustAnalyzer");
   },
@@ -596,6 +597,7 @@ export async function clientFor(
     if (!cmd) {
       lspState.status[key] = "missing";
       const name = INSTALLABLE[kind];
+      if (kind === "ocaml" && !name) lspState.message[key] = t("tools.ocamlWindows");
       if (!name || (declined.has(kind) && !needDebug)) return null;
       if (!(await askInstall(kind, name))) {
         declined.add(kind);

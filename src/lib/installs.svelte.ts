@@ -113,11 +113,14 @@ export function updateAvailable(id: string): string | null {
 export function canInstall(id: string): boolean {
   const [group, name] = id.split(":");
   if (group === "tool") return installs.installable.includes(name);
+  // Both go into Omega's opam switch, which doesn't exist on Windows.
+  if (OS === "windows" && (id === "lsp:ocaml" || id === "debug:earlybird")) return installs.status["tool:ocaml"]?.source === "omega";
   return true;
 }
 
 /** Package-manager hint for things Omega can't install on this OS (Linux compilers, Git). */
 export function manualHint(id: string): string {
+  if (OS === "windows" && id === "tool:ocaml") return t("tools.ocamlWindows");
   if (OS !== "linux") return "";
   if (id === "tool:cc") return "sudo pacman -S base-devel · sudo apt install build-essential";
   if (id === "tool:git") return "sudo pacman -S git · sudo apt install git";

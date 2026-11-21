@@ -70,6 +70,7 @@ const canInstall = async (id: ToolId) => (await (installable ??= invoke<string[]
 
 /** How to get a tool by hand when Omega can't install it (Linux system compilers). */
 function manualHint(id: ToolId): string {
+  if (id === "ocaml" && OS === "windows") return t("tools.ocamlWindows");
   if (id === "cc" || id === "git")
     return "sudo apt install build-essential git   # Debian/Ubuntu\nsudo dnf install gcc gcc-c++ git          # Fedora\nsudo pacman -S base-devel git             # Arch";
   return "";
