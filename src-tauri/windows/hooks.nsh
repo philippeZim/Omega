@@ -20,7 +20,7 @@
   Push $0
   CreateDirectory "$INSTDIR\bin"
   FileOpen $0 "$INSTDIR\bin\omega.cmd" w
-  FileWrite $0 "@echo off$\r$\nrem omega-launcher$\r$\n$\"$INSTDIR\${MAINBINARYNAME}.exe$\" %*$\r$\nexit /b %errorlevel%$\r$\n"
+  FileWrite $0 "@echo off$\r$\nrem omega-launcher$\r$\n$\"%~dp0..\${MAINBINARYNAME}.exe$\" %*$\r$\nexit /b %errorlevel%$\r$\n"
   FileClose $0
   Pop $0
   !insertmacro OMEGA_EDIT_PATH "$$l += $$env:OMEGA_BIN;"

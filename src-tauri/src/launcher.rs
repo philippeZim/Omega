@@ -39,10 +39,17 @@ fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
 
-fn script(exe: &str, no_fuse: bool) -> String {
-    if cfg!(windows) {
-        return format!("@echo off\r\nrem {MARKER}\r\n\"{}\" %*\r\nexit /b %errorlevel%\r\n", exe.replace('%', "%%"));
+/// `omega.cmd`. cmd.exe reads batch files in the console's code page, so the file stays pure ASCII:
+/// in `<app folder>\bin` it finds the app relative to itself. `exe_name` is the app's file name.
+fn cmd_script(exe: &str, exe_name: &str, beside_app: bool) -> Result<String, String> {
+    let target = if beside_app { format!("%~dp0..\\{exe_name}") } else { exe.replace('%', "%%") };
+    if !target.is_ascii() {
+        return Err("launcher:non_ascii".into());
     }
+    Ok(format!("@echo off\r\nrem {MARKER}\r\n\"{target}\" %*\r\nexit /b %errorlevel%\r\n"))
+}
+
+fn script(exe: &str, no_fuse: bool) -> String {
     // NO_CLEANUP: the process that detaches must not delete what its detached copy runs from.
     let run = if no_fuse { format!("env APPIMAGE_EXTRACT_AND_RUN=1 NO_CLEANUP=1 {}", sh_quote(exe)) } else { sh_quote(exe) };
     format!("#!/bin/sh\n# {MARKER}: created by Omega\nexec {run} \"$@\"\n")
@@ -122,9 +129,13 @@ fn has_fuse2() -> bool {
     })
 }
 
-fn wanted_script(exe: &Path) -> Result<String, String> {
-    let exe = exe.to_str().ok_or("the app's path is not valid UTF-8")?;
-    Ok(script(exe, std::env::var_os("APPIMAGE").is_some() && !has_fuse2()))
+fn wanted_script(exe: &Path, dir: &Path) -> Result<String, String> {
+    let text = exe.to_str().ok_or("the app's path is not valid UTF-8")?;
+    if cfg!(windows) {
+        let name = exe.file_name().and_then(|n| n.to_str()).ok_or("the app has no file name")?;
+        return cmd_script(text, name, exe.parent().is_some_and(|p| p.join("bin") == dir));
+    }
+    Ok(script(text, std::env::var_os("APPIMAGE").is_some() && !has_fuse2()))
 }
 
 fn on_path(dir: &Path, path: &std::ffi::OsStr) -> bool {
@@ -137,7 +148,7 @@ pub fn cli_status() -> Result<Status, String> {
     let dir = target_dir(&crate::env::home(), &exe);
     let path = dir.join(FILE_NAME);
     Ok(Status {
-        state: classify(&path, &wanted_script(&exe)?),
+        state: classify(&path, &wanted_script(&exe, &dir)?),
         path: path.to_string_lossy().into_owned(),
         on_path: on_path(&dir, &crate::env::path()),
         dir: dir.to_string_lossy().into_owned(),
@@ -151,13 +162,33 @@ pub fn cli_install(replace: bool) -> Result<Status, String> {
         return Err("launcher:test_instance".into());
     }
     let exe = app_path()?;
-    install_to(&target_dir(&crate::env::home(), &exe), &wanted_script(&exe)?, replace)?;
+    let dir = target_dir(&crate::env::home(), &exe);
+    install_to(&dir, &wanted_script(&exe, &dir)?, replace)?;
     cli_status()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_windows_launcher_stays_ascii_on_a_non_ascii_install_path() {
+        let text = cmd_script(r"C:\Users\Jürgen\AppData\Local\Omega\ide.exe", "ide.exe", true).unwrap();
+        assert!(text.is_ascii());
+        assert_eq!(text, "@echo off\r\nrem omega-launcher\r\n\"%~dp0..\\ide.exe\" %*\r\nexit /b %errorlevel%\r\n");
+        // Elsewhere it has to name the app; a path cmd.exe could misread is refused.
+        assert!(cmd_script(r"C:\Omega\ide.exe", "ide.exe", false).unwrap().contains(r#""C:\Omega\ide.exe""#));
+        assert_eq!(cmd_script(r"C:\Jürgen\ide.exe", "ide.exe", false), Err("launcher:non_ascii".into()));
+    }
+
+    #[test]
+    fn the_installer_writes_the_launcher_the_settings_button_recognises() {
+        let hooks = include_str!("../windows/hooks.nsh");
+        let line = r#"FileWrite $0 "@echo off$\r$\nrem omega-launcher$\r$\n$\"%~dp0..\${MAINBINARYNAME}.exe$\" %*$\r$\nexit /b %errorlevel%$\r$\n""#;
+        assert!(hooks.contains(line));
+        let as_written = line.trim_start_matches("FileWrite $0 \"").trim_end_matches('"').replace("$\\r", "\r").replace("$\\n", "\n").replace("$\\\"", "\"").replace("${MAINBINARYNAME}", "ide");
+        assert_eq!(as_written, cmd_script("", "ide.exe", true).unwrap());
+    }
 
     #[test]
     fn quotes_paths_for_the_shell() {
