@@ -2,6 +2,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { detectProject, type Action, type Project, TEMPLATES } from "./projects";
 import { versionSettings, type VersionSetting } from "./versions";
+import { packageAction } from "./packageInput";
 import { runCommand, runTask, cancelTask, interruptRun, type TaskState } from "../terminal.svelte";
 import { app, activeTab, save, setRoot, openFile, setMode } from "../state.svelte";
 import { ui } from "../ui.svelte";
@@ -112,7 +113,9 @@ export async function chooseVersion(s: VersionSetting) {
     const n = q.trim().toLowerCase();
     return n ? all.filter((o) => o.value.toLowerCase().includes(n)) : all;
   });
-  if (!v || v === s.current) return;
+  // The dialog trims what it returns, so the file's own value (e.g. a range) may come back changed.
+  const plain = (x: string | null) => x?.trim().replace(/\s+/g, " ");
+  if (!v || plain(v) === plain(s.current)) return;
   try {
     const cmd = await s.apply(v);
     if (cmd) {
@@ -147,16 +150,24 @@ async function current(a: Action, p: Project): Promise<[Action | null | undefine
   return fresh?.root === p.root ? [fresh[slot], fresh] : [a, p];
 }
 
-export async function runAction(action: Action | null | undefined) {
+/** `checkedArg`: the ready, shell-safe argument of an `ask` action (Code Together guest); no prompt then. */
+export async function runAction(action: Action | null | undefined, checkedArg?: string) {
   if (!action?.cmd || !runner.project) return;
   if (runnerRemote.run) return runnerRemote.run(action);
   const [a, p] = await current(action, runner.project);
   if (!a?.cmd || !p) return;
   let cmd = a.cmd;
-  if (a.ask) {
+  if (a.ask && checkedArg !== undefined) cmd = cmd.replace("{}", () => checkedArg);
+  else if (a.ask) {
     const v = await ui.prompt(a.label.replace("…", ""), "", a.ask, undefined, a.suggest);
     if (!v) return;
-    cmd = cmd.replace("{}", a.arg ? await a.arg(v) : v);
+    let arg = v;
+    try {
+      if (a.arg) arg = await a.arg(v);
+    } catch (e) {
+      return ui.toast(e instanceof Error ? e.message : String(e), "error");
+    }
+    cmd = cmd.replace("{}", () => arg);
   }
   // `{file}` in a (custom) command = the file open in the editor.
   if (cmd.includes("{file}")) {
@@ -178,6 +189,7 @@ export async function runAction(action: Action | null | undefined) {
     cancelTask("run");
     runTask("build", pre, p.root, t("code.act.build"), { onExit: (code) => code === 0 && runTask("run", cmd, p.root, title) });
   } else if (BUILD_ACTIONS.has(a.id)) runTask("build", cmd, p.root, a.id === "build" ? t("code.act.build") : title);
+  else if (packageAction(p.kind, a.id)) runCommand(cmd, p.root, title, true, { packageTask: true });
   else runCommand(cmd, p.root, title);
   // Dependency changes may alter the project (e.g. new scripts).
   if (a.ask) setTimeout(refreshProject, 3000);

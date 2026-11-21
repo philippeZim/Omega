@@ -31,6 +31,8 @@ export interface TermTab {
   code?: number | null;
   /** build/run: identifies the current command, a higher number is a later start. */
   taskId?: number;
+  /** build/run: the current command changes packages (a guest with `packages` may stop it). */
+  packageTask?: boolean;
 }
 
 // Where and whether the terminal view is shown is managed by layout.svelte.ts.
@@ -326,7 +328,7 @@ function dropTask(inst: Instance) {
  * duration; its status (running / ✓ / ✗ / stopped) is shown in the tab bar. `onExit` gets the exit
  * code (null = stopped). Programs stay interactive: it's a real PTY.
  */
-export function runTask(kind: "build" | "run", cmd: string, cwd: string | null, title: string, opts: { focus?: boolean; onExit?: (code: number | null) => void } = {}) {
+export function runTask(kind: "build" | "run", cmd: string, cwd: string | null, title: string, opts: { focus?: boolean; onExit?: (code: number | null) => void; packageTask?: boolean } = {}) {
   let tab = terms.tabs.find((x) => x.kind === kind);
   if (!tab) {
     const id = newTerminal(cwd, kind, title);
@@ -350,6 +352,7 @@ export function runTask(kind: "build" | "run", cmd: string, cwd: string | null, 
   inst.spawned = true;
   const taskId = counter++;
   tab.taskId = taskId;
+  tab.packageTask = !!opts.packageTask;
   const pty = `${tab.id}.${taskId}`;
   inst.pty = pty;
   ptyTab.set(pty, tab.id);
@@ -367,8 +370,8 @@ export function runTask(kind: "build" | "run", cmd: string, cwd: string | null, 
 }
 
 /** Runs a single command in the Run tab (installs, debuggee, new projects, AI …). */
-export function runCommand(cmd: string, cwd: string | null, title = t("common.run"), focus = true) {
-  runTask("run", cmd, cwd, title, { focus });
+export function runCommand(cmd: string, cwd: string | null, title = t("common.run"), focus = true, opts: { packageTask?: boolean } = {}) {
+  runTask("run", cmd, cwd, title, { focus, ...opts });
 }
 
 /** True while the Build or Run tab is busy. */
@@ -434,11 +437,19 @@ export function interruptTask(taskId: number): boolean {
   return true;
 }
 
+/** Whether the running command `taskId` is a package task; null when that command isn't running. */
+export function runningPackageTask(taskId: number): boolean | null {
+  const tab = runningTaskTab();
+  return tab?.taskId === taskId ? !!tab.packageTask : null;
+}
+
 export interface TaskState {
   running: boolean;
   kind: "build" | "run" | null;
   taskId: number | null;
   status: TaskStatus | null;
+  /** Only set while a package task runs. */
+  packages?: true;
 }
 
 /** The command Stop would hit, or else the latest one. Reactive. */
@@ -446,7 +457,8 @@ export function taskState(): TaskState {
   const latest = terms.tabs.filter((x) => (x.kind === "build" || x.kind === "run") && x.taskId !== undefined).sort((a, b) => b.taskId! - a.taskId!)[0];
   const tab = runningTaskTab() ?? latest;
   if (!tab) return { running: false, kind: null, taskId: null, status: null };
-  return { running: tab.status === "running", kind: tab.kind as "build" | "run", taskId: tab.taskId ?? null, status: tab.status ?? null };
+  const running = tab.status === "running";
+  return { running, kind: tab.kind as "build" | "run", taskId: tab.taskId ?? null, status: tab.status ?? null, ...(running && tab.packageTask ? { packages: true as const } : {}) };
 }
 
 /** Quotes for the Run terminal's shell (POSIX sh, or cmd.exe on Windows). */

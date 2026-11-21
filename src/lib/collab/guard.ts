@@ -22,6 +22,9 @@ export const guestGuard = {
 
 export const guestCan = (cap: Capability) => guestGuard.can(cap);
 
+/** Whether this guest may stop the host's task: `run` any, `packages` only a package task. */
+export const guestCanStop = (task: { packages?: boolean } | null | undefined) => guestCan("run") || (guestCan("packages") && !!task?.packages);
+
 /** Stops an action the host turned off for this guest. Returns true (after saying so) to stop. */
 export function blockedByCapability(cap: Capability): boolean {
   if (guestGuard.can(cap)) return false;

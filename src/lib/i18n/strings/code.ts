@@ -251,6 +251,8 @@ export const en = {
   "code.rb.runCmdOnHost": "The run command is set on the host",
   "code.term.newLocal": "New local terminal (on your computer, not the host)",
   "code.term.localTitle": "Local (not host)",
+  "code.act.badGroup": "This dependency is in a group whose name isn't valid. Rename the group in pyproject.toml.",
+  "code.ver.badVersion": "Not a valid version: {value}",
 };
 export const de: Record<keyof typeof en, string> = {
   "code.key.ctrl": "Strg",
@@ -494,6 +496,8 @@ export const de: Record<keyof typeof en, string> = {
   "code.rb.runCmdOnHost": "Der Run-Befehl wird beim Host festgelegt",
   "code.term.newLocal": "Neues lokales Terminal (auf deinem Computer, nicht beim Host)",
   "code.term.localTitle": "Lokal (nicht Host)",
+  "code.act.badGroup": "Diese Abhängigkeit liegt in einer Gruppe mit ungültigem Namen. Benenne die Gruppe in der pyproject.toml um.",
+  "code.ver.badVersion": "Keine gültige Version: {value}",
 };
 export const fr: Record<keyof typeof en, string> = {
   "code.key.ctrl": "Ctrl",
@@ -737,4 +741,6 @@ export const fr: Record<keyof typeof en, string> = {
   "code.rb.runCmdOnHost": "La commande d’exécution se règle chez l’hôte",
   "code.term.newLocal": "Nouveau terminal local (sur votre ordinateur, pas chez l’hôte)",
   "code.term.localTitle": "Local (pas l’hôte)",
+  "code.act.badGroup": "Cette dépendance est dans un groupe au nom non valide. Renommez le groupe dans pyproject.toml.",
+  "code.ver.badVersion": "Version non valide : {value}",
 };

@@ -5,6 +5,7 @@ import { q, cd, exe, IS_WIN, OS, runRel, rmrf, tmpPath } from "../platform";
 import type { ToolId } from "../tools.svelte";
 import { langFor, type LangId } from "./languages";
 import { suggestPythonAdd, suggestPythonRemove, pythonRemoveArg, suggestNodeAdd, suggestNodeRemove, type Suggest } from "./packages";
+import { validScriptName } from "./packageInput";
 import { t, i18n, type Key } from "../i18n/index.svelte";
 
 export type ProjectKind = "cargo" | "uv" | "pnpm" | "cmake" | "gradle" | "file";
@@ -79,7 +80,8 @@ export async function pyprojectScripts(root: string): Promise<{ name: string; ta
   try {
     const toml = await fsApi.readFile(joinPath(root, "pyproject.toml"));
     const sec = /^\[project\.scripts\]\s*$([\s\S]*?)(?=^\[|$(?![\s\S]))/m.exec(toml)?.[1] ?? "";
-    return [...sec.matchAll(/^\s*["']?([\w.-]+)["']?\s*=\s*["']([^"']+)["']/gm)].map((m) => ({ name: m[1], target: m[2] }));
+    // No `%`: cmd.exe expands it even inside quotes, and a real entry point never has one.
+    return [...sec.matchAll(/^\s*["']?([\w.-]+)["']?\s*=\s*["']([^"'%]+)["']/gm)].map((m) => ({ name: m[1], target: m[2] }));
   } catch {
     return [];
   }
@@ -130,6 +132,16 @@ export async function pythonEntry(file: string | null, root: string): Promise<{ 
   if (isPy) return { kind: "file", file };
   const main = await findPythonMain(root);
   return main ? { kind: "file", file: main } : { kind: "none" };
+}
+
+/**
+ * What follows `uv run`: names from the project must not read as options, and on Windows a file
+ * with `%` can't be run at all, because cmd.exe would expand it even inside quotes.
+ */
+export function uvRunTarget(entry: Awaited<ReturnType<typeof pythonEntry>>, relFile: string, windows = IS_WIN): string | null {
+  if (entry.kind === "script") return `${entry.name.startsWith("-") ? "-- " : ""}${q(entry.name)}`;
+  if (entry.kind !== "file" || (windows && relFile.includes("%"))) return null;
+  return q(relFile.startsWith("-") ? `./${relFile}` : relFile);
 }
 
 /** Removes `#` line comments and `#[[ … ]]` bracket comments, leaving quoted strings alone. */
@@ -234,7 +246,7 @@ export async function detectProject(file: string | null, workspace: string | nul
 
   if (p?.kind === "uv") {
     const entry = await pythonEntry(file, p.root);
-    const target = entry.kind === "script" ? q(entry.name) : entry.kind === "file" ? q(rel(entry.file, p.root)) : null;
+    const target = uvRunTarget(entry, entry.kind === "file" ? rel(entry.file, p.root) : "");
     return {
       ...p,
       label: "uv",
@@ -276,7 +288,7 @@ export async function detectProject(file: string | null, workspace: string | nul
           : null, // plain JavaScript: nothing to build or typecheck
       test: scripts.includes("test") ? act("test", "code.act.test", "pnpm test") : null,
       more: [
-        ...scripts.map((s) => ({ id: `script:${s}`, label: `pnpm run ${s}`, cmd: `pnpm run ${s}` })),
+        ...scripts.filter(validScriptName).map((s) => ({ id: `script:${s}`, label: `pnpm run ${s}`, cmd: `pnpm run ${q(s)}` })),
         { id: "install", label: "pnpm install", cmd: "pnpm install" },
         act("add", "code.act.addDep", "pnpm add {}", { ask: askPkg("zod"), suggest: suggestNodeAdd(p.root, false) }),
         act("adddev", "code.act.addDevDep", "pnpm add -D {}", { ask: askPkg("vitest"), suggest: suggestNodeAdd(p.root, true) }),

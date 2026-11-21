@@ -37,7 +37,7 @@ vi.mock("./projects", () => ({
   },
 }));
 
-const { runner, refreshProject, runAction, createProject } = await import("./runner.svelte");
+const { runner, refreshProject, runAction, createProject, chooseVersion } = await import("./runner.svelte");
 const { TEMPLATES } = await import("./projects");
 const { ui } = await import("../ui.svelte");
 
@@ -166,4 +166,77 @@ test("a template isn't created inside a bare repository, because it would run gi
   } finally {
     TEMPLATES.pop();
   }
+});
+
+describe("runAction with an argument checked for a Code Together guest", () => {
+  const add = (over: Partial<Action> = {}): Action => ({ id: "add", label: "Add…", cmd: "uv add {}", ask: "Package", arg: async () => "--wrong", ...over });
+
+  test("it goes in as it is, without a prompt on the host and without arg()", async () => {
+    await refreshProject();
+    vi.mocked(ui.prompt).mockClear();
+    await runAction(add(), "'numpy>=1'");
+    expect(ui.prompt).not.toHaveBeenCalled();
+    expect(h.runCommand.mock.calls[0][0]).toBe("uv add 'numpy>=1'");
+  });
+
+  test("replacement patterns in it stay literal", async () => {
+    await refreshProject();
+    await runAction(add(), "$&$`$'");
+    expect(h.runCommand.mock.calls[0][0]).toBe("uv add $&$`$'");
+  });
+
+  test("the host's own flow still prompts", async () => {
+    await refreshProject();
+    vi.mocked(ui.prompt).mockResolvedValueOnce("requests");
+    await runAction(add({ arg: undefined }));
+    expect(ui.prompt).toHaveBeenCalled();
+    expect(h.runCommand.mock.calls[0][0]).toBe("uv add requests");
+  });
+});
+
+describe("package actions on the host", () => {
+  const add = (over: Partial<Action> = {}): Action => ({ id: "add", label: "Add…", cmd: "uv add {}", ask: "Package", ...over });
+
+  test("a group name that fails validation stops with its message, nothing runs", async () => {
+    await refreshProject();
+    vi.mocked(ui.prompt).mockResolvedValueOnce("evil");
+    vi.mocked(ui.toast).mockClear();
+    await runAction(add({ arg: async () => { throw new Error("bad group"); } }));
+    expect(ui.toast).toHaveBeenCalledWith("bad group", "error");
+    expect(h.runCommand).not.toHaveBeenCalled();
+  });
+
+  test("only package actions are marked as package tasks", async () => {
+    await refreshProject();
+    (runner.project as Project).kind = "uv";
+    await runAction(add(), "requests");
+    expect(h.runCommand.mock.calls[0][4]).toEqual({ packageTask: true });
+    h.runCommand.mockReset();
+    await runAction({ id: "fmt", label: "fmt", cmd: "uvx ruff format" });
+    expect(h.runCommand.mock.calls[0][4]).toBeUndefined();
+  });
+});
+
+describe("chooseVersion with a range from the project file", () => {
+  const setting = (current: string) => ({ id: "node", label: "Node", current, chip: "Node", options: async () => [], apply: vi.fn(async (v: string) => `set ${v}`) });
+
+  test.each([[" >=18 <21 ", ">=18 <21"], ["20  ||  22", "20 || 22"], [">=18\n<21", ">=18 <21"]])("picking the file's own value %j does nothing", async (current, returned) => {
+    await refreshProject();
+    const s = setting(current);
+    vi.mocked(ui.prompt).mockResolvedValueOnce(returned);
+    vi.mocked(ui.toast).mockClear();
+    await chooseVersion(s);
+    expect(s.apply).not.toHaveBeenCalled();
+    expect(ui.toast).not.toHaveBeenCalled();
+    expect(h.runCommand).not.toHaveBeenCalled();
+  });
+
+  test("a concrete version still applies", async () => {
+    await refreshProject();
+    const s = setting(">=18 <21");
+    vi.mocked(ui.prompt).mockResolvedValueOnce("22");
+    await chooseVersion(s);
+    expect(s.apply).toHaveBeenCalledWith("22");
+    expect(h.runCommand.mock.calls[0][0]).toBe("set 22");
+  });
 });
