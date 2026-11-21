@@ -126,11 +126,17 @@ export function manualHint(id: string): string {
 
 const LSP_PREREQ: Partial<Record<string, ToolId[]>> = { python: ["node"], typescript: ["node"], java: ["jdk"], rust: ["rust"], scala: ["jdk", "scala"], ocaml: ["ocaml"] };
 
+/** opam works for a while: an open editor can start ocamllsp again from the files it is replacing. */
+const usesOcamllsp = (id: string) => id === "lsp:ocaml" || id === "tool:ocaml";
+
 async function doInstall(id: string) {
   const [group, name] = id.split(":");
   if (group === "tool" || id === "lsp:clangd") {
     if (id === "lsp:clangd") stopServers("clangd");
-    if (!(await installTool(name as ToolId))) return false;
+    if (usesOcamllsp(id)) stopServers("ocaml");
+    const ok = await installTool(name as ToolId);
+    if (usesOcamllsp(id)) stopServers("ocaml");
+    if (!ok) return false;
     pathChanged();
     return true;
   }
@@ -138,7 +144,11 @@ async function doInstall(id: string) {
     const pre = LSP_PREREQ[name];
     if (pre && !(await ensureTools(pre, t("tools.purpose.lsp")))) return false;
     stopServers(name as ServerKind);
-    await withInstallProgress(serverProgressId(name), labelOf(id), () => invoke("install_server", { kind: name }));
+    try {
+      await withInstallProgress(serverProgressId(name), labelOf(id), () => invoke("install_server", { kind: name }));
+    } finally {
+      if (usesOcamllsp(id)) stopServers("ocaml");
+    }
     return true;
   }
   if (name === "debugpy" && !(await hasTool("uv")) && !(await invoke<string | null>("which_cmd", { cmd: "python3" })) && !(await invoke<string | null>("which_cmd", { cmd: "python" })))
@@ -198,7 +208,11 @@ export async function remove(id: string) {
     const [group, name] = id.split(":");
     if (group === "lsp") stopServers(name as ServerKind);
     if (id === "tool:ocaml") stopServers("ocaml"); // ocamllsp lives in the same switch
-    await invoke("installs_remove", { id });
+    try {
+      await invoke("installs_remove", { id });
+    } finally {
+      if (usesOcamllsp(id)) stopServers("ocaml");
+    }
     pathChanged();
     return true;
   });
