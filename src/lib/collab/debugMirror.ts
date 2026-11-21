@@ -93,6 +93,13 @@ export class StreamScrubber {
     return scrubPaths(text.slice(0, end), this.root, this.home);
   }
 
+  /** Output paused: releases held text, but a character split across chunks waits for its rest. */
+  drain(): string {
+    const text = this.tail;
+    this.tail = "";
+    return scrubPaths(text, this.root, this.home);
+  }
+
   flush(): string {
     const text = this.tail + this.decoder.decode();
     this.tail = "";

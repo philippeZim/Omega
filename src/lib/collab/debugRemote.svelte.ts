@@ -298,7 +298,7 @@ export function filterTerminal(b64: string, later: (b64: string) => void): strin
   // A path that never completes must still show up.
   clearTimeout(termTimer);
   termTimer = window.setTimeout(() => {
-    const rest = termScrubber?.flush();
+    const rest = termScrubber?.drain();
     if (rest) later(toB64(rest));
   }, 120);
   return text ? toB64(text) : "";

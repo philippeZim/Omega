@@ -240,6 +240,17 @@ test("a path split across terminal chunks is still scrubbed, and nothing is lost
   expect(out).toBe("run main.py äö\n~/proj2/x /tmp/ok /ho");
 });
 
+test("a pause in the output releases a held path but keeps a character split across chunks", () => {
+  const scrubber = new mirror.StreamScrubber("/home/alice/proj", "/home/alice");
+  const bytes = new TextEncoder().encode("ä");
+  let out = scrubber.push(new TextEncoder().encode("x /ho"));
+  out += scrubber.push(bytes.slice(0, 1));
+  out += scrubber.drain();
+  out += scrubber.push(bytes.slice(1));
+  out += scrubber.flush();
+  expect(out).toBe("x /hoä");
+});
+
 test("the mirrored state holds no absolute host paths, and outside frames are only a name", async () => {
   stoppedHost();
   const state = await remote.buildState();
