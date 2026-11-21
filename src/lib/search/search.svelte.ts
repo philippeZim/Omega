@@ -224,15 +224,42 @@ export function buildRegex(global = true): RegExp | null {
   }
 }
 
-function replaceText(text: string, re: RegExp): { text: string; count: number } {
-  if (!find.regex) {
-    let count = 0;
-    const out = text.replace(re, () => (count++, find.replacement));
-    return { text: out, count };
+/** Replaces the non-empty matches of one line, the ones the search shows. */
+function replaceInLine(line: string, re: RegExp, at: RegExp): { text: string; count: number } {
+  let out = "";
+  let last = 0;
+  let count = 0;
+  for (const m of line.matchAll(re)) {
+    if (!m[0].length) continue;
+    const end = m.index + m[0].length;
+    let rep = find.replacement;
+    if (find.regex) {
+      // The native replacement handles $1, $<name>, $&, $$ etc.; `at` applies it to this match only.
+      at.lastIndex = m.index;
+      const replaced = line.replace(at, find.replacement);
+      rep = replaced.slice(m.index, replaced.length - (line.length - end));
+    }
+    out += line.slice(last, m.index) + rep;
+    last = end;
+    count++;
   }
-  // Regex mode: the native replacement string handles $1, $<name>, $&, $$ etc. correctly.
-  const count = [...text.matchAll(re)].length;
-  return { text: count ? text.replace(re, find.replacement) : text, count };
+  return count ? { text: out + line.slice(last), count } : { text: line, count };
+}
+
+/** Replaces line by line like the backend search, so `^` and `$` mean the same and a CRLF stays. */
+function replaceText(text: string, re: RegExp, onlyLine?: number): { text: string; count: number } {
+  const at = new RegExp(re.source, re.flags.replace("g", "") + "y");
+  const lines = text.split("\n");
+  let count = 0;
+  lines.forEach((raw, i) => {
+    if (onlyLine !== undefined && i !== onlyLine - 1) return;
+    const cr = i < lines.length - 1 && raw.endsWith("\r");
+    const r = replaceInLine(cr ? raw.slice(0, -1) : raw, re, at);
+    if (!r.count) return;
+    lines[i] = r.text + (cr ? "\r" : "");
+    count += r.count;
+  });
+  return { text: count ? lines.join("\n") : text, count };
 }
 
 /** Replaces in one file (open tabs are edited in the editor, so undo works). Returns replacement count. */
@@ -252,13 +279,7 @@ export async function replaceInFile(file: string, onlyLine?: number): Promise<nu
   let original: string;
   if (tab) original = ed.getText(tab.id);
   else original = await fsApi.readFile(file);
-  let result: { text: string; count: number };
-  if (onlyLine !== undefined) {
-    const lines = original.split("\n");
-    const r = replaceText(lines[onlyLine - 1] ?? "", re);
-    lines[onlyLine - 1] = r.text;
-    result = { text: lines.join("\n"), count: r.count };
-  } else result = replaceText(original, re);
+  const result = replaceText(original, re, onlyLine);
   if (!result.count) return 0;
   if (tab) ed.replaceDocText(tab.id, result.text);
   else await fsApi.writeFile(file, result.text);

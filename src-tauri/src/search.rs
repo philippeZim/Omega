@@ -881,6 +881,15 @@ mod tests {
     }
 
     #[test]
+    fn replace_plan_counts_what_the_search_shows_on_crlf_lines() {
+        let text = "foo\r\nfoo\nfoo";
+        let shown: usize = run("foo$", true, false, true, text).iter().map(|h| h.ranges.len()).sum();
+        let p = plan("foo$", true, "X", None, text);
+        assert_eq!((shown, p.count), (3, 3));
+        assert_eq!(p.edits.iter().map(|e| (e.0, e.1)).collect::<Vec<_>>(), [(0, 3), (5, 8), (9, 12)]);
+    }
+
+    #[test]
     fn replace_plan_refuses_output_that_would_not_fit_one_update() {
         let r = GuestReplace { query: "a".into(), case_sensitive: true, whole_word: false, regex: false, replacement: "x".repeat(1024 * 1024), line: None, expect_version: None, expect_line: None };
         let re = build_regex("a", true, false, false).unwrap();
