@@ -564,6 +564,38 @@ test("host: what the Run terminal mirrors to guests passes the debugger's filter
   expect(sent.flatMap((m) => m.chunks as string[]).map(dec).join("")).toBe("held $ python main.py");
 });
 
+test("host: while guests are slow, Run output waits in a bounded queue and one message goes at a time (#154)", async () => {
+  const { termOut } = await import("./debugMirror");
+  const { TERM_LIMITS } = await import("./guestInput");
+  collab.role = "host";
+  collab.participants = [{ peer: "self", role: "host" }, { peer: "g1", role: "guest" }];
+  broadcast.mockClear();
+  const release: (() => void)[] = [];
+  broadcast.mockImplementation((m: Msg) => (m.t === "term.data" ? new Promise<void>((r) => release.push(r)) : undefined));
+  termOut.filter = (b64) => b64;
+  const sent = () => broadcast.mock.calls.map((c) => c[0] as Msg).filter((m) => m.t === "term.data");
+  try {
+    runEcho("first\n");
+    await vi.waitFor(() => expect(sent().length).toBe(1));
+    const line = `${"x".repeat(1000)}\n`;
+    for (let i = 0; i < 3000; i++) runEcho(line);
+    await new Promise((r) => setTimeout(r, 45));
+    expect(sent().length).toBe(1); // the first is still being written
+    for (let i = 0; i < 40 && release.length; i++) {
+      release.shift()!();
+      await new Promise((r) => setTimeout(r));
+    }
+    await vi.waitFor(() => expect(release.length).toBe(0));
+    const rest = sent().slice(1);
+    expect(rest.filter((m) => m.skipped).length).toBe(1);
+    const size = rest.flatMap((m) => m.chunks as string[]).reduce((n, c) => n + c.length, 0);
+    expect(size).toBeLessThanOrEqual(TERM_LIMITS.maxBufferedOutput);
+  } finally {
+    termOut.filter = null;
+    broadcast.mockReset();
+  }
+});
+
 // ------------------------------------------------------------------ Run acts on the guest's file
 
 const fileRun = (file: string | null) => ({ id: "run", label: "Run", cmd: `uv run ${file}`, usesFile: true });

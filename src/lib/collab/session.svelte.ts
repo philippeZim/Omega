@@ -14,6 +14,7 @@ import { REMOTE, share, type GuestScope, flushSharedDocs, guestDocClock, guestSc
 import { blockedByCapability, guestCanStop, type Capability } from "./guard";
 import { noteGuestChange } from "./guestChanges";
 import { termOut } from "./debugMirror";
+import { MirrorQueue } from "./mirrorQueue";
 import { call, hasCapability, isObj, publish, registerMethod, registerTopic, rpcErrorText, RpcFail, subscribe } from "./rpc.svelte";
 import { app, activeTab, activate, closeTab, flushAutosave, newFile, openFile, setMode, setRoot } from "../state.svelte";
 import { fileDependent, projectFor, runner, runGuestAction, refreshProject, runnerRemote, saveForGuestRun } from "../code/runner.svelte";
@@ -350,8 +351,9 @@ $effect.root(() => {
 });
 
 // Host's Run terminal → guests. Output is batched a little to keep message counts low.
-let outBuf = "";
+const outQueue = new MirrorQueue();
 let outTimer = 0;
+let outFlushing = false;
 listen<{ id: string; data: string }>("pty-data", (e) => {
   if (collab.role !== "host" || collab.participants.length < 2 || !isTaskPty(e.payload.id)) return;
   queueOut(e.payload.data);
@@ -368,13 +370,19 @@ function queueOut(b64: string) {
   if (out) queueRaw(out);
 }
 function queueRaw(b64: string) {
-  outBuf += b64 + "|";
-  if (!outTimer)
-    outTimer = window.setTimeout(() => {
-      broadcast({ t: "term.data", chunks: outBuf.slice(0, -1).split("|") });
-      outBuf = "";
-      outTimer = 0;
-    }, 30);
+  outQueue.push(b64);
+  if (outQueue.pending && !outTimer) outTimer = window.setTimeout(() => void flushOut(), 30);
+}
+async function flushOut() {
+  outTimer = 0;
+  if (outFlushing) return;
+  outFlushing = true;
+  try {
+    // Awaited, so a slow connection holds output in the queue, where it's bounded.
+    while (collab.role === "host" && outQueue.pending) await broadcast(outQueue.take());
+  } finally {
+    outFlushing = false;
+  }
 }
 
 // ------------------------------------------------------------------ guest
@@ -638,12 +646,17 @@ onCollabMessage((_peer, msg) => {
   if (msg.t === "session") applySession(msg as unknown as SessionInfo);
   else if (msg.t === "term.data") {
     const id = ensureRemoteTerminal();
+    // CAN ends a sequence the skipped output left open, so the marker shows as text.
+    if (msg.skipped) writeTerminal(id, `\x18\x1b[0m\r\n\x1b[2m${t("ai.collab.shell.skipped")}\x1b[0m\r\n`);
     for (const c of msg.chunks as string[]) writeTerminal(id, decoder.decode(Uint8Array.from(atob(c), (ch) => ch.charCodeAt(0)), { stream: true }));
   }
 });
 
 sessionEndHooks.push(async (wasGuest) => {
   lastSent = "";
+  clearTimeout(outTimer);
+  outTimer = 0;
+  outQueue.clear();
   if (!wasGuest) return;
   joined = false;
   hostProject = null;
