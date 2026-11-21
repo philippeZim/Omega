@@ -842,6 +842,7 @@ test("guest: a malformed folder listing from the host is an empty or filtered li
 // ------------------------------------------------------------------ project search for guests
 
 const { replaceInFiles, SEARCH_LIMITS } = await import("./projectSearch.svelte");
+const { t } = await import("../i18n/index.svelte");
 const { setCapability } = await import("./rpc.svelte");
 
 /** Literal replace, as the backend plans it: UTF-16 offsets into the text it was given. */
@@ -1522,4 +1523,52 @@ test("guest: a locked doc is read-only", async () => {
   const state = EditorState.create({ doc: "hook\n", extensions: bindings.get(tab.id) as any });
   expect(state.readOnly).toBe(true);
   expect(share.sharedDocOpen(".husky/x")).toBe(false);
+  // LSP format and quick fixes reach a doc as a plain editor change: this one goes nowhere.
+  expect(state.update({ changes: { from: 0, insert: "formatted " } }).state.doc.toString()).toBe("hook\n");
+});
+
+test("Replace on disk: without run a git hook is refused and left alone, with run it changes", async () => {
+  const { fs, calls } = searchFs({ "/p/.husky/pre-commit": "old\n", "/p/a.txt": "old\n" });
+  noRun();
+  await replaceReq(950, ".husky/pre-commit", "old\n");
+  expect(answer(950)).toMatchObject({ ok: false, error: { code: "hooks" } });
+  expect(fs.files.get("/p/.husky/pre-commit")).toBe("old\n");
+  expect(calls).not.toContain("guest_write_text");
+  await replaceReq(951, "a.txt", "old\n");
+  expect(answer(951)).toMatchObject({ ok: true, result: { count: 1 } });
+  (collab.participants as { peer: string; caps: string[] }[])[0].caps = ["edit", "run"];
+  await replaceReq(952, ".husky/pre-commit", "old\n");
+  expect(answer(952)).toMatchObject({ ok: true, result: { count: 1 } });
+  expect(fs.files.get("/p/.husky/pre-commit")).toBe("new\n");
+});
+
+test("Replace in a live doc: without run a git hook is refused, also if another guest has it open", async () => {
+  searchFs({ "/p/.husky/pre-commit": "old\n" });
+  await receive("g2", { t: "doc.open", path: ".husky/pre-commit" });
+  noRun();
+  await replaceReq(953, ".husky/pre-commit", "old\n");
+  expect(answer(953)).toMatchObject({ ok: false, error: { code: "hooks" } });
+  expect(share.hostLiveText(share.guestScope()!, ".husky/pre-commit")).toBe("old\n");
+});
+
+test("Replace in a guest's own copy of a hook is refused before it starts", async () => {
+  searchFs({ "/p/.husky/pre-commit": "old\n" });
+  noRun();
+  await receive("g1", { t: "rpc.req", id: 954, method: "search.canWrite", params: { file: ".husky/pre-commit" } });
+  expect(answer(954)).toMatchObject({ ok: false, error: { code: "hooks" } });
+});
+
+test("guest: a refused hook is reported for its file, the other files still go through", async () => {
+  collab.role = "guest";
+  const replacing = replaceInFiles(query("old"), "new", [{ file: "collab:.husky/x", version: "v" }, { file: "collab:a.txt", version: "v" }] as any);
+  const reqs = () => sent.filter((s) => s.msg.t === "rpc.req" && s.msg.method === "search.replace");
+  await vi.waitFor(() => expect(reqs()).toHaveLength(1));
+  await receive("host-peer", refused(reqs()[0].msg.id, "hooks"));
+  await vi.waitFor(() => expect(reqs()).toHaveLength(2));
+  await receive("host-peer", { t: "rpc.res", id: reqs()[1].msg.id, ok: true, result: { count: 2 } });
+  const report = await replacing;
+  expect(report).toMatchObject({ replaced: 2, changed: 1, stopped: null, done: 2 });
+  expect(report.errors).toHaveLength(1);
+  expect(report.errors[0].file).toBe(".husky/x");
+  expect(report.errors[0].message).toBe(t("git.guestErr.hooks"));
 });

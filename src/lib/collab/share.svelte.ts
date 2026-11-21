@@ -312,7 +312,7 @@ const REPLACE_ORIGIN = "search-replace";
  * everybody sees it live and unsaved text is kept; only a file nobody has open is written to disk.
  * Throws an `RpcFail` if nothing was changed.
  */
-export async function hostReplaceIn(scope: GuestScope, rel: string, plan: (text: string) => Promise<ReplacePlan>, signal: AbortSignal): Promise<number> {
+export async function hostReplaceIn(scope: GuestScope, rel: string, plan: (text: string) => Promise<ReplacePlan>, signal: AbortSignal, peer: string): Promise<number> {
   const stop = () => {
     if (signal.aborted) throw new RpcFail("cancelled");
     if (!scope.live()) throw new RpcFail("unavailable");
@@ -323,6 +323,9 @@ export async function hostReplaceIn(scope: GuestScope, rel: string, plan: (text:
   const isOpen = () => docs.has(rel) || app.tabs.some((x) => x.path === abs);
   // The text can change while the plan is computed: then plan again on the new text.
   for (let attempt = 0; attempt < 3; attempt++) {
+    stop();
+    // Both routes below: a git hook is code on the host, also when it's changed by a Replace.
+    if (!(await guestMayWrite(peer, scope.root, [rel]))) throw new RpcFail("hooks");
     stop();
     if (isOpen()) {
       const d = await hostDoc(rel);

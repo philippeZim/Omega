@@ -8,6 +8,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { collab } from "./collab.svelte";
 import { blockedByCapability, guestCan } from "./guard";
+import { guestMayWrite } from "./hooksGuard";
 import { call, isObj, registerMethod, rpcErrorText, RpcFail, type RpcResult } from "./rpc.svelte";
 import { REMOTE, guestHasDoc, guestPreviewDoc, guestReplaceInDoc, guestScope, hostDocHasClock, hostLiveText, hostLiveTexts, hostReplaceIn, openRemote, type GuestScope, type ReplacePlan } from "./share.svelte";
 import { remoteSearch, type RemoteQuery, type RemoteSearch, type ReplaceReport, type ReplaceTarget } from "../search/remote";
@@ -260,7 +261,7 @@ registerMethod({
       if (!visible(scope, file)) throw new RpcFail("unavailable");
       const replace = replaceSpec(q, replacement, expect);
       try {
-        return { count: await hostReplaceIn(scope, file, (text) => invoke<ReplacePlan>("guest_replace_plan", { text, replace }), signal) };
+        return { count: await hostReplaceIn(scope, file, (text) => invoke<ReplacePlan>("guest_replace_plan", { text, replace }), signal, peer) };
       } catch (e) {
         throw failure(e);
       }
@@ -271,9 +272,10 @@ registerMethod({
   name: "search.canWrite",
   capability: "edit",
   validate: (raw) => (isObj(raw) && typeof raw.file === "string" ? { file: raw.file } : null),
-  handle: async ({ file }) => {
+  handle: async ({ file }, { peer }) => {
     const scope = needScope();
     if (!visible(scope, file) || !(await scope.check(file))) throw new RpcFail("unavailable");
+    if (!(await guestMayWrite(peer, scope.root, [file]))) throw new RpcFail("hooks");
     try {
       await invoke("guest_write_check", { root: scope.root, rel: file });
     } catch (e) {
@@ -310,6 +312,8 @@ export function searchErrorText(code: string) {
       return t("git.search.fileHardlinked");
     case "unconfirmed":
       return t("git.search.fileUnconfirmed");
+    case "hooks":
+      return t("git.guestErr.hooks");
     default:
       return rpcErrorText(code);
   }
