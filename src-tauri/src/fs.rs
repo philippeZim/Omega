@@ -84,6 +84,8 @@ pub fn list_dir(path: String) -> Result<Vec<Entry>, String> {
 
 /// Largest file read whole into memory. Above it a file only opens as a read-only head (#174).
 pub(crate) const MAX_TEXT_FILE: u64 = 8 * 1024 * 1024;
+/// Largest file that can still be opened whole, editable, with reduced features, after a warning.
+pub(crate) const MAX_LARGE_FILE: u64 = 64 * 1024 * 1024;
 /// How much of a too large file the read-only view shows.
 const HEAD_BYTES: u64 = 1024 * 1024;
 
@@ -118,17 +120,49 @@ pub fn read_file(path: String) -> Result<String, String> {
     String::from_utf8(bytes).map_err(|_| "fs:not_utf8".into())
 }
 
+/// A whole file for the large-file tier: regular, valid UTF-8 text without NUL bytes, and at most
+/// `MAX_LARGE_FILE` bytes also if it grows while being read.
+fn read_large(path: &str) -> Result<Vec<u8>, String> {
+    // Checked before opening, because opening a FIFO would block.
+    let meta = fs::metadata(path).map_err(io_err)?;
+    if meta.is_dir() {
+        return Err("fs:is_dir".into());
+    }
+    if !meta.is_file() {
+        return Err("fs:not_utf8".into());
+    }
+    let bytes = read_limited(path, MAX_LARGE_FILE)?;
+    if bytes.contains(&0) || std::str::from_utf8(&bytes).is_err() {
+        return Err("fs:not_utf8".into());
+    }
+    Ok(bytes)
+}
+
+/// `read_file` for files of 8 to 64 MiB the user chose to open. Off the main thread, and sent as
+/// raw bytes, because JSON would double the memory for the transfer.
+#[tauri::command]
+pub async fn read_file_large(path: String) -> Result<tauri::ipc::Response, String> {
+    let bytes = tauri::async_runtime::spawn_blocking(move || read_large(&path)).await.map_err(err)??;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
 #[derive(Serialize)]
 pub struct FileInfo {
     size: u64,
+    /// `read_file` refuses it.
     too_large: bool,
+    /// Even `read_file_large` refuses it: only the read-only start can be shown.
+    preview: bool,
+    /// Last change in ms since the epoch (0 if unknown).
+    modified: u64,
 }
 
-/// Size of a file and whether `read_file` refuses it.
+/// Size of a file and which tier it falls into.
 #[tauri::command]
 pub fn file_info(path: String) -> Result<FileInfo, String> {
     let m = fs::metadata(&path).map_err(io_err)?;
-    Ok(FileInfo { size: m.len(), too_large: m.is_file() && m.len() > MAX_TEXT_FILE })
+    let modified = m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_millis() as u64);
+    Ok(FileInfo { size: m.len(), too_large: m.is_file() && m.len() > MAX_TEXT_FILE, preview: m.is_file() && m.len() > MAX_LARGE_FILE, modified })
 }
 
 #[derive(Serialize)]
@@ -435,6 +469,7 @@ pub fn watch_dir(app: tauri::AppHandle, window: tauri::WebviewWindow, path: Opti
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
 
     #[test]
     fn create_file_keeps_existing_content() {
@@ -667,6 +702,47 @@ mod tests {
         let info = file_info(s(&big)).unwrap();
         assert!(info.too_large);
         assert_eq!(info.size, MAX_TEXT_FILE + 1);
+    }
+
+    #[test]
+    fn tiers_change_exactly_at_8_and_64_mib() {
+        let t = tempfile::tempdir().unwrap();
+        let f = t.path().join("f.log");
+        let tier = |len: u64| {
+            sparse(&f, b"x", len);
+            let i = file_info(s(&f)).unwrap();
+            (i.too_large, i.preview)
+        };
+        assert_eq!(tier(MAX_TEXT_FILE), (false, false));
+        assert_eq!(tier(MAX_TEXT_FILE + 1), (true, false));
+        assert_eq!(tier(MAX_LARGE_FILE), (true, false));
+        assert_eq!(tier(MAX_LARGE_FILE + 1), (true, true));
+    }
+
+    #[test]
+    fn large_read_takes_64_mib_and_refuses_one_byte_more() {
+        let t = tempfile::tempdir().unwrap();
+        let f = t.path().join("f.log");
+        fs::write(&f, vec![b'a'; MAX_LARGE_FILE as usize]).unwrap();
+        assert_eq!(read_large(&s(&f)).unwrap().len() as u64, MAX_LARGE_FILE);
+        assert_eq!(read_file(s(&f)).unwrap_err(), "fs:too_large");
+        fs::OpenOptions::new().append(true).open(&f).unwrap().write_all(b"a").unwrap();
+        assert_eq!(read_large(&s(&f)).unwrap_err(), "fs:too_large");
+    }
+
+    #[test]
+    fn large_read_keeps_bytes_and_refuses_binary() {
+        let t = tempfile::tempdir().unwrap();
+        let f = t.path().join("f.txt");
+        fs::write(&f, "\u{feff}a\r\nä\r\n").unwrap();
+        assert_eq!(read_large(&s(&f)).unwrap(), "\u{feff}a\r\nä\r\n".as_bytes());
+        fs::write(&f, b"a\0b").unwrap();
+        assert_eq!(read_large(&s(&f)).unwrap_err(), "fs:not_utf8");
+        fs::write(&f, [b'a', 0xff]).unwrap();
+        assert_eq!(read_large(&s(&f)).unwrap_err(), "fs:not_utf8");
+        assert_eq!(read_large(&s(t.path())).unwrap_err(), "fs:is_dir");
+        #[cfg(unix)]
+        assert_eq!(read_large("/dev/zero").unwrap_err(), "fs:not_utf8");
     }
 
     #[cfg(unix)]

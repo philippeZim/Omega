@@ -93,6 +93,7 @@ pub fn run() {
             fs::watch_dir,
             fs::read_file,
             fs::read_file_head,
+            fs::read_file_large,
             fs::file_info,
             fs::write_file,
             fs::create_file,
