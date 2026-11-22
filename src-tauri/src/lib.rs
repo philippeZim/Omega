@@ -92,6 +92,8 @@ pub fn run() {
             fs::list_dir,
             fs::watch_dir,
             fs::read_file,
+            fs::read_file_head,
+            fs::file_info,
             fs::write_file,
             fs::create_file,
             fs::write_file_base64,

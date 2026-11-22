@@ -328,6 +328,11 @@ pub async fn git_head_file(root: String, path: String) -> Result<Option<String>,
         }
         let top = String::from_utf8_lossy(&top.stdout).trim().to_string();
         let rel = std::path::Path::new(&path).strip_prefix(&top).map(|p| p.to_string_lossy().to_string()).unwrap_or(path);
+        // The committed version can be huge even if the file isn't anymore (#174).
+        let size = quiet_git_cmd(&top).args(["cat-file", "-s", &format!("HEAD:{rel}")]).output().map_err(|e| e.to_string())?;
+        if String::from_utf8_lossy(&size.stdout).trim().parse::<u64>().is_ok_and(|n| n > crate::fs::MAX_TEXT_FILE) {
+            return Err("fs:too_large".to_string());
+        }
         let out = quiet_git_cmd(&top).args(["show", &format!("HEAD:{rel}")]).output().map_err(|e| e.to_string())?;
         Ok(out.status.success().then(|| String::from_utf8_lossy(&out.stdout).to_string()))
     })
@@ -665,6 +670,22 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[test]
+    fn head_file_refuses_a_huge_blob() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().to_string_lossy().to_string();
+        let run = |args: &[&str]| assert!(quiet_git_cmd(&root).args(args).output().unwrap().status.success());
+        run(&["init", "-q"]);
+        let (big, small) = (t.path().join("big.log"), t.path().join("small.txt"));
+        std::fs::File::create(&big).unwrap().set_len(crate::fs::MAX_TEXT_FILE + 1).unwrap();
+        std::fs::write(&small, "hi").unwrap();
+        run(&["add", "."]);
+        run(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "x"]);
+        let head = |f: &std::path::Path| tauri::async_runtime::block_on(git_head_file(root.clone(), f.to_string_lossy().to_string()));
+        assert_eq!(head(&big).unwrap_err(), "fs:too_large");
+        assert_eq!(head(&small).unwrap().as_deref(), Some("hi"));
+    }
+
     #[test]
     fn init_is_refused_in_a_bare_repository() {
         let tmp = scratch("init-bare");

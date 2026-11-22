@@ -82,11 +82,88 @@ pub fn list_dir(path: String) -> Result<Vec<Entry>, String> {
     Ok(out)
 }
 
+/// Largest file read whole into memory. Above it a file only opens as a read-only head (#174).
+pub(crate) const MAX_TEXT_FILE: u64 = 8 * 1024 * 1024;
+/// How much of a too large file the read-only view shows.
+const HEAD_BYTES: u64 = 1024 * 1024;
+
+fn open_for_read(path: &str) -> Result<fs::File, String> {
+    // Windows reports opening a folder as "access denied".
+    let file = fs::File::open(path).map_err(|e| if Path::new(path).is_dir() { "fs:is_dir".to_string() } else { io_err(e) })?;
+    if file.metadata().is_ok_and(|m| m.is_dir()) {
+        return Err("fs:is_dir".into());
+    }
+    Ok(file)
+}
+
+/// The whole file, or `fs:too_large` above `max` bytes. The read is bounded as well as the size
+/// check, because a file can grow in between and devices report no size.
+pub(crate) fn read_limited(path: &str, max: u64) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let file = open_for_read(path)?;
+    if file.metadata().is_ok_and(|m| m.len() > max) {
+        return Err("fs:too_large".into());
+    }
+    let mut bytes = Vec::new();
+    file.take(max + 1).read_to_end(&mut bytes).map_err(io_err)?;
+    if bytes.len() as u64 > max {
+        return Err("fs:too_large".into());
+    }
+    Ok(bytes)
+}
+
 #[tauri::command]
 pub fn read_file(path: String) -> Result<String, String> {
-    // Windows reports reading a folder as "access denied".
-    let bytes = fs::read(&path).map_err(|e| if Path::new(&path).is_dir() { "fs:is_dir".to_string() } else { io_err(e) })?;
+    let bytes = read_limited(&path, MAX_TEXT_FILE)?;
     String::from_utf8(bytes).map_err(|_| "fs:not_utf8".into())
+}
+
+#[derive(Serialize)]
+pub struct FileInfo {
+    size: u64,
+    too_large: bool,
+}
+
+/// Size of a file and whether `read_file` refuses it.
+#[tauri::command]
+pub fn file_info(path: String) -> Result<FileInfo, String> {
+    let m = fs::metadata(&path).map_err(io_err)?;
+    Ok(FileInfo { size: m.len(), too_large: m.is_file() && m.len() > MAX_TEXT_FILE })
+}
+
+#[derive(Serialize)]
+pub struct FileHead {
+    text: String,
+    size: u64,
+}
+
+/// The start of a regular file as text. Binary content stays `fs:not_utf8`, like in `read_file`.
+#[tauri::command]
+pub fn read_file_head(path: String) -> Result<FileHead, String> {
+    read_head(&path, HEAD_BYTES)
+}
+
+fn read_head(path: &str, max: u64) -> Result<FileHead, String> {
+    use std::io::Read;
+    let file = open_for_read(path)?;
+    let meta = file.metadata().map_err(io_err)?;
+    if !meta.is_file() {
+        return Err("fs:not_utf8".into());
+    }
+    let mut bytes = Vec::new();
+    file.take(max).read_to_end(&mut bytes).map_err(io_err)?;
+    // The cut can fall inside a character; anything else that isn't UTF-8 is binary.
+    if let Err(e) = std::str::from_utf8(&bytes) {
+        if e.error_len().is_some() {
+            return Err("fs:not_utf8".into());
+        }
+        bytes.truncate(e.valid_up_to());
+    }
+    if bytes.contains(&0) {
+        return Err("fs:not_utf8".into());
+    }
+    let text = String::from_utf8(bytes).map_err(|_| "fs:not_utf8".to_string())?;
+    Ok(FileHead { text, size: meta.len() })
 }
 
 #[tauri::command]
@@ -571,6 +648,58 @@ mod tests {
             std::os::unix::fs::symlink(t.path().join("gone"), &link).unwrap();
             assert_eq!(create_file_for("t", s(&link)).unwrap_err(), "fs:exists");
         }
+    }
+
+    fn sparse(path: &Path, head: &[u8], len: u64) {
+        fs::write(path, head).unwrap();
+        fs::OpenOptions::new().write(true).open(path).unwrap().set_len(len).unwrap();
+    }
+
+    #[test]
+    fn read_file_stops_at_the_limit() {
+        let t = tempfile::tempdir().unwrap();
+        let (fits, big) = (t.path().join("fits.log"), t.path().join("big.log"));
+        sparse(&fits, b"ok", MAX_TEXT_FILE);
+        sparse(&big, b"ok", MAX_TEXT_FILE + 1);
+        assert_eq!(read_file(s(&fits)).unwrap().len() as u64, MAX_TEXT_FILE);
+        assert_eq!(read_file(s(&big)).unwrap_err(), "fs:too_large");
+        assert!(!file_info(s(&fits)).unwrap().too_large);
+        let info = file_info(s(&big)).unwrap();
+        assert!(info.too_large);
+        assert_eq!(info.size, MAX_TEXT_FILE + 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_limited_bounds_files_without_a_size() {
+        assert_eq!(read_limited("/dev/zero", 1024).unwrap_err(), "fs:too_large");
+        assert!(!file_info("/dev/zero".into()).unwrap().too_large);
+        assert_eq!(read_head("/dev/zero", 1024).err().unwrap(), "fs:not_utf8");
+    }
+
+    #[test]
+    fn head_of_a_1_gb_sparse_file_is_bounded() {
+        let t = tempfile::tempdir().unwrap();
+        let f = t.path().join("huge.log");
+        let line = "log line\n".repeat(200_000);
+        sparse(&f, line.as_bytes(), 1024 * 1024 * 1024);
+        let head = read_file_head(s(&f)).unwrap();
+        assert_eq!(head.text.len() as u64, HEAD_BYTES);
+        assert_eq!(head.size, 1024 * 1024 * 1024);
+        assert_eq!(read_file(s(&f)).unwrap_err(), "fs:too_large");
+    }
+
+    #[test]
+    fn head_cuts_before_a_split_character_and_refuses_binary() {
+        let t = tempfile::tempdir().unwrap();
+        let f = t.path().join("a.txt");
+        fs::write(&f, "aä").unwrap();
+        assert_eq!(read_head(&s(&f), 2).unwrap().text, "a");
+        fs::write(&f, [b'a', 0xff, b'b']).unwrap();
+        assert_eq!(read_head(&s(&f), 3).err().unwrap(), "fs:not_utf8");
+        fs::write(&f, b"a\0b").unwrap();
+        assert_eq!(read_head(&s(&f), 3).err().unwrap(), "fs:not_utf8");
+        assert_eq!(read_head(&s(t.path()), 3).err().unwrap(), "fs:is_dir");
     }
 
     #[cfg(unix)]
