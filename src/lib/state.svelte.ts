@@ -20,6 +20,7 @@ import { blockedAsGuest, guestGuard } from "./collab/guard";
 import { toolsBeforeSave } from "./collab/guestChanges";
 import { byteLength, formatSize } from "./largeFile";
 import { isSvgPath, viewerKind, type ViewerKind } from "./viewer";
+import { forgetViewer } from "./viewerMemory";
 
 setLspHooks({
   workspace: () => app.root,
@@ -720,6 +721,7 @@ export async function closeTab(id: string, force = false) {
   const textFile = tab.path ?? tab.headOf;
   if (textFile) textViews.delete(textFile);
   ed.disposeDoc(id);
+  forgetViewer(id);
   diskStamps.delete(id);
   staleNoticed.delete(id);
   if (tab.path) closeLspDoc(tab.path);

@@ -1160,6 +1160,16 @@ describe("viewer tabs (#159)", () => {
     expect(st.app.tabs).toHaveLength(0);
   });
 
+  test("closing a viewer tab forgets its place", async () => {
+    await viewerSetup({ "/p/a.pdf": "" });
+    await st.openFile("/p/a.pdf");
+    const tab = viewer("/p/a.pdf");
+    const memory = await import("./viewerMemory");
+    memory.rememberViewer(tab.id, { zoom: 2, anchor: { page: 5, fraction: 0 } });
+    await st.closeTab(tab.id);
+    expect(memory.viewerPlace(tab.id)).toBeUndefined();
+  });
+
   test("a rename moves the tab", async () => {
     await viewerSetup({ "/p/d/a.png": "" });
     await st.openFile("/p/d/a.png");
