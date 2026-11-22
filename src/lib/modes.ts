@@ -24,7 +24,7 @@ import { gitBlame } from "./git/blame.svelte";
 export { MODES, type Mode } from "./modeList";
 import type { Mode } from "./modeList";
 
-const CODE_EXT = new Set(["py", "c", "h", "cpp", "cc", "cxx", "hpp", "hh", "java", "js", "mjs", "cjs", "jsx", "ts", "tsx", "mts", "rs", "toml", "json", "scala", "sc", "ml", "mli", "mojo", "🔥", "sql", "yaml", "yml", "sh", "bash", "zsh", "ksh", "dockerfile", "containerfile", "xml", "xsd", "xsl", "xslt", "svg", "mk", "mak"]);
+const CODE_EXT = new Set(["py", "c", "h", "cpp", "cc", "cxx", "hpp", "hh", "java", "js", "mjs", "cjs", "jsx", "ts", "tsx", "mts", "rs", "toml", "json", "scala", "sc", "ml", "mli", "mojo", "🔥", "sql", "yaml", "yml", "sh", "bash", "zsh", "ksh", "dockerfile", "containerfile", "xml", "xsd", "xsl", "xslt", "svg", "mk", "mak", "go"]);
 
 /** Returns a mode only for extensions that clearly belong to one; unknown files keep the current mode. */
 export function modeForExtension(ext: string): Mode | null {

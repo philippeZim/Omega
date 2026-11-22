@@ -14,11 +14,13 @@ import { yaml } from "@codemirror/legacy-modes/mode/yaml";
 import { shell } from "@codemirror/legacy-modes/mode/shell";
 import { dockerFile } from "@codemirror/legacy-modes/mode/dockerfile";
 import { xml } from "@codemirror/legacy-modes/mode/xml";
+import { go } from "@codemirror/legacy-modes/mode/go";
 import { basename, extname } from "../api";
 import { mojoIndentStep, mojoParser } from "./mojoMode";
+import { goModParser } from "./go";
 import { dockerContinues, makefileOpensRecipe, makefileParser, shellClosesBlock, shellOpensBlock, yamlIndentAfter } from "./configModes";
 
-export type LangId = "python" | "c" | "cpp" | "java" | "javascript" | "typescript" | "rust" | "json" | "toml" | "scala" | "ocaml" | "mojo" | "sql" | "yaml" | "shell" | "dockerfile" | "xml" | "makefile";
+export type LangId = "python" | "c" | "cpp" | "java" | "javascript" | "typescript" | "rust" | "json" | "toml" | "scala" | "ocaml" | "mojo" | "sql" | "yaml" | "shell" | "dockerfile" | "xml" | "makefile" | "go";
 
 export interface LangInfo {
   id: LangId;
@@ -26,7 +28,7 @@ export interface LangInfo {
   /** LSP languageId */
   lspId: string;
   /** Which language server handles it (null = none). */
-  server: "python" | "clangd" | "java" | "typescript" | "rust" | "scala" | "ocaml" | "mojo" | null;
+  server: "python" | "clangd" | "java" | "typescript" | "rust" | "scala" | "ocaml" | "mojo" | "go" | null;
   ext: () => Extension;
 }
 
@@ -57,12 +59,20 @@ reg(["sh", "bash", "zsh", "ksh"], L("shell", "Shell", "shellscript", null, () =>
 reg(["dockerfile", "containerfile"], L("dockerfile", "Dockerfile", "dockerfile", null, () => [StreamLanguage.define(dockerFile), dockerIndent]));
 reg(["xml", "xsd", "xsl", "xslt", "svg"], L("xml", "XML", "xml", null, () => StreamLanguage.define(xml)));
 reg(["mk", "mak"], L("makefile", "Makefile", "makefile", null, () => [StreamLanguage.define(makefileParser), makefileIndent]));
+reg(["go"], L("go", "Go", "go", "go", () => StreamLanguage.define(go)));
+// gopls parses by languageId. go.sum is a list of hashes it has no features for.
+const GO_MOD = L("go", "Go", "go.mod", "go", () => StreamLanguage.define(goModParser));
+const GO_WORK = L("go", "Go", "go.work", "go", () => StreamLanguage.define(goModParser));
+const GO_SUM = L("go", "Go", "go.sum", null, () => StreamLanguage.define(goModParser));
 
 const SHELL_DOTFILES = new Set([".bashrc", ".bash_profile", ".bash_login", ".bash_logout", ".bash_aliases", ".profile", ".zshrc", ".zshenv", ".zprofile", ".zlogin", ".zlogout", ".kshrc"]);
 
 /** The language a file's name stands for when its extension doesn't say (`Dockerfile.dev`, `Makefile`, `.bashrc`). */
 function langForName(path: string): LangInfo | null {
   const name = basename(path);
+  if (name === "go.mod") return GO_MOD;
+  if (name === "go.work") return GO_WORK;
+  if (name === "go.sum" || name === "go.work.sum") return GO_SUM;
   // `Dockerfile.dev` is a Dockerfile; `Dockerfile.md` and `Dockerfile.dockerignore` are not.
   if (/^(?:docker|container)file(?:\.[^.]+)*$/i.test(name) && !/\.(?:md|markdown|txt|tex|bib|sty|cls|dockerignore)$/i.test(name)) return BY_EXT.dockerfile;
   if (/^(?:gnu)?makefile(?:\.(?:am|in))?$/i.test(name)) return BY_EXT.mk;
@@ -187,7 +197,7 @@ export function conventionalIndent(lang: LangInfo | null): string {
 
 /** The indentation for this text: its own, within what the language allows, else `fallback`. */
 function chooseIndent(doc: Text | string, lang: LangInfo | null, fallback: string): string {
-  if (lang?.id === "makefile") return "\t"; // make only accepts tabs before a recipe
+  if (lang?.id === "makefile" || lang?.id === "go") return "\t"; // make only accepts tabs before a recipe; gofmt always uses them
   const found = detectIndent(doc);
   return lang?.id === "yaml" && found === "\t" ? fallback : found ?? fallback; // YAML forbids tabs
 }
@@ -212,6 +222,6 @@ export function langFor(path: string | null): LangInfo | null {
 }
 
 /** Every language once, in the order of the picker; the plain variant (no JSX, no interface file). */
-export const LANGUAGES: LangInfo[] = ["py", "c", "cpp", "java", "js", "ts", "rs", "json", "toml", "scala", "ml", "mojo", "sql", "yaml", "sh", "dockerfile", "xml", "mk"].map((e) => BY_EXT[e]);
+export const LANGUAGES: LangInfo[] = ["py", "c", "cpp", "java", "js", "ts", "rs", "json", "toml", "scala", "ml", "mojo", "sql", "yaml", "sh", "dockerfile", "xml", "mk", "go"].map((e) => BY_EXT[e]);
 
 export const langById = (id: string): LangInfo | null => LANGUAGES.find((l) => l.id === id) ?? null;
