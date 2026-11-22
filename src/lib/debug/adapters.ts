@@ -520,7 +520,13 @@ export async function planFor(ctx: Ctx): Promise<Plan> {
       await need(["cc"]); // mojo links with the system's C compiler
       const shadow = alone ? await ownCopy() : undefined;
       const program = alone ? await ownProgram() : await tmpPath(exe(`omega-dbg-${mojoStem(ctx.file).replace(/[^\w.-]/g, "_")}`));
-      await capture(mojo, ["build", "-O0", "-g", shadow?.copy ?? ctx.file, "-o", program], root, ctx);
+      const source = shadow?.copy ?? ctx.file;
+      ctx.log(`$ ${mojo} build -O0 -g ${source} -o ${program}`, "build");
+      const built = await invoke<{ code: number; stdout: string; stderr: string }>("mojo_debug_build", { source, program, cwd: root });
+      if (built.code !== 0) {
+        ctx.log((built.stderr || built.stdout).trim(), "error");
+        throw new Error(t("code.ad.buildFailed"));
+      }
       return {
         label: `Mojo · ${basename(ctx.file)}`,
         cwd: root,

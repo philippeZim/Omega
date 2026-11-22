@@ -635,6 +635,41 @@ fn mojo_dap_command(os: &str) -> String {
     format!("\"$P/bin/_mojo-lldb-dap\" --pre-init-command \"?!plugin load \\\"$P/lib/libMojoLLDB.{ext}\\\"\"")
 }
 
+/// Runs a Mojo debug build with its own empty compile cache. Mojo's cache is keyed by the source
+/// text, so a hit would embed the debug paths of an earlier build of the same text from another
+/// folder, and breakpoints in this file would never resolve.
+pub(crate) fn mojo_debug_build(source: &str, program: &str, cwd: Option<&str>) -> Result<std::process::Output, String> {
+    run_mojo_debug_build(&mojo_prefix(), source, program, cwd)
+}
+
+fn run_mojo_debug_build(prefix: &Path, source: &str, program: &str, cwd: Option<&str>) -> Result<std::process::Output, String> {
+    let mut id = [0u8; 16];
+    getrandom::fill(&mut id).map_err(|e| e.to_string())?;
+    let name: String = id.iter().map(|b| format!("{b:02x}")).collect();
+    let cache = std::env::temp_dir().join(format!("omega-mojo-cache-{name}"));
+    let mut dir = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut dir, 0o700);
+    dir.create(&cache).map_err(|e| e.to_string())?;
+    let mut cmd = crate::env::command(prefix.join("bin").join("mojo"));
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with("MODULAR_") {
+            cmd.env_remove(key);
+        }
+    }
+    cmd.env("MODULAR_HOME", prefix.join("share").join("max"))
+        .env("MODULAR_TELEMETRY_ENABLED", "0")
+        .env("MODULAR_CRASH_REPORTING_ENABLED", "0")
+        .env("MODULAR_CACHE_DIR", &cache)
+        .args(["build", "-O0", "-g", source, "-o", program]);
+    if let Some(cwd) = cwd {
+        cmd.current_dir(cwd);
+    }
+    let out = cmd.output().map_err(|e| e.to_string());
+    let _ = std::fs::remove_dir_all(&cache);
+    out
+}
+
 fn write_mojo_launchers() -> Result<(), String> {
     let bin = mojo_bin();
     std::fs::create_dir_all(&bin).map_err(|e| e.to_string())?;
@@ -1176,6 +1211,27 @@ mod tests {
             (unsafe { libc::kill(grandchild, 0) != 0 }) || std::fs::read_to_string(format!("/proc/{grandchild}/stat")).is_ok_and(|s| s.rsplit(')').next().is_some_and(|r| r.trim_start().starts_with('Z')))
         });
         assert!(gone, "the process group survived");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn each_mojo_debug_build_gets_its_own_empty_cache() {
+        let t = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(t.path().join("bin")).unwrap();
+        crate::env::write_test_script(
+            &t.path().join("bin/mojo"),
+            "#!/bin/sh\n[ -d \"$MODULAR_CACHE_DIR\" ] && [ -z \"$(ls -A \"$MODULAR_CACHE_DIR\")\" ] && touch \"$MODULAR_CACHE_DIR/used\" && printf '%s|%s|%s' \"$MODULAR_CACHE_DIR\" \"$MODULAR_TELEMETRY_ENABLED\" \"$*\"\n",
+        );
+        let run = || {
+            let out = run_mojo_debug_build(t.path(), "/p/a.mojo", "/p/a", None).unwrap();
+            assert!(out.status.success());
+            String::from_utf8(out.stdout).unwrap()
+        };
+        let (first, second) = (run(), run());
+        let parts: Vec<&str> = first.split('|').collect();
+        assert_eq!(parts[1..], ["0", "build -O0 -g /p/a.mojo -o /p/a"]);
+        assert_ne!(parts[0], second.split('|').next().unwrap());
+        assert!(!Path::new(parts[0]).exists());
     }
 
     #[cfg(unix)]

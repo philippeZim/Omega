@@ -175,6 +175,7 @@ pub fn run() {
             proc::proc_spawn_tcp,
             proc::proc_connect,
             proc::run_capture,
+            proc::mojo_debug_build,
             proc::run_killable,
             proc::run_shared_install,
             proc::install_debugger,
