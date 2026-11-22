@@ -10,4 +10,7 @@ export function formatSize(bytes: number): string {
   return `${i === 0 || n >= 10 ? Math.round(n) : Math.round(n * 10) / 10} ${units[i]}`;
 }
 
+/** Largest text read whole without a warning, and all a Code Together guest can ever get (fs.rs). */
+export const MAX_TEXT_BYTES = 8 * 1024 * 1024;
+
 export const byteLength = (text: string) => new TextEncoder().encode(text).length;

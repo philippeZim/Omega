@@ -83,3 +83,21 @@ describe("read-only head view", () => {
     ed.disposeDoc("head");
   });
 });
+
+describe("large file in full (#174)", () => {
+  test("stays editable, shows its label and skips the mode's extensions", () => {
+    ed.mount(document.createElement("div"));
+    modePaths.length = 0;
+    ed.createDoc("large", "text");
+    ed.activate("large", { mode: "code", path: "/p/big.ts", spell: null, largeNote: "Large file" });
+    const view = ed.getView()!;
+    expect(modePaths).toEqual([]);
+    expect(view.state.readOnly).toBe(false);
+    expect(view.dom.querySelector(".cm-large-note")?.textContent).toBe("Large file");
+    view.dispatch({ changes: { from: 0, insert: "x" } });
+    expect(ed.getText("large")).toBe("xtext");
+    ed.activate(null, { mode: "code", path: null, spell: null });
+    ed.disposeDoc("large");
+  });
+});
+

@@ -20,6 +20,8 @@ export interface EditorConfig {
   spell: SpellLang | null;
   /** Set for the read-only view of a too large file's start: the banner text. No language features (#174). */
   headNote?: string | null;
+  /** Set for a large file open in full: the label. Editable, but no language features (#174). */
+  largeNote?: string | null;
 }
 import { baseTheme } from "./theme";
 import { REGISTERED_RUNS } from "./editorCommands";
@@ -55,22 +57,26 @@ const modeConf = new Compartment();
 const spellConf = new Compartment();
 const collabConf = new Compartment();
 const phraseConf = new Compartment();
-const sameCfg = (a: EditorConfig | null, b: EditorConfig) => !!a && a.mode === b.mode && a.path === b.path && a.spell === b.spell && (a.headNote ?? null) === (b.headNote ?? null);
+const sameCfg = (a: EditorConfig | null, b: EditorConfig) => !!a && a.mode === b.mode && a.path === b.path && a.spell === b.spell && (a.headNote ?? null) === (b.headNote ?? null) && (a.largeNote ?? null) === (b.largeNote ?? null);
 
-/** A too large file's start: plain text that nothing can change, whatever the mode (#174). */
-function headView(note: string) {
+/** Plain text with line numbers and a label on top, whatever the mode (#174). */
+function plainView(note: string, className: string) {
   const panel = () => {
     const dom = document.createElement("div");
-    dom.className = "cm-head-note";
+    dom.className = className;
     dom.setAttribute("role", "status");
     dom.textContent = note;
     dom.style.cssText = "padding: 6px 14px; font-size: 12px; color: var(--orange);";
     return { dom, top: true };
   };
-  return [lineNumbers(), EditorState.readOnly.of(true), EditorState.changeFilter.of(() => false), showPanel.of(panel), EditorView.editorAttributes.of({ class: "mode-code" })];
+  return [lineNumbers(), showPanel.of(panel), EditorView.editorAttributes.of({ class: "mode-code" })];
 }
 
-const modeExt = (cfg: EditorConfig) => (cfg.headNote ? headView(cfg.headNote) : modeExtensions(cfg.mode, cfg.path));
+/** A too large file's start: nothing can change it. */
+const headView = (note: string) => [plainView(note, "cm-head-note"), EditorState.readOnly.of(true), EditorState.changeFilter.of(() => false)];
+
+const modeExt = (cfg: EditorConfig) =>
+  cfg.headNote ? headView(cfg.headNote) : cfg.largeNote ? plainView(cfg.largeNote, "cm-large-note") : modeExtensions(cfg.mode, cfg.path);
 let view: EditorView | null = null;
 let activeId: string | null = null;
 let cb = {
@@ -195,7 +201,7 @@ export function configure(cfg: EditorConfig) {
   const prev = d.cfg;
   d.cfg = cfg;
   const effects = [];
-  if (!prev || prev.mode !== cfg.mode || prev.path !== cfg.path || prev.headNote !== cfg.headNote) effects.push(modeConf.reconfigure(modeExt(cfg)));
+  if (!prev || prev.mode !== cfg.mode || prev.path !== cfg.path || prev.headNote !== cfg.headNote || prev.largeNote !== cfg.largeNote) effects.push(modeConf.reconfigure(modeExt(cfg)));
   if (!prev || prev.spell !== cfg.spell || prev.mode !== cfg.mode) effects.push(spellConf.reconfigure(cfg.spell ? spellcheck(cfg.spell, cfg.mode) : []));
   if (effects.length) view.dispatch({ effects });
 }

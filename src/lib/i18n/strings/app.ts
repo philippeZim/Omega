@@ -231,6 +231,12 @@ export const en = {
   "app.large.banner": "Read-only: showing the first {shown} of {size}. This view can't be saved.",
   "app.large.noSave": "This is only the start of a large file, so it can't be saved.",
   "app.large.skipped": "\"{name}\" ({size}) is too large and was not reopened.",
+  "app.large.fullMessage": "This file is {size}. Omega can open it completely, but without language server, highlighting, git markers, spell check, folding, autosave and LaTeX compile. Save it yourself with Ctrl+S.",
+  "app.large.openFull": "Open with reduced features",
+  "app.large.reduced": "Large file: reduced features, no autosave. Save with Ctrl+S.",
+  "app.large.changedOnDisk": "\"{name}\" changed on disk. This tab still shows the old text; reopen it to load the new one. Saving asks first.",
+  "app.large.notSaved": "\"{name}\" is a large file and wasn't saved. Save it with Ctrl+S.",
+  "app.large.keptOpen": "\"{name}\" has unsaved changes and stays open. Large files aren't autosaved.",
 };
 export const de: Record<keyof typeof en, string> = {
   "app.report.button": "Problem oder Idee melden",
@@ -459,6 +465,12 @@ export const de: Record<keyof typeof en, string> = {
   "app.large.banner": "Schreibgeschützt: die ersten {shown} von {size}. Diese Ansicht lässt sich nicht speichern.",
   "app.large.noSave": "Das ist nur der Anfang einer großen Datei, er lässt sich nicht speichern.",
   "app.large.skipped": "„{name}“ ({size}) ist zu groß und wurde nicht wieder geöffnet.",
+  "app.large.fullMessage": "Diese Datei hat {size}. Omega kann sie vollständig öffnen, aber ohne Language Server, Hervorhebung, Git-Markierungen, Rechtschreibprüfung, Faltung, automatisches Speichern und LaTeX-Kompilierung. Speichere sie selbst mit Strg+S.",
+  "app.large.openFull": "Mit reduzierten Funktionen öffnen",
+  "app.large.reduced": "Große Datei: reduzierte Funktionen, kein automatisches Speichern. Speichern mit Strg+S.",
+  "app.large.changedOnDisk": "„{name}“ wurde auf der Festplatte geändert. Dieser Tab zeigt noch den alten Text; öffne ihn neu, um den neuen zu laden. Beim Speichern wird zuerst gefragt.",
+  "app.large.notSaved": "„{name}“ ist eine große Datei und wurde nicht gespeichert. Speichere sie mit Strg+S.",
+  "app.large.keptOpen": "„{name}“ hat ungespeicherte Änderungen und bleibt offen. Große Dateien werden nicht automatisch gespeichert.",
 };
 export const fr: Record<keyof typeof en, string> = {
   "app.report.button": "Signaler un problème ou une idée",
@@ -687,4 +699,10 @@ export const fr: Record<keyof typeof en, string> = {
   "app.large.banner": "Lecture seule : affichage des premiers {shown} sur {size}. Cette vue ne peut pas être enregistrée.",
   "app.large.noSave": "Ce n'est que le début d'un gros fichier : il ne peut pas être enregistré.",
   "app.large.skipped": "« {name} » ({size}) est trop volumineux et n'a pas été rouvert.",
+  "app.large.fullMessage": "Ce fichier fait {size}. Omega peut l’ouvrir entièrement, mais sans serveur de langage, coloration, marqueurs git, correcteur, repliage, enregistrement automatique ni compilation LaTeX. Enregistrez-le vous-même avec Ctrl+S.",
+  "app.large.openFull": "Ouvrir avec fonctions réduites",
+  "app.large.reduced": "Gros fichier : fonctions réduites, pas d’enregistrement automatique. Enregistrez avec Ctrl+S.",
+  "app.large.changedOnDisk": "« {name} » a changé sur le disque. Cet onglet montre encore l’ancien texte ; rouvrez-le pour charger le nouveau. L’enregistrement demande d’abord.",
+  "app.large.notSaved": "« {name} » est un gros fichier et n’a pas été enregistré. Enregistrez-le avec Ctrl+S.",
+  "app.large.keptOpen": "« {name} » a des modifications non enregistrées et reste ouvert. Les gros fichiers ne sont pas enregistrés automatiquement.",
 };
