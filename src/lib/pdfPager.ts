@@ -15,6 +15,8 @@ export interface PagerHost {
   /** Fixed zoom, 0 for fit width. */
   zoom(): number;
   openLink(link: PageLink): void;
+  /** Shown on a page that can't be rendered. */
+  pageError(): string;
   onView?(view: { page: number; total: number; scale: number; anchor: PdfAnchor }): void;
 }
 
@@ -208,9 +210,21 @@ export class PdfPager {
     } catch (e) {
       if (this.job !== mine) return;
       this.job = null;
-      if ((e as { name?: string })?.name !== "RenderingCancelledException") s.failed = true; // one bad page: the others still show
+      if ((e as { name?: string })?.name !== "RenderingCancelledException") this.showFailed(s);
     }
     this.pump();
+  }
+
+  /** One bad page: the others still show. An older version's bitmap must not pass for this page. */
+  private showFailed(s: Slot) {
+    s.failed = true;
+    freeCanvas(s.canvas);
+    s.canvas = null;
+    s.stale = false;
+    const note = document.createElement("div");
+    note.className = "page-error";
+    note.textContent = this.host.pageError();
+    s.wrap.replaceChildren(note);
   }
 
   /** The page differs from the estimate: moves what follows and keeps the view where it was. */
@@ -273,6 +287,7 @@ export class PdfPager {
     this.fitSpacer(width);
     scroller.scrollTop = l.resolve(anchor) * l.compress;
     if (this.job && this.job.scale !== l.scales[this.job.slot.index]) this.cancelJob();
+    for (const s of this.slots.values()) s.failed = false; // worth another try at the new scale
     clearTimeout(this.settleTimer);
     this.settleTimer = window.setTimeout(() => {
       this.settleTimer = 0;
@@ -303,7 +318,8 @@ export class PdfPager {
     if (!l) return;
     const { scroller } = this.host;
     const top = Math.max(0, y) * l.compress;
-    if (smooth && scroller.scrollTo && Math.abs(top - scroller.scrollTop) <= 2 * scroller.clientHeight) scroller.scrollTo({ top, behavior: "smooth" });
+    // Compressed: mounted pages are placed from the scroll position, so it must be final at once.
+    if (smooth && l.compress === 1 && scroller.scrollTo && Math.abs(top - scroller.scrollTop) <= 2 * scroller.clientHeight) scroller.scrollTo({ top, behavior: "smooth" });
     else scroller.scrollTop = top;
     this.sync(); // no waiting for the scroll event
   }

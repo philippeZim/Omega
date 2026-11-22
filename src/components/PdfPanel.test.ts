@@ -166,6 +166,21 @@ describe("PdfPanel", () => {
     unmount(c);
   });
 
+  test("in a compressed document the flash box lands on the page after the jump", async () => {
+    pdf.pages = 40_000;
+    localStorage.setItem("pdfZoom", "4");
+    const { target, c } = setup();
+    await settle();
+    latex.target = { page: 30_000, x: 10, y: 20, w: 5, h: 5, seq: 2 };
+    await settle();
+    const box = target.querySelector<HTMLElement>(".flash")!;
+    const holder = target.querySelector<HTMLElement>('[data-page="30000"]')!.parentElement!;
+    expect(parseFloat(box.style.top)).toBeCloseTo(parseFloat(holder.style.top) + 20 * 4 - 3, 0);
+    latex.target = null;
+    localStorage.removeItem("pdfZoom");
+    unmount(c);
+  });
+
   test("reverse SyncTeX works on a mounted page of a long document", async () => {
     pdf.pages = 1500;
     const sync = vi.spyOn(controller, "reverseSync").mockReturnValue(null);

@@ -66,7 +66,7 @@ const getDocument = vi.hoisted(() => vi.fn());
 vi.mock("pdfjs-dist", () => ({ GlobalWorkerOptions: {}, getDocument, PDFWorker: class {}, PDFDataRangeTransport: class {} }));
 
 import PdfView from "./PdfView.svelte";
-import { forgetViewer } from "../lib/viewerMemory";
+import { forgetViewer, rememberViewer } from "../lib/viewerMemory";
 
 async function settle() {
   for (let i = 0; i < 40; i++) await tick();
@@ -80,7 +80,7 @@ Object.defineProperty(HTMLElement.prototype, "clientWidth", { configurable: true
 async function view() {
   const target = document.createElement("div");
   document.body.append(target);
-  const cmp = mount(PdfView, { target, props: { source: { path: "/p/a.pdf", size: 1000 } } });
+  const cmp = mount(PdfView, { target, props: { source: { path: "/p/a.pdf", size: 1000, modified: 1 } } });
   flushSync();
   await settle();
   return { target, scroller: target.querySelector<HTMLElement>(".scroller")!, cmp };
@@ -208,21 +208,70 @@ test("a corrupt PDF shows the message", async () => {
   unmount(cmp);
 });
 
-test("a file that changed under the open document shows a translated message and asks its tab to check", async () => {
+test("a file that changed under the open document keeps the view and asks for a reload", async () => {
   const onReadFailed = vi.fn();
   const target = document.createElement("div");
   document.body.append(target);
-  const cmp = mount(PdfView, { target, props: { source: { path: "/p/a.pdf", size: 1000 }, onReadFailed } });
+  const cmp = mount(PdfView, { target, props: { source: { path: "/p/a.pdf", size: 1000, modified: 1 }, onReadFailed } });
   flushSync();
   await settle();
   const transport = getDocument.mock.calls[0][0].range;
   const { fsApi } = await import("../lib/api");
-  vi.mocked(fsApi.readFileRange).mockResolvedValueOnce(new Uint8Array(1)); // shorter than asked for
+  vi.mocked(fsApi.readFileRange).mockRejectedValueOnce("fs:changed");
+  transport.requestDataRange(0, 10);
+  await new Promise((r) => setTimeout(r, 0));
+  await settle();
+  expect(onReadFailed).toHaveBeenCalledExactlyOnceWith(true);
+  expect(target.querySelector('[role="alert"]')).toBeNull();
+  expect(target.querySelector(".page canvas")).not.toBeNull();
+  unmount(cmp);
+});
+
+test("a read that fails for another reason shows the message", async () => {
+  const onReadFailed = vi.fn();
+  const target = document.createElement("div");
+  document.body.append(target);
+  const cmp = mount(PdfView, { target, props: { source: { path: "/p/a.pdf", size: 1000, modified: 1 }, onReadFailed } });
+  flushSync();
+  await settle();
+  const transport = getDocument.mock.calls[0][0].range;
+  const { fsApi } = await import("../lib/api");
+  vi.mocked(fsApi.readFileRange).mockRejectedValueOnce("denied");
   transport.requestDataRange(0, 10);
   await new Promise((r) => setTimeout(r, 0));
   await settle();
   expect(target.querySelector('[role="alert"]')!.textContent).toContain("app.viewer.brokenPdf");
-  expect(onReadFailed).toHaveBeenCalledTimes(1);
+  expect(onReadFailed).toHaveBeenCalledExactlyOnceWith(false);
+  unmount(cmp);
+});
+
+test("a failed render drops the old version's bitmap, and a new zoom tries again", async () => {
+  const props = $state({ source: { path: "/p/a.pdf", size: 1000, modified: 1 } });
+  const target = document.createElement("div");
+  document.body.append(target);
+  const cmp = mount(PdfView, { target, props });
+  flushSync();
+  await settle();
+  const page = target.querySelector<HTMLElement>('[data-page="1"]')!;
+  const old = page.querySelector("canvas")!;
+  pdf.manual = true;
+  props.source = { path: "/p/a.pdf", size: 1000, modified: 2 };
+  flushSync();
+  await settle();
+  expect(page.querySelector("canvas")).toBe(old); // still there while the new version renders
+  pdf.pending.find((j) => j.n === 1)!.fail(new Error("bad page"));
+  await settle();
+  expect(page.querySelector("canvas")).toBeNull();
+  expect(page.querySelector(".page-error")!.textContent).toContain("app.viewer.pageFailed");
+  pdf.pending = [];
+  target.querySelectorAll<HTMLElement>(".zoom .tool.round")[1].click();
+  await settle();
+  await new Promise((r) => setTimeout(r, 140));
+  await settle();
+  pdf.pending.find((j) => j.n === 1)!.done();
+  await settle();
+  expect(page.querySelector("canvas")).not.toBeNull();
+  expect(page.querySelector(".page-error")).toBeNull();
   unmount(cmp);
 });
 
@@ -230,7 +279,7 @@ describe("a tab switch", () => {
   const open = async (tabId: string) => {
     const target = document.createElement("div");
     document.body.append(target);
-    const cmp = mount(PdfView, { target, props: { tabId, source: { path: `/p/${tabId}.pdf`, size: 1000 } } });
+    const cmp = mount(PdfView, { target, props: { tabId, source: { path: `/p/${tabId}.pdf`, size: 1000, modified: 1 } } });
     flushSync();
     await settle();
     return { target, cmp, scroller: target.querySelector<HTMLElement>(".scroller")! };
@@ -253,6 +302,31 @@ describe("a tab switch", () => {
     expect(pdf.requested.filter((n) => n > 1 && n < 900)).toEqual([]); // nothing between the start and the place
     unmount(b.cmp);
     forgetViewer("t1");
+  });
+
+  test("after a failed read the reopen goes to the latest place, not the one at mount", async () => {
+    forgetViewer("t5");
+    rememberViewer("t5", { zoom: 0, anchor: { page: 10, fraction: 0 } });
+    const props = $state({ tabId: "t5", source: { path: "/p/t5.pdf", size: 1000, modified: 1 } });
+    const target = document.createElement("div");
+    document.body.append(target);
+    const cmp = mount(PdfView, { target, props });
+    flushSync();
+    await settle();
+    const scroller = target.querySelector<HTMLElement>(".scroller")!;
+    await scrollTo(scroller, topOf(700));
+    const transport = getDocument.mock.calls.at(-1)![0].range;
+    const { fsApi } = await import("../lib/api");
+    vi.mocked(fsApi.readFileRange).mockRejectedValueOnce("denied");
+    transport.requestDataRange(0, 10);
+    await new Promise((r) => setTimeout(r, 0));
+    await settle();
+    props.source = { path: "/p/t5.pdf", size: 1000, modified: 2 };
+    flushSync();
+    await settle();
+    expect(target.querySelector(".scroller")!.scrollTop).toBe(topOf(700));
+    unmount(cmp);
+    forgetViewer("t5");
   });
 
   test("each tab has its own place, and a closed tab has none", async () => {

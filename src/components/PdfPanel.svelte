@@ -3,8 +3,7 @@
   import { onDestroy } from "svelte";
   import { convertFileSrc } from "@tauri-apps/api/core";
   import { openUrl } from "../lib/native";
-  import * as pdfjs from "pdfjs-dist";
-  import { PDF_LOAD_OPTIONS, pdfWorker, type PageLink } from "../lib/pdfPages";
+  import { loadPdf, type PageLink } from "../lib/pdfPages";
   import { PdfPager } from "../lib/pdfPager";
   import { latex, setDark, reverseSync, forwardSync, installLatex, remoteLatex, remotePdfBytes, compileNow } from "../lib/latex/controller.svelte";
   import { app, activeTab, openFile } from "../lib/state.svelte";
@@ -24,7 +23,7 @@
   const warnings = $derived(latex.diagnostics.filter((d) => d.severity === "warning"));
 
   function getPager() {
-    pager ??= new PdfPager({ scroller, pages: pagesEl, zoom: () => zoom, openLink });
+    pager ??= new PdfPager({ scroller, pages: pagesEl, zoom: () => zoom, openLink, pageError: () => t("app.viewer.pageFailed") });
     return pager;
   }
 
@@ -37,8 +36,9 @@
   async function load(path: string) {
     const seq = ++renderSeq;
     const data = remotePdfBytes();
-    const source = data ? { data } : { url: convertFileSrc(path) + "?v=" + latex.pdfVersion };
-    const next = await pdfjs.getDocument({ ...source, ...PDF_LOAD_OPTIONS, worker: pdfWorker() }).promise.catch(() => null);
+    const url = convertFileSrc(path) + "?v=" + latex.pdfVersion;
+    // pdf.js takes the buffer over, and a retry on a new worker needs it again.
+    const next = await loadPdf(() => (data ? { data: data.slice() } : { url })).promise.catch(() => null);
     if (!next) return;
     if (seq !== renderSeq) return void next.destroy();
     const first = await next.getPage(1).catch(() => null);
@@ -67,8 +67,9 @@
   async function reveal(tg: NonNullable<typeof latex.target>) {
     const p = pager;
     if (!p || !(await p.ensureSize(tg.page - 1)) || latex.target !== tg) return;
-    const b = p.pageBox(tg.page - 1);
-    p.scrollToDoc(b.docTop + tg.y * b.scale - scroller.clientHeight / 3, true);
+    const target = p.pageBox(tg.page - 1);
+    p.scrollToDoc(target.docTop + tg.y * target.scale - scroller.clientHeight / 3, true);
+    const b = p.pageBox(tg.page - 1); // in a compressed document the position depends on the scroll
     flash = { left: b.left + tg.x * b.scale - 4, top: b.top + tg.y * b.scale - 3, w: tg.w * b.scale + 8, h: tg.h * b.scale + 6 };
     clearTimeout(flashTimer);
     flashTimer = window.setTimeout(() => (flash = null), 1400);
@@ -320,6 +321,7 @@
   .pages { position: relative; }
   .pages :global(.slot) { position: absolute; }
   .pages :global(.page) { position: relative; width: 100%; height: 100%; border-radius: 6px; overflow: hidden; box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5); background: white; }
+  .pages :global(.page-error) { position: absolute; inset: 0; display: grid; place-items: center; padding: 16px; text-align: center; font-size: 12px; color: #777; }
   .pages :global(canvas) { width: 100%; height: 100%; display: block; }
   .pages :global(.link) { position: absolute; border-radius: 3px; cursor: pointer; }
   .pages :global(.link:hover) { background: rgba(52, 120, 246, 0.14); box-shadow: 0 0 0 1px rgba(52, 120, 246, 0.35); }

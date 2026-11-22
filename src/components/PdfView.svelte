@@ -2,16 +2,17 @@
   import Glyph from "./Glyph.svelte";
   import { onDestroy, tick, untrack } from "svelte";
   import * as pdfjs from "pdfjs-dist";
-  import { PDF_LOAD_OPTIONS, pdfWorker, type PageLink } from "../lib/pdfPages";
+  import { loadPdf, type PageLink } from "../lib/pdfPages";
   import { PdfPager } from "../lib/pdfPager";
   import { FileRangeTransport, RANGE_CHUNK } from "../lib/pdfRange";
   import { MAX_PDF_ZOOM, safePdfUrl, stepZoom } from "../lib/viewer";
   import { rememberViewer, viewerPlace } from "../lib/viewerMemory";
+  import type { PdfFile } from "../lib/viewerData";
   import { openUrl } from "../lib/native";
   import { t } from "../lib/i18n/index.svelte";
 
-  /** `onReadFailed`: the file may have changed under the open document, so its tab should check. */
-  let { tabId, source, onReadFailed }: { tabId?: string; source: { path: string; size: number }; onReadFailed?: () => void } = $props();
+  /** `onReadFailed`: `changed` if the file is another version than the open document, so its tab should reload. */
+  let { tabId, source, onReadFailed }: { tabId?: string; source: PdfFile; onReadFailed?: (changed: boolean) => void } = $props();
 
   // A tab switch unmounts this view: it comes back where it was, at the same zoom.
   const place = untrack(() => (tabId ? viewerPlace(tabId) : undefined));
@@ -34,6 +35,7 @@
       pages: pagesEl!,
       zoom: () => zoom,
       openLink,
+      pageError: () => t("app.viewer.pageFailed"),
       onView: (v) => {
         current = v.page;
         total = v.total;
@@ -63,14 +65,20 @@
     error = message;
   }
 
-  async function open(file: { path: string; size: number }) {
+  async function open(file: PdfFile) {
     const mine = ++seq;
-    const next = new FileRangeTransport(file.path, file.size, () => {
+    let next!: FileRangeTransport;
+    const onRangeFail = (changed: boolean) => {
       if (mine !== seq) return;
-      fail(t("app.viewer.brokenPdf"));
-      onReadFailed?.();
+      // Another version: what's on screen stays until the reload replaces it.
+      if (!changed) fail(t("app.viewer.brokenPdf"));
+      onReadFailed?.(changed);
+    };
+    const loading = loadPdf(() => {
+      next?.close();
+      next = new FileRangeTransport(file, onRangeFail);
+      return { range: next, rangeChunkSize: RANGE_CHUNK, disableAutoFetch: true, disableStream: true };
     });
-    const loading = pdfjs.getDocument({ ...PDF_LOAD_OPTIONS, worker: pdfWorker(), range: next, rangeChunkSize: RANGE_CHUNK, disableAutoFetch: true, disableStream: true });
     const drop = () => {
       next.close();
       void loading.destroy();
@@ -96,8 +104,9 @@
       if (mine !== seq || !scroller) return drop();
       pendingDrop = null;
       const p = getPager();
-      // The first load of this view returns to the tab's place; a reload stays where the reader is.
-      const old = p.attach(opened, first, p.hasDocument ? null : place?.anchor);
+      // Without a document on screen (first load, or after a failed read) it returns to the tab's
+      // latest place; a reload over a document stays where the reader is.
+      const old = p.attach(opened, first, p.hasDocument ? null : (tabId ? viewerPlace(tabId) : place)?.anchor);
       void old?.destroy();
       transport?.close();
       transport = next;
@@ -184,6 +193,7 @@
   .pages { position: relative; }
   .pages :global(.slot) { position: absolute; }
   .pages :global(.page) { position: relative; width: 100%; height: 100%; border-radius: 6px; overflow: hidden; box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5); background: white; }
+  .pages :global(.page-error) { position: absolute; inset: 0; display: grid; place-items: center; padding: 16px; text-align: center; font-size: 12px; color: #777; }
   .pages :global(canvas) { width: 100%; height: 100%; display: block; }
   .pages :global(.link) { position: absolute; border-radius: 3px; cursor: pointer; }
   .pages :global(.link:hover) { background: rgba(52, 120, 246, 0.14); box-shadow: 0 0 0 1px rgba(52, 120, 246, 0.35); }
