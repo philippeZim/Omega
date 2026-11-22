@@ -40,7 +40,7 @@ export function openNewProject() {
 }
 
 // Editing a project file outside the editor (or git) can change the actions too.
-const PROJECT_FILES = new Set(["Cargo.toml", "pyproject.toml", "package.json", "CMakeLists.txt", "settings.gradle.kts", "settings.gradle", "build.gradle.kts", "build.gradle", "build.sbt", "project.scala", "dune-project", "dune-workspace", "dune", "mojoproject.toml", "pixi.toml"]);
+const PROJECT_FILES = new Set(["Cargo.toml", "pyproject.toml", "package.json", "CMakeLists.txt", "settings.gradle.kts", "settings.gradle", "build.gradle.kts", "build.gradle", "build.sbt", "project.scala", "dune-project", "dune-workspace", "dune", "mojoproject.toml", "pixi.toml", "go.mod", "go.work"]);
 onFilesChanged((files) => {
   if (files.some((f) => PROJECT_FILES.has(basename(f)))) refreshProject();
 });

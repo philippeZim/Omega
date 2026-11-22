@@ -299,6 +299,11 @@ export const en = {
   "code.lsp.gotoNone": "Nothing found for this symbol.",
   "code.lsp.gotoUnsupported": "This language server can't do that.",
   "code.lsp.gotoMore": "{count} more not shown",
+  "code.lsp.goplsPaused": "gopls is paused: a guest without Run changed this project. Restart the server to allow it again.",
+  "code.lsp.goplsResumeTitle": "Start gopls for this project?",
+  "code.lsp.goplsResumeMsg": "{name} changed this project without the Run permission. gopls runs the C compiler, linker and pkg-config on cgo code, so check the project first.",
+  "code.lsp.goplsResumeOk": "Start gopls",
+  "code.ad.goNoMain": "No main package to debug here. Open a file of a main package or a _test.go file.",
 };
 export const de: Record<keyof typeof en, string> = {
   "code.key.ctrl": "Strg",
@@ -590,6 +595,11 @@ export const de: Record<keyof typeof en, string> = {
   "code.lsp.gotoNone": "Für dieses Symbol wurde nichts gefunden.",
   "code.lsp.gotoUnsupported": "Dieser Sprachserver unterstützt das nicht.",
   "code.lsp.gotoMore": "{count} weitere nicht angezeigt",
+  "code.lsp.goplsPaused": "gopls ist pausiert: Ein Gast ohne Ausführen-Recht hat dieses Projekt geändert. Starte den Server neu, um es wieder zu erlauben.",
+  "code.lsp.goplsResumeTitle": "gopls für dieses Projekt starten?",
+  "code.lsp.goplsResumeMsg": "{name} hat dieses Projekt ohne Ausführen-Recht geändert. gopls startet für cgo-Code den C-Compiler, Linker und pkg-config, prüfe das Projekt also vorher.",
+  "code.lsp.goplsResumeOk": "gopls starten",
+  "code.ad.goNoMain": "Hier gibt es kein main-Paket zum Debuggen. Öffne eine Datei eines main-Pakets oder eine _test.go-Datei.",
 };
 export const fr: Record<keyof typeof en, string> = {
   "code.key.ctrl": "Ctrl",
@@ -881,4 +891,9 @@ export const fr: Record<keyof typeof en, string> = {
   "code.lsp.gotoNone": "Rien de trouvé pour ce symbole.",
   "code.lsp.gotoUnsupported": "Ce serveur de langage ne prend pas cela en charge.",
   "code.lsp.gotoMore": "{count} autres non affichés",
+  "code.lsp.goplsPaused": "gopls est en pause : un invité sans droit d’exécution a modifié ce projet. Redémarrez le serveur pour l’autoriser à nouveau.",
+  "code.lsp.goplsResumeTitle": "Démarrer gopls pour ce projet ?",
+  "code.lsp.goplsResumeMsg": "{name} a modifié ce projet sans le droit d’exécution. gopls lance le compilateur C, l’éditeur de liens et pkg-config sur le code cgo : vérifiez d’abord le projet.",
+  "code.lsp.goplsResumeOk": "Démarrer gopls",
+  "code.ad.goNoMain": "Aucun paquet main à déboguer ici. Ouvrez un fichier d’un paquet main ou un fichier _test.go.",
 };

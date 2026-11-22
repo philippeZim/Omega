@@ -9,9 +9,10 @@
  */
 import { invoke } from "@tauri-apps/api/core";
 import { dirname, fsApi } from "../api";
-import { exe, OS, q } from "../platform";
+import { exe, OS, q, cd } from "../platform";
 import type { ToolId } from "../tools.svelte";
 import type { LangId, LangInfo } from "./languages";
+import { goPrefix } from "./go";
 import { ocamlShellPrefix } from "./ocamlTools";
 
 export interface OverrideRun {
@@ -32,6 +33,7 @@ export function runCopyName(lang: LangId, text: string): string | null {
     case "javascript": return "omega_main.js";
     case "typescript": return "omega_main.ts";
     case "mojo": return "omega_main.mojo";
+    case "go": return "omega_main.go";
     case "scala": return scalaHasMain(text) ? "OmegaMain.scala" : "omega_main.sc";
     default: return null;
   }
@@ -39,7 +41,7 @@ export function runCopyName(lang: LangId, text: string): string | null {
 
 /** Path of the language server's copy in its folder. javac wants a public class in a file of its name. */
 export function lspCopyName(lang: LangInfo, text: string): string {
-  const ext: Record<LangId, string> = { python: "py", c: "c", cpp: "cpp", java: "java", javascript: "js", typescript: "ts", rust: "rs", json: "json", toml: "toml", scala: "scala", ocaml: "ml", mojo: "mojo", sql: "sql", yaml: "yaml", shell: "sh", dockerfile: "dockerfile", xml: "xml", makefile: "mk" };
+  const ext: Record<LangId, string> = { python: "py", c: "c", cpp: "cpp", java: "java", javascript: "js", typescript: "ts", rust: "rs", json: "json", toml: "toml", scala: "scala", ocaml: "ml", mojo: "mojo", sql: "sql", yaml: "yaml", shell: "sh", dockerfile: "dockerfile", xml: "xml", makefile: "mk", go: "go" };
   if (lang.id === "scala") return runCopyName("scala", text)!; // a script needs .sc, a program .scala
   if (lang.id === "java") {
     const cls = /^\s*public\s+(?:(?:final|abstract|sealed|strictfp)\s+)*(?:class|interface|enum|record)\s+([A-Za-z_]\w*)/m.exec(text)?.[1] ?? "OmegaMain";
@@ -77,6 +79,12 @@ export async function overrideRun(lang: LangId, file: string, tsx: string): Prom
       return { cmd: out, needs: ["rust"], pre: `rustc -g --crate-name omega_main ${f} -o ${out}` };
     }
     case "ocaml": return { cmd: `${await ocamlShellPrefix()}ocaml ${f}`, needs: ["ocaml"] };
+    case "go": {
+      // Built in the private folder, which never holds links: a go.mod next to the file doesn't apply.
+      const bin = await workDir(file, "bin");
+      const name = exe("omega_out");
+      return { cmd: q(`${bin}/${name}`), needs: ["go"], pre: `(${cd(bin)} && ${await goPrefix()}go build -o ${name} omega_main.go)`, prepare: async () => void (await refreshBinCopy(file, "omega_main.go")) };
+    }
     case "java":
     case "javascript":
     case "typescript":

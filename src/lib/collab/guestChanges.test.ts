@@ -314,3 +314,65 @@ test("Save As of a file paused for ocamllsp only pauses only ocamllsp at the tar
   expect(ocamlBy("/other")).toBe("name-g");
   expect(mod.metalsPausedBy("/other")).toBeNull();
 });
+
+test("a guest change pauses gopls too, released on its own", () => {
+  mod.noteGuestChange("g", "/p", "main.go");
+  for (const tool of ["gopls", "ocaml", "metals"] as const) expect(mod.toolPausedBy(tool, "/p/sub")).toBe("name-g");
+  expect(mod.resumeTool("gopls", "/p", mod.toolChangeCount("gopls"))).toBe(true);
+  expect(mod.toolPausedBy("gopls", "/p")).toBeNull();
+  expect(mod.toolPausedBy("ocaml", "/p")).toBe("name-g");
+  expect(mod.toolPausedBy("metals", "/p")).toBe("name-g");
+});
+
+test("the gopls pause survives a restart in its own store", async () => {
+  mod.noteGuestChange("g", "/p", "main.go");
+  mod.resumeTool("ocaml", "/p", mod.toolChangeCount("ocaml"));
+  expect(JSON.parse(localStorage.getItem("gopls.guestChanged")!)).toEqual({ "/p": "name-g" });
+  vi.resetModules();
+  const again = await import("./guestChanges");
+  expect(again.toolPausedBy("gopls", "/p")).toBe("name-g");
+  expect(again.toolPausedBy("ocaml", "/p")).toBeNull();
+});
+
+test("the first gopls store starts with everything already paused, and is written at once", async () => {
+  localStorage.clear();
+  localStorage.setItem("latex.guestChanged", JSON.stringify({ "/tex": "a" }));
+  localStorage.setItem("metals.guestChanged", JSON.stringify({ "/sbt": "b" }));
+  localStorage.setItem("ocaml.guestChanged", JSON.stringify({ "/ml": "c" }));
+  vi.resetModules();
+  const first = await import("./guestChanges");
+  for (const [root, by] of [["/tex", "a"], ["/sbt", "b"], ["/ml", "c"]]) expect(first.toolPausedBy("gopls", root)).toBe(by);
+  expect(JSON.parse(localStorage.getItem("gopls.guestChanged")!)).toEqual({ "/tex": "a", "/sbt": "b", "/ml": "c" });
+});
+
+test("an unreadable gopls store counts as not there yet", async () => {
+  localStorage.clear();
+  localStorage.setItem("latex.guestChanged", JSON.stringify({ "/tex": "a" }));
+  localStorage.setItem("gopls.guestChanged", "{broken");
+  vi.resetModules();
+  expect((await import("./guestChanges")).toolPausedBy("gopls", "/tex")).toBe("a");
+});
+
+test("the gopls pause follows a move and covers folders around and inside", () => {
+  mod.noteGuestChange("g", "/p/sub", "main.go");
+  expect(mod.toolPausedBy("gopls", "/p")).toBe("name-g");
+  expect(mod.toolPausedBy("gopls", "/p/sub/deep")).toBe("name-g");
+  mod.moveGuestChange("/p/sub", "/q/sub");
+  expect(mod.toolPausedBy("gopls", "/q/sub")).toBe("name-g");
+  expect(mod.toolPausedBy("gopls", "/p/sub")).toBeNull();
+});
+
+test("allowing gopls doesn't cover a change made during the question", () => {
+  mod.noteGuestChange("g", "/p", "main.go");
+  const seen = mod.toolChangeCount("gopls");
+  mod.noteGuestChange("g", "/p", "main.go");
+  expect(mod.resumeTool("gopls", "/p", seen)).toBe(false);
+  expect(mod.toolPausedBy("gopls", "/p")).toBe("name-g");
+});
+
+test("an unsaved guest tab saved into a project pauses gopls before the file exists", () => {
+  mod.noteGuestChange("g", null, "tab:t9");
+  expect(mod.toolPausedBy("gopls", "/n")).toBeNull();
+  mod.toolsBeforeSave("t9", null, "/n/go.mod");
+  expect(mod.toolPausedBy("gopls", "/n")).toBe("name-g");
+});

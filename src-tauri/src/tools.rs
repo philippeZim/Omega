@@ -1,6 +1,6 @@
 //! Tools Omega can install by itself into its app-data folder (`tools/`), per OS and CPU:
 //! uv (Python), tectonic (LaTeX), Node.js, pnpm, CMake, Ninja, clangd, a JDK, Gradle, Rust (rustup),
-//! Scala CLI with Coursier, sbt, OCaml through its own opam root, Mojo in its own Conda environment, a C/C++ compiler (llvm-mingw on Windows, Xcode Command Line Tools
+//! Scala CLI with Coursier, sbt, OCaml through its own opam root, Mojo in its own Conda environment, Go (see `golang.rs`), a C/C++ compiler (llvm-mingw on Windows, Xcode Command Line Tools
 //! on macOS) and Git on Windows.
 //! Installed tools are recorded in `tools/managed.json` (tool id → folder with its executables);
 //! those folders are appended to the PATH of everything Omega starts (see `env.rs`).
@@ -11,6 +11,9 @@ use std::io::{BufRead, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tauri::{AppHandle, Emitter};
+
+#[path = "golang.rs"]
+pub mod golang;
 
 const OS: &str = if cfg!(windows) { "windows" } else if cfg!(target_os = "macos") { "macos" } else { "linux" };
 const ARM: bool = cfg!(target_arch = "aarch64");
@@ -293,7 +296,7 @@ fn plan(id: &str) -> Result<Plan, String> {
 /// Which tool ids can be installed automatically on this OS.
 #[tauri::command]
 pub fn tool_installable() -> Vec<&'static str> {
-    let mut v = vec!["uv", "tectonic", "node", "pnpm", "cmake", "ninja", "clangd", "jdk", "gradle", "rust", "scala", "sbt"];
+    let mut v = vec!["uv", "tectonic", "node", "pnpm", "cmake", "ninja", "clangd", "jdk", "gradle", "rust", "scala", "sbt", "go"];
     if cfg!(windows) {
         v.extend(["git", "cc"]);
     } else {
@@ -330,6 +333,9 @@ fn install(app: &AppHandle, id: &str) -> Result<String, String> {
     }
     if id == "mojo" {
         return install_mojo(app, "mojo", true);
+    }
+    if id == "go" {
+        return golang::install_go(app);
     }
     if cfg!(target_os = "macos") && (id == "cc" || id == "git") {
         // Apple's installer dialog; the tools appear in /usr/bin once the user finished it.

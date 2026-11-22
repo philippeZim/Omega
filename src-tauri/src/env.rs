@@ -39,6 +39,7 @@ pub fn tools_dir() -> PathBuf {
 pub fn init(tools: PathBuf) {
     let _ = std::fs::create_dir_all(&tools);
     let _ = TOOLS_DIR.set(tools);
+    crate::tools::golang::recover_go();
     *BASE_PATH.write().unwrap() = Some(user_path());
     rebuild();
 }
@@ -216,10 +217,12 @@ pub fn which(cmd: &str) -> Option<PathBuf> {
 
 /// A `Command` with the effective PATH and (on Windows) no console window popping up.
 pub fn command(program: impl AsRef<OsStr>) -> Command {
+    let name = program.as_ref().to_os_string();
     let mut c = process(program);
     c.env("PATH", path());
     c.envs(git_guard_env());
     c.env_remove(GIT_PARAMETERS);
+    crate::tools::golang::apply_go_env(&mut c, &name);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -256,6 +259,8 @@ pub fn pty_command(program: impl AsRef<OsStr>) -> portable_pty::CommandBuilder {
             None => c.env_remove(k),
         }
     }
+    #[cfg(windows)]
+    crate::tools::golang::apply_go_shell_env(&mut c);
     c
 }
 

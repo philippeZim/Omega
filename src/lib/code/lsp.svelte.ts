@@ -6,7 +6,7 @@ import { onRpc } from "../rpc";
 import { t, type Key } from "../i18n/index.svelte";
 import { ui } from "../ui.svelte";
 import { fsApi, dirname, joinPath, isRoot } from "../api";
-import { IS_WIN, OS, platform } from "../platform";
+import { IS_WIN, OS, platform, exe } from "../platform";
 import { ensureTools, mojoInstallHint, withInstallProgress, serverProgressId, type ToolId } from "../tools.svelte";
 import { metalsPausedBy, onGuestChange, resumeTool, toolChangeCount, toolPausedBy, type PausedTool } from "../collab/guestChanges";
 import type { LangInfo } from "./languages";
@@ -429,12 +429,13 @@ const ROOT_MARKERS: Record<ServerKind, string[]> = {
   scala: ["build.sbt", "project.scala", ".bsp", ".scala-build", ".git"],
   ocaml: ["dune-project", "dune-workspace"],
   mojo: ["mojoproject.toml", "pixi.toml", ".git"],
+  go: ["go.work", "go.mod"],
 };
 
 const within = (path: string, dir: string) => path === dir || path.startsWith(dir.endsWith("/") ? dir : dir + "/");
 
 /** Build systems whose root is the outermost marker, so a multi-package repo gets one server. */
-const OUTERMOST_ROOT = new Set(["Cargo.toml", "dune-project"]);
+const OUTERMOST_ROOT = new Set(["Cargo.toml", "dune-project", "go.work"]);
 
 /** Walks up from the file to find the project root (stops at the workspace root's parent). */
 export async function findRoot(file: string, markers: string[], workspace: string | null): Promise<string> {
@@ -476,7 +477,7 @@ export const lspSettings = $state({ strictPython: localStorage.getItem("strictPy
 function serverSetting(kind: ServerKind, section?: string): Json {
   if (kind === "python" && (section === "basedpyright" || section === "python"))
     return { analysis: { typeCheckingMode: lspSettings.strictPython ? "recommended" : "standard" } };
-  if (kind === "scala") return {}; // Metals reads its section as an object
+  if (kind === "scala" || kind === "go") return {}; // Metals and gopls read their section as an object
   return null;
 }
 
@@ -572,6 +573,10 @@ async function resolveCommand(kind: ServerKind, root: string): Promise<{ cmd: st
       const cmd = await first(`${tools}/mojo/bin/mojo-lsp-server`, "mojo-lsp-server");
       return cmd ? { cmd, args: [] } : null;
     }
+    case "go": {
+      const cmd = await first(`${tools}/go-tools/bin/${exe("gopls")}`, "gopls");
+      return cmd ? { cmd, args: [] } : null;
+    }
   }
 }
 
@@ -584,13 +589,14 @@ export const INSTALLABLE: Partial<Record<ServerKind, string>> = {
   // On Windows it can only come from the user's own opam: there is nothing to offer.
   ocaml: IS_WIN ? undefined : "ocaml-lsp-server (OCaml)",
   mojo: "Mojo (compiler, LSP, LLDB)",
+  go: "gopls (Go)",
   get rust() {
     return t("code.lsp.rustAnalyzer");
   },
 };
 
 /** Tools a language server installation builds on. */
-const PREREQ: Partial<Record<ServerKind, ToolId[]>> = { python: ["node"], typescript: ["node"], java: ["jdk"], rust: ["rust"], scala: ["jdk", "scala"], ocaml: ["ocaml"] };
+const PREREQ: Partial<Record<ServerKind, ToolId[]>> = { python: ["node"], typescript: ["node"], java: ["jdk"], rust: ["rust"], scala: ["jdk", "scala"], ocaml: ["ocaml"], go: ["go"] };
 
 /** `askInstall` for work the host didn't start itself: never prompts, and doesn't count as declining. */
 export const neverInstall = async (_kind: ServerKind, _name: string) => false;
@@ -624,6 +630,7 @@ async function guestMayStart(kind: ServerKind, root: string, key: string) {
 const PAUSABLE: Partial<Record<ServerKind, { tool: PausedTool; paused: Key; title: Key; msg: Key; ok: Key }>> = {
   scala: { tool: "metals", paused: "code.lsp.metalsPaused", title: "code.lsp.metalsResumeTitle", msg: "code.lsp.metalsResumeMsg", ok: "code.lsp.metalsResumeOk" },
   ocaml: { tool: "ocaml", paused: "code.lsp.ocamlPaused", title: "code.lsp.ocamlResumeTitle", msg: "code.lsp.ocamlResumeMsg", ok: "code.lsp.ocamlResumeOk" },
+  go: { tool: "gopls", paused: "code.lsp.goplsPaused", title: "code.lsp.goplsResumeTitle", msg: "code.lsp.goplsResumeMsg", ok: "code.lsp.goplsResumeOk" },
 };
 
 /** A guest without `run` changed this project: the server would execute that text, so it stays off. */
@@ -640,6 +647,9 @@ export const metalsPausedFor = async (file: string, workspace: string | null) =>
 
 /** The folder ocamllsp's guest pause is checked against for this file. */
 export const ocamlPauseRoot = (file: string, workspace: string | null) => findRoot(file, ROOT_MARKERS.ocaml, workspace);
+
+/** The folder gopls' guest pause is checked against for this file. */
+export const goPauseRoot = (file: string, workspace: string | null) => findRoot(file, ROOT_MARKERS.go, workspace);
 
 onGuestChange(() => {
   for (const [key, c] of clients) {
