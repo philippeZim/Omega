@@ -5,7 +5,8 @@
   import { loadPdf, type PageLink } from "../lib/pdfPages";
   import { PdfPager } from "../lib/pdfPager";
   import { FileRangeTransport, RANGE_CHUNK } from "../lib/pdfRange";
-  import { MAX_PDF_ZOOM, safePdfUrl, stepZoom } from "../lib/viewer";
+  import { MAX_PDF_ZOOM, MIN_ZOOM, safePdfUrl, stepZoom } from "../lib/viewer";
+  import { wheelZoom } from "../lib/wheelZoom";
   import { rememberViewer, viewerPlace } from "../lib/viewerMemory";
   import type { PdfFile } from "../lib/viewerData";
   import { openUrl } from "../lib/native";
@@ -131,6 +132,19 @@
     if (z === lastZoom) return;
     lastZoom = z;
     pager?.relayout();
+  });
+
+  $effect(() => {
+    if (!scroller) return;
+    return wheelZoom(scroller, {
+      scale: () => pager?.scale ?? shownScale,
+      min: MIN_ZOOM,
+      max: MAX_PDF_ZOOM,
+      apply: (scale, x, y) => {
+        if (!pager) return;
+        pager.zoomAt(() => (zoom = lastZoom = scale), x, y);
+      },
+    });
   });
 
   // Fit-width follows the tab width, debounced.

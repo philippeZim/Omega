@@ -1,7 +1,9 @@
 <script lang="ts">
   import Glyph from "./Glyph.svelte";
+  import { tick } from "svelte";
   import { imageSource, type ViewerData } from "../lib/viewerData";
-  import { fitScale, stepZoom } from "../lib/viewer";
+  import { MAX_ZOOM, MIN_ZOOM, fitScale, stepZoom } from "../lib/viewer";
+  import { wheelZoom } from "../lib/wheelZoom";
   import { formatSize } from "../lib/largeFile";
   import { t } from "../lib/i18n/index.svelte";
 
@@ -40,6 +42,28 @@
     // An SVG without a size of its own reports 0 in some engines.
     natural = { w: img.naturalWidth || 300, h: img.naturalHeight || 150 };
   }
+
+  let image = $state<HTMLImageElement>();
+
+  /** Ctrl + wheel: the point of the image under the cursor stays there. */
+  async function zoomAt(next: number, x: number, y: number) {
+    if (!scroller || !image) return;
+    const box = scroller.getBoundingClientRect();
+    const before = image.getBoundingClientRect();
+    const fx = (box.left + x - before.left) / before.width;
+    const fy = (box.top + y - before.top) / before.height;
+    zoom = next;
+    await tick();
+    if (!scroller || !image) return;
+    const after = image.getBoundingClientRect();
+    scroller.scrollLeft += after.left + fx * after.width - (box.left + x);
+    scroller.scrollTop += after.top + fy * after.height - (box.top + y);
+  }
+
+  $effect(() => {
+    if (!scroller) return;
+    return wheelZoom(scroller, { scale: () => scale, min: MIN_ZOOM, max: MAX_ZOOM, apply: (s, x, y) => void zoomAt(s, x, y) });
+  });
 
   // Drag to pan when the image is larger than the tab.
   let drag: { x: number; y: number; left: number; top: number } | null = null;
@@ -83,7 +107,7 @@
   <div class="scroller" class:dragging bind:this={scroller} bind:clientWidth={boxW} bind:clientHeight={boxH} onpointerdown={down} onpointermove={move} onpointerup={up} onpointercancel={up} role="presentation">
     <div class="stage">
       {#if src}
-        <img class="checker" {src} alt={path.split("/").pop()} draggable="false" onload={onLoad} onerror={() => (broken = true)} style={natural ? `width: ${natural.w * scale}px; height: ${natural.h * scale}px` : "visibility: hidden"} />
+        <img class="checker" bind:this={image} {src} alt={path.split("/").pop()} draggable="false" onload={onLoad} onerror={() => (broken = true)} style={natural ? `width: ${natural.w * scale}px; height: ${natural.h * scale}px` : "visibility: hidden"} />
       {/if}
     </div>
   </div>

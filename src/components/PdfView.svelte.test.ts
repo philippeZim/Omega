@@ -149,9 +149,9 @@ test("a render that scrolled out of reach is cancelled", async () => {
 
 test("far pages are let go of and unmounted", async () => {
   const { target, scroller, cmp } = await view();
-  for (const p of [500, 1000, 1500, 2000]) await scrollTo(scroller, topOf(p));
+  for (let p = 100; p <= 2000; p += 100) await scrollTo(scroller, topOf(p));
   expect(target.querySelector('[data-page="1"]')).toBeNull();
-  expect(target.querySelectorAll(".page").length).toBeLessThan(10);
+  expect(target.querySelectorAll(".page").length).toBeLessThan(18); // near the view + the few kept
   unmount(cmp);
 });
 
@@ -377,4 +377,151 @@ test("fit width accounts for the scrollbar the document itself brings", async ()
   } finally {
     Object.defineProperty(HTMLElement.prototype, "clientWidth", width);
   }
+});
+
+describe("scrolling back and forth", () => {
+  test("a scroll position that came without a scroll event still gets its pages", async () => {
+    const { target, scroller, cmp } = await view();
+    scroller.scrollTop = topOf(1500); // WebKit doesn't always deliver the event
+    await new Promise((r) => setTimeout(r, 170));
+    await settle();
+    expect(target.querySelector('[data-page="1500"] canvas')).not.toBeNull();
+    expect(target.querySelector(".info")!.textContent).toContain("/3000");
+    unmount(cmp);
+  });
+
+  test("a rendered page stays in the DOM with its canvas, and returning renders nothing", async () => {
+    const { target, scroller, cmp } = await view();
+    const canvas = target.querySelector<HTMLCanvasElement>('[data-page="1"] canvas')!;
+    await scrollTo(scroller, topOf(20));
+    expect(canvas.isConnected).toBe(true); // never taken out of the DOM and put back
+    const before = pdf.rendered.filter((n) => n === 1).length;
+    await scrollTo(scroller, 0);
+    expect(target.querySelector('[data-page="1"] canvas')).toBe(canvas);
+    expect(canvas.width).toBeGreaterThan(0);
+    expect(pdf.rendered.filter((n) => n === 1).length).toBe(before);
+    unmount(cmp);
+  });
+
+  test("reversing while renders are in flight leaves every page in view rendered", async () => {
+    pdf.manual = true;
+    const { target, scroller, cmp } = await view();
+    for (let round = 0; round < 40; round++) {
+      await scrollTo(scroller, topOf(1 + ((round * 37) % 11) * (round % 3 ? 1 : 90)));
+      if (round % 2) pdf.pending.splice(0, 1).forEach((j) => j.done());
+    }
+    await scrollTo(scroller, topOf(30));
+    pdf.manual = false;
+    pdf.pending.splice(0).forEach((j) => j.done());
+    for (let i = 0; i < 30; i++) {
+      await settle();
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    for (const p of [30, 31]) expect(target.querySelector(`[data-page="${p}"] canvas`)).not.toBeNull();
+    unmount(cmp);
+  });
+
+  test("the pager stops watching when the view closes", async () => {
+    const stop = vi.spyOn(window, "clearInterval");
+    const { cmp } = await view();
+    unmount(cmp);
+    expect(stop).toHaveBeenCalled();
+    stop.mockRestore();
+  });
+});
+
+describe("ctrl + wheel", () => {
+  const wheel = (el: HTMLElement, deltaY: number, x = 40, y = 100, ctrlKey = true) => {
+    const e = Object.assign(new Event("wheel", { bubbles: true, cancelable: true }), { deltaY, deltaMode: 0, clientX: x, clientY: y, ctrlKey }); // the test DOM's WheelEvent drops ctrlKey
+    el.dispatchEvent(e);
+    return e;
+  };
+  const wait = async (ms = 30) => {
+    await new Promise((r) => setTimeout(r, ms));
+    await settle();
+  };
+
+  test("zooms like the buttons, and nothing else reacts to the event", async () => {
+    const outer = vi.fn();
+    document.body.addEventListener("wheel", outer);
+    const { target, scroller, cmp } = await view();
+    const e = wheel(scroller, -100);
+    expect(e.defaultPrevented).toBe(true);
+    expect(outer).not.toHaveBeenCalled();
+    await wait();
+    expect(target.querySelector(".pct")!.textContent).toMatch(/12\d %/);
+    expect(wheel(scroller, -100, 40, 100, false).defaultPrevented).toBe(false); // plain wheel scrolls
+    document.body.removeEventListener("wheel", outer);
+    unmount(cmp);
+  });
+
+  test("the point under the cursor stays there", async () => {
+    const { scroller, cmp } = await view();
+    await scrollTo(scroller, topOf(40) + 50);
+    const y = 100;
+    const before = scroller.scrollTop + y;
+    const onPage = (before - topOf(40)) / 200;
+    wheel(scroller, -200, 40, y);
+    await wait();
+    const scale = Math.exp(200 * 0.00223);
+    const top = 16 + 39 * (200 * scale + 14);
+    expect(scroller.scrollTop + y).toBeCloseTo(top + onPage * 200 * scale, 0);
+    unmount(cmp);
+  });
+
+  test("over many steps the point doesn't creep, although the browser rounds scroll positions", async () => {
+    const { scroller, cmp } = await view();
+    let top = 0;
+    Object.defineProperty(scroller, "scrollTop", { configurable: true, get: () => top, set: (v: number) => void (top = Math.floor(v)) });
+    await scrollTo(scroller, topOf(40) + 50);
+    const y = 100;
+    const onPage = (scroller.scrollTop + y - topOf(40)) / 200;
+    let total = 0;
+    for (let i = 0; i < 30; i++) {
+      wheel(scroller, -10, 40, y);
+      total += 10;
+      await wait(20);
+    }
+    const scale = Math.exp(total * 0.00223);
+    const pageTop = 16 + 39 * (200 * scale + 14);
+    expect(Math.abs(scroller.scrollTop + y - (pageTop + onPage * 200 * scale))).toBeLessThan(1.5);
+    unmount(cmp);
+  });
+
+  test("small pinch deltas add up, many events cause one layout and no render per event", async () => {
+    const { target, scroller, cmp } = await view();
+    await wait();
+    pdf.rendered = [];
+    for (let i = 0; i < 100; i++) wheel(scroller, -1);
+    expect(pdf.rendered).toEqual([]);
+    await wait();
+    expect(target.querySelector(".pct")!.textContent).toMatch(/12\d %/);
+    expect(pdf.rendered).toEqual([]); // the sharp render waits until the zoom has settled
+    await wait(160);
+    expect(pdf.rendered.length).toBeGreaterThan(0);
+    expect(pdf.rendered.length).toBeLessThan(8);
+    unmount(cmp);
+  });
+
+  test("stops at the limits of the buttons", async () => {
+    const { target, scroller, cmp } = await view();
+    for (let i = 0; i < 40; i++) wheel(scroller, -300);
+    await wait();
+    expect(target.querySelector(".pct")!.textContent).toContain("400 %");
+    for (let i = 0; i < 80; i++) wheel(scroller, 300);
+    await wait();
+    expect(target.querySelector(".pct")!.textContent).toContain("5 %");
+    unmount(cmp);
+  });
+
+  test("the old bitmap stays while zooming", async () => {
+    const { target, scroller, cmp } = await view();
+    await wait();
+    const old = target.querySelector('[data-page="1"] canvas');
+    pdf.manual = true;
+    wheel(scroller, -100);
+    await wait();
+    expect(target.querySelector('[data-page="1"] canvas')).toBe(old);
+    unmount(cmp);
+  });
 });
