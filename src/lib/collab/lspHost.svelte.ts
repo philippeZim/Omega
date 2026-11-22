@@ -18,6 +18,7 @@ import { isForeignLang, onLanguageOverride } from "../code/langOverride.svelte";
 import { formattingOptions, langFor, type LangInfo } from "../code/languages";
 import { clientFor, fileUri, neverInstall, restartListeners, stopGuestServers, toolsDir, uriPath, workspaceSymbols, type LspClient, type WorkspaceSymbol } from "../code/lsp.svelte";
 import { editsForDoc, MAX_FIXES, quickFixesFor } from "../code/lspExtension";
+import { keepFileIndent } from "../code/clangFormat";
 
 /** Delay between an edit and the server hearing about it. */
 const CHANGE_MS = 200;
@@ -516,7 +517,9 @@ registerMethod({
     const { s, c, paths } = await synced(path, at, peer, signal, true);
     if (!c.capabilities.documentFormattingProvider) refuse("unsupported");
     const before = s.ytext.toString();
-    const res = await ask<unknown>(c, "textDocument/formatting", { textDocument: { uri: s.uri }, options: formattingOptions(before, s.lang) }, signal);
+    const options = formattingOptions(before, s.lang);
+    let res = await ask<unknown>(c, "textDocument/formatting", { textDocument: { uri: s.uri }, options }, signal);
+    if (s.lang.server === "clangd" && Array.isArray(res) && res.length) res = await keepFileIndent(s.abs, before, res, options);
     // Someone typed meanwhile: these positions no longer fit.
     if (s.stopped || s.ytext.toString() !== before) refuse("stale");
     if (res !== null && !Array.isArray(res)) refuse("server_error");

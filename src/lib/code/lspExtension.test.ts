@@ -228,6 +228,16 @@ describe("lspExtension formatting", () => {
     expect(await optionsFor("a.py", "def f():\n  if x:\n    return 1\n")).toEqual({ tabSize: 2, insertSpaces: true });
   });
 
+  test("clangd's result keeps the file's tabs", async () => {
+    const edits = [{ range: range(1, 0, 1, 1), newText: "  " }, { range: range(1, 3, 1, 4), newText: "" }, { range: range(2, 0, 2, 1), newText: "  " }];
+    const c = fakeClient({ capabilities: { documentFormattingProvider: true }, request: vi.fn(async () => edits) });
+    m.client = c;
+    const v = view("void f() {\n\tg( );\n\th();\n}\n", [lspExtension("/w/proj/main.c", { server: "clangd", lspId: "c" } as any)]);
+    await vi.waitFor(() => expect(c.open).toHaveBeenCalled());
+    runViewAction(v, "lsp.format");
+    await vi.waitFor(() => expect(v.state.doc.toString()).toBe("void f() {\n\tg();\n\th();\n}\n"));
+  });
+
   test("without indentation the language's convention counts", async () => {
     expect(await optionsFor("a.ts", "let x = 1;\n")).toEqual({ tabSize: 2, insertSpaces: true });
     expect(await optionsFor("a.py", "x = 1\n")).toEqual({ tabSize: 4, insertSpaces: true });

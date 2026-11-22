@@ -510,7 +510,7 @@ async function resolveCommand(kind: ServerKind, root: string): Promise<{ cmd: st
     }
     case "clangd": {
       const cmd = await first("clangd");
-      return cmd ? { cmd, args: ["--background-index", "--clang-tidy", "--header-insertion=never", "--completion-style=detailed"] } : null;
+      return cmd ? { cmd, args: ["--background-index", "--clang-tidy", "--header-insertion=never", "--completion-style=detailed", "--fallback-style=LLVM"] } : null;
     }
     case "rust": {
       const ok = await invoke<boolean>("cmd_works", { cmd: "rust-analyzer" });

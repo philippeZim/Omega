@@ -9,6 +9,7 @@ import { ui } from "../ui.svelte";
 import { t } from "../i18n/index.svelte";
 import { clientFor, fileUri, lspState, realPathOf, registerShadow, releasePrivate, restartListeners, restartServer, setLspRoute, setLspWorkspace, uriPath, type LspClient, type ServerKind } from "./lsp.svelte";
 import { formattingOptions, type LangInfo } from "./languages";
+import { keepFileIndent, syncPrivateStyle } from "./clangFormat";
 import { isForeignLang } from "./langOverride.svelte";
 import { clangdCommand, shadowForLsp } from "./langRun";
 import { runsAlone } from "./projects";
@@ -419,11 +420,17 @@ export function lspExtension(path: string, lang: LangInfo): Extension {
   }
 
   async function format(view: EditorView) {
-    if (!client?.capabilities.documentFormattingProvider) return false;
+    const c = client;
+    if (!c?.capabilities.documentFormattingProvider) return false;
     flush();
-    const edits: any[] = await client.request("textDocument/formatting", { textDocument: { uri }, options: formattingOptions(view.state.doc, lang, view.state.facet(indentUnit), view.state.tabSize) }).catch(() => null);
-    if (!edits?.length) return true;
     const doc = view.state.doc;
+    const clangd = lang.server === "clangd";
+    if (clangd && uri !== fileUri(path)) await syncPrivateStyle(path, dirname(uriPath(uri))).catch(() => {});
+    const options = formattingOptions(doc, lang, view.state.facet(indentUnit), view.state.tabSize);
+    let edits: any[] | null = await c.request("textDocument/formatting", { textDocument: { uri }, options }).catch(() => null);
+    if (clangd && edits?.length) edits = await keepFileIndent(path, doc.toString(), edits, options);
+    // Typed while waiting: these positions no longer fit.
+    if (!edits?.length || view.state.doc !== doc) return true;
     view.dispatch({ changes: edits.map((e) => ({ from: toOffset(doc, e.range.start), to: toOffset(doc, e.range.end), insert: e.newText })) });
     return true;
   }
