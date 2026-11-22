@@ -68,4 +68,5 @@ test("the bitmap budget drops the farthest pages and never a visible one", () =>
   expect(evictions(items, 5, 40)).toEqual([]);
   expect(evictions(items, 5, 30)).toEqual([20]);
   expect(evictions(items, 5, 5)).toEqual([20, 0]);
+  expect(evictions(items, 5, 1000, 1)).toEqual([20]); // also a limit on how many pages stay
 });

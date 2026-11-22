@@ -127,12 +127,16 @@ export function renderOrder(first: number, last: number, center: number): number
   return out;
 }
 
-/** Bitmaps to free so the rest fits `budget` pixels: farthest from `center` first, never a kept one. */
-export function evictions(items: { index: number; pixels: number; keep: boolean }[], center: number, budget: number): number[] {
+/**
+ * Bitmaps to free so the rest fits `budget` pixels and at most `maxExtra` pages outside the view
+ * remain: farthest from `center` first, never a kept one.
+ */
+export function evictions(items: { index: number; pixels: number; keep: boolean }[], center: number, budget: number, maxExtra = Infinity): number[] {
   let total = items.reduce((sum, x) => sum + x.pixels, 0);
+  const extra = items.filter((y) => !y.keep).sort((a, b) => Math.abs(b.index - center) - Math.abs(a.index - center));
   const out: number[] = [];
-  for (const x of items.filter((y) => !y.keep).sort((a, b) => Math.abs(b.index - center) - Math.abs(a.index - center))) {
-    if (total <= budget) break;
+  for (const [i, x] of extra.entries()) {
+    if (total <= budget && extra.length - i <= maxExtra) break;
     total -= x.pixels;
     out.push(x.index);
   }

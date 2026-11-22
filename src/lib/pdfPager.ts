@@ -8,6 +8,8 @@ import { addPageLinks, renderPage, resolvePdfDest, type PageLink } from "./pdfPa
 import { PdfLayout, evictions, renderOrder } from "./pdfLayout";
 
 export type PdfAnchor = { page: number; fraction: number };
+/** A place on a page (fractions of its size) and where in the scroller it is to stay. */
+export type PagePoint = { page: number; fx: number; fy: number; x: number; y: number };
 
 export interface PagerHost {
   scroller: HTMLElement;
@@ -48,6 +50,10 @@ const NEAR_PX = 600;
 const BITMAP_BUDGET = 48_000_000;
 /** After a zoom the old bitmaps show scaled; the sharp ones are rendered once the zoom has settled. */
 const ZOOM_SETTLE_MS = 120;
+/** Rendered pages kept beyond the ones near the view, for scrolling back. They stay in the DOM. */
+const MAX_KEPT_PAGES = 8;
+/** How often the pager checks the scroll position itself: WebKit doesn't always deliver a scroll event. */
+const WATCH_MS = 120;
 
 const freeCanvas = (c: HTMLCanvasElement | null) => {
   if (c) c.width = c.height = 0; // WebKit frees the bitmap only then
@@ -59,6 +65,9 @@ export class PdfPager {
   private slots = new Map<number, Slot>();
   private job: Job | null = null;
   private settleTimer = 0;
+  private watchTimer = 0;
+  private syncedTop = -1;
+  private zoomGesture: { point: PagePoint; top: number; left: number } | null = null;
 
   constructor(private readonly host: PagerHost) {}
 
@@ -141,20 +150,28 @@ export class PdfPager {
     if (!l) return;
     const { scroller, pages } = this.host;
     const y = this.docY();
+    this.syncedTop = scroller.scrollTop;
     const [first, last] = this.near();
     for (const s of [...this.slots.values()]) {
-      if (s.index >= first && s.index <= last) continue;
       // A bitmap of an older version of the document is worthless once it's out of sight.
-      if (s.canvas && !s.stale) s.holder.remove();
-      else this.freeSlot(s);
+      if ((s.index < first || s.index > last) && (!s.canvas || s.stale)) this.freeSlot(s);
     }
-    for (let i = first; i <= last; i++) {
-      const s = this.slots.get(i) ?? this.makeSlot(i);
+    for (let i = first; i <= last; i++) if (!this.slots.has(i)) this.makeSlot(i);
+    // Rendered pages stay mounted when they leave the view: taking a canvas out of the DOM and
+    // putting it back is what can leave it white in WebKitGTK.
+    for (const s of this.slots.values()) {
       this.place(s);
       if (!s.holder.isConnected) pages.appendChild(s.holder);
     }
     this.host.onView?.({ page: l.pageAt(y + scroller.clientHeight / 3) + 1, total: l.count, scale: l.scales[0], anchor: l.anchor(y) });
     this.pump();
+  };
+
+  /** The safety net: the view is followed even without a scroll event, and pages in it always get rendered. */
+  private watch = () => {
+    if (!this.layout) return;
+    if (this.host.scroller.scrollTop !== this.syncedTop) this.sync();
+    else this.pump();
   };
 
   private pump() {
@@ -174,7 +191,7 @@ export class PdfPager {
 
   private evict(center: number, first: number, last: number) {
     const items = [...this.slots.values()].filter((s) => s.canvas).map((s) => ({ index: s.index, pixels: s.canvas!.width * s.canvas!.height, keep: s.index >= first && s.index <= last }));
-    for (const i of evictions(items, center, BITMAP_BUDGET)) this.freeSlot(this.slots.get(i)!);
+    for (const i of evictions(items, center, BITMAP_BUDGET, MAX_KEPT_PAGES)) this.freeSlot(this.slots.get(i)!);
   }
 
   private async start(s: Slot) {
@@ -272,12 +289,13 @@ export class PdfPager {
     }
     const s = this.slots.get(0) ?? (from === 0 ? this.makeSlot(0) : null);
     if (s) s.page = first;
+    this.watchTimer ||= window.setInterval(this.watch, WATCH_MS);
     this.sync();
     return old;
   }
 
   /** New zoom or width: pages take their new size at once, showing the old bitmap until the sharp one is ready. */
-  relayout = () => {
+  relayout = (point?: PagePoint) => {
     const l = this.layout;
     if (!l) return;
     const { scroller } = this.host;
@@ -285,7 +303,10 @@ export class PdfPager {
     const width = scroller.clientWidth;
     l.relayout(this.scaleFor(width));
     this.fitSpacer(width);
-    scroller.scrollTop = l.resolve(anchor) * l.compress;
+    if (point) {
+      scroller.scrollTop = Math.max(0, l.tops[point.page] + point.fy * l.pageHeight(point.page) - point.y) * l.compress;
+      scroller.scrollLeft = Math.max(0, this.position(point.page).left + point.fx * l.pageWidth(point.page) - point.x);
+    } else scroller.scrollTop = l.resolve(anchor) * l.compress;
     if (this.job && this.job.scale !== l.scales[this.job.slot.index]) this.cancelJob();
     for (const s of this.slots.values()) s.failed = false; // worth another try at the new scale
     clearTimeout(this.settleTimer);
@@ -295,6 +316,34 @@ export class PdfPager {
     }, ZOOM_SETTLE_MS);
     this.sync();
   };
+
+  /** The scale the zoom controls start from. */
+  get scale() {
+    return this.layout?.scales[0] ?? 1;
+  }
+
+  /** What lies at `x`, `y` (px from the scroller's corner), as a place on a page. */
+  pointAt(x: number, y: number): PagePoint | null {
+    const l = this.layout;
+    if (!l) return null;
+    const docY = this.docY() + y;
+    const page = l.pageAt(docY);
+    const docX = this.host.scroller.scrollLeft + x;
+    return { page, fx: (docX - this.position(page).left) / l.pageWidth(page), fy: (docY - l.tops[page]) / l.pageHeight(page), x, y };
+  }
+
+  /** Changes the zoom with `setZoom`, keeping the point at `x`, `y` where it is. */
+  zoomAt(setZoom: () => void, x: number, y: number) {
+    const { scroller } = this.host;
+    // The browser rounds scroll positions: reading the point back after every step would let it
+    // creep. So one gesture keeps its point until the cursor or the scroll position moves.
+    const last = this.zoomGesture;
+    const same = last && last.point.x === x && last.point.y === y && last.top === scroller.scrollTop && last.left === scroller.scrollLeft;
+    const point = same ? last.point : this.pointAt(x, y);
+    setZoom();
+    this.relayout(point ?? undefined);
+    this.zoomGesture = point ? { point, top: scroller.scrollTop, left: scroller.scrollLeft } : null;
+  }
 
   /** Loads a page's real size, also of a page that isn't mounted. False if the document changed meanwhile. */
   async ensureSize(index: number) {
@@ -340,6 +389,9 @@ export class PdfPager {
     this.cancelJob();
     clearTimeout(this.settleTimer);
     this.settleTimer = 0;
+    clearInterval(this.watchTimer);
+    this.watchTimer = 0;
+    this.zoomGesture = null;
     for (const s of [...this.slots.values()]) this.freeSlot(s);
     const old = this.doc;
     this.doc = null;
