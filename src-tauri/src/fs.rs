@@ -805,6 +805,7 @@ mod tests {
         assert_eq!(read_view(&s(&fifo), 4).unwrap_err(), "fs:not_file");
     }
 
+    #[cfg(unix)]
     #[test]
     fn read_limited_bounds_files_without_a_size() {
         assert_eq!(read_limited("/dev/zero", 1024).unwrap_err(), "fs:too_large");
