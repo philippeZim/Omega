@@ -1,238 +1,136 @@
 <script lang="ts">
   import Glyph from "./Glyph.svelte";
-  import { onDestroy, tick } from "svelte";
+  import { onDestroy, tick, untrack } from "svelte";
   import * as pdfjs from "pdfjs-dist";
-  import { PDF_LOAD_OPTIONS, addPageLinks, createPageShell, paintPage, resolvePdfDest, type PageLink } from "../lib/pdfPages";
-  import { MAX_PDF_ZOOM, pageAt, pagesNear, safePdfUrl, stepZoom } from "../lib/viewer";
+  import { loadPdf, type PageLink } from "../lib/pdfPages";
+  import { PdfPager } from "../lib/pdfPager";
+  import { FileRangeTransport, RANGE_CHUNK } from "../lib/pdfRange";
+  import { MAX_PDF_ZOOM, safePdfUrl, stepZoom } from "../lib/viewer";
+  import { rememberViewer, viewerPlace } from "../lib/viewerMemory";
+  import type { PdfFile } from "../lib/viewerData";
   import { openUrl } from "../lib/native";
   import { t } from "../lib/i18n/index.svelte";
 
-  let { bytes }: { bytes: Uint8Array } = $props();
+  /** `onReadFailed`: `changed` if the file is another version than the open document, so its tab should reload. */
+  let { tabId, source, onReadFailed }: { tabId?: string; source: PdfFile; onReadFailed?: (changed: boolean) => void } = $props();
 
-  /** One page. Its proxy is only held while the page is near the view. */
-  interface Entry {
-    index: number;
-    wrap: HTMLDivElement;
-    /** Size at scale 1: page 1's until the real page has been loaded. */
-    w: number;
-    h: number;
-    scale: number;
-    page: pdfjs.PDFPageProxy | null;
-    loading: boolean;
-    failed: boolean;
-    task: ReturnType<typeof paintPage> | null;
-  }
-
-  const NEAR_PX = 800;
-
-  let zoom = $state(0); // 0 = fit width
+  // A tab switch unmounts this view: it comes back where it was, at the same zoom.
+  const place = untrack(() => (tabId ? viewerPlace(tabId) : undefined));
+  let zoom = $state(place?.zoom ?? 0); // 0 = fit width
   let shownScale = $state(1);
   let current = $state(0);
   let total = $state(0);
   let error = $state<string | null>(null);
   let scroller = $state<HTMLDivElement>();
   let pagesEl = $state<HTMLDivElement>();
-  let doc: pdfjs.PDFDocumentProxy | null = null;
-  let entries: Entry[] = [];
-  let tops: number[] = [];
-  let heights: number[] = [];
-  /** Pages holding a proxy, a canvas or a pending load. */
-  const live = new Set<Entry>();
+  let pager: PdfPager | null = null;
+  let transport: FileRangeTransport | null = null;
   let seq = 0;
+  /** Stops a load that hasn't produced a document yet. */
+  let pendingDrop: (() => void) | null = null;
 
-  /** Width for fit-width. Read once per pass: reading it after a size was written forces a full reflow. */
-  const availableWidth = () => scroller?.clientWidth ?? 800;
-  const scaleFor = (pageW: number, width: number) => zoom || Math.max(0.3, (width - 32) / pageW);
-
-  function clearCanvas(e: Entry) {
-    e.task?.cancel();
-    e.task = null;
-    e.wrap.replaceChildren();
-  }
-
-  function drop(e: Entry) {
-    clearCanvas(e);
-    live.delete(e);
-    const page = e.page;
-    e.page = null;
-    page?.cleanup();
-  }
-
-  function paint(e: Entry) {
-    if (e.task || !e.page) return;
-    const page = e.page;
-    const vp = page.getViewport({ scale: e.scale });
-    const task = paintPage(page, e.wrap, vp, window.devicePixelRatio || 1);
-    e.task = task;
-    task.promise.then(
-      () => {
-        if (e.task === task) void addPageLinks(page, vp, e.wrap, openLink);
+  function getPager() {
+    pager ??= new PdfPager({
+      scroller: scroller!,
+      pages: pagesEl!,
+      zoom: () => zoom,
+      openLink,
+      pageError: () => t("app.viewer.pageFailed"),
+      onView: (v) => {
+        current = v.page;
+        total = v.total;
+        shownScale = v.scale;
+        if (tabId) rememberViewer(tabId, { zoom, anchor: v.anchor });
       },
-      () => {}, // cancelled, or one bad page: the others still show
-    );
+    });
+    return pager;
   }
 
-  /** Paints the page, fetching it first if needed. */
-  function show(e: Entry) {
-    if (e.failed) return;
-    live.add(e);
-    if (e.page) return paint(e);
-    if (e.loading || !doc) return;
-    e.loading = true;
-    const owner = doc;
-    owner.getPage(e.index + 1).then(
-      (page) => {
-        if (doc !== owner) return;
-        e.loading = false;
-        e.page = page;
-        applyRealSize(e, page);
-        onScroll(); // paints it, or lets it go if the view moved on
-      },
-      () => {
-        if (doc !== owner) return;
-        e.loading = false;
-        e.failed = true;
-        live.delete(e);
-      },
-    );
-  }
-
-  function sizeShell(e: Entry, width: number) {
-    e.scale = scaleFor(e.w, width);
-    e.wrap.style.width = `${e.w * e.scale}px`;
-    e.wrap.style.height = `${e.h * e.scale}px`;
-  }
-
-  /** Real offsets, after all sizes are written (one reflow): with UI zoom the browser snaps sizes, so a sum would drift. */
-  function measure() {
-    tops = entries.map((e) => e.wrap.offsetTop);
-    heights = entries.map((e) => e.wrap.offsetHeight);
-  }
-
-  /** The page differs from page 1's size: fixes its shell and keeps the view where it was. */
-  function applyRealSize(e: Entry, page: pdfjs.PDFPageProxy) {
-    const base = page.getViewport({ scale: 1 });
-    if (base.width === e.w && base.height === e.h) return;
-    const oldHeight = e.h * e.scale;
-    const above = !!scroller && tops[e.index] + oldHeight <= scroller.scrollTop;
-    clearCanvas(e);
-    e.w = base.width;
-    e.h = base.height;
-    sizeShell(e, availableWidth());
-    measure();
-    if (above && scroller) scroller.scrollTop += e.h * e.scale - oldHeight;
-  }
-
-  /** Sizes every page for the current zoom; only pages near the view hold a canvas. */
-  function layout() {
-    if (!entries.length || !scroller) return;
-    const ratio = scroller.scrollTop / Math.max(1, scroller.scrollHeight);
-    for (const e of live) clearCanvas(e);
-    const width = availableWidth();
-    for (const e of entries) sizeShell(e, width);
-    shownScale = entries[0].scale;
-    measure();
-    scroller.scrollTop = ratio * scroller.scrollHeight;
-    onScroll();
-  }
-
-  /** Keeps pages near the view loaded and painted, and lets go of the others, so long PDFs stay light. */
-  function onScroll() {
-    if (!scroller || !tops.length) return;
-    current = pageAt(tops, scroller.scrollTop + scroller.clientHeight / 3);
-    const near = pagesNear(tops, heights, scroller.scrollTop, scroller.clientHeight, NEAR_PX);
-    if (!near) return;
-    for (const e of [...live]) if (!e.loading && (e.index < near[0] || e.index > near[1])) drop(e);
-    for (let i = near[0]; i <= near[1]; i++) show(entries[i]);
-  }
-
-  async function openLink(link: PageLink) {
+  function openLink(link: PageLink) {
     if (link.url) {
       const url = safePdfUrl(link.url);
       if (url) void openUrl(url);
-      return;
-    }
-    if (!doc || !link.dest || !scroller) return;
-    const owner = doc;
-    const target = await resolvePdfDest(owner, link.dest);
-    const e = target && entries[target.index];
-    if (!target || !e || doc !== owner) return;
-    // The target may not be loaded yet, and its real height decides where the destination lies.
-    const page = e.page ?? (await owner.getPage(target.index + 1).catch(() => null));
-    if (doc !== owner || !scroller) return;
-    if (page) applyRealSize(e, page);
-    // A destination above the page edge (common with a y meant for another page size) is its top.
-    const top = target.y !== null ? Math.max(0, (e.h - target.y) * e.scale) : 0;
-    scroller.scrollTo({ top: tops[e.index] + top - 12 });
-    onScroll(); // no waiting for the scroll event
+    } else if (link.dest) void pager?.gotoDest(link.dest);
   }
 
   function teardown() {
-    for (const e of live) e.task?.cancel();
-    live.clear();
-    entries = [];
-    tops = [];
-    heights = [];
-    void doc?.destroy();
-    doc = null;
+    void pager?.clear()?.destroy();
+    transport?.close();
+    transport = null;
   }
 
-  async function open(data: Uint8Array) {
+  function fail(message: string) {
+    teardown();
+    total = 0;
+    error = message;
+  }
+
+  async function open(file: PdfFile) {
     const mine = ++seq;
-    // pdf.js takes the buffer over, so it gets its own copy.
-    const task = pdfjs.getDocument({ ...PDF_LOAD_OPTIONS, data: data.slice() });
-    let next: pdfjs.PDFDocumentProxy;
+    let next!: FileRangeTransport;
+    const onRangeFail = (changed: boolean) => {
+      if (mine !== seq) return;
+      // Another version: what's on screen stays until the reload replaces it.
+      if (!changed) fail(t("app.viewer.brokenPdf"));
+      onReadFailed?.(changed);
+    };
+    const loading = loadPdf(() => {
+      next?.close();
+      next = new FileRangeTransport(file, onRangeFail);
+      return { range: next, rangeChunkSize: RANGE_CHUNK, disableAutoFetch: true, disableStream: true };
+    });
+    const drop = () => {
+      next.close();
+      void loading.destroy();
+    };
+    pendingDrop = drop;
+    let opened: pdfjs.PDFDocumentProxy;
     try {
-      next = await task.promise;
+      opened = await loading.promise;
     } catch (e) {
       if (mine !== seq) return;
-      teardown();
-      pagesEl?.replaceChildren();
-      total = 0;
-      error = t((e as { name?: string })?.name === "PasswordException" ? "app.viewer.passwordPdf" : "app.viewer.brokenPdf");
+      pendingDrop = null;
+      drop();
+      fail(t((e as { name?: string })?.name === "PasswordException" ? "app.viewer.passwordPdf" : "app.viewer.brokenPdf"));
       return;
     }
-    if (mine !== seq) return void next.destroy();
+    if (mine !== seq) return drop();
     try {
       // Only page 1 is needed to show the document: the others take its size until they are near.
-      const first = await next.getPage(1);
-      if (mine !== seq) return void next.destroy();
-      const base = first.getViewport({ scale: 1 });
-      const built: Entry[] = [];
-      const scale = scaleFor(base.width, availableWidth());
-      for (let index = 0; index < next.numPages; index++) {
-        const wrap = createPageShell(index + 1, { width: base.width * scale, height: base.height * scale });
-        built.push({ index, wrap, w: base.width, h: base.height, scale, page: null, loading: false, failed: false, task: null });
-      }
-      built[0].page = first;
-      teardown();
-      doc = next;
-      entries = built;
-      live.add(built[0]);
+      const first = await opened.getPage(1);
+      if (mine !== seq) return drop();
       error = null;
-      total = next.numPages;
       await tick(); // a previous error hid the scroller, and fit width needs its size
-      if (mine !== seq) return;
-      pagesEl!.replaceChildren(...built.map((e) => e.wrap));
-      layout();
+      if (mine !== seq || !scroller) return drop();
+      pendingDrop = null;
+      const p = getPager();
+      // Without a document on screen (first load, or after a failed read) it returns to the tab's
+      // latest place; a reload over a document stays where the reader is.
+      const old = p.attach(opened, first, p.hasDocument ? null : (tabId ? viewerPlace(tabId) : place)?.anchor);
+      void old?.destroy();
+      transport?.close();
+      transport = next;
     } catch {
       if (mine !== seq) return;
-      teardown();
-      pagesEl?.replaceChildren();
-      total = 0;
-      void next.destroy();
-      error = t("app.viewer.brokenPdf");
+      pendingDrop = null;
+      drop();
+      fail(t("app.viewer.brokenPdf"));
     }
   }
 
-  $effect(() => void open(bytes));
+  $effect(() => {
+    const file = source;
+    pendingDrop?.();
+    pendingDrop = null;
+    void open(file);
+  });
 
-  let lastZoom = 0;
+  let lastZoom = place?.zoom ?? 0;
   $effect(() => {
     const z = zoom;
     if (z === lastZoom) return;
     lastZoom = z;
-    layout();
+    pager?.relayout();
   });
 
   // Fit-width follows the tab width, debounced.
@@ -245,7 +143,7 @@
       if (el.clientWidth === last) return;
       last = el.clientWidth;
       clearTimeout(timer);
-      timer = window.setTimeout(() => zoom === 0 && layout(), 150);
+      timer = window.setTimeout(() => pager?.relayout(), 150);
     });
     ro.observe(el);
     return () => {
@@ -256,6 +154,8 @@
 
   onDestroy(() => {
     seq++;
+    pendingDrop?.();
+    pendingDrop = null;
     teardown();
   });
 </script>
@@ -274,7 +174,7 @@
 </div>
 
 {#if error}<div class="message" role="alert"><p>{error}</p></div>{/if}
-<div class="scroller" class:gone={!!error} bind:this={scroller} onscroll={onScroll}>
+<div class="scroller" class:gone={!!error} bind:this={scroller} onscroll={() => pager?.sync()}>
   <div class="pages" bind:this={pagesEl}></div>
 </div>
 
@@ -288,10 +188,12 @@
   .tool.round { width: 26px; padding: 0; }
   .zoom { display: flex; align-items: center; flex-shrink: 0; gap: 2px; padding: 2px; border-radius: 999px; background: var(--recess); box-shadow: var(--recess-shadow); }
   .pct { min-width: 46px; text-align: center; font-size: 11.5px; color: var(--label-2); font-variant-numeric: tabular-nums; }
-  .scroller { position: relative; flex: 1; min-height: 0; overflow: auto; overflow-anchor: none; padding: 16px; }
+  .scroller { position: relative; flex: 1; min-height: 0; overflow: auto; }
   .scroller.gone { display: none; }
-  .pages { display: flex; flex-direction: column; align-items: center; gap: 14px; width: max-content; min-width: 100%; }
-  .pages :global(.page) { position: relative; flex-shrink: 0; border-radius: 6px; overflow: hidden; box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5); background: white; }
+  .pages { position: relative; }
+  .pages :global(.slot) { position: absolute; }
+  .pages :global(.page) { position: relative; width: 100%; height: 100%; border-radius: 6px; overflow: hidden; box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5); background: white; }
+  .pages :global(.page-error) { position: absolute; inset: 0; display: grid; place-items: center; padding: 16px; text-align: center; font-size: 12px; color: #777; }
   .pages :global(canvas) { width: 100%; height: 100%; display: block; }
   .pages :global(.link) { position: absolute; border-radius: 3px; cursor: pointer; }
   .pages :global(.link:hover) { background: rgba(52, 120, 246, 0.14); box-shadow: 0 0 0 1px rgba(52, 120, 246, 0.35); }

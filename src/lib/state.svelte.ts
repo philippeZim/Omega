@@ -20,6 +20,7 @@ import { blockedAsGuest, guestGuard } from "./collab/guard";
 import { toolsBeforeSave } from "./collab/guestChanges";
 import { byteLength, formatSize } from "./largeFile";
 import { isSvgPath, viewerKind, type ViewerKind } from "./viewer";
+import { forgetViewer } from "./viewerMemory";
 
 setLspHooks({
   workspace: () => app.root,
@@ -284,18 +285,73 @@ async function syncLargeTab(tab: Tab & { path: string }) {
   if (!writing.has(tab.id) && stampOf(info) !== diskStamps.get(tab.id)) noticeStale(tab);
 }
 
-/** A viewer tab's file: reloads the view when size or time changed, follows deletion and return. */
+/** A viewer tab's file: reloads the view once a change has settled, follows deletion and return. */
 async function syncViewerTab(tab: Tab & { viewOf: string }) {
+  if (settling.has(tab.id)) return; // the running wait sees this change too
   const info = await fsApi.fileInfo(tab.viewOf).catch(() => null);
   if (!info) {
     if (!tab.deleted && !(await fsApi.exists(tab.viewOf).catch(() => true))) markDeleted(tab);
     return;
   }
-  const stamp = stampOf(info);
-  if (!tab.deleted && stamp === diskStamps.get(tab.id)) return;
-  tab.deleted = false;
-  diskStamps.set(tab.id, stamp);
-  tab.viewRev = (tab.viewRev ?? 0) + 1;
+  if (!tab.deleted && stampOf(info) === diskStamps.get(tab.id)) return;
+  settleViewerTab(tab, false);
+}
+
+/** How long a file must keep its size and time before a viewer loads it, growing while it keeps changing. */
+const SETTLE_FIRST_MS = 300;
+const SETTLE_MAX_STEP_MS = 1200;
+/** Then the old view stays, and the next watcher or focus event tries again. */
+const SETTLE_CAP_MS = 15_000;
+/** Viewer tabs waiting for their file to stop changing, at most one wait each. */
+const settling = new Map<string, { path: string; force: boolean }>();
+
+const viewerStamp = (path: string) => fsApi.fileInfo(path).then(stampOf, () => null);
+
+/** `force`: the open document is known to be another version, so reload even if the stamp looks known. */
+function settleViewerTab(tab: Tab & { viewOf: string }, force: boolean) {
+  const running = settling.get(tab.id);
+  if (running) {
+    running.force ||= force;
+    return;
+  }
+  const wait = { path: tab.viewOf, force };
+  settling.set(tab.id, wait);
+  void awaitSettled(tab.id, wait).finally(() => {
+    if (settling.get(tab.id) === wait) settling.delete(tab.id);
+  });
+}
+
+async function awaitSettled(id: string, wait: { path: string; force: boolean }) {
+  const current = () => (settling.get(id) === wait ? app.tabs.find((x) => x.id === id && x.viewOf === wait.path) : undefined);
+  const end = Date.now() + SETTLE_CAP_MS;
+  let step = SETTLE_FIRST_MS;
+  let last = await viewerStamp(wait.path);
+  while (Date.now() < end) {
+    await new Promise((r) => setTimeout(r, step));
+    if (!current()) return;
+    const stamp = await viewerStamp(wait.path);
+    const tab = current();
+    if (!tab) return;
+    if (stamp !== last) {
+      last = stamp;
+      step = Math.min(step * 1.5, SETTLE_MAX_STEP_MS);
+      continue;
+    }
+    if (stamp === null) {
+      if (!tab.deleted && !(await fsApi.exists(wait.path).catch(() => true))) markDeleted(tab);
+    } else if (wait.force || tab.deleted || stamp !== diskStamps.get(id)) {
+      tab.deleted = false;
+      diskStamps.set(id, stamp);
+      tab.viewRev = (tab.viewRev ?? 0) + 1;
+    }
+    return;
+  }
+}
+
+/** The open document no longer matches its file: loads the file again once it has stopped changing. */
+export function reloadViewerTab(id: string) {
+  const tab = app.tabs.find((x) => x.id === id);
+  if (tab?.viewOf && !isRemotePath(tab.viewOf)) settleViewerTab(tab as Tab & { viewOf: string }, true);
 }
 
 /** `raw`: the file content as read from disk. */
@@ -720,6 +776,8 @@ export async function closeTab(id: string, force = false) {
   const textFile = tab.path ?? tab.headOf;
   if (textFile) textViews.delete(textFile);
   ed.disposeDoc(id);
+  forgetViewer(id);
+  settling.delete(id);
   diskStamps.delete(id);
   staleNoticed.delete(id);
   if (tab.path) closeLspDoc(tab.path);
@@ -853,6 +911,7 @@ export function pathMoved(from: string, to: string | null) {
   }
   for (const t of app.tabs) {
     if (t.viewOf && (t.viewOf === from || t.viewOf.startsWith(from + "/"))) {
+      settling.delete(t.id);
       if (to === null) t.deleted = true;
       else {
         t.viewOf = to + t.viewOf.slice(from.length);

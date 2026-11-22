@@ -1135,6 +1135,7 @@ describe("viewer tabs (#159)", () => {
     expect(viewer("/p/a.png").viewRev).toBe(0);
     modified = 2;
     await st.syncFromDisk(["/p/a.png"]);
+    await vi.advanceTimersByTimeAsync(320); // a single quick write reloads promptly
     expect(viewer("/p/a.png").viewRev).toBe(1);
   });
 
@@ -1151,6 +1152,7 @@ describe("viewer tabs (#159)", () => {
     expect(ui.toasts.at(-1)!.text).toContain("app.viewer.deleted");
     fs.files.set("/p/a.png", "");
     await st.syncFromDisk();
+    await vi.advanceTimersByTimeAsync(320);
     expect(tab.deleted).toBe(false);
     expect(tab.viewRev).toBe(1);
     fs.files.delete("/p/a.png");
@@ -1158,6 +1160,96 @@ describe("viewer tabs (#159)", () => {
     await st.closeTab(tab.id);
     expect(ui.choose).not.toHaveBeenCalled();
     expect(st.app.tabs).toHaveLength(0);
+  });
+
+  test("closing a viewer tab forgets its place", async () => {
+    await viewerSetup({ "/p/a.pdf": "" });
+    await st.openFile("/p/a.pdf");
+    const tab = viewer("/p/a.pdf");
+    const memory = await import("./viewerMemory");
+    memory.rememberViewer(tab.id, { zoom: 2, anchor: { page: 5, fraction: 0 } });
+    await st.closeTab(tab.id);
+    expect(memory.viewerPlace(tab.id)).toBeUndefined();
+  });
+
+  test("a changed file reloads the view even when the stamp already looks known", async () => {
+    await viewerSetup({ "/p/a.pdf": "" });
+    await st.openFile("/p/a.pdf");
+    const tab = viewer("/p/a.pdf");
+    st.reloadViewerTab(tab.id);
+    await vi.advanceTimersByTimeAsync(320);
+    expect(tab.viewRev).toBe(1);
+    await st.syncFromDisk(["/p/a.pdf"]);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(tab.viewRev).toBe(1); // the reload took the stamp, so no second one follows
+  });
+
+  describe("a file that is still being written", () => {
+    const infoCalls = () => fs.calls.filter((c) => c.cmd === "file_info").length;
+
+    test("reloads only when it has settled, and exactly once", async () => {
+      await viewerSetup({ "/p/a.pdf": "" });
+      await st.openFile("/p/a.pdf");
+      const tab = viewer("/p/a.pdf");
+      for (let i = 0; i < 40; i++) {
+        modified = 100 + i;
+        st.reloadViewerTab(tab.id); // every read of the open document fails meanwhile
+        await st.syncFromDisk(["/p/a.pdf"]);
+        await vi.advanceTimersByTimeAsync(100);
+      }
+      expect(tab.viewRev).toBe(0);
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(tab.viewRev).toBe(1);
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(tab.viewRev).toBe(1);
+    });
+
+    test("polls gently, with one wait per tab", async () => {
+      await viewerSetup({ "/p/a.pdf": "" });
+      await st.openFile("/p/a.pdf");
+      const tab = viewer("/p/a.pdf");
+      const before = infoCalls();
+      for (let i = 0; i < 50; i++) st.reloadViewerTab(tab.id);
+      for (let i = 0; i < 40; i++) {
+        modified = 200 + i;
+        await vi.advanceTimersByTimeAsync(100);
+      }
+      expect(infoCalls() - before).toBeLessThan(10);
+    });
+
+    test("never settling keeps the view without spinning, and the next event tries again", async () => {
+      await viewerSetup({ "/p/a.pdf": "" });
+      await st.openFile("/p/a.pdf");
+      const tab = viewer("/p/a.pdf");
+      st.reloadViewerTab(tab.id);
+      for (let i = 0; i < 200; i++) {
+        modified = 1000 + i;
+        await vi.advanceTimersByTimeAsync(100);
+      }
+      expect(tab.viewRev).toBe(0);
+      const idle = infoCalls();
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(infoCalls()).toBe(idle); // given up: no polling
+      expect(tab.viewRev).toBe(0);
+      await st.syncFromDisk(["/p/a.pdf"]);
+      await vi.advanceTimersByTimeAsync(320);
+      expect(tab.viewRev).toBe(1);
+    });
+
+    test("closing the tab or moving its file cancels the wait", async () => {
+      await viewerSetup({ "/p/a.pdf": "", "/p/b.pdf": "" });
+      await st.openFile("/p/a.pdf");
+      await st.openFile("/p/b.pdf");
+      const a = viewer("/p/a.pdf");
+      const b = viewer("/p/b.pdf");
+      st.reloadViewerTab(a.id);
+      st.reloadViewerTab(b.id);
+      await st.closeTab(a.id);
+      st.pathMoved("/p/b.pdf", "/p/c.pdf");
+      const rev = b.viewRev;
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(b.viewRev).toBe(rev);
+    });
   });
 
   test("a rename moves the tab", async () => {

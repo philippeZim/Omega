@@ -1,5 +1,6 @@
 /** pdf.js page helpers shared by the LaTeX PDF panel and the PDF viewer tab. */
 import * as pdfjs from "pdfjs-dist";
+import type { DocumentInitParameters } from "pdfjs-dist/types/src/display/api";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
@@ -10,28 +11,84 @@ pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
  */
 export const PDF_LOAD_OPTIONS = { isEvalSupported: false, isOffscreenCanvasSupported: false } as const;
 
+/** One worker for all documents: starting it is the slowest part of opening a small PDF. */
+let worker: pdfjs.PDFWorker | null = null;
+/** Who loaded through which worker, so a replaced worker can end once its documents are closed. */
+const loads = new Map<pdfjs.PDFWorker, Set<pdfjs.PDFDocumentLoadingTask>>();
+
+export function pdfWorker() {
+  if (!worker || worker.destroyed) worker = new pdfjs.PDFWorker();
+  return worker;
+}
+
+function endUnusedWorkers() {
+  for (const [w, tasks] of loads) {
+    for (const t of tasks) if (t.destroyed) tasks.delete(t);
+    if (w === worker || tasks.size) continue;
+    loads.delete(w);
+    w.destroy();
+  }
+}
+
+/** The file is the problem (password, not a PDF), so another worker wouldn't help. */
+const isDocumentError = (e: unknown) => ["PasswordException", "InvalidPDFException"].includes((e as { name?: string })?.name ?? "");
+
+/**
+ * Loads a document on the shared worker. If that fails for a reason other than the file, the worker
+ * may be dead: the next loads get a new one and this one is tried once more. The old worker stays
+ * for documents still open on it. `params` is called per attempt, as pdf.js consumes its sources.
+ */
+export function loadPdf(params: () => Omit<DocumentInitParameters, "worker">) {
+  let stopped = false;
+  const begin = () => {
+    const w = pdfWorker();
+    const task = pdfjs.getDocument({ ...params(), ...PDF_LOAD_OPTIONS, worker: w });
+    if (!loads.has(w)) loads.set(w, new Set());
+    loads.get(w)!.add(task);
+    task.promise.catch(() => loads.get(w)?.delete(task)); // a failed load holds no document
+    endUnusedWorkers();
+    return { w, task };
+  };
+  let current = begin();
+  const promise = current.task.promise.catch(async (e: unknown) => {
+    if (stopped || isDocumentError(e)) throw e;
+    const failed = current;
+    if (worker === failed.w) worker = null;
+    await failed.task.destroy();
+    if (stopped) throw e;
+    current = begin();
+    return current.task.promise;
+  });
+  return {
+    promise,
+    destroy() {
+      stopped = true;
+      return current.task.destroy();
+    },
+  };
+}
+
+/** Most pixels one page's canvas may have: enough for a sharp page, and rendering stays fast. */
+export const MAX_CANVAS_PIXELS = 8_000_000;
+
+/** Device pixels per CSS pixel for a page of this size. */
+export function canvasRatio(width: number, height: number, dpr: number) {
+  return Math.min(dpr, Math.sqrt(MAX_CANVAS_PIXELS / Math.max(1, width * height)));
+}
+
 export interface PageLink {
   url?: string;
   dest?: string | unknown[];
 }
 
-/** The empty, correctly sized element of one page. */
-export function createPageShell(index: number, vp: { width: number; height: number }): HTMLDivElement {
-  const wrap = document.createElement("div");
-  wrap.className = "page";
-  wrap.dataset.page = String(index);
-  wrap.style.width = `${vp.width}px`;
-  wrap.style.height = `${vp.height}px`;
-  return wrap;
-}
-
-/** Draws the page on a new canvas inside `wrap`. The returned task can be cancelled. */
-export function paintPage(page: pdfjs.PDFPageProxy, wrap: HTMLElement, vp: pdfjs.PageViewport, dpr: number) {
+/** Renders on a canvas that isn't in the page yet, so what's on screen stays until it's done. */
+export function renderPage(page: pdfjs.PDFPageProxy, vp: pdfjs.PageViewport, dpr: number) {
+  const ratio = canvasRatio(vp.width, vp.height, dpr);
   const canvas = document.createElement("canvas");
-  canvas.width = Math.floor(vp.width * dpr);
-  canvas.height = Math.floor(vp.height * dpr);
-  wrap.appendChild(canvas);
-  return page.render({ canvasContext: canvas.getContext("2d")!, viewport: vp, transform: dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : undefined });
+  canvas.width = Math.floor(vp.width * ratio);
+  canvas.height = Math.floor(vp.height * ratio);
+  const task = page.render({ canvasContext: canvas.getContext("2d")!, viewport: vp, transform: ratio !== 1 ? [ratio, 0, 0, ratio, 0, 0] : undefined });
+  return { canvas, task };
 }
 
 /**

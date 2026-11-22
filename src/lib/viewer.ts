@@ -15,6 +15,8 @@ const IMAGE_MIME: Record<string, string> = {
 
 /** Largest file a viewer tab loads; `MAX_VIEW_FILE` in fs.rs enforces it. */
 export const MAX_VIEW_BYTES = 64 * 1024 * 1024;
+/** pdf.js keeps one typed array as long as the file, mostly untouched; 2 GiB is what WebKit allows safely. */
+export const MAX_PDF_BYTES = 2 * 1024 * 1024 * 1024 - 1;
 export const MIN_ZOOM = 0.05;
 export const MAX_ZOOM = 8;
 export const MAX_PDF_ZOOM = 4;
@@ -46,29 +48,6 @@ export function fitScale(w: number, h: number, boxW: number, boxH: number) {
 export function stepZoom(current: number, dir: 1 | -1, max = MAX_ZOOM) {
   const next = dir > 0 ? current * 1.25 : current / 1.25;
   return Math.min(max, Math.max(MIN_ZOOM, Math.round(next * 1000) / 1000));
-}
-
-/** 1-based page shown at `y`, from the ascending top offsets of the pages. */
-export function pageAt(tops: number[], y: number) {
-  let lo = 0;
-  let hi = tops.length - 1;
-  while (lo < hi) {
-    const mid = Math.ceil((lo + hi) / 2);
-    if (tops[mid] <= y) lo = mid;
-    else hi = mid - 1;
-  }
-  return tops.length ? lo + 1 : 0;
-}
-
-/** 0-based first and last page within `margin` px of the visible range; null without pages. */
-export function pagesNear(tops: number[], heights: number[], top: number, viewH: number, margin: number): [number, number] | null {
-  if (!tops.length) return null;
-  const from = top - margin;
-  const to = top + viewH + margin;
-  let first = pageAt(tops, from) - 1;
-  if (tops[first] + heights[first] < from && first < tops.length - 1) first++;
-  const last = pageAt(tops, to) - 1;
-  return [first, Math.max(first, last)];
 }
 
 /** A PDF is untrusted: its links may only open web and mail addresses. */

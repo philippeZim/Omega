@@ -5,7 +5,7 @@ vi.mock("./api", () => ({ fsApi: api }));
 vi.mock("./i18n/index.svelte", () => ({ t: (k: string) => k }));
 
 import { imageSource, loadViewerData, viewerHooks } from "./viewerData";
-import { MAX_VIEW_BYTES } from "./viewer";
+import { MAX_PDF_BYTES, MAX_VIEW_BYTES } from "./viewer";
 
 beforeEach(() => {
   api.fileInfo.mockReset();
@@ -19,10 +19,24 @@ test("reads a local file", async () => {
   expect((await loadViewerData("/p/a.png", "image")).size).toBe(3);
 });
 
-test("a too large file is refused before its bytes are read", async () => {
+test("a too large image is refused before its bytes are read", async () => {
   api.fileInfo.mockResolvedValue({ size: MAX_VIEW_BYTES + 1 });
-  await expect(loadViewerData("/p/a.pdf", "pdf")).rejects.toBe("app.viewer.tooLarge");
+  await expect(loadViewerData("/p/a.png", "image")).rejects.toBe("app.viewer.tooLarge");
   expect(api.readFileView).not.toHaveBeenCalled();
+});
+
+test("a PDF isn't read at all when opening, also above the image limit", async () => {
+  api.fileInfo.mockResolvedValue({ size: MAX_VIEW_BYTES * 8, modified: 7 });
+  const d = await loadViewerData("/p/a.pdf", "pdf");
+  expect(d.file).toEqual({ path: "/p/a.pdf", size: MAX_VIEW_BYTES * 8, modified: 7 });
+  expect(api.readFileView).not.toHaveBeenCalled();
+});
+
+test("an empty or absurdly large PDF gets a message", async () => {
+  api.fileInfo.mockResolvedValue({ size: 0 });
+  await expect(loadViewerData("/p/a.pdf", "pdf")).rejects.toBe("app.viewer.brokenPdf");
+  api.fileInfo.mockResolvedValue({ size: MAX_PDF_BYTES + 1 });
+  await expect(loadViewerData("/p/a.pdf", "pdf")).rejects.toBe("app.viewer.tooLarge");
 });
 
 test("a guest never reads a shared file from the local disk", async () => {
