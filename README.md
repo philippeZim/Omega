@@ -13,6 +13,8 @@
 
 <br>
 
+https://github.com/user-attachments/assets/af9486bf-46b4-451e-bce3-4defc9e70a62
+
 ![LaTeX source next to the live PDF](docs/screenshots/latex.png)
 
 Obsidian, Overleaf and VS Code in one app.
