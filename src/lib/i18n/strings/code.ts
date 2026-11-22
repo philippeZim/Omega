@@ -304,6 +304,8 @@ export const en = {
   "code.lsp.goplsResumeMsg": "{name} changed this project without the Run permission. gopls runs the C compiler, linker and pkg-config on cgo code, so check the project first.",
   "code.lsp.goplsResumeOk": "Start gopls",
   "code.ad.goNoMain": "No main package to debug here. Open a file of a main package or a _test.go file.",
+  "code.lsp.javaImportFailed": "The Gradle/Maven build could not be imported: {err}",
+  "code.lsp.javaTooOld": "The Java language server needs Java {required} or newer, but found Java {found}.",
 };
 export const de: Record<keyof typeof en, string> = {
   "code.key.ctrl": "Strg",
@@ -600,6 +602,8 @@ export const de: Record<keyof typeof en, string> = {
   "code.lsp.goplsResumeMsg": "{name} hat dieses Projekt ohne Ausführen-Recht geändert. gopls startet für cgo-Code den C-Compiler, Linker und pkg-config, prüfe das Projekt also vorher.",
   "code.lsp.goplsResumeOk": "gopls starten",
   "code.ad.goNoMain": "Hier gibt es kein main-Paket zum Debuggen. Öffne eine Datei eines main-Pakets oder eine _test.go-Datei.",
+  "code.lsp.javaImportFailed": "Der Gradle/Maven-Build konnte nicht importiert werden: {err}",
+  "code.lsp.javaTooOld": "Der Java Language Server braucht Java {required} oder neuer, gefunden wurde Java {found}.",
 };
 export const fr: Record<keyof typeof en, string> = {
   "code.key.ctrl": "Ctrl",
@@ -896,4 +900,6 @@ export const fr: Record<keyof typeof en, string> = {
   "code.lsp.goplsResumeMsg": "{name} a modifié ce projet sans le droit d’exécution. gopls lance le compilateur C, l’éditeur de liens et pkg-config sur le code cgo : vérifiez d’abord le projet.",
   "code.lsp.goplsResumeOk": "Démarrer gopls",
   "code.ad.goNoMain": "Aucun paquet main à déboguer ici. Ouvrez un fichier d’un paquet main ou un fichier _test.go.",
+  "code.lsp.javaImportFailed": "Le build Gradle/Maven n’a pas pu être importé : {err}",
+  "code.lsp.javaTooOld": "Le serveur de langage Java nécessite Java {required} ou plus récent, mais Java {found} a été trouvé.",
 };
