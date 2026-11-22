@@ -2,9 +2,13 @@
 import { fsApi } from "./api";
 import { t } from "./i18n/index.svelte";
 import { formatSize } from "./largeFile";
-import { imageMime, MAX_VIEW_BYTES, type ViewerKind } from "./viewer";
+import { imageMime, MAX_PDF_BYTES, MAX_VIEW_BYTES, type ViewerKind } from "./viewer";
 
-export type ViewerData = { bytes: Uint8Array; size: number; url?: undefined } | { url: string; size: number; bytes?: undefined };
+/** A PDF isn't loaded here: pdf.js reads the parts it needs from `file`. */
+export type ViewerData =
+  | { bytes: Uint8Array; size: number; url?: undefined; file?: undefined }
+  | { url: string; size: number; bytes?: undefined; file?: undefined }
+  | { file: { path: string; size: number }; size: number; bytes?: undefined; url?: undefined };
 
 /** Set by collab/assets.svelte.ts (avoids an import cycle). */
 export const viewerHooks = {
@@ -21,6 +25,11 @@ export async function loadViewerData(path: string, kind: ViewerKind): Promise<Vi
     return { url, size: Math.floor(((url.length - url.indexOf(",") - 1) * 3) / 4) };
   }
   const info = await fsApi.fileInfo(path);
+  if (kind === "pdf") {
+    if (info.size > MAX_PDF_BYTES) throw t("app.viewer.tooLarge", { size: formatSize(info.size), max: formatSize(MAX_PDF_BYTES) });
+    if (info.size === 0) throw t("app.viewer.brokenPdf");
+    return { file: { path, size: info.size }, size: info.size };
+  }
   if (info.size > MAX_VIEW_BYTES) throw t("app.viewer.tooLarge", { size: formatSize(info.size), max: formatSize(MAX_VIEW_BYTES) });
   const bytes = await fsApi.readFileView(path);
   return { bytes, size: bytes.length };
@@ -32,6 +41,7 @@ export async function loadViewerData(path: string, kind: ViewerKind): Promise<Vi
  */
 export function imageSource(data: ViewerData, path: string): Promise<string> {
   if (data.url) return Promise.resolve(data.url);
+  if (!data.bytes) return Promise.reject(new Error("no image data"));
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result));

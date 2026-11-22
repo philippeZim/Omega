@@ -15,6 +15,8 @@ const IMAGE_MIME: Record<string, string> = {
 
 /** Largest file a viewer tab loads; `MAX_VIEW_FILE` in fs.rs enforces it. */
 export const MAX_VIEW_BYTES = 64 * 1024 * 1024;
+/** pdf.js keeps one typed array as long as the file, mostly untouched; 2 GiB is what WebKit allows safely. */
+export const MAX_PDF_BYTES = 2 * 1024 * 1024 * 1024 - 1;
 export const MIN_ZOOM = 0.05;
 export const MAX_ZOOM = 8;
 export const MAX_PDF_ZOOM = 4;
