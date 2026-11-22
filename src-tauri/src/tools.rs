@@ -1504,6 +1504,7 @@ mod tests {
             assert!(p.url.starts_with("https://"), "{id}: {}", p.url);
             assert!(!p.exe.is_empty());
         }
+        assert!(plan("jdk").unwrap().url.contains("/latest/25/"), "the JDK must be able to run the pinned jdtls");
         assert!(plan("nonexistent").is_err());
         assert!(tool_installable().contains(&"rust"));
         // rust is installed through rustup-init, not plan().

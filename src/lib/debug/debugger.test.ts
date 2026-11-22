@@ -497,6 +497,7 @@ describe("debugger controller with a fake adapter", () => {
     await D.startDebugging();
     expect(S.dbg.status).toBe("terminated");
     expect(S.dbg.console.at(-1)).toEqual({ text: "no debugger for .xyz", kind: "error" });
+    expect(S.dbg.label).toContain("no debugger for .xyz");
     expect(ipc.some(([c]) => c === "proc_spawn")).toBe(false);
     vi.doMock("./adapters", () => ({ planFor: async () => m.plan })); // back to the file's own mock
   });
