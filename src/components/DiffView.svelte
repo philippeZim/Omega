@@ -27,6 +27,7 @@
   let eol: Eol = "\n";
   let info = $state<"git.diff.deleted" | "git.diff.newFile" | "git.diff.renamedFrom" | "git.diff.binary" | "git.diff.readOnly" | null>(null);
   let tooLarge = $state(false);
+  let localTooLarge = $state(false);
   let binary = $state(false);
   const file = diffState.file!;
   // Code Together guest: the file is "collab:<relative path>" and the host supplies both sides.
@@ -102,7 +103,12 @@
   onMount(async () => {
     if (guest) return loadGuest();
     const headPath = orig && git.top ? git.top + "/" + orig : file;
-    const head = (await invoke<string | null>("git_head_file", { root: git.top || app.root, path: headPath })) ?? "";
+    let headTooLarge = false;
+    const head = (await invoke<string | null>("git_head_file", { root: git.top || app.root, path: headPath }).catch((e) => {
+      if (String(e) !== "fs:too_large") throw e;
+      headTooLarge = true;
+      return null;
+    })) ?? "";
     const tab = app.tabs.find((t) => t.path === file);
     let current = "";
     let unreadable = false;
@@ -113,6 +119,14 @@
       // Not readable as UTF-8 text is not the same as gone (#66).
       unreadable = await fsApi.exists(file).catch(() => false);
       if (!unreadable) info = "git.diff.deleted";
+      else if ((await fsApi.fileInfo(file).catch(() => null))?.too_large) headTooLarge = true;
+    }
+    // Too large to load on either side: no text diff, and nothing that could write the file (#174).
+    if (headTooLarge) {
+      binary = true;
+      localTooLarge = true;
+      info = null;
+      return;
     }
     if (!head) info = "git.diff.newFile";
     else if (orig) info = "git.diff.renamedFrom";
@@ -180,7 +194,7 @@
     </header>
     {#if !binary}<div class="labels"><span>{t("git.diff.head")}</span><span>{t("git.diff.current")}</span></div>{/if}
     {#if binary}
-      <div class="binary">{tooLarge ? t("git.diff.tooLarge", { mb: GIT_LIMITS.maxFile / 1024 / 1024 }) : t("git.diff.binaryHint")}</div>
+      <div class="binary">{localTooLarge ? t("git.diff.tooLargeLocal") : tooLarge ? t("git.diff.tooLarge", { mb: GIT_LIMITS.maxFile / 1024 / 1024 }) : t("git.diff.binaryHint")}</div>
     {:else}
       <div class="merge" bind:this={host}></div>
     {/if}
