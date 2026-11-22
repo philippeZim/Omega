@@ -370,7 +370,10 @@ fn plan(dirs: &[String], files: &[String], open: &[(String, Option<String>)], ac
         }
         let free = |l: &String| !acts.iter().any(|a| a.label.as_ref() == Some(l));
         let act = if let Some((l, _)) = open.iter().find(|(_, r)| r.as_ref() == Some(dir)) {
-            Act { label: Some(l.clone()), ..Act::default() }
+            // A window restored at start may have lost its workspace (the app was killed before the
+            // page saved it), so it still gets the folder. One that kept it just stays as it is.
+            let cold = start != Start::Running;
+            Act { label: Some(l.clone()), root: cold.then(|| dir.clone()), if_empty: cold, ..Act::default() }
         } else if let (Start::ColdInstance, 0, Some(l)) = (start, i, active.map(str::to_string).or_else(|| open.first().map(|o| o.0.clone()))) {
             Act { label: Some(l), root: Some(dir.clone()), ..Act::default() }
         } else if let (true, Some((l, _))) = (start != Start::Running, open.iter().find(|(l, r)| r.is_none() && free(l))) {
@@ -614,6 +617,14 @@ mod tests {
         let replaced = &plan(&v(&["/a"]), &[], &w, Some("main"), Start::ColdInstance)[0];
         assert_eq!(replaced.label.as_deref(), Some("main"));
         assert!(!replaced.if_empty, "instance_launch means to replace it");
+    }
+
+    #[test]
+    fn a_restored_window_still_gets_the_folder_named_at_start() {
+        let w = open(&[("main", Some("/a"))]);
+        assert_eq!(plan(&v(&["/a"]), &[], &w, Some("main"), Start::Cold), [
+            Act { label: Some("main".into()), root: Some("/a".into()), focus: true, if_empty: true, ..Act::default() },
+        ]);
     }
 
     #[test]
