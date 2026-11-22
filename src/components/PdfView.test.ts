@@ -38,7 +38,8 @@ const pdf = vi.hoisted(() => {
   };
   return s;
 });
-vi.mock("pdfjs-dist", () => ({ GlobalWorkerOptions: {}, getDocument: () => ({ promise: Promise.resolve(pdf.doc()) }) }));
+const getDocument = vi.hoisted(() => vi.fn());
+vi.mock("pdfjs-dist", () => ({ GlobalWorkerOptions: {}, getDocument }));
 
 import PdfView from "./PdfView.svelte";
 
@@ -63,6 +64,8 @@ Object.defineProperty(HTMLElement.prototype, "offsetTop", { configurable: true, 
 Object.defineProperty(HTMLElement.prototype, "offsetHeight", { configurable: true, get(this: HTMLElement) { return parseFloat(this.style.height) || 0; } });
 
 beforeEach(() => {
+  getDocument.mockReset();
+  getDocument.mockImplementation(() => ({ promise: Promise.resolve(pdf.doc()) }));
   pdf.requested = [];
   pdf.cleaned = [];
   pdf.hold = null;
@@ -108,4 +111,28 @@ test("a link to a page not loaded yet lands on it, and its real size corrects th
   expect(scroller.scrollTop).toBe(2499 * 74 - 12);
   expect(target.querySelector(".info")!.textContent).toMatch(/250[01]\/3000/); // the page a third down the view
   unmount(cmp);
+});
+
+test("pdf.js doesn't decode images through OffscreenCanvas, which mixes up pages in WebKitGTK", async () => {
+  const { cmp } = await view();
+  expect(getDocument.mock.calls[0][0]).toMatchObject({ isOffscreenCanvasSupported: false, isEvalSupported: false });
+  unmount(cmp);
+});
+
+test("laying out thousands of pages reads the width once, not once per page (a forced reflow each)", async () => {
+  let reads = 0;
+  Object.defineProperty(HTMLElement.prototype, "clientWidth", {
+    configurable: true,
+    get(this: HTMLElement) {
+      if (this.classList.contains("scroller")) reads++;
+      return 800;
+    },
+  });
+  try {
+    const { cmp } = await view();
+    expect(reads).toBeLessThan(20);
+    unmount(cmp);
+  } finally {
+    delete (HTMLElement.prototype as { clientWidth?: number }).clientWidth;
+  }
 });

@@ -4,6 +4,12 @@ import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
 
+/**
+ * For every getDocument. Without OffscreenCanvas: in WebKitGTK the images pdf.js decodes through it
+ * in the worker came out as the last decoded image, so each page showed the last page's picture.
+ */
+export const PDF_LOAD_OPTIONS = { isEvalSupported: false, isOffscreenCanvasSupported: false } as const;
+
 export interface PageLink {
   url?: string;
   dest?: string | unknown[];
