@@ -135,7 +135,12 @@ export async function chooseVersion(s: VersionSetting) {
 }
 
 async function saveAll() {
-  for (const t of app.tabs) if (t.dirty && t.path && !t.deleted) await save(t.id);
+  for (const x of app.tabs) {
+    if (!x.dirty || !x.path || x.deleted) continue;
+    // Large files are only saved by hand (#174).
+    if (x.large) ui.toast(t("app.large.notSaved", { name: x.name }));
+    else await save(x.id);
+  }
 }
 
 /** Actions whose output belongs in the Build tab. */
@@ -159,6 +164,7 @@ async function current(a: Action, p: Project): Promise<[Action | null | undefine
 export async function runAction(action: Action | null | undefined, checkedArg?: string) {
   if (!action?.cmd || !runner.project) return;
   if (runnerRemote.run) return runnerRemote.run(action);
+  if (activeTab()?.large && fileDependent(action)) return ui.toast(t("code.large.noRun"), "error");
   const [a, p] = await current(action, runner.project);
   if (!a?.cmd || !p) return;
   await launch(a, p, () => activeTab()?.path, checkedArg);

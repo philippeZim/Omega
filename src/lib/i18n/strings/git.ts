@@ -196,6 +196,7 @@ export const en = {
   "git.guestKeptTyped": "Your text in {file} was kept: it was typed while Git changed the file.",
   "git.guestErr.wholeRepo": "This would also change files outside the shared folder, so only the host can do it.",
   "git.guestErr.hooks": "This touches the project's Git hooks or Git config, which can run code on the host. It needs the “Run” permission.",
+  "git.diff.tooLargeLocal": "This file is too large to compare.",
 };
 export const de: Record<keyof typeof en, string> = {
   "git.noFolderOpen": "Kein Ordner geöffnet",
@@ -394,6 +395,7 @@ export const de: Record<keyof typeof en, string> = {
   "git.guestKeptTyped": "Dein Text in {file} wurde behalten: Er wurde getippt, während Git die Datei geändert hat.",
   "git.guestErr.wholeRepo": "Das würde auch Dateien außerhalb des geteilten Ordners ändern, deshalb kann das nur der Host.",
   "git.guestErr.hooks": "Das betrifft die Git-Hooks oder die Git-Konfiguration des Projekts, die beim Host Code ausführen können. Dafür brauchst du die Berechtigung „Ausführen“.",
+  "git.diff.tooLargeLocal": "Diese Datei ist zu groß für einen Vergleich.",
 };
 export const fr: Record<keyof typeof en, string> = {
   "git.noFolderOpen": "Aucun dossier ouvert",
@@ -592,4 +594,5 @@ export const fr: Record<keyof typeof en, string> = {
   "git.guestKeptTyped": "Votre texte dans {file} a été conservé : il a été saisi pendant que Git modifiait le fichier.",
   "git.guestErr.wholeRepo": "Cela modifierait aussi des fichiers hors du dossier partagé : seul l’hôte peut le faire.",
   "git.guestErr.hooks": "Cela touche les hooks ou la configuration Git du projet, qui peuvent exécuter du code chez l’hôte. Il faut l’autorisation « Exécuter ».",
+  "git.diff.tooLargeLocal": "Ce fichier est trop volumineux pour être comparé.",
 };

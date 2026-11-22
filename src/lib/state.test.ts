@@ -579,7 +579,7 @@ describe("file deleted outside Omega (#32)", () => {
     expect(tab.deleted).toBe(true);
     expect(tab.dirty).toBe(true);
     expect(ui.toast).toHaveBeenCalledWith(expect.stringContaining("app.deletedOnDisk"));
-    ui.choose.mockResolvedValueOnce("cancel");
+    ui.nextChoice = "cancel";
     await st.closeTab(tab.id);
     expect(ui.choose).toHaveBeenCalledTimes(1);
     expect(st.app.tabs).toHaveLength(1);
@@ -757,3 +757,253 @@ describe("language server documents follow the tab", () => {
     expect(lspDocs.close).toHaveBeenCalledWith("/p/b");
   });
 });
+
+describe("too large files (#174)", () => {
+  const SIZE = 1024 * 1024 * 1024;
+  /** `path` is refused by read_file; its start is "head text". */
+  function tooLarge(path: string) {
+    const read = fs.other;
+    fs.other = (cmd: string, args: any) => {
+      if (cmd === "file_info") return args.path === path ? { size: SIZE, too_large: true, preview: true, modified: 1 } : { size: 1, too_large: false, preview: false, modified: 1 };
+      if (cmd === "read_file_head") return { text: "head text", size: SIZE };
+      return read(cmd, args);
+    };
+    fs.beforeRead = async (p: string) => {
+      if (p === path) throw "fs:too_large";
+    };
+  }
+  const headTab = () => st.app.tabs.find((t) => t.headOf === "/p/big.log");
+
+  test("warns, and Cancel opens nothing", async () => {
+    await setup({ "/p/big.log": "" });
+    tooLarge("/p/big.log");
+    ui.nextChoice = "cancel";
+    await st.openFile("/p/big.log");
+    expect(ui.choose).toHaveBeenCalledTimes(1);
+    expect(ui.choose.mock.calls[0][1]).toContain("1 GB");
+    expect(st.app.tabs).toHaveLength(0);
+    expect(fs.calls.some((c) => c.cmd === "read_file_head")).toBe(false);
+  });
+
+  test("the read-only start has no path and can never be saved over the file", async () => {
+    await setup({ "/p/big.log": "original" });
+    tooLarge("/p/big.log");
+    ui.nextChoice = "head";
+    await st.openFile("/p/big.log");
+    const tab = headTab()!;
+    expect(tab.path).toBeNull();
+    expect(ed.getText(tab.id)).toBe("head text");
+    expect(await st.save(tab.id)).toBe(false);
+    expect(await st.save(tab.id, true)).toBe(false);
+    await st.flushAutosave();
+    expect(writes()).toEqual([]);
+    expect(fs.files.get("/p/big.log")).toBe("original");
+    // Opening it again finds the same tab, without asking.
+    await st.openFile("/p/big.log");
+    expect(st.app.tabs).toHaveLength(1);
+    expect(ui.choose).toHaveBeenCalledTimes(1);
+  });
+
+  test("session restore doesn't ask, it only reports the file", async () => {
+    await setup({ "/p/big.log": "" });
+    tooLarge("/p/big.log");
+    await st.openFile("/p/big.log", true);
+    expect(ui.choose).not.toHaveBeenCalled();
+    expect(ui.toast).toHaveBeenCalledTimes(1);
+    expect(st.app.tabs).toHaveLength(0);
+  });
+
+  test("a file that grew past the limit isn't overwritten by a save", async () => {
+    await setup({ "/p/big.log": "small" });
+    const tab = await open("/p/big.log");
+    ed.type(tab.id, "small edit");
+    tooLarge("/p/big.log");
+    ui.nextChoice = null;
+    expect(await st.save(tab.id)).toBe(false);
+    expect(ui.choose).toHaveBeenCalledTimes(1);
+    expect(writes()).toEqual([]);
+  });
+
+  test("a large file we wrote ourselves saves without a question", async () => {
+    await setup({ "/p/big.log": "small" });
+    const tab = await open("/p/big.log");
+    ed.type(tab.id, "small edit");
+    const read = fs.other;
+    fs.other = (cmd: string, args: any) => (cmd === "file_info" ? { size: 5, too_large: true, preview: true, modified: 1 } : read(cmd, args));
+    fs.beforeRead = async () => {
+      throw "fs:too_large";
+    };
+    expect(await st.save(tab.id)).toBe(true);
+    expect(ui.choose).not.toHaveBeenCalled();
+    expect(writes()).toHaveLength(1);
+  });
+});
+
+describe("large files opened in full, 8 to 64 MiB (#174)", () => {
+  const MIB = 1024 * 1024;
+  const PATH = "/p/mid.log";
+  const bytes = (s: string) => new TextEncoder().encode(s).buffer;
+  /** read_file refuses PATH; read_file_large returns what is in the fake file system. */
+  function midSize(info: { size?: number; preview?: boolean; modified?: number } = {}) {
+    const state = { size: 50 * MIB, preview: false, modified: 1, ...info };
+    const other = fs.other;
+    fs.other = (cmd: string, args: any) => {
+      if (args?.path !== PATH) return other(cmd, args);
+      if (cmd === "file_info") return { size: state.size, too_large: true, preview: state.preview, modified: state.modified };
+      if (cmd === "read_file_large") {
+        if (state.preview) throw "fs:too_large";
+        return bytes(fs.files.get(PATH)!);
+      }
+      if (cmd === "read_file_head") return { text: "head", size: state.size };
+      return other(cmd, args);
+    };
+    fs.beforeRead = async (p: string) => {
+      if (p === PATH) throw "fs:too_large";
+    };
+    return state;
+  }
+  async function openMid(content = "one\ntwo\n", info = {}) {
+    await setup({ [PATH]: content });
+    const state = midSize(info);
+    ui.nextChoice = "full";
+    await st.openFile(PATH);
+    ui.nextChoice = undefined;
+    ui.choose.mockClear();
+    const tab = st.app.tabs.find((t) => t.path === PATH)!;
+    return { tab, state };
+  }
+  const largeReads = () => fs.calls.filter((c) => c.cmd === "read_file_large").length;
+
+  test("warns first, Cancel reads nothing", async () => {
+    await setup({ [PATH]: "x" });
+    midSize();
+    ui.nextChoice = "cancel";
+    await st.openFile(PATH);
+    expect(ui.choose.mock.calls[0][1]).toContain("app.large.fullMessage");
+    expect(largeReads()).toBe(0);
+    expect(st.app.tabs).toHaveLength(0);
+  });
+
+  test.each([
+    [8 * MIB + 1, false, "app.large.fullMessage"],
+    [64 * MIB, false, "app.large.fullMessage"],
+    [64 * MIB + 1, true, "app.large.message"],
+  ])("%d bytes get the matching offer", async (size, preview, message) => {
+    await setup({ [PATH]: "x" });
+    midSize({ size, preview });
+    ui.nextChoice = "cancel";
+    await st.openFile(PATH);
+    expect(ui.choose.mock.calls[0][1]).toContain(message);
+  });
+
+  test("a file past 64 MiB by the time it's read falls back to the preview offer", async () => {
+    await setup({ [PATH]: "x" });
+    const state = midSize();
+    ui.choose.mockImplementationOnce(async () => {
+      state.preview = true;
+      return "full";
+    });
+    ui.nextChoice = "head";
+    await st.openFile(PATH);
+    expect(st.app.tabs[0].headOf).toBe(PATH);
+    expect(st.app.tabs[0].path).toBeNull();
+  });
+
+  test("keeps its real path, and Save round-trips CRLF and the BOM", async () => {
+    const { tab } = await openMid("\uFEFFone\r\ntwo\r\n");
+    expect(tab.path).toBe(PATH);
+    expect(tab.large).toBe(true);
+    expect(ed.getText(tab.id)).toBe("one\ntwo\n");
+    ed.type(tab.id, "one\nTWO\n");
+    expect(await st.save(tab.id)).toBe(true);
+    expect(fs.files.get(PATH)).toBe("\uFEFFone\r\nTWO\r\n");
+    expect(tab.dirty).toBe(false);
+  });
+
+  test("is never autosaved, and counts as unsaved when quitting", async () => {
+    const { tab } = await openMid();
+    ed.type(tab.id, "edited\n");
+    await vi.advanceTimersByTimeAsync(5000);
+    await st.flushAutosave();
+    expect(writes()).toEqual([]);
+    expect(st.unsavedTabs().map((t) => t.id)).toEqual([tab.id]);
+  });
+
+  test("an outside change is not overwritten without asking", async () => {
+    const { tab } = await openMid();
+    ed.type(tab.id, "mine\n");
+    fs.files.set(PATH, "theirs\n");
+    ui.nextChoice = null;
+    expect(await st.save(tab.id)).toBe(false);
+    expect(ui.choose).toHaveBeenCalledTimes(1);
+    expect(writes()).toEqual([]);
+  });
+
+  test("a file grown past 64 MiB is not overwritten without asking", async () => {
+    const { tab, state } = await openMid();
+    ed.type(tab.id, "mine\n");
+    state.preview = true;
+    state.size = 65 * MIB;
+    ui.nextChoice = null;
+    expect(await st.save(tab.id)).toBe(false);
+    expect(ui.choose).toHaveBeenCalledTimes(1);
+    expect(writes()).toEqual([]);
+  });
+
+  test("session restore only reports it and reads nothing", async () => {
+    await setup({ [PATH]: "x" });
+    midSize();
+    await st.openFile(PATH, true);
+    expect(ui.choose).not.toHaveBeenCalled();
+    expect(ui.toast).toHaveBeenCalledTimes(1);
+    expect(largeReads()).toBe(0);
+    expect(st.app.tabs).toHaveLength(0);
+  });
+
+  test("an outside change shows one notice, without re-reading the file", async () => {
+    const { tab, state } = await openMid();
+    const reads = largeReads();
+    await st.syncFromDisk();
+    expect(ui.toast).not.toHaveBeenCalled();
+    state.modified = 2;
+    await st.syncFromDisk();
+    state.modified = 3;
+    await st.syncFromDisk();
+    expect(ui.toasts.filter((x) => x.text.includes("app.large.changedOnDisk"))).toHaveLength(1);
+    expect(largeReads()).toBe(reads);
+    expect(ed.getText(tab.id)).toBe("one\ntwo\n");
+  });
+
+  test("our own save doesn't count as an outside change", async () => {
+    const { tab, state } = await openMid();
+    ed.type(tab.id, "edited\n");
+    state.modified = 2;
+    await st.save(tab.id);
+    await st.syncFromDisk();
+    expect(ui.toast).not.toHaveBeenCalled();
+  });
+
+  test("a clean normal tab whose file grew past the limit shows one notice", async () => {
+    await setup({ [PATH]: "small" });
+    const tab = await open(PATH);
+    midSize();
+    await st.syncFromDisk();
+    await st.syncFromDisk();
+    expect(ui.toasts.filter((x) => x.text.includes("app.large.changedOnDisk"))).toHaveLength(1);
+    expect(ed.getText(tab.id)).toBe("small");
+  });
+
+  test("a normal tab holding a 8-64 MiB text it wrote itself saves normally", async () => {
+    await setup({ [PATH]: "small" });
+    const tab = await open(PATH);
+    ed.type(tab.id, "bigger");
+    await st.save(tab.id);
+    midSize();
+    ed.type(tab.id, "bigger still");
+    fs.files.set(PATH, "bigger");
+    expect(await st.save(tab.id)).toBe(true);
+    expect(ui.choose).not.toHaveBeenCalled();
+    expect(fs.files.get(PATH)).toBe("bigger still");
+  });
+});
+

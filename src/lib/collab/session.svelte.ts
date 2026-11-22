@@ -403,7 +403,12 @@ async function stashOwnWorkspace() {
   await flushAutosave();
   const snap: Snapshot = { root: app.root, mode: app.mode, active: activeTab()?.path ?? null, tabs: [] };
   for (const tab of [...app.tabs]) {
-    if (isRemote(tab.path)) continue;
+    if (isRemote(tab.path) || tab.headOf) continue; // a too large file's read-only view isn't kept
+    if (tab.large && tab.dirty) {
+      // Large files aren't autosaved and don't fit the snapshot: the tab stays open, unsaved (#174).
+      ui.toast(t("app.large.keptOpen", { name: tab.name }));
+      continue;
+    }
     // Files on disk are autosaved. Unsaved "Untitled" tabs and files whose autosave failed (e.g.
     // read-only) keep their text in the snapshot (#129).
     snap.tabs.push(tab.path && !tab.dirty ? { path: tab.path, name: tab.name } : { path: tab.path, name: tab.name, content: ed.getText(tab.id) });
@@ -411,7 +416,7 @@ async function stashOwnWorkspace() {
   try {
     localStorage.setItem(SNAP_KEY, JSON.stringify(snap));
   } catch {}
-  for (const tab of [...app.tabs]) if (!isRemote(tab.path)) await closeTab(tab.id, true);
+  for (const tab of [...app.tabs]) if (!isRemote(tab.path) && !(tab.large && tab.dirty)) await closeTab(tab.id, true);
   setRoot(null);
 }
 
@@ -427,7 +432,7 @@ async function restoreOwnWorkspace() {
   setMode(snap.mode);
   for (const tab of snap.tabs) {
     const onDisk = !!tab.path && (await fsApi.exists(tab.path));
-    if (onDisk) await openFile(tab.path!);
+    if (onDisk) await openFile(tab.path!, true); // quiet: a large file gets a notice, no dialog (#174)
     if (tab.content === undefined || (!tab.path && !tab.content)) continue;
     // Unsaved text: back into the reopened file's tab (still unsaved), or a new tab.
     let x = onDisk ? app.tabs.find((y) => y.path === tab.path) : undefined;

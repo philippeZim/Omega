@@ -935,3 +935,18 @@ describe("a stop or a second start during a start", () => {
     expect(S.dbg.actor).toBe("");
   });
 });
+
+test("a large file says why it can't be debugged and starts nothing (#174)", async () => {
+  const { app } = await import("../state.svelte");
+  (app.tabs as unknown[]).push({ id: "t1", path: "/p/main.py", dirty: false, large: true });
+  try {
+    await D.startDebugging();
+    expect(m.toast).toHaveBeenCalledTimes(1);
+    expect(m.toast.mock.calls[0][1]).toBe("error");
+    expect(S.dbg.status).toBe("idle");
+    expect(ipc.some(([cmd]) => cmd === "proc_spawn")).toBe(false);
+  } finally {
+    (app.tabs as unknown[]).length = 0;
+  }
+});
+

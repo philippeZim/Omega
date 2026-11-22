@@ -194,7 +194,7 @@ fn copy_into(dir: &Path, file: &str, name: &str, link: bool) -> Result<PathBuf, 
     if !(valid_name(name) || (!link && valid_rel(name))) {
         return Err("invalid file name".into());
     }
-    let data = fs::read(file).map_err(|e| e.to_string())?;
+    let data = crate::fs::read_limited(file, crate::fs::MAX_TEXT_FILE)?;
     let target = dir.join(name);
     let parent = target.parent().ok_or("invalid file name")?;
     fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -441,6 +441,10 @@ mod tests {
         let source = root.path().join("prog");
         fs::write(&source, "x").unwrap();
         assert!(copy_into(root.path(), source.to_str().unwrap(), "a/B.java", true).is_err());
+        let huge = root.path().join("huge.java");
+        fs::File::create(&huge).unwrap().set_len(crate::fs::MAX_TEXT_FILE + 1).unwrap();
+        assert_eq!(copy_into(root.path(), huge.to_str().unwrap(), "Huge.java", false).unwrap_err(), "fs:too_large");
+        assert!(!root.path().join("Huge.java").exists());
     }
 
     #[cfg(unix)]

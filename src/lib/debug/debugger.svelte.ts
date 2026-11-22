@@ -151,6 +151,7 @@ export async function startDebugging() {
 }
 
 async function startFile(file: string, actor: string, byGuest: boolean) {
+  if (app.tabs.some((x) => x.path === file && x.large)) return ui.toast(t("code.large.noDebug"), "error");
   const gen = ++startGen;
   starting = true;
   try {
@@ -167,9 +168,9 @@ async function runStart(gen: number, file: string, actor: string, byGuest: boole
   if (stale()) return;
   await dbgHooks.beforeStart();
   if (stale()) return;
-  for (const t of app.tabs)
-    if (t.dirty && t.path) {
-      await save(t.id);
+  for (const x of app.tabs)
+    if (x.dirty && x.path && !x.large) {
+      await save(x.id);
       if (stale()) return;
     }
   if (!quiet) {

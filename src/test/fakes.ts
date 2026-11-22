@@ -18,7 +18,10 @@ export function fakeEditor() {
     dropLive: false,
     setCallbacks: (c: Callbacks) => void (cb = c),
     setKeyHandler: () => {},
-    createDoc: (id: string, content: string) => void docs.set(id, { text: norm(content), saved: norm(content) }),
+    createDoc: (id: string, content: string) => {
+      const text = norm(content).replace(/^\uFEFF/, ""); // like the real editor: the BOM isn't part of the text
+      docs.set(id, { text, saved: text });
+    },
     disposeDoc: (id: string) => void docs.delete(id),
     activate: vi.fn(),
     configure: vi.fn(),

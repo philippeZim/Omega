@@ -10,14 +10,16 @@
   let { compact = false }: { compact?: boolean } = $props();
 
   const path = $derived(activeTab()?.path ?? null);
-  const lang = $derived(effectiveLang(path));
-  const chosen = $derived(!!overrideFor(path));
+  // A large file has no language features; a click on the picker says why (#174).
+  const large = $derived(!!activeTab()?.large);
+  const lang = $derived(large ? null : effectiveLang(path));
+  const chosen = $derived(!large && !!overrideFor(path));
   const text = $derived(lang?.label ?? t("code.lang.plain"));
   const st = $derived(statusFor(lang, path));
   const head = $derived(
     st.status ? t("code.lsp.statusTitle", { kind: lang?.server ?? "", status: t(`code.lsp.st.${st.status}` as Key) }) : "",
   );
-  const langTitle = $derived(chosen ? t("code.lang.titleChosen", { lang: text }) : t("code.lang.title", { lang: text }));
+  const langTitle = $derived(large ? t("code.large.noLang") : chosen ? t("code.lang.titleChosen", { lang: text }) : t("code.lang.title", { lang: text }));
   const title = $derived([langTitle, head, st.message?.trim()].filter(Boolean).join("\n"));
   const label = $derived(head ? `${text}. ${head}` : langTitle);
 

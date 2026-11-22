@@ -13,7 +13,7 @@ const KEY = "session";
 async function restoreTabs(saved: Session) {
   // Opening a file switches to its mode; the window comes back in the mode it was in.
   const mode = app.mode as Mode;
-  for (const f of saved.files) if (await fsApi.exists(f).catch(() => false)) await openFile(f);
+  for (const f of saved.files) if (await fsApi.exists(f).catch(() => false)) await openFile(f, true);
   const active = app.tabs.find((t) => t.path === saved.active);
   if (active) activate(active.id);
   if (app.mode !== mode) setMode(mode);

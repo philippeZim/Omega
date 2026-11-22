@@ -18,6 +18,7 @@ import { detectEol, fromDisk, toDisk, type Eol } from "./eol";
 import { findHeadingLine } from "./headingAnchor";
 import { blockedAsGuest, guestGuard } from "./collab/guard";
 import { toolsBeforeSave } from "./collab/guestChanges";
+import { byteLength, formatSize } from "./largeFile";
 
 setLspHooks({
   workspace: () => app.root,
@@ -74,6 +75,12 @@ export interface Tab {
   eol?: Eol;
   /** The file was deleted outside Omega: the tab stays dirty, autosave skips it (#32). */
   deleted?: boolean;
+  /** Read-only view of the start of this too large file. The tab has no `path`, so nothing can write to it (#174). */
+  headOf?: string;
+  /** For `headOf`: what the banner says. */
+  headNote?: string;
+  /** The whole file, 8 to 64 MiB, opened after a warning: editable, saved by hand, no language features (#174). */
+  large?: boolean;
 }
 
 export const app = $state({
@@ -92,7 +99,10 @@ export function spellLangFor(path: string | null): SpellLang {
 }
 
 function cfg(): ed.EditorConfig {
-  const path = activeTab()?.path ?? null;
+  const tab = activeTab();
+  const path = tab?.path ?? null;
+  if (tab?.headOf) return { mode: app.mode, path, spell: null, headNote: tab.headNote };
+  if (tab?.large) return { mode: app.mode, path, spell: null, largeNote: t("app.large.reduced") };
   return { mode: app.mode, path, spell: app.spellEnabled ? spellLangFor(path) : null };
 }
 
@@ -186,7 +196,7 @@ const autosaveTimers = new Map<string, number>();
 
 function scheduleAutosave(id: string) {
   const t = app.tabs.find((t) => t.id === id);
-  if (!t?.path || isRemotePath(t.path)) return;
+  if (!t?.path || t.large || isRemotePath(t.path)) return;
   clearTimeout(autosaveTimers.get(id));
   autosaveTimers.set(id, window.setTimeout(() => autosave(id), AUTOSAVE_DELAY));
 }
@@ -196,7 +206,7 @@ async function autosave(id: string | null) {
   clearTimeout(autosaveTimers.get(id));
   autosaveTimers.delete(id);
   const t = app.tabs.find((t) => t.id === id);
-  if (!t?.path || !t.dirty || t.deleted || isRemotePath(t.path)) return;
+  if (!t?.path || !t.dirty || t.deleted || t.large || isRemotePath(t.path)) return;
   // Deleted outside Omega before the watcher noticed: don't bring the file back (#32).
   if (!(await fsApi.exists(t.path))) return markDeleted(t);
   await save(id);
@@ -211,10 +221,10 @@ function markDeleted(tab: Tab) {
 }
 
 /**
- * Tabs whose edits would be lost on quit after flushAutosave(): new files that never got a path and
- * files deleted outside Omega (autosave skips those, #32).
+ * Tabs whose edits would be lost on quit after flushAutosave(): new files that never got a path,
+ * files deleted outside Omega (#32) and large files (#174): autosave skips all of those.
  */
-export const unsavedTabs = () => app.tabs.filter((t) => t.dirty && (!t.path || t.deleted));
+export const unsavedTabs = () => app.tabs.filter((t) => t.dirty && (!t.path || t.deleted || t.large));
 
 /** Writes every modified file that has a path. */
 export async function flushAutosave() {
@@ -228,6 +238,38 @@ const writing = new Set<string>();
 /** Tabs with a pending "changed on disk" question. */
 const conflicts = new Set<string>();
 let conflictQueue: Promise<unknown> = Promise.resolve();
+
+/** Large tabs: size and time of the file they match. They aren't re-read on every change (#174). */
+const diskStamps = new Map<string, string>();
+/** Tabs already told that their file moved on, so a growing log doesn't repeat the message. */
+const staleNoticed = new Set<string>();
+const stampOf = (i: { size: number; modified: number }) => `${i.size}:${i.modified}`;
+
+async function rememberStamp(id: string, path: string) {
+  const info = await fsApi.fileInfo(path).catch(() => null);
+  if (info) diskStamps.set(id, stampOf(info));
+  staleNoticed.delete(id);
+}
+
+function noticeStale(tab: Tab) {
+  if (staleNoticed.has(tab.id)) return;
+  staleNoticed.add(tab.id);
+  ui.toast(t("app.large.changedOnDisk", { name: tab.name }));
+}
+
+/** A large tab's file: only its size and time are compared; saving does the full check. */
+async function syncLargeTab(tab: Tab & { path: string }) {
+  const info = await fsApi.fileInfo(tab.path).catch(() => null);
+  if (!info) {
+    if (!tab.deleted && !(await fsApi.exists(tab.path).catch(() => true))) markDeleted(tab);
+    return;
+  }
+  if (tab.deleted) {
+    tab.deleted = false;
+    tab.dirty = ed.isDirty(tab.id);
+  }
+  if (!writing.has(tab.id) && stampOf(info) !== diskStamps.get(tab.id)) noticeStale(tab);
+}
 
 /** `raw`: the file content as read from disk. */
 function reloadTab(tab: Tab, raw: string) {
@@ -259,7 +301,9 @@ async function askConflict(tab: Tab): Promise<boolean> {
   if (choice === "keep") return save(tab.id, false, true);
   if (choice !== "reload" || !tab.path) return false; // dismissed: stays dirty, asked again on the next save
   try {
-    reloadTab(tab, await fsApi.readFile(tab.path));
+    if (tab.large) await rememberStamp(tab.id, tab.path);
+    reloadTab(tab, await (tab.large ? fsApi.readFileLarge(tab.path) : fsApi.readFile(tab.path)));
+    staleNoticed.delete(tab.id);
     return true;
   } catch (e) {
     ui.toast(t("app.cannotOpenFile", { error: String(e) }), "error");
@@ -287,6 +331,10 @@ export async function syncFromDisk(paths?: string[]) {
       for (const t of app.tabs) {
         if (!t.path || isRemotePath(t.path) || (only && !only.has(t.path))) continue;
         if (writing.has(t.id) || conflicts.has(t.id)) continue;
+        if (t.large) {
+          await syncLargeTab(t as Tab & { path: string });
+          continue;
+        }
         const saved = ed.savedText(t.id);
         let raw: string;
         try {
@@ -294,8 +342,10 @@ export async function syncFromDisk(paths?: string[]) {
         } catch {
           // Deleted: keep the buffer, but mark the tab. Unreadable: just keep the buffer.
           if (!t.deleted && !(await fsApi.exists(t.path).catch(() => true))) markDeleted(t);
+          else if ((await fsApi.fileInfo(t.path).catch(() => null))?.too_large) noticeStale(t);
           continue;
         }
+        staleNoticed.delete(t.id);
         if (t.deleted) {
           // The file is back (git checkout, undo in another program).
           t.deleted = false;
@@ -351,7 +401,7 @@ ed.setCallbacks({
   onChange(id) {
     // Only the active buffer: a background tab reloaded from disk must not be compiled under the
     // active tab's path (#50). The controller recompiles on dependency changes by itself.
-    if (app.mode === "latex" && id === app.activeId) {
+    if (app.mode === "latex" && id === app.activeId && !activeTab()?.large) {
       if (collabHooks.editBlocksCompile()) latexCtl.schedule(id, activeTab()?.path ?? null, undefined, false);
       else latexCtl.schedule(id, activeTab()?.path ?? null);
     }
@@ -361,7 +411,7 @@ ed.setCallbacks({
 /** Kick off LaTeX compilation when entering LaTeX mode or switching tabs within it. */
 function latexHook() {
   const t = activeTab();
-  if (app.mode === "latex" && t) latexCtl.schedule(t.id, t.path, 0);
+  if (app.mode === "latex" && t && !t.headOf && !t.large) latexCtl.schedule(t.id, t.path, 0);
 }
 
 export function setMode(mode: Mode) {
@@ -394,15 +444,18 @@ export function activate(id: string) {
   touchRecent(activeTab()?.path);
 }
 
-export async function openFile(path: string) {
+/** `quiet`: nobody asked for this file right now (session restore), so a too large one is only reported. */
+export async function openFile(path: string, quiet = false) {
   path = resolveDots(normPath(path));
-  const existing = app.tabs.find((t) => t.path === path);
+  const existing = app.tabs.find((t) => t.path === path || t.headOf === path);
   if (existing) return activate(existing.id);
   if (isRemotePath(path)) return collabHooks.openRemote(path);
   let content: string;
   try {
     content = await fsApi.readFile(path);
   } catch (e) {
+    const info = await fsApi.fileInfo(path).catch(() => null);
+    if (info?.too_large) return info.preview ? openHead(path, info.size, quiet) : openLarge(path, info.size, quiet);
     ui.toast(t("app.cannotOpenFile", { error: String(e) }), "error");
     return;
   }
@@ -416,6 +469,62 @@ export async function openFile(path: string) {
   }
   activate(id);
   collabHooks.tabOpened(id, path);
+}
+
+/** 8 to 64 MiB: warns, then opens the whole file, editable, without the expensive features (#174). */
+async function openLarge(path: string, size: number, quiet: boolean) {
+  const name = basename(path);
+  const sizeText = formatSize(size);
+  if (quiet) return ui.toast(t("app.large.skipped", { name, size: sizeText }));
+  const choice = await ui.choose(t("app.large.title", { name }), t("app.large.fullMessage", { size: sizeText }), [
+    { label: t("common.cancel"), value: "cancel" },
+    { label: t("app.large.openFull"), value: "full", primary: true },
+  ]);
+  if (choice !== "full") return;
+  const before = await fsApi.fileInfo(path).catch(() => null);
+  let content: string;
+  try {
+    content = await fsApi.readFileLarge(path);
+  } catch (e) {
+    // It grew past the limit since the question.
+    const now = await fsApi.fileInfo(path).catch(() => null);
+    if (now?.preview) return openHead(path, now.size, false);
+    ui.toast(t("app.cannotOpenFile", { error: String(e) }), "error");
+    return;
+  }
+  const open = app.tabs.find((x) => x.path === path);
+  if (open) return activate(open.id);
+  const id = uid();
+  ed.createDoc(id, content);
+  if (before) diskStamps.set(id, stampOf(before));
+  app.tabs.push({ id, path, name, dirty: false, root: inRoot(path, app.root) ? app.root : null, eol: detectEol(content), large: true });
+  activate(id);
+}
+
+/** A file too large to load: warns, then offers its start as a read-only tab (#174). */
+async function openHead(path: string, size: number, quiet: boolean) {
+  const name = basename(path);
+  const sizeText = formatSize(size);
+  if (quiet) return ui.toast(t("app.large.skipped", { name, size: sizeText }));
+  const choice = await ui.choose(t("app.large.title", { name }), t("app.large.message", { size: sizeText }), [
+    { label: t("common.cancel"), value: "cancel" },
+    { label: t("app.large.openHead"), value: "head", primary: true },
+  ]);
+  if (choice !== "head") return;
+  const open = app.tabs.find((x) => x.headOf === path);
+  if (open) return activate(open.id);
+  let head: { text: string; size: number };
+  try {
+    head = await fsApi.readFileHead(path);
+  } catch (e) {
+    ui.toast(t("app.cannotOpenFile", { error: String(e) }), "error");
+    return;
+  }
+  const id = uid();
+  ed.createDoc(id, head.text);
+  const headNote = t("app.large.banner", { shown: formatSize(byteLength(head.text)), size: formatSize(head.size) });
+  app.tabs.push({ id, path: null, name: t("app.large.tabName", { name }), dirty: false, headOf: path, headNote });
+  activate(id);
 }
 
 /**
@@ -514,6 +623,8 @@ export async function closeTab(id: string, force = false) {
     if (closedPaths.length > 30) closedPaths.shift();
   }
   ed.disposeDoc(id);
+  diskStamps.delete(id);
+  staleNoticed.delete(id);
   if (tab.path) closeLspDoc(tab.path);
   if (app.activeId === id) {
     const next = app.tabs[idx] ?? app.tabs[idx - 1];
@@ -529,6 +640,11 @@ export async function closeTab(id: string, force = false) {
 export async function save(id = app.activeId, forceDialog = false, overwrite = false): Promise<boolean> {
   const tab = app.tabs.find((t) => t.id === id);
   if (!tab) return false;
+  if (tab.headOf) {
+    // Only the start of the file is loaded: saving it anywhere would pass for the whole file.
+    ui.toast(t("app.large.noSave"), "error");
+    return false;
+  }
   if (isRemotePath(tab.path)) {
     if (!forceDialog) return true; // saved by the host
     const { saveCopyToHost } = await import("./collab/guestFiles");
@@ -545,8 +661,21 @@ export async function save(id = app.activeId, forceDialog = false, overwrite = f
     if (conflicts.has(tab.id)) return false;
     let disk: string | null = null;
     try {
-      disk = fromDisk(await fsApi.readFile(path));
-    } catch {} // missing: nothing to protect
+      disk = fromDisk(await (tab.large ? fsApi.readFileLarge(path) : fsApi.readFile(path)));
+    } catch {
+      // Missing: nothing to protect. Too large for this read: compare it whole up to 64 MiB; past
+      // that, only a file of exactly the size we last wrote counts as unchanged (#174).
+      const info = await fsApi.fileInfo(path).catch(() => null);
+      if (info?.preview) {
+        if (info.size !== byteLength(toDisk(ed.savedText(tab.id) ?? "", tab.eol))) return resolveConflict(tab);
+      } else if (info?.too_large) {
+        try {
+          disk = fromDisk(await fsApi.readFileLarge(path));
+        } catch {
+          return resolveConflict(tab);
+        }
+      }
+    }
     const saved = ed.savedText(tab.id);
     // write_file replaced lone surrogates with U+FFFD, so compare against that (#21).
     if (disk !== null && saved !== null && disk !== wellFormed(saved) && disk !== wellFormed(ed.getText(tab.id))) return resolveConflict(tab);
@@ -558,6 +687,7 @@ export async function save(id = app.activeId, forceDialog = false, overwrite = f
   writing.add(tab.id);
   try {
     await fsApi.writeFile(path, toDisk(snapshot.toString(), tab.eol));
+    if (tab.large) await rememberStamp(tab.id, path);
   } catch (e) {
     undoToolPause();
     ui.toast(t("app.saveFailed", { error: String(e) }), "error");
@@ -568,7 +698,7 @@ export async function save(id = app.activeId, forceDialog = false, overwrite = f
   ed.markSaved(tab.id, snapshot);
   tab.deleted = false;
   window.dispatchEvent(new CustomEvent("omega:saved", { detail: path }));
-  void saveLspDoc(path, ed.getText(tab.id));
+  if (!tab.large) void saveLspDoc(path, ed.getText(tab.id));
   if (tab.path !== path) {
     if (tab.path) closeLspDoc(tab.path);
     tab.path = path;
@@ -616,6 +746,7 @@ export function pathMoved(from: string, to: string | null) {
   moveLanguageOverrides(from, to);
   moveImagePermissions(from, to);
   for (const t of app.tabs) {
+    if (t.headOf && to !== null && (t.headOf === from || t.headOf.startsWith(from + "/"))) t.headOf = to + t.headOf.slice(from.length);
     if (!t.path) continue;
     if (t.path === from || t.path.startsWith(from + "/")) {
       closeLspDoc(t.path);

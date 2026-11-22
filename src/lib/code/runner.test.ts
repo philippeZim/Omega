@@ -19,7 +19,7 @@ vi.mock("../fsWatch.svelte", () => ({ onFilesChanged: (fn: (files: string[]) => 
 vi.mock("../terminal.svelte", () => ({ runCommand: h.runCommand, runTask: h.runTask, cancelTask: vi.fn(), interruptRun: vi.fn() }));
 vi.mock("../state.svelte", () => ({
   app: { root: "/p", get tabs() { return h.tabs; } },
-  activeTab: () => null,
+  activeTab: () => (h.tabs as { active?: boolean }[]).find((t) => t.active) ?? null,
   save: async (id: string) => {
     h.saved.push(id);
     for (const t of h.tabs) if (t.id === id) t.dirty = false;
@@ -354,3 +354,22 @@ describe("chooseVersion with a range from the project file", () => {
     expect(h.runCommand.mock.calls[0][0]).toBe("set 22");
   });
 });
+
+test("a large file: file-bound Run says why, project Run works without saving it (#174)", async () => {
+  await refreshProject();
+  const tab = { id: "big", path: "/p/big.py", dirty: true, large: true, active: true, name: "big.py" };
+  (h.tabs as unknown[]).push(tab);
+  try {
+    vi.mocked(ui.toast).mockClear();
+    h.runCommand.mockClear();
+    h.runTask.mockClear();
+    await runAction({ id: "run", label: "Run", cmd: "python {file}" } as Action);
+    expect(h.runCommand).not.toHaveBeenCalled();
+    expect(h.runTask).not.toHaveBeenCalled();
+    expect(vi.mocked(ui.toast).mock.calls[0][1]).toBe("error");
+    expect(h.saved).not.toContain("big");
+  } finally {
+    (h.tabs as unknown[]).splice((h.tabs as unknown[]).indexOf(tab), 1);
+  }
+});
+
