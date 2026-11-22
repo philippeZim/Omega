@@ -60,6 +60,10 @@ describe("mojoValue", () => {
     expect(await mojoValue({ value: "55", type: scalar("bool"), ref: 4 }, wrong)).toEqual({ value: "55", type: "Bool", ref: 4 });
   });
 
+  test("an expanded SIMD element gets its Mojo type name", async () => {
+    expect(await mojoValue({ value: "-2", type: "__mlir_type.si32", ref: 0 }, none)).toEqual({ value: "-2", type: "Int32", ref: 0 });
+  });
+
   test("a long SIMD is cut off visibly", async () => {
     const kids = async () => Array.from({ length: 32 }, () => ({ value: "7" }));
     const { value } = await mojoValue({ value: simd(32, "si64"), type: simd(32, "si64"), ref: 9 }, kids);

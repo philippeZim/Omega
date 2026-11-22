@@ -61,7 +61,10 @@ export async function mojoValue(v: DapValue, children: Children): Promise<DapVal
     if (!kids.length) return { ...v, type: shownType };
     return { value: list(kids.map((k) => k.value)), type: shownType, ref: v.ref };
   }
-  return v;
+  // An element of an expanded SIMD value.
+  const element = /^__mlir_type\.(\w+)$/.exec(type);
+  const name = element && elementName(element[1]);
+  return name ? { ...v, type: name } : v;
 }
 
 /** Mojo's runtime starts one idle worker per core. Lists the stopped thread first, without them. */
