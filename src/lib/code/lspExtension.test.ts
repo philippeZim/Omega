@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { forEachDiagnostic, type Diagnostic } from "@codemirror/lint";
-import { applyItem, lspExtension, toOffset, toPos } from "./lspExtension";
+import { applyItem, lspExtension, renderDoc, toOffset, toPos } from "./lspExtension";
 import { fileUri } from "./lsp.svelte";
 
 const m = vi.hoisted(() => ({ client: null as any }));
@@ -45,6 +45,35 @@ describe("toPos / toOffset", () => {
 });
 
 // ---------------------------------------------------------------- completion apply
+
+describe("renderDoc", () => {
+  test("plaintext shows <, > and & literally", () => {
+    const el = renderDoc({ kind: "plaintext", value: "Vec<T> && Option<&str>" })!;
+    expect(el.textContent).toBe("Vec<T> && Option<&str>");
+  });
+
+  test("plaintext cannot inject markup", () => {
+    const el = renderDoc({ kind: "plaintext", value: '<img src=x onerror="alert(1)"><script>x</script>' })!;
+    expect(el.children.length).toBe(0);
+    expect(el.textContent).toContain("<img");
+  });
+
+  test("plaintext keeps markdown characters and line breaks", () => {
+    const el = renderDoc({ kind: "plaintext", value: "a `b` **c**\nnext" })!;
+    expect(el.children.length).toBe(0);
+    expect(el.textContent).toBe("a `b` **c**\nnext");
+  });
+
+  test("empty plaintext renders nothing", () => {
+    expect(renderDoc({ kind: "plaintext", value: "  " })).toBeNull();
+  });
+
+  test("markdown is still escaped once", () => {
+    const el = renderDoc({ kind: "markdown", value: "`Vec<T>` <img src=x>" })!;
+    expect(el.querySelector("img")).toBeNull();
+    expect(el.querySelector("code")!.textContent).toBe("Vec<T>");
+  });
+});
 
 describe("applyItem", () => {
   test("insertText replaces from..to", () => {

@@ -49,9 +49,18 @@ const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replac
 export function renderDoc(content: any): HTMLElement | null {
   let md = "";
   if (!content) return null;
+  if (content.kind === "plaintext") {
+    // Set as text, so it needs no escaping and markdown characters in it stay literal.
+    const text = String(content.value ?? "").trim();
+    if (!text) return null;
+    const plain = document.createElement("div");
+    plain.className = "lsp-doc lsp-plain";
+    plain.textContent = text;
+    return plain;
+  }
   if (typeof content === "string") md = content;
   else if (Array.isArray(content)) md = content.map((c) => (typeof c === "string" ? c : "```\n" + c.value + "\n```")).join("\n\n");
-  else if (content.kind === "markdown" || content.kind === "plaintext") md = content.kind === "plaintext" ? esc(content.value) : content.value;
+  else if (content.kind === "markdown") md = content.value;
   else if (content.value) md = "```\n" + content.value + "\n```";
   md = md.trim();
   if (!md) return null;
@@ -239,6 +248,7 @@ export const lspTheme = EditorView.baseTheme({
   ".lsp-doc": { padding: "8px 12px", maxWidth: "560px", maxHeight: "320px", overflow: "auto", fontFamily: "var(--font)", fontSize: "12.5px", lineHeight: "1.5", color: "var(--label-2)" },
   ".lsp-doc pre, .lsp-detail": { fontFamily: "var(--mono)", fontSize: "12px", color: "var(--label)", whiteSpace: "pre-wrap", margin: "4px 0" },
   ".lsp-detail": { padding: "8px 12px 0" },
+  ".lsp-plain": { whiteSpace: "pre-wrap" },
   ".lsp-doc code": { fontFamily: "var(--mono)", fontSize: "0.92em", color: "var(--label)" },
   ".cm-completionIcon": { opacity: "0.8", width: "1.2em" },
 });
