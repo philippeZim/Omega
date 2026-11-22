@@ -30,23 +30,6 @@ export interface PageLink {
   dest?: string | unknown[];
 }
 
-/** The empty, correctly sized element of one page. */
-export function createPageShell(index: number, vp: { width: number; height: number }): HTMLDivElement {
-  const wrap = document.createElement("div");
-  wrap.className = "page";
-  wrap.dataset.page = String(index);
-  wrap.style.width = `${vp.width}px`;
-  wrap.style.height = `${vp.height}px`;
-  return wrap;
-}
-
-/** Draws the page on a new canvas inside `wrap`. The returned task can be cancelled. */
-export function paintPage(page: pdfjs.PDFPageProxy, wrap: HTMLElement, vp: pdfjs.PageViewport, dpr: number) {
-  const { canvas, task } = renderPage(page, vp, dpr);
-  wrap.appendChild(canvas);
-  return task;
-}
-
 /** Renders on a canvas that isn't in the page yet, so what's on screen stays until it's done. */
 export function renderPage(page: pdfjs.PDFPageProxy, vp: pdfjs.PageViewport, dpr: number) {
   const ratio = canvasRatio(vp.width, vp.height, dpr);

@@ -68,6 +68,14 @@ export class PdfLayout {
     return this.total * this.compress;
   }
 
+  /** Takes over the page sizes of the previous version of this document. */
+  adopt(old: PdfLayout) {
+    const n = Math.min(this.count, old.count);
+    this.widths.set(old.widths.subarray(0, n));
+    this.heights.set(old.heights.subarray(0, n));
+    this.relayout();
+  }
+
   /** Stores a page's real size. True if it differed from the estimate. */
   setSize(i: number, width: number, height: number) {
     if (Math.abs(this.widths[i] - width) < 0.01 && Math.abs(this.heights[i] - height) < 0.01) return false;

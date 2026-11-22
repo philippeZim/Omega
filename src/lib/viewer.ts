@@ -50,29 +50,6 @@ export function stepZoom(current: number, dir: 1 | -1, max = MAX_ZOOM) {
   return Math.min(max, Math.max(MIN_ZOOM, Math.round(next * 1000) / 1000));
 }
 
-/** 1-based page shown at `y`, from the ascending top offsets of the pages. */
-export function pageAt(tops: number[], y: number) {
-  let lo = 0;
-  let hi = tops.length - 1;
-  while (lo < hi) {
-    const mid = Math.ceil((lo + hi) / 2);
-    if (tops[mid] <= y) lo = mid;
-    else hi = mid - 1;
-  }
-  return tops.length ? lo + 1 : 0;
-}
-
-/** 0-based first and last page within `margin` px of the visible range; null without pages. */
-export function pagesNear(tops: number[], heights: number[], top: number, viewH: number, margin: number): [number, number] | null {
-  if (!tops.length) return null;
-  const from = top - margin;
-  const to = top + viewH + margin;
-  let first = pageAt(tops, from) - 1;
-  if (tops[first] + heights[first] < from && first < tops.length - 1) first++;
-  const last = pageAt(tops, to) - 1;
-  return [first, Math.max(first, last)];
-}
-
 /** A PDF is untrusted: its links may only open web and mail addresses. */
 export function safePdfUrl(url: string | undefined): string | null {
   if (!url) return null;

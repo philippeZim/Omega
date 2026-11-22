@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { MAX_ZOOM, MIN_ZOOM, fitScale, imageMime, pageAt, pagesNear, safePdfUrl, stepZoom, viewerKind } from "./viewer";
+import { MAX_ZOOM, MIN_ZOOM, fitScale, imageMime, safePdfUrl, stepZoom, viewerKind } from "./viewer";
 
 describe("viewerKind", () => {
   test.each(["a.png", "a.jpg", "a.JPEG", "b/c.GiF", "a.webp", "a.bmp", "a.ico", "a.avif", "a.Svg"])("%s is an image", (p) => expect(viewerKind(p)).toBe("image"));
@@ -25,26 +25,8 @@ test("zoom steps stay within the limits", () => {
   expect(stepZoom(MIN_ZOOM, -1)).toBe(MIN_ZOOM);
 });
 
-test("pageAt finds the page at an offset", () => {
-  expect(pageAt([0, 100, 200], 0)).toBe(1);
-  expect(pageAt([0, 100, 200], 150)).toBe(2);
-  expect(pageAt([0, 100, 200], 999)).toBe(3);
-  expect(pageAt([], 5)).toBe(0);
-});
-
 test("PDF links only open web and mail addresses", () => {
   expect(safePdfUrl("https://example.com/a")).toBe("https://example.com/a");
   expect(safePdfUrl("mailto:a@example.com")).toBe("mailto:a@example.com");
   for (const bad of ["file:///etc/passwd", "javascript:alert(1)", "smb://host/x", "nonsense", undefined]) expect(safePdfUrl(bad)).toBeNull();
-});
-
-test("only pages near the view are kept rendered", () => {
-  const tops = [0, 110, 220, 330, 440];
-  const heights = [100, 100, 100, 100, 100];
-  expect(pagesNear(tops, heights, 0, 100, 0)).toEqual([0, 0]);
-  expect(pagesNear(tops, heights, 215, 100, 0)).toEqual([2, 2]);
-  expect(pagesNear(tops, heights, 215, 100, 120)).toEqual([0, 3]); // page 0 ends at 100, inside the margin (from 95)
-  expect(pagesNear(tops, heights, 215, 100, 100)).toEqual([1, 3]);
-  expect(pagesNear(tops, heights, 9999, 100, 0)).toEqual([4, 4]);
-  expect(pagesNear([], [], 0, 100, 0)).toBeNull();
 });

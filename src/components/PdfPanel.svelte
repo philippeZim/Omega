@@ -4,7 +4,8 @@
   import { convertFileSrc } from "@tauri-apps/api/core";
   import { openUrl } from "../lib/native";
   import * as pdfjs from "pdfjs-dist";
-  import { PDF_LOAD_OPTIONS, pdfWorker, addPageLinks, createPageShell, paintPage, resolvePdfDest } from "../lib/pdfPages";
+  import { PDF_LOAD_OPTIONS, pdfWorker, type PageLink } from "../lib/pdfPages";
+  import { PdfPager } from "../lib/pdfPager";
   import { latex, setDark, reverseSync, forwardSync, installLatex, remoteLatex, remotePdfBytes, compileNow } from "../lib/latex/controller.svelte";
   import { app, activeTab, openFile } from "../lib/state.svelte";
   import * as ed from "../lib/editor";
@@ -14,19 +15,25 @@
   let scroller: HTMLDivElement;
   let pagesEl = $state<HTMLDivElement>()!;
   let showLog = $state(false);
-  let doc: pdfjs.PDFDocumentProxy | null = null;
-  let pageSizes: { w: number; h: number }[] = [];
+  let pager: PdfPager | null = null;
   let renderSeq = 0;
-  let flash = $state<{ page: number; x: number; y: number; w: number; h: number } | null>(null);
+  let flash = $state<{ left: number; top: number; w: number; h: number } | null>(null);
+  let flashTimer = 0;
 
   const errors = $derived(latex.diagnostics.filter((d) => d.severity === "error"));
   const warnings = $derived(latex.diagnostics.filter((d) => d.severity === "warning"));
 
-  function scale(pageW: number) {
-    if (zoom > 0) return zoom;
-    return Math.max(0.3, (scroller.clientWidth - 32) / pageW);
+  function getPager() {
+    pager ??= new PdfPager({ scroller, pages: pagesEl, zoom: () => zoom, openLink });
+    return pager;
   }
 
+  function openLink(link: PageLink) {
+    if (link.url) void openUrl(link.url);
+    else if (link.dest) void pager?.gotoDest(link.dest, true);
+  }
+
+  /** A recompile keeps the view: pages show their old bitmap until the new one is ready. */
   async function load(path: string) {
     const seq = ++renderSeq;
     const data = remotePdfBytes();
@@ -34,67 +41,15 @@
     const next = await pdfjs.getDocument({ ...source, ...PDF_LOAD_OPTIONS, worker: pdfWorker() }).promise.catch(() => null);
     if (!next) return;
     if (seq !== renderSeq) return void next.destroy();
-    const old = doc;
-    doc = next;
-    try {
-      await render(seq);
-    } finally {
-      old?.destroy();
-    }
-  }
-
-  async function render(seq = ++renderSeq) {
-    try {
-      await renderPages(seq);
-    } catch (e) {
-      // clear() or a newer load destroyed the doc mid-render ("Worker was destroyed").
-      if (seq === renderSeq) throw e;
-    }
-  }
-
-  async function renderPages(seq: number) {
-    if (!doc) return;
-    const ratio = scroller.scrollTop / Math.max(1, scroller.scrollHeight);
-    const dpr = window.devicePixelRatio || 1;
-    const frag: HTMLElement[] = [];
-    pageSizes = [];
-    for (let i = 1; i <= doc.numPages; i++) {
-      const page = await doc.getPage(i);
-      if (seq !== renderSeq) return;
-      const base = page.getViewport({ scale: 1 });
-      pageSizes.push({ w: base.width, h: base.height });
-      const vp = page.getViewport({ scale: scale(base.width) });
-      const wrap = createPageShell(i, vp);
-      await paintPage(page, wrap, vp, dpr).promise;
-      if (seq !== renderSeq) return;
-      await addPageLinks(page, vp, wrap, (a) => (a.url ? openUrl(a.url) : gotoDest(a.dest!)));
-      frag.push(wrap);
-    }
-    // Swap all pages at once to avoid flicker, then restore the scroll position.
-    pagesEl.replaceChildren(...frag);
-    scroller.scrollTop = ratio * scroller.scrollHeight;
-  }
-
-  /** Scrolls to a PDF destination (named, or explicit `[pageRef, {name}, …args]`). */
-  async function gotoDest(dest: string | unknown[]) {
-    if (!doc) return;
-    const target = await resolvePdfDest(doc, dest);
-    if (!target) return;
-    const pageEl = pagesEl.querySelector<HTMLElement>(`[data-page="${target.index + 1}"]`);
-    const size = pageSizes[target.index];
-    if (!pageEl || !size) return;
-    const s = pageEl.clientWidth / size.w;
-    const top = target.y !== null ? (size.h - target.y) * s : 0;
-    scroller.scrollTo({ top: pageEl.offsetTop + top - 12, behavior: "smooth" });
+    const first = await next.getPage(1).catch(() => null);
+    if (!first || seq !== renderSeq) return void next.destroy();
+    void getPager().attach(next, first)?.destroy();
   }
 
   /** Drops the rendered pages (e.g. after switching to a .tex tab without a PDF). */
   function clear() {
     renderSeq++;
-    doc?.destroy();
-    doc = null;
-    pageSizes = [];
-    pagesEl.replaceChildren();
+    void pager?.clear()?.destroy();
   }
 
   $effect(() => {
@@ -105,28 +60,34 @@
   $effect(() => {
     void zoom;
     localStorage.setItem("pdfZoom", String(zoom));
-    if (doc) render();
+    pager?.relayout();
   });
 
-  // Forward sync: scroll to and flash the target box.
+  // Forward sync: scroll to and flash the target box, also on a page that isn't mounted.
+  async function reveal(tg: NonNullable<typeof latex.target>) {
+    const p = pager;
+    if (!p || !(await p.ensureSize(tg.page - 1)) || latex.target !== tg) return;
+    const b = p.pageBox(tg.page - 1);
+    p.scrollToDoc(b.docTop + tg.y * b.scale - scroller.clientHeight / 3, true);
+    flash = { left: b.left + tg.x * b.scale - 4, top: b.top + tg.y * b.scale - 3, w: tg.w * b.scale + 8, h: tg.h * b.scale + 6 };
+    clearTimeout(flashTimer);
+    flashTimer = window.setTimeout(() => (flash = null), 1400);
+  }
+
   $effect(() => {
     const tg = latex.target;
-    if (!tg || !pageSizes[tg.page - 1]) return;
-    const pageEl = pagesEl.querySelector<HTMLElement>(`[data-page="${tg.page}"]`);
-    if (!pageEl) return;
-    const s = pageEl.clientWidth / pageSizes[tg.page - 1].w;
-    scroller.scrollTo({ top: pageEl.offsetTop + tg.y * s - scroller.clientHeight / 3, behavior: "smooth" });
-    flash = { page: tg.page, x: tg.x * s, y: tg.y * s, w: tg.w * s, h: tg.h * s };
-    setTimeout(() => (flash = null), 1400);
+    if (tg) void reveal(tg);
   });
 
   async function onDblClick(e: MouseEvent) {
     const pageEl = (e.target as HTMLElement).closest<HTMLElement>(".page");
-    if (!pageEl) return;
+    if (!pageEl || !pager) return;
     const page = Number(pageEl.dataset.page);
     const r = pageEl.getBoundingClientRect();
-    const s = r.width / pageSizes[page - 1].w;
-    const hit = reverseSync(page, (e.clientX - r.left) / s, (e.clientY - r.top) / s);
+    const { clientX, clientY } = e;
+    if (!(await pager.ensureSize(page - 1))) return;
+    const s = r.width / pager.pageBox(page - 1).width;
+    const hit = reverseSync(page, (clientX - r.left) / s, (clientY - r.top) / s);
     if (!hit) return;
     await openAt(hit.file, hit.line);
   }
@@ -170,7 +131,7 @@
       if (!rootEl || rootEl.clientWidth === last) return;
       last = rootEl.clientWidth;
       clearTimeout(timer);
-      timer = window.setTimeout(() => zoom === 0 && render(), 150);
+      timer = window.setTimeout(() => zoom === 0 && pager?.relayout(), 150);
     });
     ro.observe(rootEl);
     return () => { ro.disconnect(); clearTimeout(timer); };
@@ -178,7 +139,8 @@
 
   onDestroy(() => {
     renderSeq++;
-    doc?.destroy();
+    clearTimeout(flashTimer);
+    void pager?.clear()?.destroy();
   });
 </script>
 
@@ -225,7 +187,7 @@
   {#if latex.progress && latex.pdf}
     <div class="topbar-progress" title={t(`code.pdf.phase.${latex.progress.phase}`)}><div class="fill" style="width: {latex.progress.percent}%"></div></div>
   {/if}
-  <div class="scroller" bind:this={scroller} ondblclick={onDblClick} role="document">
+  <div class="scroller" bind:this={scroller} onscroll={() => pager?.sync()} ondblclick={onDblClick} role="document">
     {#if latex.available === false}
       <div class="empty">
         <h3>{t("code.pdf.notInstalled")}</h3>
@@ -252,10 +214,7 @@
     {/if}
     <div class="pages" class:dark={latex.dark} bind:this={pagesEl}></div>
     {#if flash}
-      {@const pageEl = pagesEl?.querySelector<HTMLElement>(`[data-page="${flash.page}"]`)}
-      {#if pageEl}
-        <div class="flash" style="left: {pageEl.offsetLeft + flash.x - 4}px; top: {pageEl.offsetTop + flash.y - 3}px; width: {flash.w + 8}px; height: {flash.h + 6}px"></div>
-      {/if}
+      <div class="flash" style="left: {flash.left}px; top: {flash.top}px; width: {flash.w}px; height: {flash.h}px"></div>
     {/if}
   </div>
 
@@ -357,9 +316,10 @@
   .zoom .tool { height: 26px; min-width: 26px; }
   .zoom .tool:not(.fit) { width: 26px; padding: 0; }
   .fit { font-size: 11.5px; }
-  .scroller { position: relative; flex: 1; overflow: auto; padding: 16px; }
-  .pages { display: flex; flex-direction: column; align-items: center; gap: 14px; }
-  .pages :global(.page) { position: relative; border-radius: 6px; overflow: hidden; box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5); background: white; }
+  .scroller { position: relative; flex: 1; overflow: auto; }
+  .pages { position: relative; }
+  .pages :global(.slot) { position: absolute; }
+  .pages :global(.page) { position: relative; width: 100%; height: 100%; border-radius: 6px; overflow: hidden; box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5); background: white; }
   .pages :global(canvas) { width: 100%; height: 100%; display: block; }
   .pages :global(.link) { position: absolute; border-radius: 3px; cursor: pointer; }
   .pages :global(.link:hover) { background: rgba(52, 120, 246, 0.14); box-shadow: 0 0 0 1px rgba(52, 120, 246, 0.35); }
@@ -375,8 +335,8 @@
     animation: flash-fade 1.4s ease-out forwards;
   }
   @keyframes flash-fade { 0%, 60% { background: rgba(216, 194, 122, 0.25); box-shadow: 0 0 0 2px rgba(216, 194, 122, 0.7); } 100% { background: transparent; box-shadow: 0 0 0 2px transparent; } }
-  .empty { text-align: center; color: var(--label-2); padding-top: 80px; }
-  .progress-card { max-width: 340px; margin: 70px auto 0; padding: 16px 18px; border-radius: 18px; background: var(--fill-hover); box-shadow: inset 0 1px 0 rgba(var(--hl-rgb), 0.05); }
+  .empty { text-align: center; color: var(--label-2); padding: 96px 16px 0; }
+  .progress-card { box-sizing: border-box; width: calc(100% - 32px); max-width: 340px; margin: 86px auto 0; padding: 16px 18px; border-radius: 18px; background: var(--fill-hover); box-shadow: inset 0 1px 0 rgba(var(--hl-rgb), 0.05); }
   .pc-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; font-weight: 600; color: var(--label); }
   .pc-pct { font-size: 12px; font-weight: 500; color: var(--label-2); font-variant-numeric: tabular-nums; }
   .bar { height: 6px; margin: 12px 0 8px; border-radius: 999px; background: var(--recess); box-shadow: var(--recess-shadow); overflow: hidden; }

@@ -49,7 +49,7 @@
   {:else if tab.viewer === "image"}
     <ImageView {data} path={tab.viewOf!} onText={svg ? () => openViewerAsText(tab.id) : null} />
   {:else if data.file}
-    <PdfView source={data.file} onReadFailed={() => syncFromDisk([tab.viewOf!])} />
+    <PdfView tabId={tab.id} source={data.file} onReadFailed={() => syncFromDisk([tab.viewOf!])} />
   {/if}
 </div>
 

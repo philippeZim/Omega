@@ -1,4 +1,4 @@
-import { beforeEach, expect, test, vi } from "vitest";
+import { beforeEach, describe, expect, test, vi } from "vitest";
 import { flushSync, mount, tick, unmount } from "svelte";
 
 vi.mock("../lib/native", () => ({ openUrl: vi.fn() }));
@@ -66,6 +66,7 @@ const getDocument = vi.hoisted(() => vi.fn());
 vi.mock("pdfjs-dist", () => ({ GlobalWorkerOptions: {}, getDocument, PDFWorker: class {}, PDFDataRangeTransport: class {} }));
 
 import PdfView from "./PdfView.svelte";
+import { forgetViewer } from "../lib/viewerMemory";
 
 async function settle() {
   for (let i = 0; i < 40; i++) await tick();
@@ -223,4 +224,65 @@ test("a file that changed under the open document shows a translated message and
   expect(target.querySelector('[role="alert"]')!.textContent).toContain("app.viewer.brokenPdf");
   expect(onReadFailed).toHaveBeenCalledTimes(1);
   unmount(cmp);
+});
+
+describe("a tab switch", () => {
+  const open = async (tabId: string) => {
+    const target = document.createElement("div");
+    document.body.append(target);
+    const cmp = mount(PdfView, { target, props: { tabId, source: { path: `/p/${tabId}.pdf`, size: 1000 } } });
+    flushSync();
+    await settle();
+    return { target, cmp, scroller: target.querySelector<HTMLElement>(".scroller")! };
+  };
+
+  test("returns to the same page and zoom", async () => {
+    forgetViewer("t1");
+    const a = await open("t1");
+    a.target.querySelectorAll<HTMLElement>(".zoom .tool.round")[1].click(); // 125 %
+    await settle();
+    await scrollTo(a.scroller, 1000 * (250 + 14) + 40);
+    const page = a.target.querySelector(".info")!.textContent;
+    const top = a.scroller.scrollTop;
+    unmount(a.cmp);
+    pdf.requested = [];
+    const b = await open("t1");
+    expect(b.target.querySelector(".pct")!.textContent).toContain("125");
+    expect(b.scroller.scrollTop).toBeCloseTo(top, 0);
+    expect(b.target.querySelector(".info")!.textContent).toBe(page);
+    expect(pdf.requested.filter((n) => n > 1 && n < 900)).toEqual([]); // nothing between the start and the place
+    unmount(b.cmp);
+    forgetViewer("t1");
+  });
+
+  test("each tab has its own place, and a closed tab has none", async () => {
+    forgetViewer("t2");
+    forgetViewer("t3");
+    const a = await open("t2");
+    await scrollTo(a.scroller, topOf(500));
+    unmount(a.cmp);
+    const b = await open("t3");
+    expect(b.scroller.scrollTop).toBe(0);
+    unmount(b.cmp);
+    forgetViewer("t2");
+    const c = await open("t2");
+    expect(c.scroller.scrollTop).toBe(0);
+    unmount(c.cmp);
+    forgetViewer("t2");
+    forgetViewer("t3");
+  });
+
+  test("a hidden tab holds no canvas and does no work", async () => {
+    forgetViewer("t4");
+    const a = await open("t4");
+    const canvases = [...a.target.querySelectorAll("canvas")];
+    expect(canvases.length).toBeGreaterThan(0);
+    unmount(a.cmp);
+    expect(canvases.every((c) => c.width === 0)).toBe(true);
+    const n = pdf.rendered.length;
+    await new Promise((r) => setTimeout(r, 160));
+    expect(pdf.rendered.length).toBe(n);
+    expect(pdf.destroyed).toBeGreaterThan(0);
+    forgetViewer("t4");
+  });
 });
