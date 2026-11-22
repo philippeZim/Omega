@@ -21,7 +21,7 @@ vi.mock("./code/lspExtension", () => ({ setLspHooks: vi.fn() }));
 const lspDocs = vi.hoisted(() => ({ close: vi.fn(), save: vi.fn(async () => {}) }));
 vi.mock("./code/lsp.svelte", () => ({ allClients: () => [], fileUri: (p: string) => "file://" + p, closeLspDoc: lspDocs.close, saveLspDoc: lspDocs.save }));
 vi.mock("./markdown/livePreview", () => ({ setLinkHandler: vi.fn(), resolvePath: vi.fn() }));
-vi.mock("./modes", () => ({ modeForExtension: () => null }));
+vi.mock("./modes", () => ({ modeForPath: () => null }));
 vi.mock("./fsWatch.svelte", () => ({ onFilesChanged: vi.fn(), watchRoot: vi.fn() }));
 vi.mock("./i18n/index.svelte", () => ({ t: (k: string, p?: object) => (p ? `${k} ${JSON.stringify(p)}` : k) }));
 
