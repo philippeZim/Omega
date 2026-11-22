@@ -238,6 +238,18 @@ describe("lspExtension formatting", () => {
     await vi.waitFor(() => expect(v.state.doc.toString()).toBe("void f() {\n\tg();\n\th();\n}\n"));
   });
 
+  test("clangd edits that make no sense change nothing and don't throw", async () => {
+    const c = fakeClient({ capabilities: { documentFormattingProvider: true }, request: vi.fn(async () => [{ range: range(2, 0, 0, 0), newText: "x" }]) });
+    m.client = c;
+    const text = "void f() {\n\tg();\n\th();\n}\n";
+    const v = view(text, [lspExtension("/w/proj/main.c", { server: "clangd", lspId: "c" } as any)]);
+    await vi.waitFor(() => expect(c.open).toHaveBeenCalled());
+    runViewAction(v, "lsp.format");
+    await vi.waitFor(() => expect(c.request).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 20));
+    expect(v.state.doc.toString()).toBe(text);
+  });
+
   test("without indentation the language's convention counts", async () => {
     expect(await optionsFor("a.ts", "let x = 1;\n")).toEqual({ tabSize: 2, insertSpaces: true });
     expect(await optionsFor("a.py", "x = 1\n")).toEqual({ tabSize: 4, insertSpaces: true });

@@ -491,6 +491,12 @@ describe("format with clangd, which ignores the options", () => {
     expect(r.edits).toEqual([edits[1]]);
   });
 
+  test("edits that make no sense are not applied", async () => {
+    await ready(text, "a.c");
+    h.client.request.mockResolvedValue([{ range: { start: { line: 2, character: 0 }, end: { line: 0, character: 0 } }, newText: "x" }]);
+    expect((await run("lsp.format", { path: "a.c", at: at(text) })).edits).toEqual([]);
+  });
+
   test("a style file in the project wins", async () => {
     const d = await ready(text, "a.c");
     h.styleFiles.add(`${d.root}/.clang-format`);
