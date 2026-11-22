@@ -555,6 +555,49 @@ describe("Mojo values and threads", () => {
     expect(await D.hostDebug.setVariable(100, "z", "7")).toBe("7");
   });
 
+  test("a failed read-back keeps the old value instead of the typed text", async () => {
+    m.plan.launch = { type: "mojo-lldb", request: "launch", program: "/p/main" };
+    script();
+    fake.replies.setVariable = () => ({ value: "0700000000000000  7" });
+    await startAndStop();
+    const z = S.dbg.scopes[0].children![0];
+    fake.replies.variables = () => {
+      throw new Error("gone");
+    };
+    await D.setVariable(z, "1234");
+    expect(z.value).toBe("86");
+    expect(await D.hostDebug.setVariable(100, "z", "1234")).toBe("86");
+  });
+
+  test("past the request budget a raw scalar shows a placeholder, not its bytes", async () => {
+    m.plan.launch = { type: "mojo-lldb", request: "launch", program: "/p/main" };
+    script();
+    const many = Array.from({ length: 40 }, (_, i) => ({ name: `v${i}`, value: "2a00000000000000", type, variablesReference: 1000 + i }));
+    fake.replies.variables = (a) => (a.variablesReference === 100 ? { variables: many } : { variables: [{ value: "42" }] });
+    S.dbg.breakpoints["/p/main.py"] = [{ line: 3 }];
+    await D.startDebugging();
+    await vi.waitFor(() => expect(S.dbg.scopes[0]?.children?.length).toBe(40));
+    const values = S.dbg.scopes[0].children!.map((v) => v.value);
+    expect(values.filter((v) => v === "42")).toHaveLength(32);
+    expect(values.filter((v) => v === "<not available>")).toHaveLength(8);
+    expect(values).not.toContain("2a00000000000000");
+  });
+
+  test("a stop shows at once while worker lookups hang", async () => {
+    m.plan.launch = { type: "mojo-lldb", request: "launch", program: "/p/main" };
+    script();
+    const send = fake.onSend.bind(fake);
+    fake.onSend = (msg: string) => {
+      const r = JSON.parse(msg);
+      if (r.command === "stackTrace" && r.arguments.levels === 8) return;
+      send(msg);
+    };
+    await startAndStop();
+    expect(S.dbg.threadId).toBe(1);
+    expect(S.dbg.frames.length).toBeGreaterThan(0);
+    expect(S.dbg.threads.map((x) => x.name)).toEqual(["prog"]);
+  });
+
   test("two workers stopping at once leave the newest stop selected", async () => {
     m.plan.launch = { type: "mojo-lldb", request: "launch", program: "/p/main" };
     script();

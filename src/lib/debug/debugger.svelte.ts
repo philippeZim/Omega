@@ -4,7 +4,7 @@ import { DapSession } from "./dap";
 import { planFor, type Plan } from "./adapters";
 import { dbg, dbgHooks, dbgRemote, saveWatches, SHARED_BP, type Frame, type VarNode } from "./store.svelte";
 import { debugRefresh } from "./editorExt";
-import { limited, mojoThreads, mojoValue, WORKER_FRAMES } from "./mojoValues";
+import { limited, mojoKnownThreads, mojoThreads, mojoValue, WORKER_FRAMES } from "./mojoValues";
 import { app, activeTab, openFile, save, setMode, inRoot } from "../state.svelte";
 import { ui } from "../ui.svelte";
 import * as ed from "../editor";
@@ -506,20 +506,26 @@ async function onStopped(s: DapSession, b: Json) {
     const text = await exceptionText(s, b);
     if (text) log(t("code.dbg.exception", { text }), "error");
   }
+  let threads: Json[] = [];
   try {
-    const threads: Json[] = (await s.request("threads")).threads ?? [];
-    if (mojo) {
-      const stack = async (threadId: number) => (await s.request("stackTrace", { threadId, levels: WORKER_FRAMES })).stackFrames ?? [];
-      const shown = await mojoThreads(threads as { id: number; name: string }[], b.threadId, stack);
-      // Several workers can stop at once: only the newest stop may set the list.
-      if (gen !== runGen) return;
-      dbg.threads = shown;
-    } else dbg.threads = threads;
+    threads = (await s.request("threads")).threads ?? [];
+    // Several workers can stop at once: only the newest stop may set the list.
+    if (mojo && gen !== runGen) return;
+    dbg.threads = mojo ? mojoKnownThreads(threads, b.threadId) : threads;
   } catch {
     dbg.threads = [];
   }
   dbg.threadId = b.threadId ?? dbg.threads[0]?.id ?? null;
   await loadStack();
+  if (mojo) await addBusyWorkers(s, threads, b.threadId, gen);
+}
+
+/** Runs after the stop is on screen, so looking at the workers never delays a step. */
+async function addBusyWorkers(s: DapSession, threads: Json[], stopped: number | undefined, gen: number) {
+  if (gen !== runGen || threads.length === dbg.threads.length) return;
+  const stack = async (threadId: number) => (gen === runGen ? (await s.request("stackTrace", { threadId, levels: WORKER_FRAMES })).stackFrames ?? [] : []);
+  const shown = await mojoThreads(threads as { id: number; name: string }[], stopped, stack);
+  if (gen === runGen && active === s && shown.length !== dbg.threads.length) dbg.threads = shown;
 }
 
 /** "KeyError: 'zz'": the stopped event only carries the type, the message comes from exceptionInfo. */
@@ -670,14 +676,16 @@ async function readEvaluate(s: DapSession, args: Json): Promise<Json> {
   return { ...r, result: m.value, type: m.type, variablesReference: m.ref };
 }
 
-/** A new value from setVariable, in the same form the Variables panel shows. */
-async function setVar(s: DapSession, args: Json): Promise<string> {
+/** A new value from setVariable, in the same form the Variables panel shows. Null if the write
+ *  worked but its result can't be read cleanly. */
+async function setVar(s: DapSession, args: Json): Promise<string | null> {
   const r = await s.request("setVariable", args);
   if (!mojo) return r.value;
-  if (r.type) return (await mojoValue({ value: r.value, type: r.type, ref: r.variablesReference ?? 0 }, (ref) => rawVars(s, ref))).value;
   // Without a type the text can't be read safely: ask for the variable again, by name.
-  const fresh = await readVars(s, args.variablesReference).catch(() => [] as Json[]);
-  return fresh.find((v) => v.name === args.name)?.value ?? args.value;
+  const v = r.type ? { value: r.value, type: r.type, variablesReference: r.variablesReference } : (await rawVars(s, args.variablesReference).catch(() => [] as Json[])).find((x) => x.name === args.name);
+  if (!v) return null;
+  const m = await mojoValue({ value: v.value, type: v.type, ref: v.variablesReference ?? 0 }, (ref) => rawVars(s, ref));
+  return m.unread ? null : m.value;
 }
 
 async function fetchVars(ref: number, prefix: string): Promise<VarNode[]> {
@@ -719,8 +727,11 @@ export async function setVariable(n: VarNode, value: string) {
   if (remoteImpl) return remoteImpl.setVariable(n, value);
   if (!active?.capabilities.supportsSetVariable) return ui.toast(t("code.dbg.noSetVariable"), "error");
   try {
-    n.value = await setVar(active, { variablesReference: n.parentRef, name: n.name, value });
-    n.changed = true;
+    const shown = await setVar(active, { variablesReference: n.parentRef, name: n.name, value });
+    if (shown !== null) {
+      n.value = shown;
+      n.changed = true;
+    }
     await evaluateWatches();
   } catch (e) {
     ui.toast(String(e instanceof Error ? e.message : e), "error");
@@ -884,9 +895,12 @@ export const hostDebug = {
   },
   async setVariable(ref: number, name: string, value: string) {
     if (!active?.capabilities.supportsSetVariable) return null;
+    const old = flatten(dbg.scopes).find((n) => n.parentRef === ref && n.name === name)?.value;
     const shown = await setVar(active, { variablesReference: ref, name, value });
     await refreshAfterChange();
-    return shown;
+    if (shown !== null) return shown;
+    if (old === undefined) throw new Error("unreadable");
+    return old;
   },
   refresh: refreshAfterChange,
   log,

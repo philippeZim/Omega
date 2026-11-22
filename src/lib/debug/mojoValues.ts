@@ -2,10 +2,14 @@
 // raw little-endian bytes ("5600000000000000  86"), and SIMD values have no usable text at all.
 // LLDB's Mojo plugin already computes the real values, so these helpers only pick them out.
 
+import { t } from "../i18n/index.svelte";
+
 export interface DapValue {
   value: string;
   type?: string;
   ref: number;
+  /** The value couldn't be read, so `value` is only a placeholder. */
+  unread?: boolean;
 }
 
 type Children = (ref: number) => Promise<{ value: string }[]>;
@@ -71,11 +75,12 @@ export async function mojoValue(v: DapValue, children: Children): Promise<DapVal
     if (v.value.trim() && !isRawBytes(v.value, scalar[1])) return { value: v.value, type: shownType, ref: 0 };
     // Raw bytes without a summary: the only child is the same scalar, decoded by LLDB.
     const kids = v.ref ? await children(v.ref).catch(() => []) : [];
-    if (kids.length !== 1) return { ...v, type: shownType };
+    // Raw bytes are never shown as a value. Expanding the row can still load the real one.
+    if (kids.length !== 1) return { value: t("code.dbg.valueUnavailable"), type: shownType, ref: v.ref, unread: true };
     const only = kids[0].value;
     if (scalar[1] !== "bool") return { value: only, type: shownType, ref: 0 };
     const bool = only === "1" ? "True" : only === "0" ? "False" : null;
-    return bool ? { value: bool, type: shownType, ref: 0 } : { ...v, type: shownType };
+    return bool ? { value: bool, type: shownType, ref: 0 } : { value: t("code.dbg.valueUnavailable"), type: shownType, ref: 0, unread: true };
   }
   const simd = SIMD.exec(type);
   if (simd) {
@@ -121,21 +126,37 @@ export function limited(max: number) {
 const RUNTIME_WORKER = /^🔥 Thread\d+$/;
 /** Frames to look through: a worker in user code may be inside a libc call. */
 export const WORKER_FRAMES = 8;
+const WORKER_LOOKUP_MS = 2000;
 
 type StackFrame = { source?: { path?: string; presentationHint?: string } };
 const hasUserFrame = (frames: StackFrame[]) => frames.some((f) => f.source?.path && f.source.presentationHint !== "deemphasize");
 
+const stoppedFirst = <T extends { id: number }>(threads: T[], stopped: number | null | undefined) => [...threads.filter((t) => t.id === stopped), ...threads.filter((t) => t.id !== stopped)];
+
+/** The threads to show right away, before any worker's stack is known. Never empty if `threads` isn't. */
+export function mojoKnownThreads<T extends { id: number; name: string }>(threads: T[], stopped: number | null | undefined): T[] {
+  const known = threads.filter((t) => t.id === stopped || !RUNTIME_WORKER.test(t.name));
+  return stoppedFirst(known.length ? known : threads, stopped);
+}
+
+function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  const late = new Promise<never>((_, fail) => (timer = setTimeout(() => fail(new Error("timeout")), ms)));
+  return Promise.race([work, late]).finally(() => clearTimeout(timer));
+}
+
 /** Mojo's runtime starts one idle worker per core. Hides those whose stack is only system code and
- *  lists the stopped thread first. A thread whose stack can't be read stays visible. */
+ *  lists the stopped thread first. A thread whose stack can't be read in time stays visible. No
+ *  verdict is kept between stops, because an idle worker can enter user code at any time. */
 export async function mojoThreads<T extends { id: number; name: string }>(threads: T[], stopped: number | null | undefined, stack: (id: number) => Promise<StackFrame[]>): Promise<T[]> {
   const limit = limited(8);
   const keep = await Promise.all(
     threads.map(async (t) => {
       if (t.id === stopped || !RUNTIME_WORKER.test(t.name)) return true;
-      const frames = await limit(() => stack(t.id)).catch(() => null);
+      const frames = await limit(() => withTimeout(stack(t.id), WORKER_LOOKUP_MS)).catch(() => null);
       return !frames?.length || hasUserFrame(frames);
     }),
   );
   const own = threads.filter((_, i) => keep[i]);
-  return [...own.filter((t) => t.id === stopped), ...own.filter((t) => t.id !== stopped)];
+  return stoppedFirst(own.length ? own : threads, stopped);
 }

@@ -1,5 +1,5 @@
 import { describe, expect, test, vi } from "vitest";
-import { limited, mojoThreads, mojoValue } from "./mojoValues";
+import { limited, mojoKnownThreads, mojoThreads, mojoValue } from "./mojoValues";
 
 const none = async () => [];
 const scalar = (e: string) => `__mlir_type.\`!kgen.scalar<${e}>\``;
@@ -35,11 +35,12 @@ describe("mojoValue", () => {
     expect((await mojoValue({ value: "01", type: scalar("bool"), ref: 4 }, bool)).value).toBe("True");
   });
 
-  test("a scalar it can't decode keeps its text", async () => {
+  test("raw bytes it can't decode are never the value, and the row can still be expanded", async () => {
     const failing = async () => {
       throw new Error("gone");
     };
-    expect(await mojoValue({ value: "0x2a", type: scalar("index"), ref: 4 }, failing)).toEqual({ value: "0x2a", type: "Int", ref: 4 });
+    for (const value of ["0x2a", "2a00000000000000"])
+      expect(await mojoValue({ value, type: scalar("index"), ref: 4 }, failing)).toEqual({ value: "<not available>", type: "Int", ref: 4, unread: true });
   });
 
   test("SIMD shows its elements and stays expandable", async () => {
@@ -72,7 +73,7 @@ describe("mojoValue", () => {
 
   test("a bool scalar never shows a child that isn't 0 or 1", async () => {
     const wrong = async () => [{ value: "85" }];
-    expect(await mojoValue({ value: "55", type: scalar("bool"), ref: 4 }, wrong)).toEqual({ value: "55", type: "Bool", ref: 4 });
+    expect(await mojoValue({ value: "55", type: scalar("bool"), ref: 4 }, wrong)).toEqual({ value: "<not available>", type: "Bool", ref: 0, unread: true });
   });
 
   test("an expanded SIMD element gets its Mojo type name", async () => {
@@ -174,6 +175,23 @@ describe("mojoThreads", () => {
 
   test("keeps every worker in user code, even inside a libc call", async () => {
     expect(await ids(3, async (id) => (id === 2 ? inUserCode : idle))).toEqual([3, 1, 2]);
+  });
+
+  test("a stalled lookup times out and keeps its worker", async () => {
+    vi.useFakeTimers();
+    try {
+      const shown = ids(1, (id) => (id === 2 ? new Promise(() => {}) : Promise.resolve(idle)));
+      await vi.advanceTimersByTimeAsync(2100);
+      expect(await shown).toEqual([1, 2]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("never ends up with an empty list", async () => {
+    const workers = threads.slice(1);
+    expect((await mojoThreads(workers, undefined, async () => idle)).map((t) => t.id)).toEqual([2, 3, 4]);
+    expect(mojoKnownThreads(workers, undefined).map((t) => t.id)).toEqual([2, 3, 4]);
   });
 
   test("keeps a worker whose stack can't be read", async () => {
