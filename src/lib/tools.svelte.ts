@@ -31,7 +31,7 @@ export const TOOLS: Record<ToolId, ToolInfo> = {
   cmake: { label: "CMake", cmds: ["cmake"], mb: 50 },
   ninja: { label: "Ninja", cmds: ["ninja"], mb: 1 },
   clangd: { label: "clangd (C/C++)", cmds: ["clangd"], mb: 40 },
-  jdk: { label: "Java JDK 21", cmds: ["java"], mb: 190 },
+  jdk: { label: "Java JDK 25", cmds: ["java"], mb: 190 },
   gradle: { label: "Gradle", cmds: ["gradle"], mb: 140 },
   rust: { label: "Rust (rustup)", cmds: ["cargo"], mb: 300 },
   git: { label: "Git", cmds: ["git"], mb: 60 },

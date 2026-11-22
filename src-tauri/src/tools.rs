@@ -267,7 +267,7 @@ fn plan(id: &str) -> Result<Plan, String> {
         "jdk" => {
             let os = match OS { "windows" => "windows", "macos" => "mac", _ => "linux" };
             let a = if ARM { "aarch64" } else { "x64" };
-            Plan { url: format!("https://api.adoptium.net/v3/binary/latest/21/ga/{os}/{a}/jdk/hotspot/normal/eclipse"), exe: "java" }
+            Plan { url: format!("https://api.adoptium.net/v3/binary/latest/{}/ga/{os}/{a}/jdk/hotspot/normal/eclipse", crate::jdtls::MIN_JAVA), exe: "java" }
         }
         "gradle" => {
             let v = get_json("https://services.gradle.org/versions/current")?;
@@ -630,7 +630,7 @@ fn write_mojo_launchers() -> Result<(), String> {
     Ok(())
 }
 
-fn sha256_hex(path: &Path) -> Result<String, String> {
+pub fn sha256_hex(path: &Path) -> Result<String, String> {
     use sha2::{Digest, Sha256};
     let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let mut hash = Sha256::new();

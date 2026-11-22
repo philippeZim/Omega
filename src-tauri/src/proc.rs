@@ -480,16 +480,7 @@ pub async fn install_server(app: AppHandle, kind: String) -> Result<String, Stri
                 let bin = if kind == "python" { "basedpyright-langserver" } else { "typescript-language-server" };
                 Ok(crate::env::norm(target.join("node_modules").join(".bin").join(bin)))
             }
-            "java" => {
-                let archive = dir.join(".jdtls.tar.gz");
-                crate::tools::download(&app, "jdtls", "https://download.eclipse.org/jdtls/snapshots/jdt-language-server-latest.tar.gz", &archive)?;
-                let target = dir.join("jdtls");
-                let _ = std::fs::remove_dir_all(&target);
-                let r = crate::tools::unpack(&archive, "jdtls.tar.gz", &target, "");
-                let _ = std::fs::remove_file(archive);
-                r?;
-                Ok(crate::env::norm(target))
-            }
+            "java" => crate::jdtls::install(&app, &dir),
             "rust" => {
                 run(crate::env::tool("rustup")?.args(["component", "add", "rust-analyzer"]))?;
                 Ok("rust-analyzer".into())
