@@ -12,7 +12,7 @@ import { dirname, fsApi } from "../api";
 import { exe, OS, q, cd } from "../platform";
 import type { ToolId } from "../tools.svelte";
 import type { LangId, LangInfo } from "./languages";
-import { goLocal } from "./go";
+import { goPrefix } from "./go";
 import { ocamlShellPrefix } from "./ocamlTools";
 
 export interface OverrideRun {
@@ -83,7 +83,7 @@ export async function overrideRun(lang: LangId, file: string, tsx: string): Prom
       // Built in the private folder, which never holds links: a go.mod next to the file doesn't apply.
       const bin = await workDir(file, "bin");
       const name = exe("omega_out");
-      return { cmd: q(`${bin}/${name}`), needs: ["go"], pre: `(${cd(bin)} && ${goLocal()}go build -o ${name} omega_main.go)`, prepare: async () => void (await refreshBinCopy(file, "omega_main.go")) };
+      return { cmd: q(`${bin}/${name}`), needs: ["go"], pre: `(${cd(bin)} && ${await goPrefix()}go build -o ${name} omega_main.go)`, prepare: async () => void (await refreshBinCopy(file, "omega_main.go")) };
     }
     case "java":
     case "javascript":

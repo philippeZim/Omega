@@ -10,7 +10,7 @@ import { suggestPythonAdd, suggestPythonRemove, pythonRemoveArg, suggestNodeAdd,
 import { validScriptName } from "./packageInput";
 import { duneTarget, findDuneExecutables, pickExecutable } from "./dune";
 import { ocamlShellPrefix } from "./ocamlTools";
-import { goLocal, goModuleName, goPatterns, goRunTarget, isGoTest } from "./go";
+import { goModuleName, goPatterns, goPrefix, goRunTarget, isGoTest } from "./go";
 import { isMojoFile, mojoCompiles, mojoEntry, mojoStem, pixiMojoLauncher, pixiUsesMojo } from "./mojo";
 import { t, i18n, type Key } from "../i18n/index.svelte";
 
@@ -479,18 +479,19 @@ export async function detectProject(file: string | null, workspace: string | nul
     const target = await goRunTarget(p.root, file);
     const all = await goPatterns(p.root);
     const module = await fsApi.exists(joinPath(p.root, "go.mod"));
+    const go = `${await goPrefix()}go`;
     return {
       ...p,
       label: "Go",
       needs: ["go"],
-      run: target ? act("run", "common.run", `go run ${q(target)}`, { shortcut: RUN, usesFile: true }) : null,
-      build: act("build", "code.act.build", `go build ${all}`, { shortcut: BUILD }),
-      test: act("test", "code.act.test", `go test ${all}`),
+      run: target ? act("run", "common.run", `${go} run ${q(target)}`, { shortcut: RUN, usesFile: true }) : null,
+      build: act("build", "code.act.build", `${go} build ${all}`, { shortcut: BUILD }),
+      test: act("test", "code.act.test", `${go} test ${all}`),
       more: [
-        { id: "vet", label: "go vet", cmd: `go vet ${all}` },
-        { id: "fmt", label: "go fmt", cmd: `go fmt ${all}` },
-        ...(module ? [{ id: "tidy", label: "go mod tidy", cmd: "go mod tidy" }, act("add", "code.act.addDep", "go get {}", { ask: askPkg("golang.org/x/text") })] : [{ id: "sync", label: "go work sync", cmd: "go work sync" }]),
-        { id: "clean", label: "go clean", cmd: "go clean" },
+        { id: "vet", label: "go vet", cmd: `${go} vet ${all}` },
+        { id: "fmt", label: "go fmt", cmd: `${go} fmt ${all}` },
+        ...(module ? [{ id: "tidy", label: "go mod tidy", cmd: `${go} mod tidy` }, act("add", "code.act.addDep", `${go} get {}`, { ask: askPkg("golang.org/x/text") })] : [{ id: "sync", label: "go work sync", cmd: `${go} work sync` }]),
+        { id: "clean", label: "go clean", cmd: `${go} clean` },
       ],
     };
   }
@@ -561,7 +562,7 @@ async function singleFileRun(lang: LangId | undefined, file: string): Promise<[s
     case "scala": return [`scala-cli run ${f}`, ["scala"]];
     case "go":
       if (!file.endsWith(".go")) return null; // go.mod and go.sum without a module around them
-      return isGoTest(file) ? [`${goLocal()}go test ${f}`, ["go"]] : [out, ["go"], `${goLocal()}go build -o ${out} ${f}`];
+      return isGoTest(file) ? [`${await goPrefix()}go test ${f}`, ["go"]] : [out, ["go"], `${await goPrefix()}go build -o ${out} ${f}`];
     case "mojo": return mojoCompiles(file) ? [`mojo run ${f}`, ["mojo", "cc"]] : null; // Mojo 1.x refuses .🔥
     case "ocaml": return file.endsWith(".ml") ? [`${await ocamlShellPrefix()}ocaml ${f}`, ["ocaml"]] : null; // an interface doesn't run
     default: return null;

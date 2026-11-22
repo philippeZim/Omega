@@ -7,7 +7,7 @@ import { detectProject, runsAlone, pythonEntry, cmakeConfigure, cmakeExecutable 
 import { duneProjectIssue, duneSourcePath, nearestDuneProject, duneTarget, findDuneExecutables, pickExecutable, sameToolchain } from "../code/dune";
 import { OCAML_PROGRAM_ENV, managedOcaml } from "../code/ocamlTools";
 import { mojoCompiles, mojoStem } from "../code/mojo";
-import { GO_DEBUG_FLAGS, goRunTarget, isGoTest } from "../code/go";
+import { GO_DEBUG_FLAGS, goInfo, goRunTarget, isGoTest } from "../code/go";
 import { toolsDir, clientFor, fileUri, goPauseRoot, javaDebugBundles, metalsPausedFor, ocamlPauseRoot, registerShadow } from "../code/lsp.svelte";
 import { onGuestChange, toolPausedBy } from "../collab/guestChanges";
 import { t, type Key } from "../i18n/index.svelte";
@@ -481,7 +481,9 @@ export async function planFor(ctx: Ctx): Promise<Plan> {
       const dlv = await delve(tools, ctx);
       held();
       const adapter = { kind: "tcp" as const, cmd: dlv, args: ["dap", "--listen=127.0.0.1:{port}"] };
-      const launch = (program: string) => ({ type: "go", request: "launch", name: "Go", mode: "exec", program, args: [], cwd: root, stopOnEntry: false });
+      // The program gets the user's environment back, not the settings Delve itself runs with.
+      const env = (await goInfo())?.program_env;
+      const launch = (program: string) => ({ type: "go", request: "launch", name: "Go", mode: "exec", program, args: [], cwd: root, stopOnEntry: false, ...(env ? { env } : {}) });
       const build = (args: string[], cwd: string) => buildUnlessPaused("go", args, cwd, ctx, paused, "code.lsp.goplsPaused");
       if (alone) {
         // In the build folder, which holds no links: a go.mod next to the file doesn't apply.

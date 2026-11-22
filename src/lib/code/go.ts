@@ -1,10 +1,29 @@
 /** Go projects: what to run in a module or workspace, and the highlighting of go.mod, go.work and go.sum. */
+import { invoke } from "@tauri-apps/api/core";
 import type { StreamParser } from "@codemirror/language";
 import { dirname, fsApi, joinPath } from "../api";
 import { IS_WIN, q } from "../platform";
 
-/** Before a `go` command in a shell: a project's go.mod must not fetch and run another toolchain. */
-export const goLocal = (windows = IS_WIN) => (windows ? 'set "GOTOOLCHAIN=local"&& ' : "GOTOOLCHAIN=local ");
+/**
+ * Before a `go` command in a shell: a project's go.mod must not fetch and run another toolchain.
+ * A value the login shell exports is the user's choice and stays; cmd.exe has no profile, so on
+ * Windows `go_info` already knows it.
+ */
+export const goLocal = (windows = IS_WIN) => (windows ? 'set "GOTOOLCHAIN=local"&& ' : 'GOTOOLCHAIN="${GOTOOLCHAIN:-local}" ');
+
+export interface GoInfo {
+  managed: boolean;
+  user_toolchain: boolean;
+  program_env: Record<string, string | null>;
+}
+
+export const goInfo = () => invoke<GoInfo | null>("go_info").catch(() => null);
+
+/** `goLocal` unless it isn't needed: Omega's Go is local by itself, and `go env -w` is the user's choice. */
+export async function goPrefix() {
+  const info = await goInfo();
+  return info?.managed || info?.user_toolchain ? "" : goLocal();
+}
 
 export const isGoTest = (file: string) => file.endsWith("_test.go");
 

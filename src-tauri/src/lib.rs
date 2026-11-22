@@ -81,6 +81,7 @@ pub fn run() {
             env::refresh_path,
             tools::tool_install,
             tools::tool_installable,
+            tools::golang::go_info,
             installs::installs_status,
             installs::installs_latest,
             installs::installs_remove,

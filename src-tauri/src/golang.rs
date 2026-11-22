@@ -21,6 +21,21 @@ const FOREIGN_VARS: &[&str] = &["GOROOT", "GOPATH", "GOCACHE", "GOMODCACHE", "GO
 /// Settings that could weaken the checks while Omega installs gopls or Delve.
 const UNSAFE_INSTALL_VARS: &[&str] = &["GOSUMDB", "GONOSUMDB", "GONOSUMCHECK", "GOINSECURE", "GOPRIVATE", "GONOPROXY", "GOVCS"];
 
+/// Where Go's telemetry and Delve's config go instead of the user's config folder. Go has no
+/// setting for this (`GOTELEMETRY` and `GOTELEMETRYDIR` are read-only): it follows the OS's config
+/// folder. On macOS that is below HOME, which git and netrc need, so there only Delve moves.
+fn private_config_vars(os: &str, config: &Path) -> Vec<(&'static str, PathBuf)> {
+    let mut vars = vec![("XDG_CONFIG_HOME", config.to_path_buf())];
+    if os == "windows" {
+        vars.push(("APPDATA", config.to_path_buf()));
+    }
+    vars
+}
+
+fn go_config() -> PathBuf {
+    go_home().join("config")
+}
+
 static WORK: Mutex<()> = Mutex::new(());
 
 /// One install or removal of Go's files at a time.
@@ -53,12 +68,27 @@ fn real_go() -> PathBuf {
 /// In front of the real programs on Unix. A terminal's shell can export another Go's GOPATH or
 /// GOFLAGS from its profile after Omega started it, so only a launcher can keep them out.
 #[cfg(unix)]
-fn shim_text(program: &str) -> String {
-    format!(
-        "#!/bin/sh\n# Omega's Go, with its own settings (see go.env) instead of those of another Go.\ndir=$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd) || exit 1\nunset {} GOTOOLCHAIN\nGOENV=off\nexport GOENV\nexec \"$dir/../go/bin/{program}\" \"$@\"\n",
+fn shim_text(program: &str, private_config: bool) -> String {
+    let mut text = format!(
+        "#!/bin/sh\n# Omega's Go, with its own settings (see go.env) instead of those of another Go.\ndir=$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd) || exit 1\nunset {} GOTOOLCHAIN\nGOENV=off\nexport GOENV\n",
         FOREIGN_VARS.join(" ")
-    )
+    );
+    if private_config && program == "go" {
+        // Telemetry stays in Omega's folder. What `go run` and `go test` start gets the user's value back.
+        text.push_str(concat!(
+            "if [ \"${XDG_CONFIG_HOME+x}\" = x ]; then OMEGA_GO_USER_CONFIG=$XDG_CONFIG_HOME; export OMEGA_GO_USER_CONFIG; else unset OMEGA_GO_USER_CONFIG; fi\n",
+            "XDG_CONFIG_HOME=\"$dir/../../go-home/config\"\nexport XDG_CONFIG_HOME\n",
+            "case \"$dir\" in *\"'\"*) q='\"' ;; *) q=\"'\" ;; esac\n",
+            "case \"$1\" in run|test) sub=$1; shift; exec \"$dir/../go/bin/go\" \"$sub\" -exec \"$q$dir/omega-exec$q\" \"$@\" ;; esac\n",
+        ));
+    }
+    text.push_str(&format!("exec \"$dir/../go/bin/{program}\" \"$@\"\n"));
+    text
 }
+
+/// Runs a program built by `go run` or `go test` with the environment it would have had.
+#[cfg(unix)]
+const PROGRAM_SHIM: &str = "#!/bin/sh\nif [ \"${OMEGA_GO_USER_CONFIG+x}\" = x ]; then XDG_CONFIG_HOME=$OMEGA_GO_USER_CONFIG; export XDG_CONFIG_HOME; else unset XDG_CONFIG_HOME; fi\nunset OMEGA_GO_USER_CONFIG GOENV\nexec \"$@\"\n";
 
 /// The folder that goes on the PATH.
 #[cfg(unix)]
@@ -67,9 +97,12 @@ fn write_shims(dir: &Path) -> Result<PathBuf, String> {
     std::fs::create_dir_all(&shim).map_err(|e| format!("tools:go_failed:{e}"))?;
     for program in ["go", "gofmt"] {
         let file = shim.join(program);
-        std::fs::write(&file, shim_text(program)).map_err(|e| format!("tools:go_failed:{e}"))?;
+        std::fs::write(&file, shim_text(program, OS == "linux")).map_err(|e| format!("tools:go_failed:{e}"))?;
         make_executable(&file);
     }
+    let exec = shim.join("omega-exec");
+    std::fs::write(&exec, PROGRAM_SHIM).map_err(|e| format!("tools:go_failed:{e}"))?;
+    make_executable(&exec);
     Ok(shim)
 }
 
@@ -144,11 +177,62 @@ fn go_env_changes(managed: bool) -> (Vec<(&'static str, &'static str)>, &'static
 pub fn apply_go_env(c: &mut Command, program: &OsStr) {
     let Some(stem) = is_go_program(program) else { return };
     let go = if stem == "go" { env::which(&program.to_string_lossy()) } else { env::which("go") };
-    let (set, remove) = go_env_changes(go.is_some_and(|p| p.starts_with(go_dir())));
+    let managed = go.is_some_and(|p| p.starts_with(go_dir()));
+    let (set, remove) = go_env_changes(managed);
     for k in remove {
         c.env_remove(k);
     }
     c.envs(set);
+    let own_tool = env::which(&program.to_string_lossy()).is_some_and(|p| p.starts_with(go_tools_bin()));
+    if managed || own_tool {
+        let config = go_config();
+        let _ = std::fs::create_dir_all(&config);
+        c.envs(private_config_vars(OS, &config));
+    }
+}
+
+/// The user's own Go config file (`go env -w`).
+fn user_go_env_file() -> Option<PathBuf> {
+    match std::env::var_os("GOENV") {
+        Some(v) if v == "off" => return None,
+        Some(v) if !v.is_empty() => return Some(PathBuf::from(v)),
+        _ => {}
+    }
+    dirs_config().map(|d| d.join("go").join("env"))
+}
+
+fn dirs_config() -> Option<PathBuf> {
+    if cfg!(windows) {
+        return std::env::var_os("APPDATA").map(PathBuf::from);
+    }
+    if cfg!(target_os = "macos") {
+        return Some(env::home().join("Library").join("Application Support"));
+    }
+    std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()).map(PathBuf::from).or_else(|| Some(env::home().join(".config")))
+}
+
+fn env_file_sets_toolchain(text: &str) -> bool {
+    text.lines().any(|l| l.trim_start().strip_prefix("GOTOOLCHAIN=").is_some_and(|v| !v.trim().is_empty()))
+}
+
+#[derive(serde::Serialize)]
+pub struct GoInfo {
+    /// `go` on the PATH is Omega's own.
+    managed: bool,
+    /// The user chose a toolchain policy (environment or `go env -w`): Omega's Run leaves it alone.
+    user_toolchain: bool,
+    /// For a debugged program: the values it would have without Omega's settings (`null` = unset).
+    program_env: std::collections::HashMap<String, Option<String>>,
+}
+
+#[tauri::command]
+pub fn go_info() -> GoInfo {
+    let chosen = std::env::var_os("GOTOOLCHAIN").is_some_and(|v| !v.is_empty());
+    let in_file = user_go_env_file().and_then(|f| std::fs::read_to_string(f).ok()).is_some_and(|t| env_file_sets_toolchain(&t));
+    let mut keys = vec!["GOENV", "GOTOOLCHAIN"];
+    keys.extend(private_config_vars(OS, Path::new("")).into_iter().map(|(k, _)| k));
+    let program_env = keys.into_iter().map(|k| (k.to_string(), std::env::var(k).ok())).collect();
+    GoInfo { managed: env::which("go").is_some_and(|p| p.starts_with(go_dir())), user_toolchain: chosen || in_file, program_env }
 }
 
 /// cmd.exe reads no profile, so on Windows a terminal is kept clean when it starts.
@@ -219,8 +303,24 @@ pub fn install_go(app: &AppHandle) -> Result<String, String> {
     let _ = remove_tree(&fresh);
     result?;
     let bin = write_shims(&go_dir())?;
+    telemetry_off(&real_go());
     record("go", &bin)?;
     Ok(env::norm(bin))
+}
+
+/// Go's own switch, in Omega's private config. On macOS that folder can't be moved, so nothing is written.
+fn telemetry_off(go: &Path) {
+    if OS == "macos" {
+        return;
+    }
+    let config = go_config();
+    let _ = std::fs::create_dir_all(&config);
+    let _ = env::command(go).args(["telemetry", "off"]).current_dir(go_home_or_tools()).envs(private_config_vars(OS, &config)).env("GOENV", "off").stdin(Stdio::null()).output();
+}
+
+fn go_home_or_tools() -> PathBuf {
+    let home = go_home();
+    if home.is_dir() { home } else { env::tools_dir() }
 }
 
 /// Builds gopls or Delve with `go install` into Omega's folder. It runs outside any project, and
@@ -234,6 +334,7 @@ pub fn install_go_tool(app: &AppHandle, progress: &str, package: &str, exe: &str
     let (home, bin) = (go_home(), go_tools_bin());
     std::fs::create_dir_all(&bin).map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&home).map_err(|e| e.to_string())?;
+    telemetry_off(&go);
     let _ = app.emit("tool-progress", Progress { id: progress, done: 0, total: 0, stage: "build" });
     let mut c = env::command(&go);
     for k in FOREIGN_VARS.iter().chain(UNSAFE_INSTALL_VARS) {
@@ -249,6 +350,7 @@ pub fn install_go_tool(app: &AppHandle, progress: &str, package: &str, exe: &str
         .env("GOPATH", home.join("path"))
         .env("GOCACHE", home.join("cache"))
         .env("GOMODCACHE", home.join("mod"))
+        .envs(private_config_vars(OS, &go_config()))
         .stdin(Stdio::null());
     if !managed {
         // A system Go keeps its own GOROOT, if the shell names one.
@@ -403,6 +505,52 @@ mod tests {
         let shim = write_shims(&root).unwrap();
         let out = Command::new(shim.join("go")).args(["a b", "c"]).env("GOPATH", "/own").env("GOFLAGS", "-mod=mod").env("GOTOOLCHAIN", "auto").env("KEEP", "yes").output().unwrap();
         assert_eq!(String::from_utf8_lossy(&out.stdout), "2|a b||||off|yes|");
+    }
+
+    #[test]
+    fn config_folders_move_per_system() {
+        let p = Path::new("/c");
+        let names = |os| private_config_vars(os, p).into_iter().map(|(k, _)| k).collect::<Vec<_>>();
+        assert_eq!(names("linux"), ["XDG_CONFIG_HOME"]);
+        assert_eq!(names("macos"), ["XDG_CONFIG_HOME"]);
+        assert_eq!(names("windows"), ["XDG_CONFIG_HOME", "APPDATA"]);
+    }
+
+    #[test]
+    fn a_toolchain_choice_in_go_env_is_seen() {
+        assert!(env_file_sets_toolchain("GOPROXY=x\nGOTOOLCHAIN=auto\n"));
+        assert!(!env_file_sets_toolchain("GOPROXY=x\nGOTOOLCHAIN=\n# GOTOOLCHAIN=auto\n"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_program_started_by_go_gets_the_users_config_folder_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("it's here");
+        std::fs::create_dir_all(root.join("go/bin")).unwrap();
+        let fake = root.join("go/bin/go");
+        // Like `go run -exec`: splits the quoted launcher off and starts the program through it.
+        std::fs::write(&fake, "#!/bin/sh\nprintf 'go:%s|' \"$XDG_CONFIG_HOME\"\nif [ \"$2\" = -exec ]; then x=$3; x=${x#?}; x=${x%?}; exec \"$x\" sh -c 'printf \"prog:%s:%s\" \"${XDG_CONFIG_HOME-unset}\" \"${GOENV-unset}\"'; fi\n").unwrap();
+        make_executable(&fake);
+        std::fs::write(root.join("x"), "").unwrap();
+        let shim = root.join("shim");
+        std::fs::create_dir_all(&shim).unwrap();
+        std::fs::write(shim.join("go"), shim_text("go", true)).unwrap();
+        make_executable(&shim.join("go"));
+        std::fs::write(shim.join("omega-exec"), PROGRAM_SHIM).unwrap();
+        make_executable(&shim.join("omega-exec"));
+        let run = |user: Option<&str>| {
+            let mut c = Command::new(shim.join("go"));
+            c.args(["run", "."]).env_remove("XDG_CONFIG_HOME");
+            if let Some(u) = user {
+                c.env("XDG_CONFIG_HOME", u);
+            }
+            String::from_utf8_lossy(&c.output().unwrap().stdout).to_string()
+        };
+        let own = run(Some("/mine"));
+        assert!(own.starts_with("go:") && own.contains("go-home/config|"), "{own}");
+        assert!(own.ends_with("prog:/mine:unset"), "{own}");
+        assert!(run(None).ends_with("prog:unset:unset"));
     }
 
     #[cfg(unix)]

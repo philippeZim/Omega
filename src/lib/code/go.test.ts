@@ -15,6 +15,7 @@ const ipc = vi.hoisted(() => ({
   buildCode: 0,
   killed: [] as string[],
   spawned: [] as string[],
+  goInfo: null as null | { managed: boolean; user_toolchain: boolean; program_env: Record<string, string | null> },
 }));
 vi.mock("@tauri-apps/api/core", async (orig) => ({
   ...(await orig<typeof import("@tauri-apps/api/core")>()),
@@ -34,6 +35,7 @@ vi.mock("@tauri-apps/api/core", async (orig) => ({
       if (ipc.holdBuild) await ipc.holdBuild;
       return { code: ipc.killed.includes(ipc.buildId) ? -1 : ipc.buildCode, stdout: "", stderr: "build output" };
     }
+    if (cmd === "go_info") return ipc.goInfo;
     if (cmd !== "which_cmd") return null;
     const hook = ipc.onWhich;
     ipc.onWhich = null;
@@ -83,6 +85,7 @@ import { ui } from "../ui.svelte";
 import { t } from "../i18n/index.svelte";
 
 const MAIN = "package main\n\nfunc main() {}\n";
+const GO = 'GOTOOLCHAIN="${GOTOOLCHAIN:-local}" go';
 const release = (root: string) => {
   for (const tool of ["gopls", "ocaml"] as const) resumeTool(tool, root, toolChangeCount(tool));
   resumeMetals(root, metalsChangeCount());
@@ -96,6 +99,7 @@ beforeEach(() => {
   ipc.buildCode = 0;
   ipc.which = {};
   ipc.onWhich = ipc.onBuild = null;
+  ipc.goInfo = null;
 });
 afterEach(() => vi.restoreAllMocks());
 
@@ -139,7 +143,7 @@ describe("Go helpers", () => {
   });
 
   test("the toolchain setting works in both shells", () => {
-    expect(goLocal(false)).toBe("GOTOOLCHAIN=local ");
+    expect(goLocal(false)).toBe('GOTOOLCHAIN="${GOTOOLCHAIN:-local}" ');
     expect(goLocal(true)).toBe('set "GOTOOLCHAIN=local"&& ');
   });
 });
@@ -150,9 +154,9 @@ describe("Go projects", () => {
     disk.set("/m/main.go", MAIN);
     const p = (await detectProject("/m/main.go", "/m"))!;
     expect(p).toMatchObject({ kind: "go", root: "/m", needs: ["go"] });
-    expect(p.run?.cmd).toBe("go run .");
-    expect(p.build?.cmd).toBe("go build ./...");
-    expect(p.test?.cmd).toBe("go test ./...");
+    expect(p.run?.cmd).toBe(`${GO} run .`);
+    expect(p.build?.cmd).toBe(`${GO} build ./...`);
+    expect(p.test?.cmd).toBe(`${GO} test ./...`);
     expect(p.more.map((a) => a.id)).toEqual(expect.arrayContaining(["vet", "fmt", "tidy", "add", "clean"]));
   });
 
@@ -160,7 +164,7 @@ describe("Go projects", () => {
     disk.set("/m/go.mod", "module m\n");
     disk.set("/m/cmd/a/main.go", MAIN);
     disk.set("/m/cmd/b/main.go", MAIN);
-    expect((await detectProject("/m/cmd/b/main.go", "/m"))!.run?.cmd).toBe("go run ./cmd/b");
+    expect((await detectProject("/m/cmd/b/main.go", "/m"))!.run?.cmd).toBe(`${GO} run ./cmd/b`);
   });
 
   test("a library file runs the module's command, a pure library has no Run", async () => {
@@ -168,7 +172,7 @@ describe("Go projects", () => {
     disk.set("/m/lib/l.go", "package lib\n");
     expect((await detectProject("/m/lib/l.go", "/m"))!.run).toBeNull();
     disk.set("/m/cmd/app/main.go", MAIN);
-    expect((await detectProject("/m/lib/l.go", "/m"))!.run?.cmd).toBe("go run ./cmd/app");
+    expect((await detectProject("/m/lib/l.go", "/m"))!.run?.cmd).toBe(`${GO} run ./cmd/app`);
   });
 
   test("a build-ignored generator isn't taken for the program", async () => {
@@ -198,6 +202,24 @@ describe("Go projects", () => {
     expect((await detectProject("/m/web.ts", "/m"))!.kind).toBe("pnpm");
   });
 
+  test("with a system Go a project's go line can't fetch a toolchain through Run, Build or Test", async () => {
+    disk.set("/m/go.mod", "module m\n\ngo 1.99\n");
+    disk.set("/m/main.go", MAIN);
+    ipc.goInfo = { managed: false, user_toolchain: false, program_env: {} };
+    const p = (await detectProject("/m/main.go", "/m"))!;
+    for (const a of [p.run, p.build, p.test, ...p.more]) expect(a!.cmd, a!.id).toMatch(/^GOTOOLCHAIN="\$\{GOTOOLCHAIN:-local\}" go /);
+  });
+
+  test.each([
+    ["the user's own toolchain setting", { managed: false, user_toolchain: true, program_env: {} }],
+    ["Omega's Go, which is local by itself", { managed: true, user_toolchain: false, program_env: {} }],
+  ])("%s gets plain commands", async (_n, info) => {
+    disk.set("/m/go.mod", "module m\n");
+    disk.set("/m/main.go", MAIN);
+    ipc.goInfo = info;
+    expect((await detectProject("/m/main.go", "/m"))!.run?.cmd).toBe("go run .");
+  });
+
   test("the template makes a module with a runnable main", async () => {
     const tpl = TEMPLATES.find((x) => x.id === "go")!;
     const made = await tpl.create("My App");
@@ -212,14 +234,14 @@ describe("A single Go file", () => {
     disk.set("/f/a b.go", MAIN);
     const p = (await detectProject("/f/a b.go", "/f"))!;
     expect(p.kind).toBe("file");
-    expect(p.run?.pre).toBe("GOTOOLCHAIN=local go build -o '/tmp/omega-a b' '/f/a b.go'");
+    expect(p.run?.pre).toBe(`${GO} build -o '/tmp/omega-a b' '/f/a b.go'`);
     expect(p.test).toBeNull();
   });
 
   test("a test file runs its tests", async () => {
     disk.set("/f/a_test.go", "package a\n");
     const p = (await detectProject("/f/a_test.go", "/f"))!;
-    expect(p.test?.cmd).toBe("GOTOOLCHAIN=local go test /f/a_test.go");
+    expect(p.test?.cmd).toBe(`${GO} test /f/a_test.go`);
     expect(p.run?.cmd).toBe(p.test?.cmd);
   });
 
@@ -239,7 +261,7 @@ describe("A file set to Go by hand", () => {
 
   test("builds in the private folder on the local toolchain", async () => {
     const r = (await overrideRun("go", "/py/tool", "tsx"))!;
-    expect(r.pre).toBe("(cd /private/s/bin && GOTOOLCHAIN=local go build -o omega_out omega_main.go)");
+    expect(r.pre).toBe(`(cd /private/s/bin && ${GO} build -o omega_out omega_main.go)`);
     expect(r.cmd).toBe("/private/s/bin/omega_out");
     await r.prepare!();
     expect(ipc.calls).toContain("lang_copy");
@@ -280,6 +302,11 @@ describe("Debugging Go", () => {
     expect(ipc.builds[0]).toEqual(["go", "build", "-gcflags=all=-N -l", "-o", "/tmp/omega-dbg-go-main", "."]);
     expect(plan.adapter).toEqual({ kind: "tcp", cmd: "/sw/dlv", args: ["dap", "--listen=127.0.0.1:{port}"] });
     expect(plan.launch).toMatchObject({ type: "go", request: "launch", mode: "exec", program: "/tmp/omega-dbg-go-main", cwd: "/d" });
+  });
+
+  test("the program gets the user's environment back", async () => {
+    ipc.goInfo = { managed: true, user_toolchain: false, program_env: { XDG_CONFIG_HOME: "/mine", GOENV: null } };
+    expect((await planFor(ctx())).launch.env).toEqual({ XDG_CONFIG_HOME: "/mine", GOENV: null });
   });
 
   test("a test file is debugged as a test binary of its package", async () => {
