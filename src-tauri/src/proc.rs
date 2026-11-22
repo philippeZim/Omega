@@ -574,6 +574,7 @@ pub async fn install_debugger(app: AppHandle, kind: String) -> Result<String, St
             let r = crate::tools::unpack(&archive, "js-debug.tar.gz", &dir, "");
             let _ = std::fs::remove_file(&archive);
             r?;
+            mark_commonjs(&dir.join("js-debug").join("src"))?;
             if let Some(v) = crate::installs::extract_version(&url.rsplit('/').next().unwrap_or_default()) {
                 let _ = std::fs::write(dir.join("js-debug").join(".omega-version"), v);
             }
@@ -605,9 +606,29 @@ pub async fn install_debugger(app: AppHandle, kind: String) -> Result<String, St
     .map_err(|e| e.to_string())?
 }
 
+/// js-debug ships CommonJS without its own package.json, so a `"type": "module"` in any parent
+/// folder (a package.json in the home folder, say) would make Node load it as an ES module.
+fn mark_commonjs(dir: &std::path::Path) -> Result<(), String> {
+    std::fs::write(dir.join("package.json"), "{\"type\":\"commonjs\"}\n").map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{npm_packages, read_message, run_registered};
+    use super::{mark_commonjs, npm_packages, read_message, run_registered};
+
+    #[test]
+    fn js_debug_stays_commonjs_under_a_module_package() {
+        let Some(node) = crate::proc::which("node") else { return };
+        let t = tempfile::tempdir().unwrap();
+        std::fs::write(t.path().join("package.json"), r#"{"type":"module"}"#).unwrap();
+        let src = t.path().join("js-debug").join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let script = src.join("server.js");
+        std::fs::write(&script, "require('fs'); module.exports = 1;").unwrap();
+        assert!(!crate::env::command(&node).arg(&script).output().unwrap().status.success());
+        mark_commonjs(&src).unwrap();
+        assert!(crate::env::command(&node).arg(&script).output().unwrap().status.success());
+    }
     #[cfg(unix)]
     use super::{descendant_groups, descendants, kill_registered, ps_rows};
     use std::collections::{HashMap, HashSet};
