@@ -24,12 +24,52 @@ const UNSAFE_INSTALL_VARS: &[&str] = &["GOSUMDB", "GONOSUMDB", "GONOSUMCHECK", "
 /// Where Go's telemetry and Delve's config go instead of the user's config folder. Go has no
 /// setting for this (`GOTELEMETRY` and `GOTELEMETRYDIR` are read-only): it follows the OS's config
 /// folder. On macOS that is below HOME, which git and netrc need, so there only Delve moves.
-fn private_config_vars(os: &str, config: &Path) -> Vec<(&'static str, PathBuf)> {
-    let mut vars = vec![("XDG_CONFIG_HOME", config.to_path_buf())];
+/// `XDG_CONFIG_HOME` is also where git looks: outside Linux only Delve, which runs no git, gets it.
+fn private_config_vars(os: &str, config: &Path, delve: bool) -> Vec<(&'static str, PathBuf)> {
+    let mut vars = Vec::new();
+    if os == "linux" || delve {
+        vars.push(("XDG_CONFIG_HOME", config.to_path_buf()));
+    }
     if os == "windows" {
         vars.push(("APPDATA", config.to_path_buf()));
     }
     vars
+}
+
+/// Git run by Go reads the user's `git` config folder through the private one, so credentials and
+/// `url.insteadOf` keep working and `~/.gitconfig` keeps its normal precedence. A real folder of
+/// that name is never replaced.
+#[cfg(unix)]
+fn link_user_git(config: &Path, user: &Path) {
+    if user == config {
+        return;
+    }
+    let (link, target) = (config.join("git"), user.join("git"));
+    let meta = std::fs::symlink_metadata(&link).ok();
+    if meta.as_ref().is_some_and(|m| !m.file_type().is_symlink()) {
+        return;
+    }
+    if !target.is_dir() {
+        if meta.is_some() {
+            let _ = std::fs::remove_file(&link);
+        }
+    } else if std::fs::read_link(&link).ok().as_deref() != Some(target.as_path()) {
+        let _ = std::fs::remove_file(&link);
+        let _ = std::os::unix::fs::symlink(&target, &link);
+    }
+}
+
+/// The private config folder, ready for a Go program.
+fn prepare_go_config() -> PathBuf {
+    let config = go_config();
+    let _ = std::fs::create_dir_all(&config);
+    #[cfg(unix)]
+    if OS == "linux" {
+        if let Some(user) = dirs_config() {
+            link_user_git(&config, &user);
+        }
+    }
+    config
 }
 
 fn go_config() -> PathBuf {
@@ -77,7 +117,11 @@ fn shim_text(program: &str, private_config: bool) -> String {
         // Telemetry stays in Omega's folder. What `go run` and `go test` start gets the user's value back.
         text.push_str(concat!(
             "if [ \"${XDG_CONFIG_HOME+x}\" = x ]; then OMEGA_GO_USER_CONFIG=$XDG_CONFIG_HOME; export OMEGA_GO_USER_CONFIG; else unset OMEGA_GO_USER_CONFIG; fi\n",
-            "XDG_CONFIG_HOME=\"$dir/../../go-home/config\"\nexport XDG_CONFIG_HOME\n",
+            "private=$(CDPATH= cd -- \"$dir/../..\" && pwd)/go-home/config\n",
+            "user=${XDG_CONFIG_HOME:-$HOME/.config}\n",
+            // Git run by Go keeps the user's settings; a real folder of that name is left alone.
+            "case \"$user\" in /*) if [ \"$user\" != \"$private\" ]; then mkdir -p \"$private\"; if [ -d \"$user/git\" ]; then if [ -L \"$private/git\" ] || [ ! -e \"$private/git\" ]; then ln -sfn \"$user/git\" \"$private/git\" 2>/dev/null; fi; elif [ -L \"$private/git\" ]; then rm -f \"$private/git\"; fi; fi ;; esac\n",
+            "XDG_CONFIG_HOME=$private\nexport XDG_CONFIG_HOME\n",
             "case \"$dir\" in *\"'\"*) q='\"' ;; *) q=\"'\" ;; esac\n",
             "case \"$1\" in run|test) sub=$1; shift; exec \"$dir/../go/bin/go\" \"$sub\" -exec \"$q$dir/omega-exec$q\" \"$@\" ;; esac\n",
         ));
@@ -185,9 +229,8 @@ pub fn apply_go_env(c: &mut Command, program: &OsStr) {
     c.envs(set);
     let own_tool = env::which(&program.to_string_lossy()).is_some_and(|p| p.starts_with(go_tools_bin()));
     if managed || own_tool {
-        let config = go_config();
-        let _ = std::fs::create_dir_all(&config);
-        c.envs(private_config_vars(OS, &config));
+        let config = prepare_go_config();
+        c.envs(private_config_vars(OS, &config, stem == "dlv"));
     }
 }
 
@@ -230,7 +273,7 @@ pub fn go_info() -> GoInfo {
     let chosen = std::env::var_os("GOTOOLCHAIN").is_some_and(|v| !v.is_empty());
     let in_file = user_go_env_file().and_then(|f| std::fs::read_to_string(f).ok()).is_some_and(|t| env_file_sets_toolchain(&t));
     let mut keys = vec!["GOENV", "GOTOOLCHAIN"];
-    keys.extend(private_config_vars(OS, Path::new("")).into_iter().map(|(k, _)| k));
+    keys.extend(private_config_vars(OS, Path::new(""), true).into_iter().map(|(k, _)| k));
     let program_env = keys.into_iter().map(|k| (k.to_string(), std::env::var(k).ok())).collect();
     GoInfo { managed: env::which("go").is_some_and(|p| p.starts_with(go_dir())), user_toolchain: chosen || in_file, program_env }
 }
@@ -277,6 +320,45 @@ pub(crate) fn remove_tree(dir: &Path) -> Result<(), String> {
     }
 }
 
+fn go_old() -> PathBuf {
+    env::tools_dir().join(".go.old")
+}
+
+/// After a crash during `swap_in`: the old version comes back if the new one never arrived.
+fn recover_old(target: &Path, old: &Path) -> Result<(), String> {
+    if std::fs::symlink_metadata(old).is_err() {
+        return Ok(());
+    }
+    if target.exists() {
+        return remove_tree(old);
+    }
+    std::fs::rename(old, target).map_err(|e| format!("tools:go_failed:{e}"))
+}
+
+/// Puts `fresh` at `target`. Until it is there the old version is only moved aside, and it returns
+/// if the move fails (a virus scanner or an open file on Windows).
+fn swap_in(fresh: &Path, target: &Path, old: &Path) -> Result<(), String> {
+    recover_old(target, old)?;
+    let had_old = target.exists();
+    if had_old {
+        std::fs::rename(target, old).map_err(|e| format!("tools:go_failed:{e}"))?;
+    }
+    if let Err(e) = std::fs::rename(fresh, target) {
+        if had_old && !target.exists() {
+            std::fs::rename(old, target).map_err(|back| format!("tools:go_failed:{e}; {back}"))?;
+        }
+        return Err(format!("tools:go_failed:{e}"));
+    }
+    let _ = remove_tree(old);
+    Ok(())
+}
+
+/// At startup, before the PATH is built from the installed tools.
+pub fn recover_go() {
+    let _work = go_lock();
+    let _ = recover_old(&go_dir(), &go_old());
+}
+
 /// Installs or updates Omega's Go. The old version stays until the new one is complete.
 pub fn install_go(app: &AppHandle) -> Result<String, String> {
     let _work = go_lock();
@@ -296,8 +378,7 @@ pub fn install_go(app: &AppHandle) -> Result<String, String> {
         let env_file = fresh.join("go").join("go.env");
         let shipped = std::fs::read_to_string(&env_file).map_err(|e| format!("tools:go_failed:{e}"))?;
         std::fs::write(&env_file, go_env_text(&shipped, &go_home())).map_err(|e| format!("tools:go_failed:{e}"))?;
-        remove_tree(&go_dir())?;
-        std::fs::rename(&fresh, go_dir()).map_err(|e| format!("tools:go_failed:{e}"))
+        swap_in(&fresh, &go_dir(), &go_old())
     })();
     let _ = std::fs::remove_file(&archive);
     let _ = remove_tree(&fresh);
@@ -313,9 +394,8 @@ fn telemetry_off(go: &Path) {
     if OS == "macos" {
         return;
     }
-    let config = go_config();
-    let _ = std::fs::create_dir_all(&config);
-    let _ = env::command(go).args(["telemetry", "off"]).current_dir(go_home_or_tools()).envs(private_config_vars(OS, &config)).env("GOENV", "off").stdin(Stdio::null()).output();
+    let config = prepare_go_config();
+    let _ = env::command(go).args(["telemetry", "off"]).current_dir(go_home_or_tools()).envs(private_config_vars(OS, &config, false)).env("GOENV", "off").stdin(Stdio::null()).output();
 }
 
 fn go_home_or_tools() -> PathBuf {
@@ -350,7 +430,7 @@ pub fn install_go_tool(app: &AppHandle, progress: &str, package: &str, exe: &str
         .env("GOPATH", home.join("path"))
         .env("GOCACHE", home.join("cache"))
         .env("GOMODCACHE", home.join("mod"))
-        .envs(private_config_vars(OS, &go_config()))
+        .envs(private_config_vars(OS, &prepare_go_config(), false))
         .stdin(Stdio::null());
     if !managed {
         // A system Go keeps its own GOROOT, if the shell names one.
@@ -376,6 +456,7 @@ pub fn remove_go() -> Result<(), String> {
     if !super::manifest().contains_key("go") {
         return Err("installs:not_ours:go".into());
     }
+    remove_tree(&go_old())?;
     remove_tree(&go_dir())?;
     remove_tree(&go_home())?;
     super::forget("go")
@@ -510,10 +591,109 @@ mod tests {
     #[test]
     fn config_folders_move_per_system() {
         let p = Path::new("/c");
-        let names = |os| private_config_vars(os, p).into_iter().map(|(k, _)| k).collect::<Vec<_>>();
-        assert_eq!(names("linux"), ["XDG_CONFIG_HOME"]);
-        assert_eq!(names("macos"), ["XDG_CONFIG_HOME"]);
-        assert_eq!(names("windows"), ["XDG_CONFIG_HOME", "APPDATA"]);
+        let names = |os, delve| private_config_vars(os, p, delve).into_iter().map(|(k, _)| k).collect::<Vec<_>>();
+        assert_eq!(names("linux", false), ["XDG_CONFIG_HOME"]);
+        assert_eq!(names("macos", true), ["XDG_CONFIG_HOME"]);
+        assert_eq!(names("windows", true), ["XDG_CONFIG_HOME", "APPDATA"]);
+        // Go runs git, which reads XDG_CONFIG_HOME too.
+        assert!(names("macos", false).is_empty());
+        assert_eq!(names("windows", false), ["APPDATA"]);
+    }
+
+    fn version_dir(path: &Path, text: &str) {
+        std::fs::create_dir_all(path).unwrap();
+        std::fs::write(path.join("VERSION"), text).unwrap();
+    }
+    fn version(path: &Path) -> String {
+        std::fs::read_to_string(path.join("VERSION")).unwrap()
+    }
+
+    #[test]
+    fn a_failed_replace_keeps_the_old_go() {
+        let dir = tempfile::tempdir().unwrap();
+        let (target, old) = (dir.path().join("go"), dir.path().join(".go.old"));
+        version_dir(&target, "old");
+        assert!(swap_in(&dir.path().join("missing"), &target, &old).is_err());
+        assert_eq!(version(&target), "old");
+        assert!(!old.exists());
+    }
+
+    #[test]
+    fn a_replace_leaves_only_the_new_go() {
+        let dir = tempfile::tempdir().unwrap();
+        let (fresh, target, old) = (dir.path().join(".go.new"), dir.path().join("go"), dir.path().join(".go.old"));
+        version_dir(&target, "old");
+        version_dir(&fresh, "new");
+        swap_in(&fresh, &target, &old).unwrap();
+        assert_eq!(version(&target), "new");
+        assert!(!old.exists() && !fresh.exists());
+    }
+
+    #[test]
+    fn a_crash_between_the_moves_brings_the_old_go_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let (target, old) = (dir.path().join("go"), dir.path().join(".go.old"));
+        version_dir(&old, "old");
+        recover_old(&target, &old).unwrap();
+        assert_eq!(version(&target), "old");
+        assert!(!old.exists());
+    }
+
+    #[test]
+    fn a_crash_after_the_new_go_arrived_only_drops_the_old_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let (target, old) = (dir.path().join("go"), dir.path().join(".go.old"));
+        version_dir(&target, "new");
+        version_dir(&old, "old");
+        recover_old(&target, &old).unwrap();
+        assert_eq!(version(&target), "new");
+        assert!(!old.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn git_under_the_launcher_keeps_the_users_config_and_its_precedence() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(home.join(".config/git")).unwrap();
+        std::fs::write(home.join(".config/git/config"), "[a]\n\tfromxdg = x\n\tboth = xdg\n").unwrap();
+        std::fs::write(home.join(".gitconfig"), "[a]\n\tboth = home\n").unwrap();
+        let root = dir.path().join("tools/go");
+        std::fs::create_dir_all(root.join("go/bin")).unwrap();
+        let fake = root.join("go/bin/go");
+        std::fs::write(&fake, "#!/bin/sh\ngit config --get a.fromxdg\ngit config --get a.both\n").unwrap();
+        make_executable(&fake);
+        let shim = write_shim_for_test(&root);
+        let run = || Command::new(shim.join("go")).arg("get").current_dir(&home).env("HOME", &home).env_remove("XDG_CONFIG_HOME").env_remove("GIT_CONFIG_GLOBAL").env_remove("GIT_CONFIG_SYSTEM").output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&run().stdout), "x\nhome\n");
+        // The user's folder goes away: so does the link.
+        std::fs::remove_dir_all(home.join(".config/git")).unwrap();
+        assert_eq!(String::from_utf8_lossy(&run().stdout), "home\n");
+        assert!(std::fs::symlink_metadata(dir.path().join("tools/go-home/config/git")).is_err());
+    }
+
+    #[cfg(unix)]
+    fn write_shim_for_test(root: &Path) -> PathBuf {
+        let shim = root.join("shim");
+        std::fs::create_dir_all(&shim).unwrap();
+        std::fs::write(shim.join("go"), shim_text("go", true)).unwrap();
+        make_executable(&shim.join("go"));
+        shim
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_git_link_never_replaces_a_real_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let (config, user) = (dir.path().join("private"), dir.path().join("user"));
+        std::fs::create_dir_all(config.join("git")).unwrap();
+        std::fs::write(config.join("git/keep"), "x").unwrap();
+        std::fs::create_dir_all(user.join("git")).unwrap();
+        link_user_git(&config, &user);
+        assert!(config.join("git/keep").exists());
+        std::fs::remove_dir_all(config.join("git")).unwrap();
+        link_user_git(&config, &user);
+        assert_eq!(std::fs::read_link(config.join("git")).unwrap(), user.join("git"));
     }
 
     #[test]

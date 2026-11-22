@@ -39,6 +39,7 @@ pub fn tools_dir() -> PathBuf {
 pub fn init(tools: PathBuf) {
     let _ = std::fs::create_dir_all(&tools);
     let _ = TOOLS_DIR.set(tools);
+    crate::tools::golang::recover_go();
     *BASE_PATH.write().unwrap() = Some(user_path());
     rebuild();
 }
