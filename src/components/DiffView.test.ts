@@ -121,3 +121,13 @@ describe("too large files (#174)", () => {
     expect(ipc.some((c) => c.cmd === "write_file")).toBe(false);
   });
 });
+
+test("a large file open in a tab gets no text diff (#174)", async () => {
+  const { app } = await import("../lib/state.svelte");
+  (app.tabs as unknown[]).push({ id: "l", path: "/r/mid.log", large: true });
+  await open("/r/mid.log", { "/r/mid.log": "x\n" }, { "/r/mid.log": "y\n" });
+  (app.tabs as unknown[]).length = 0;
+  expect(document.querySelector(".cm-mergeView")).toBeNull();
+  expect(document.querySelector(".binary")?.textContent).toBe("git.diff.tooLargeLocal");
+});
+

@@ -242,6 +242,27 @@ test("the read-only head of a too large file is never shared (#174)", async () =
   expect(sent.some((s) => s.msg.t === "doc.state")).toBe(false);
 });
 
+test("a host tab with a large file gives guests nothing (#174)", async () => {
+  hostFs({ "/p/mid.log": "on disk" });
+  const tab = { id: "m1", path: "/p/mid.log", name: "mid.log", large: true };
+  app.tabs.push(tab);
+  texts.set("m1", "the whole large text");
+  expect(share.hostKey(tab as any)).toBeNull();
+  await receive("g1", { t: "doc.open", path: "mid.log" });
+  expect(sent.some((s) => s.msg.t === "doc.state")).toBe(false);
+  const scope = { root: "/p", rel: (p: string) => p.slice(3), abs: (r: string) => `/p/${r}` } as any;
+  expect(share.hostLiveText(scope, "mid.log")).toBeUndefined();
+  expect(share.hostLiveTexts(scope)).toEqual({ texts: {}, omitted: ["mid.log"] });
+});
+
+test("an unsaved tab over 8 MiB isn't shared with a guest (#174)", async () => {
+  hostFs({});
+  app.tabs.push({ id: "u9", path: null, name: "Untitled" });
+  texts.set("u9", "x".repeat(8 * 1024 * 1024 + 1));
+  await receive("g1", { t: "doc.open", path: "tab:u9" });
+  expect(sent.some((s) => s.msg.t === "doc.state")).toBe(false);
+});
+
 test("host deletes a shared file it has open: guests are told, the host tab is unshared (#134)", async () => {
   hostFs({ "/p/src/x.rs": "fn x() {}\n" });
   app.tabs.push({ id: "t1", path: "/p/src/x.rs", name: "x.rs" });
@@ -502,7 +523,7 @@ test("following a guest never opens a path outside the project or in .git", asyn
     expect(openFile).not.toHaveBeenCalled();
 
     await receive("g1", { t: "presence", file: "a.txt", line: 1, name: "G", color: "#333333" });
-    await vi.waitFor(() => expect(openFile).toHaveBeenCalledWith("/p/a.txt"));
+    await vi.waitFor(() => expect(openFile).toHaveBeenCalledWith("/p/a.txt", true));
   } finally {
     share.follow("g1");
   }

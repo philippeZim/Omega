@@ -6,6 +6,7 @@
  *  - Remote cursors via Yjs awareness (y-codemirror.next), presence messages drive "follow mode".
  */
 import * as Y from "yjs";
+import { MAX_TEXT_BYTES, byteLength } from "../largeFile";
 import { Awareness, encodeAwarenessUpdate, applyAwarenessUpdate, removeAwarenessStates } from "y-protocols/awareness";
 import { yCollab, ySyncAnnotation } from "y-codemirror.next";
 import { invoke } from "@tauri-apps/api/core";
@@ -275,7 +276,7 @@ const shareableRel = (abs: string) => {
  * relative path (so the guest's file tree finds them), unsaved "Untitled" tabs their id
  * ("tab:<id>"). Files on disk outside the project and in a git folder aren't shared.
  */
-export const hostKey = (tab: Tab): string | null => (tab.headOf ? null : tab.path ? shareableRel(tab.path) : `tab:${tab.id}`);
+export const hostKey = (tab: Tab): string | null => (tab.headOf || tab.large ? null : tab.path ? shareableRel(tab.path) : `tab:${tab.id}`);
 
 /** Like `hostKey`, but also resolves symlinks. Use it before telling guests about a tab. */
 export async function hostKeyChecked(tab: Tab): Promise<string | null> {
@@ -330,7 +331,7 @@ export function hostLiveText(scope: GuestScope, rel: string): string | undefined
   const d = docs.get(rel);
   if (d && d.root === scope.root) return d.ytext.toString();
   const tab = app.tabs.find((x) => x.path === scope.abs(rel));
-  return tab ? ed.getText(tab.id) : undefined;
+  return tab && !tab.large ? ed.getText(tab.id) : undefined;
 }
 
 /**
@@ -339,14 +340,16 @@ export function hostLiveText(scope: GuestScope, rel: string): string | undefined
  */
 export function hostLiveTexts(scope: GuestScope, maxFile = Infinity, maxTotal = Infinity) {
   const live = new Map<string, string>();
+  const large: string[] = []; // never handed out, whatever the limits (#174)
   for (const tab of app.tabs) {
     const rel = tab.path ? scope.rel(tab.path) : null;
-    if (rel) live.set(rel, ed.getText(tab.id));
+    if (rel && tab.large) large.push(rel);
+    else if (rel) live.set(rel, ed.getText(tab.id));
   }
   // A shared doc is the newest copy, also of a file with a tab.
   for (const d of docs.values()) if (d.root === scope.root && !d.rel.startsWith("tab:")) live.set(d.rel, d.ytext.toString());
   const texts: Record<string, string> = {};
-  const omitted: string[] = [];
+  const omitted = large.filter((rel) => !live.has(rel));
   let total = 0;
   for (const [rel, text] of live) {
     if (text.length > maxFile || total + text.length > maxTotal) omitted.push(rel);
@@ -575,6 +578,7 @@ async function hostDoc(rel: string): Promise<SharedDoc | null> {
     if (!tab || tab.path || tab.headOf) return null;
     const shared = docs.get(rel);
     if (shared) return shared;
+    if (byteLength(ed.getText(tab.id)) > MAX_TEXT_BYTES) return null;
     const d = makeDoc(rel, true);
     d.ytext.insert(0, ed.getText(tab.id));
     bindHostTab(d, tab.id);
@@ -594,12 +598,14 @@ async function hostDoc(rel: string): Promise<SharedDoc | null> {
   }
   const abs = joinPath(root, rel);
   const tab = app.tabs.find((t) => t.path === abs);
+  if (tab?.large) return null; // guests get nothing over 8 MiB (#174)
   let text: string;
   try {
     text = tab ? ed.getText(tab.id) : await fsApi.readFile(abs);
   } catch {
     return null;
   }
+  if (byteLength(text) > MAX_TEXT_BYTES) return null;
   if (app.root !== root) return null; // the host opened another folder meanwhile
   const d = makeDoc(rel, true);
   d.ytext.insert(0, text);
@@ -854,7 +860,7 @@ export function hostCompileTexts(key: string, peer: string) {
   if (!d || !d.subscribers.has(peer)) return null;
   const overlays = new Map<string, string>();
   for (const t of app.tabs) {
-    const rel = t.path && t.dirty ? shareableRel(t.path) : null;
+    const rel = t.path && t.dirty && !t.large ? shareableRel(t.path) : null;
     if (rel) overlays.set(rel, ed.getText(t.id));
   }
   for (const o of docs.values()) if (!o.rel.startsWith("tab:") && o.root === app.root) overlays.set(o.rel, o.ytext.toString());
@@ -1134,7 +1140,8 @@ async function applyFollow() {
     if (app.tabs.some((t) => t.id === id && !t.path)) activate(id);
     scrollToLine(p.line);
   } else if (app.root && (await guestPathOk(p.file))) {
-    await openFile(joinPath(app.root, p.file));
+    // Quiet: following a guest must never start the read of a large file on the host (#174).
+    await openFile(joinPath(app.root, p.file), true);
     scrollToLine(p.line);
   }
 }

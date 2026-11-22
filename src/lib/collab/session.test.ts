@@ -130,6 +130,19 @@ beforeEach(() => {
   collab.role = "guest";
 });
 
+test("joining keeps a large file with unsaved edits open, out of the snapshot (#174)", async () => {
+  addTab("/home/g/mid.log", "mid.log", "UNSAVED LARGE TEXT", true);
+  (app.tabs[0] as { large?: boolean }).large = true;
+  addTab("/home/g/clean.txt", "clean.txt", "clean\n");
+  await join();
+  expect(app.tabs.map((t) => t.path)).toEqual(["/home/g/mid.log"]);
+  expect(localStorage.getItem("collab.guestSnapshot")).not.toContain("UNSAVED LARGE TEXT");
+  expect(texts.get(app.tabs[0].id)).toBe("UNSAVED LARGE TEXT");
+  expect(ui.toast).toHaveBeenCalled();
+  for (const h of endHooks) await h(true);
+  expect(app.tabs.find((t) => t.path === "/home/g/mid.log")?.dirty).toBe(true);
+});
+
 test("joining keeps unsaved edits of a file whose autosave failed, leaving brings them back (#129)", async () => {
   addTab("/home/g/ro.txt", "ro.txt", "UNSAVED GUEST WORK readonly original\n", true);
   addTab("/home/g/clean.txt", "clean.txt", "clean\n");

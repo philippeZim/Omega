@@ -113,7 +113,8 @@
     let current = "";
     let unreadable = false;
     try {
-      current = tab ? ed.getText(tab.id) : await fsApi.readFile(file);
+      if (tab?.large) headTooLarge = true;
+      else current = tab ? ed.getText(tab.id) : await fsApi.readFile(file);
       eol = detectEol(current);
     } catch {
       // Not readable as UTF-8 text is not the same as gone (#66).
