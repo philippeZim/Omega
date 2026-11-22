@@ -278,7 +278,7 @@ export async function createProject(templateId: string, parent: string, name: st
     // Give the tool a moment to write its source files, then open the best candidate.
     for (let j = 0; j < 20; j++) {
       for (const rel of tpl.open) {
-        const f = joinPath(dir, rel.replace("{name}", name.replace(/-/g, "_")));
+        const f = joinPath(dir, rel.replace("{name}", name.toLowerCase().replace(/[-_.]+/g, "_")));
         const found = await fsApi.exists(f);
         if (keptOutOfSession(dir)) return;
         if (found) {
