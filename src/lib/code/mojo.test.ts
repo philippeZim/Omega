@@ -17,7 +17,7 @@ vi.mock("@tauri-apps/api/core", async (orig) => ({
     if (cmd === "tools_dir") return "/tools";
     if (cmd === "tool_installable") return ipc.installable;
     if (cmd === "which_cmd") return ipc.which[a.cmd] ?? null;
-    if (cmd === "run_capture") return { code: 0, stdout: "", stderr: "" };
+    if (cmd === "run_capture" || cmd === "mojo_debug_build") return { code: 0, stdout: "", stderr: "" };
     if (cmd === "install_debugger") ipc.onInstall();
     return null;
   },
@@ -345,10 +345,8 @@ describe("debugging", () => {
     disk.set("/tools/mojo/bin/omega-mojo-dap", "");
     disk.set("/p/mojoproject.toml", "");
     const plan = await planFor(ctx("/p/a b.mojo"));
-    const build = ipc.calls.find((c) => c.cmd === "run_capture")!.args;
-    expect(build.cmd).toBe("/tools/mojo/bin/mojo");
-    expect(build.args).toEqual(["build", "-O0", "-g", "/p/a b.mojo", "-o", "/tmp/omega-dbg-a_b"]);
-    expect(build.cwd).toBe("/p");
+    const build = ipc.calls.find((c) => c.cmd === "mojo_debug_build")!.args;
+    expect(build).toEqual({ source: "/p/a b.mojo", program: "/tmp/omega-dbg-a_b", cwd: "/p" });
     expect(plan.adapter).toEqual({ kind: "stdio", cmd: "/tools/mojo/bin/omega-mojo-dap", args: [] });
     expect(plan.launch).toMatchObject({ request: "launch", program: "/tmp/omega-dbg-a_b", cwd: "/p" });
   });
@@ -363,13 +361,13 @@ describe("debugging", () => {
 
   test("declining the install builds nothing", async () => {
     await expect(planFor(ctx("/p/a.mojo", async () => false))).rejects.toThrow();
-    expect(ipc.calls.some((c) => c.cmd === "run_capture" || c.cmd === "install_debugger")).toBe(false);
+    expect(ipc.calls.some((c) => c.cmd === "mojo_debug_build" || c.cmd === "install_debugger")).toBe(false);
   });
 
   test("a .🔥 file says to rename it instead of installing or building", async () => {
     const ask = vi.fn(async () => true);
     await expect(planFor(ctx("/p/a.🔥", ask))).rejects.toThrow(t("code.ad.mojoFireExt"));
     expect(ask).not.toHaveBeenCalled();
-    expect(ipc.calls.some((c) => c.cmd === "run_capture")).toBe(false);
+    expect(ipc.calls.some((c) => c.cmd === "mojo_debug_build")).toBe(false);
   });
 });

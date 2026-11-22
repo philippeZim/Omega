@@ -346,6 +346,21 @@ pub async fn run_capture(cmd: String, args: Vec<String>, cwd: Option<String>) ->
     .map_err(|e| e.to_string())?
 }
 
+/// `mojo build` for the debugger, see `tools::mojo_debug_build`.
+#[tauri::command]
+pub async fn mojo_debug_build(source: String, program: String, cwd: Option<String>) -> Result<Captured, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let out = crate::tools::mojo_debug_build(&source, &program, cwd.as_deref())?;
+        Ok(Captured {
+            code: out.status.code().unwrap_or(-1),
+            stdout: String::from_utf8_lossy(&out.stdout).into(),
+            stderr: String::from_utf8_lossy(&out.stderr).into(),
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// One shared tool install at a time, across all windows.
 static SHARED_INSTALL: Mutex<()> = Mutex::new(());
 
