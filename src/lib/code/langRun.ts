@@ -39,7 +39,7 @@ export function runCopyName(lang: LangId, text: string): string | null {
 
 /** Path of the language server's copy in its folder. javac wants a public class in a file of its name. */
 export function lspCopyName(lang: LangInfo, text: string): string {
-  const ext: Record<LangId, string> = { python: "py", c: "c", cpp: "cpp", java: "java", javascript: "js", typescript: "ts", rust: "rs", json: "json", toml: "toml", scala: "scala", ocaml: "ml", mojo: "mojo" };
+  const ext: Record<LangId, string> = { python: "py", c: "c", cpp: "cpp", java: "java", javascript: "js", typescript: "ts", rust: "rs", json: "json", toml: "toml", scala: "scala", ocaml: "ml", mojo: "mojo", sql: "sql", yaml: "yaml", shell: "sh", dockerfile: "dockerfile", xml: "xml", makefile: "mk" };
   if (lang.id === "scala") return runCopyName("scala", text)!; // a script needs .sc, a program .scala
   if (lang.id === "java") {
     const cls = /^\s*public\s+(?:(?:final|abstract|sealed|strictfp)\s+)*(?:class|interface|enum|record)\s+([A-Za-z_]\w*)/m.exec(text)?.[1] ?? "OmegaMain";

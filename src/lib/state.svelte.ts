@@ -2,7 +2,7 @@ import { openDialog, saveDialog, openUrl } from "./native";
 import { onGlobalChange } from "./windowStorage";
 import { basename, dirname, extname, fsApi, joinPath, normPath, wellFormed } from "./api";
 import * as ed from "./editor";
-import { modeForExtension, type Mode } from "./modes";
+import { modeForPath, type Mode } from "./modes";
 import { moveLanguageOverrides, overrideFor } from "./code/langOverride.svelte";
 import { ui } from "./ui.svelte";
 import type { SpellLang } from "./spell";
@@ -408,7 +408,7 @@ export async function openFile(path: string) {
   const id = uid();
   ed.createDoc(id, content);
   app.tabs.push({ id, path, name: basename(path), dirty: false, root: inRoot(path, app.root) ? app.root : null, eol: detectEol(content) });
-  const suggested = overrideFor(path) ? "code" : modeForExtension(extname(path));
+  const suggested = overrideFor(path) ? "code" : modeForPath(path);
   if (suggested && suggested !== app.mode) {
     app.mode = suggested;
     localStorage.setItem("mode", suggested);
@@ -451,7 +451,7 @@ export function openVirtual(path: string, name: string, content: string): string
   const id = uid();
   ed.createDoc(id, content);
   app.tabs.push({ id, path, name, dirty: false });
-  const suggested = modeForExtension(extname(path));
+  const suggested = modeForPath(path);
   if (suggested && suggested !== app.mode) {
     app.mode = suggested;
     localStorage.setItem("mode", suggested);
