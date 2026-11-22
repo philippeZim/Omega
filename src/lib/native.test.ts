@@ -9,7 +9,8 @@ const h = vi.hoisted(() => ({
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: h.open, save: h.save }));
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: h.openUrl, revealItemInDir: h.reveal }));
 
-import { openDialog, openUrl, revealItemInDir, sandboxNative, saveDialog } from "./native";
+import { mockIPC } from "@tauri-apps/api/mocks";
+import { linkTarget, openDialog, openUrl, revealItemInDir, sandboxNative, saveDialog } from "./native";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -27,6 +28,39 @@ describe("without sandbox", () => {
     expect(h.openUrl).toHaveBeenCalledWith("https://example.com", "firefox");
     await revealItemInDir("/a/b");
     expect(h.reveal).toHaveBeenCalledWith("/a/b");
+  });
+});
+
+describe("links", () => {
+  test("a plain link leaves through the backend, which cleans the AppImage environment", async () => {
+    const calls: unknown[] = [];
+    mockIPC((cmd, args) => {
+      calls.push([cmd, args]);
+    });
+    await openUrl("https://example.com/");
+    expect(calls).toEqual([["open_external", { url: "https://example.com/" }]]);
+    expect(h.openUrl).not.toHaveBeenCalled();
+  });
+
+  test("only new-window web links are taken over", () => {
+    const click = (href: string, target: string | null, init: MouseEventInit = {}) => {
+      const a = document.createElement("a");
+      a.href = href;
+      if (target) a.target = target;
+      document.body.append(a);
+      let got: string | null = null;
+      a.addEventListener("click", (e) => {
+        got = linkTarget(e);
+        e.preventDefault();
+      });
+      a.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, ...init }));
+      a.remove();
+      return got;
+    };
+    expect(click("https://example.com/", "_blank")).toBe("https://example.com/");
+    expect(click("https://example.com/", null, { ctrlKey: true })).toBe("https://example.com/");
+    expect(click("https://example.com/", null)).toBeNull();
+    expect(click("file:///etc/passwd", "_blank")).toBeNull();
   });
 });
 

@@ -53,12 +53,12 @@ fn test_workspace() -> Option<String> {
 }
 
 fn hypr_json(what: &str) -> Option<Value> {
-    let out = std::process::Command::new("hyprctl").args([what, "-j"]).output().ok()?;
+    let out = crate::env::process("hyprctl").args([what, "-j"]).output().ok()?;
     serde_json::from_slice(&out.stdout).ok()
 }
 
 fn hypr_dispatch(arg: String) {
-    let _ = std::process::Command::new("hyprctl").args(["dispatch", &arg]).output();
+    let _ = crate::env::process("hyprctl").args(["dispatch", &arg]).output();
 }
 
 /// The address of this process's window with `title`.
@@ -71,7 +71,7 @@ fn window_address(clients: &Value, pid: u64, title: &str) -> Option<String> {
 /// Focuses this process's window on Hyprland, through its Lua dispatcher or the classic one.
 pub fn hypr_focus(title: &str) {
     let Some(addr) = hypr_json("clients").and_then(|c| window_address(&c, std::process::id() as u64, title)) else { return };
-    let dispatch = |arg: String| std::process::Command::new("hyprctl").args(["dispatch", &arg]).output().is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "ok");
+    let dispatch = |arg: String| crate::env::process("hyprctl").args(["dispatch", &arg]).output().is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "ok");
     if !dispatch(format!(r#"hl.dsp.focus({{ window = "address:{addr}" }})"#)) {
         dispatch(format!("focuswindow address:{addr}"));
     }

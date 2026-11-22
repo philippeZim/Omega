@@ -260,7 +260,7 @@ fn client_pids(port: u16) -> Vec<u32> {
 #[cfg(target_os = "macos")]
 fn client_pids(port: u16) -> Vec<u32> {
     let me = std::process::id();
-    let Ok(out) = std::process::Command::new("/usr/sbin/lsof").args(["-nP", "-t", &format!("-iTCP:{port}")]).output() else { return vec![] };
+    let Ok(out) = crate::env::process("/usr/sbin/lsof").args(["-nP", "-t", &format!("-iTCP:{port}")]).output() else { return vec![] };
     String::from_utf8_lossy(&out.stdout).lines().filter_map(|l| l.trim().parse().ok()).filter(|p| *p != me).collect()
 }
 
