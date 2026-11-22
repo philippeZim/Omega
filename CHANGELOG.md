@@ -2,7 +2,7 @@
 
 All notable changes to Omega are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Omega uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.2.0] - Unreleased
+## [0.2.0] - 2026-11-22
 
 ### Added
 
@@ -19,27 +19,27 @@ All notable changes to Omega are documented here. The format follows [Keep a Cha
 - **Code Together for guests:** shared Run, Debug, Git, search, terminals, packages and language features, with permissions per guest.
 - Cheat sheets for Scala, OCaml and Mojo, and reworked sheets for the other languages.
 - Keyboard navigation in the file tree.
-- A language server status button with restart in Code mode.
 
 ### Changed
 
 - New Omega logo and app icons.
 - New Python projects use plain `uv init`.
-- Language and language server status now share one button.
+- One button in Code mode now shows the language and the language server status, with restart.
 - Error messages from the backend and Code Together are translated into your language.
 - Shortcut hints across the app follow your configured keymap.
 - Programs started from the AppImage get your normal environment.
+- Java now uses a pinned language server and needs Java 25 for it. Omega installs JDK 25, and a JDK 21 that Omega installed is replaced by it, so your programs run on 25 too.
 
 ### Fixed
 
-- **Editor:** indentation is detected from the file, cursor positions are restored, UTF-8 BOMs are kept on save, and many selection, sorting and case commands behave correctly.
+- **Editor:** indentation is detected from the file, formatting keeps it, cursor positions are restored, UTF-8 BOMs are kept on save, and many selection, sorting and case commands behave correctly.
 - **Files:** no more false "changed on disk" conflicts, deleted files keep their tab and ask before closing, and symlinked folders work in the file tree.
 - **LaTeX:** more reliable included files, diagnostics, outline, SyncTeX and PDF panel.
 - **Markdown:** fixes for links, images, nested quotes, headings and bold or italic toggles.
 - **Find and Replace:** Replace in Files changes exactly the lines Find shows and covers results beyond the display limit.
 - **Git:** rebases and merges in progress can be continued or aborted, the behind count stays current, and diffs of renamed, binary and large files are correct.
 - **Debugger:** Restart, exception stops, variables and breakpoints across projects work reliably.
-- **Language servers:** failed starts and crashes recover cleanly, and servers from a previous folder are stopped.
+- **Language servers:** failed starts and crashes recover cleanly, servers from a previous folder are stopped, and a failed Java project import now shows its reason.
 - **Run and Build:** better CMake, TypeScript, JavaScript and Python project detection.
 - Many layout, accessibility and translation fixes.
 
