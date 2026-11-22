@@ -1058,3 +1058,158 @@ describe("large files opened in full, 8 to 64 MiB (#174)", () => {
   });
 });
 
+
+describe("viewer tabs (#159)", () => {
+  /** `file_info` answers from this stamp; null means the file is gone. */
+  let modified: number | null;
+  async function viewerSetup(files: Record<string, string>) {
+    await setup(files);
+    modified = 1;
+    fs.other = (cmd: string, args: any) => {
+      if (cmd !== "file_info") return null;
+      if (modified === null || !fs.files.has(args.path)) throw "fs:not_found";
+      return { size: 10, too_large: false, preview: false, modified };
+    };
+  }
+  const viewer = (path: string) => st.app.tabs.find((t) => t.viewOf === path)!;
+
+  test("images and PDFs open as viewers without reading text, in any case", async () => {
+    await viewerSetup({ "/p/a.PNG": "\x89", "/p/b.pdf": "%PDF" });
+    await st.openFile("/p/a.PNG");
+    await st.openFile("/p/b.pdf");
+    expect(viewer("/p/a.PNG").viewer).toBe("image");
+    expect(viewer("/p/b.pdf").viewer).toBe("pdf");
+    expect(viewer("/p/b.pdf").path).toBeNull();
+    expect(fs.calls.some((c) => c.cmd === "read_file")).toBe(false);
+  });
+
+  test("opening it again activates the same tab", async () => {
+    await viewerSetup({ "/p/a.png": "", "/p/t.txt": "x" });
+    await st.openFile("/p/a.png");
+    await open("/p/t.txt");
+    await st.openFile("/p/a.png");
+    expect(st.app.tabs).toHaveLength(2);
+    expect(st.app.activeId).toBe(viewer("/p/a.png").id);
+  });
+
+  test("a missing file opens no tab and says so", async () => {
+    await viewerSetup({});
+    await st.openFile("/p/nope.png");
+    expect(st.app.tabs).toHaveLength(0);
+    expect(ui.toast).toHaveBeenCalled();
+  });
+
+  test("can't be saved, and stays clean", async () => {
+    await viewerSetup({ "/p/a.png": "bytes" });
+    await st.openFile("/p/a.png");
+    expect(await st.save(viewer("/p/a.png").id)).toBe(false);
+    expect(await st.save(viewer("/p/a.png").id, true)).toBe(false);
+    expect(writes()).toHaveLength(0);
+    expect(viewer("/p/a.png").dirty).toBe(false);
+    expect(fs.files.get("/p/a.png")).toBe("bytes");
+  });
+
+  test("the editor behind it has no path, spell check or write access", async () => {
+    await viewerSetup({ "/p/a.pdf": "" });
+    await st.openFile("/p/a.pdf");
+    const cfg = ed.activate.mock.calls.at(-1)![1] as { path: string | null; spell: unknown; headNote?: string };
+    expect(cfg.path).toBeNull();
+    expect(cfg.spell).toBeNull();
+    expect(cfg.headNote).toBeTruthy();
+  });
+
+  test("a PDF tab in LaTeX mode starts no compile", async () => {
+    await viewerSetup({ "/p/a.pdf": "" });
+    const latex = await import("./latex/controller.svelte");
+    st.setMode("latex");
+    vi.mocked(latex.schedule).mockClear();
+    await st.openFile("/p/a.pdf");
+    expect(latex.schedule).not.toHaveBeenCalled();
+    st.setMode("text");
+  });
+
+  test("an external change reloads the view, an unchanged file doesn't", async () => {
+    await viewerSetup({ "/p/a.png": "" });
+    await st.openFile("/p/a.png");
+    await st.syncFromDisk(["/p/a.png"]);
+    expect(viewer("/p/a.png").viewRev).toBe(0);
+    modified = 2;
+    await st.syncFromDisk(["/p/a.png"]);
+    expect(viewer("/p/a.png").viewRev).toBe(1);
+  });
+
+  test("a deleted file marks the tab, closing asks nothing, and its return reloads", async () => {
+    await viewerSetup({ "/p/a.png": "" });
+    await st.openFile("/p/a.png");
+    const tab = viewer("/p/a.png");
+    fs.files.delete("/p/a.png");
+    await st.syncFromDisk();
+    expect(tab.deleted).toBe(true);
+    expect(tab.dirty).toBe(false);
+    expect(st.unsavedTabs()).toHaveLength(0);
+    // The text tabs' message promises that Ctrl+S writes the file again; a viewer can't.
+    expect(ui.toasts.at(-1)!.text).toContain("app.viewer.deleted");
+    fs.files.set("/p/a.png", "");
+    await st.syncFromDisk();
+    expect(tab.deleted).toBe(false);
+    expect(tab.viewRev).toBe(1);
+    fs.files.delete("/p/a.png");
+    await st.syncFromDisk();
+    await st.closeTab(tab.id);
+    expect(ui.choose).not.toHaveBeenCalled();
+    expect(st.app.tabs).toHaveLength(0);
+  });
+
+  test("a rename moves the tab", async () => {
+    await viewerSetup({ "/p/d/a.png": "" });
+    await st.openFile("/p/d/a.png");
+    const tab = viewer("/p/d/a.png");
+    st.pathMoved("/p/d", "/p/e");
+    expect(tab.viewOf).toBe("/p/e/a.png");
+    expect(tab.name).toBe("a.png");
+  });
+
+  test("an SVG opens as text on request, and as an image again after that tab closes", async () => {
+    await viewerSetup({ "/p/a.svg": "<svg/>" });
+    await st.openFile("/p/a.svg");
+    await st.openViewerAsText(viewer("/p/a.svg").id);
+    const text = st.app.tabs.find((t) => t.path === "/p/a.svg")!;
+    expect(ed.getText(text.id)).toBe("<svg/>");
+    expect(viewer("/p/a.svg")).toBeUndefined();
+    await st.closeTab(text.id);
+    await st.openFile("/p/a.svg");
+    expect(viewer("/p/a.svg")).toBeDefined();
+  });
+
+  test("an SVG that isn't text falls back to the image", async () => {
+    await viewerSetup({ "/p/a.svg": "x" });
+    fs.beforeRead = async () => {
+      throw "fs:not_utf8";
+    };
+    await st.openFile("/p/a.svg");
+    await st.openViewerAsText(viewer("/p/a.svg").id);
+    expect(viewer("/p/a.svg")).toBeDefined();
+  });
+
+  test("a language override keeps an SVG as text", async () => {
+    await viewerSetup({ "/p/a.svg": "<svg/>" });
+    const { setLanguageOverride } = await import("./code/langOverride.svelte");
+    setLanguageOverride("/p/a.svg", "xml");
+    await st.openFile("/p/a.svg");
+    expect(st.app.tabs[0].path).toBe("/p/a.svg");
+    expect(st.app.tabs[0].viewOf).toBeUndefined();
+    setLanguageOverride("/p/a.svg", null);
+  });
+
+  test("a language override on a binary image still shows the image", async () => {
+    await viewerSetup({ "/p/a.png": "x" });
+    fs.beforeRead = async () => {
+      throw "fs:not_utf8";
+    };
+    const { setLanguageOverride } = await import("./code/langOverride.svelte");
+    setLanguageOverride("/p/a.png", "xml");
+    await st.openFile("/p/a.png");
+    expect(viewer("/p/a.png")).toBeDefined();
+    setLanguageOverride("/p/a.png", null);
+  });
+});

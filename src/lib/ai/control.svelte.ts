@@ -154,7 +154,7 @@ export const TOOLS: Tool[] = [
     run: () => ({
       mode: app.mode,
       projectRoot: app.root,
-      tabs: app.tabs.map((t) => ({ path: t.path, name: t.name, dirty: t.dirty, active: t.id === app.activeId })),
+      tabs: app.tabs.map((t) => ({ path: t.path ?? t.viewOf ?? null, name: t.name, dirty: t.dirty, active: t.id === app.activeId })),
       editor: editorInfo(),
       layout: Object.fromEntries(ZONES.map((z) => [z, { shown: zoneShown(z), active: activeView(z), views: layout.zones[z].views, available: visibleViews(z), size: layout.zones[z].size }])),
       overlays: {

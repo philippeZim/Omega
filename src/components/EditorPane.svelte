@@ -16,6 +16,7 @@
   import { modeSwitchLabel, shortcutLabel } from "../lib/commands.svelte";
   import { runViewAction, viewActionState } from "../lib/editorActions";
   import { GOTO_IDS } from "../lib/code/lspGoto";
+  import FileViewer from "./FileViewer.svelte";
 
   const NAV_COMMANDS = ["lsp.gotoDefinition", ...GOTO_IDS];
 
@@ -74,6 +75,7 @@
     ui.menu = { x: e.clientX, y: e.clientY, items };
   }
 
+  const viewerTab = $derived(activeTab()?.viewOf ? activeTab() : null);
   const modeLabel = $derived(MODES.find((m) => m.id === app.mode)?.label);
   /** Hints follow the configured keymap; unbound commands are left out. */
   const newKey = $derived(shortcutLabel("file.new"));
@@ -85,7 +87,10 @@
 </script>
 
 <div class="pane">
-  <div class="host" class:hidden={!app.activeId} bind:this={host} oncontextmenu={contextMenu} role="presentation"></div>
+  <div class="host" class:hidden={!app.activeId || !!viewerTab} bind:this={host} oncontextmenu={contextMenu} role="presentation"></div>
+  {#if viewerTab}
+    {#key viewerTab.id}<FileViewer tab={viewerTab} />{/key}
+  {/if}
   {#if !app.activeId}
     <div class="welcome">
       <div class="inner">
