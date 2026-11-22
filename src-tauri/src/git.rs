@@ -686,6 +686,7 @@ mod tests {
         assert_eq!(head(&small).unwrap().as_deref(), Some("hi"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn init_is_refused_in_a_bare_repository() {
         let tmp = scratch("init-bare");
