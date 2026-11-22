@@ -286,3 +286,21 @@ describe("a tab switch", () => {
     forgetViewer("t4");
   });
 });
+
+test("fit width accounts for the scrollbar the document itself brings", async () => {
+  const width = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientWidth")!;
+  Object.defineProperty(HTMLElement.prototype, "clientWidth", {
+    configurable: true,
+    get(this: HTMLElement) {
+      return this.querySelector<HTMLElement>(":scope > .pages")?.style.height ? 122 : 132;
+    },
+  });
+  try {
+    const { target, cmp } = await view();
+    const holder = target.querySelector<HTMLElement>('[data-page="1"]')!.parentElement!;
+    expect(parseFloat(holder.style.width)).toBeCloseTo(90); // 122 - 32, not 132 - 32
+    unmount(cmp);
+  } finally {
+    Object.defineProperty(HTMLElement.prototype, "clientWidth", width);
+  }
+});

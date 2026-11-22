@@ -110,6 +110,16 @@ export class PdfPager {
     pages.style.width = this.layout ? `${Math.max(scroller.clientWidth, this.layout.widest + 32)}px` : "";
   }
 
+  /** Sizes the scroll area. If that made a scrollbar appear or go, fit width is computed again for the new width. */
+  private fitSpacer(usedWidth: number) {
+    const l = this.layout!;
+    this.sizeSpacer();
+    const width = this.host.scroller.clientWidth;
+    if (width === usedWidth) return;
+    l.relayout(this.scaleFor(width));
+    this.sizeSpacer();
+  }
+
   private freeSlot(s: Slot) {
     if (this.job?.slot === s) this.cancelJob();
     s.holder.remove();
@@ -226,13 +236,14 @@ export class PdfPager {
     const anchor = resume ?? before?.anchor(this.docY()) ?? null;
     this.cancelJob();
     const base = first.getViewport({ scale: 1 });
-    const next = new PdfLayout(doc.numPages, base.width, base.height, this.scaleFor(scroller.clientWidth));
+    const width = scroller.clientWidth;
+    const next = new PdfLayout(doc.numPages, base.width, base.height, this.scaleFor(width));
     // A new version of a document mostly has the same page sizes: no jumps while they are confirmed.
     if (before) next.adopt(before);
     next.setSize(0, base.width, base.height);
     this.doc = doc;
     this.layout = next;
-    this.sizeSpacer();
+    this.fitSpacer(width);
     scroller.scrollTop = anchor ? next.resolve(anchor) * next.compress : 0;
     const [from, to] = this.near();
     for (const s of [...this.slots.values()]) {
@@ -257,8 +268,9 @@ export class PdfPager {
     if (!l) return;
     const { scroller } = this.host;
     const anchor = l.anchor(this.docY());
-    l.relayout(this.scaleFor(scroller.clientWidth));
-    this.sizeSpacer();
+    const width = scroller.clientWidth;
+    l.relayout(this.scaleFor(width));
+    this.fitSpacer(width);
     scroller.scrollTop = l.resolve(anchor) * l.compress;
     if (this.job && this.job.scale !== l.scales[this.job.slot.index]) this.cancelJob();
     clearTimeout(this.settleTimer);
