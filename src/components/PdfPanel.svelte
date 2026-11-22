@@ -4,13 +4,11 @@
   import { convertFileSrc } from "@tauri-apps/api/core";
   import { openUrl } from "../lib/native";
   import * as pdfjs from "pdfjs-dist";
-  import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+  import { addPageLinks, createPageShell, paintPage, resolvePdfDest } from "../lib/pdfPages";
   import { latex, setDark, reverseSync, forwardSync, installLatex, remoteLatex, remotePdfBytes, compileNow } from "../lib/latex/controller.svelte";
   import { app, activeTab, openFile } from "../lib/state.svelte";
   import * as ed from "../lib/editor";
   import { t } from "../lib/i18n/index.svelte";
-
-  pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
 
   let zoom = $state(Number(localStorage.getItem("pdfZoom")) || 0); // 0 = fit width
   let scroller: HTMLDivElement;
@@ -66,18 +64,10 @@
       const base = page.getViewport({ scale: 1 });
       pageSizes.push({ w: base.width, h: base.height });
       const vp = page.getViewport({ scale: scale(base.width) });
-      const wrap = document.createElement("div");
-      wrap.className = "page";
-      wrap.dataset.page = String(i);
-      wrap.style.width = `${vp.width}px`;
-      wrap.style.height = `${vp.height}px`;
-      const canvas = document.createElement("canvas");
-      canvas.width = Math.floor(vp.width * dpr);
-      canvas.height = Math.floor(vp.height * dpr);
-      wrap.appendChild(canvas);
-      await page.render({ canvasContext: canvas.getContext("2d")!, viewport: vp, transform: dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : undefined }).promise;
+      const wrap = createPageShell(i, vp);
+      await paintPage(page, wrap, vp, dpr).promise;
       if (seq !== renderSeq) return;
-      await addLinks(page, vp, wrap);
+      await addPageLinks(page, vp, wrap, (a) => (a.url ? openUrl(a.url) : gotoDest(a.dest!)));
       frag.push(wrap);
     }
     // Swap all pages at once to avoid flicker, then restore the scroll position.
@@ -85,48 +75,16 @@
     scroller.scrollTop = ratio * scroller.scrollHeight;
   }
 
-  /**
-   * The canvas is only a picture: overlay the PDF's link annotations (hyperref: table of contents,
-   * \ref, \cite, \url) as clickable boxes. Internal links scroll the viewer, external ones open
-   * in the browser.
-   */
-  async function addLinks(page: pdfjs.PDFPageProxy, vp: pdfjs.PageViewport, wrap: HTMLElement) {
-    const annots = await page.getAnnotations({ intent: "display" }).catch(() => []);
-    for (const a of annots) {
-      if (a.subtype !== "Link" || (!a.dest && !a.url)) continue;
-      const [x1, y1, x2, y2] = vp.convertToViewportRectangle(a.rect);
-      const el = document.createElement("a");
-      el.className = "link";
-      el.style.left = `${Math.min(x1, x2)}px`;
-      el.style.top = `${Math.min(y1, y2)}px`;
-      el.style.width = `${Math.abs(x2 - x1)}px`;
-      el.style.height = `${Math.abs(y2 - y1)}px`;
-      if (a.url) el.title = a.url;
-      el.onclick = (e) => {
-        e.preventDefault();
-        if (a.url) openUrl(a.url);
-        else gotoDest(a.dest);
-      };
-      el.ondblclick = (e) => e.stopPropagation(); // don't trigger reverse sync
-      wrap.appendChild(el);
-    }
-  }
-
   /** Scrolls to a PDF destination (named, or explicit `[pageRef, {name}, …args]`). */
   async function gotoDest(dest: string | unknown[]) {
     if (!doc) return;
-    const explicit = typeof dest === "string" ? await doc.getDestination(dest).catch(() => null) : dest;
-    if (!explicit?.length) return;
-    const ref = explicit[0] as number | { num: number; gen: number };
-    const index = typeof ref === "number" ? ref : await doc.getPageIndex(ref).catch(() => -1);
-    const pageEl = pagesEl.querySelector<HTMLElement>(`[data-page="${index + 1}"]`);
-    const size = pageSizes[index];
+    const target = await resolvePdfDest(doc, dest);
+    if (!target) return;
+    const pageEl = pagesEl.querySelector<HTMLElement>(`[data-page="${target.index + 1}"]`);
+    const size = pageSizes[target.index];
     if (!pageEl || !size) return;
     const s = pageEl.clientWidth / size.w;
-    // PDF y runs bottom-up; XYZ carries (left, top, zoom), FitH/FitBH carry (top).
-    const kind = (explicit[1] as { name?: string } | undefined)?.name;
-    const y = kind === "XYZ" ? explicit[3] : kind === "FitH" || kind === "FitBH" ? explicit[2] : null;
-    const top = typeof y === "number" ? (size.h - y) * s : 0;
+    const top = target.y !== null ? (size.h - target.y) * s : 0;
     scroller.scrollTo({ top: pageEl.offsetTop + top - 12, behavior: "smooth" });
   }
 
