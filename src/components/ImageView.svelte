@@ -21,6 +21,8 @@
       (url) => {
         if (stale) return;
         broken = false;
+        // A new picture may have another size: stay hidden until it has loaded. The same URL fires no load.
+        if (url !== src) natural = null;
         src = url;
       },
       () => {
