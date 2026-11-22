@@ -11,6 +11,7 @@ All notable changes to Omega are documented here. The format follows [Keep a Cha
 - **Go:** highlighting, gopls, Run, Test, debugging with Delve, one-click setup and a project template.
 - **Scala, OCaml and Mojo:** highlighting, language servers, Run, Build, Debug, project templates and one-click install. Mojo needs WSL on Windows. OCaml's one-click install isn't available on Windows yet, but an OCaml you installed yourself works.
 - **More file types:** highlighting, comment toggling and indentation for SQL, YAML, Shell, Dockerfile, XML and Makefile.
+- **Image and PDF viewer:** open images (PNG, JPEG, GIF, WebP, BMP, ICO, AVIF, SVG) and PDFs in a normal tab, with zoom and page navigation.
 - **Choose the language of any file:** Run, Debug and the language server follow your choice.
 - **Signature help:** see a function's parameters while you type a call, with the current one highlighted.
 - **Symbol highlighting:** other uses of the symbol under the cursor are marked.
