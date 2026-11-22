@@ -25,6 +25,18 @@ function elementName(e: string): string | null {
   return `${m[1] === "si" ? "Int" : m[1] === "ui" ? "UInt" : "Float"}${m[2]}`;
 }
 
+/** A bool vector is stored as packed bits, lowest first, and LLDB's children are those bytes. Its
+ *  text is only right for the first byte, which makes it a check on the decoding. */
+function boolElements(width: number, bytes: { value: string }[], text: string): string[] | null {
+  const count = Math.ceil(width / 8);
+  if (bytes.length < count) return null;
+  const packed = bytes.slice(0, count).map((b) => (/^\d+$/.test(b.value) ? Number(b.value) : -1));
+  if (packed.some((b) => b < 0 || b > 255)) return null;
+  const items = Array.from({ length: width }, (_, i) => ((packed[i >> 3] >> (i & 7)) & 1 ? "True" : "False"));
+  const shown = [...text.matchAll(/\[\d+\] = (True|False)\b/g)].map((x) => x[1]).slice(0, 8);
+  return shown.every((x, i) => x === items[i]) ? items : null;
+}
+
 function list(items: string[]): string {
   const shown = items.slice(0, SIMD_SHOWN);
   if (items.length > SIMD_SHOWN) shown.push("…");
@@ -52,10 +64,10 @@ export async function mojoValue(v: DapValue, children: Children): Promise<DapVal
     const element = elementName(simd[2]);
     const shownType = element ? `SIMD[${element}, ${simd[1]}]` : type;
     if (simd[2] === "bool") {
-      // The children of a bool vector read the wrong memory (5, 85, 255 …), so they are never shown.
-      // The value text holds the right elements.
-      const items = [...v.value.matchAll(/\[\d+\] = (True|False)\b/g)].map((x) => x[1]);
-      return items.length === Number(simd[1]) ? { value: list(items), type: shownType, ref: 0 } : { ...v, type: shownType, ref: 0 };
+      const kids = v.ref ? await children(v.ref).catch(() => []) : [];
+      const items = boolElements(Number(simd[1]), kids, v.value);
+      // The children are packed bytes, so they are never offered for expansion.
+      return { value: items ? list(items) : shownType, type: shownType, ref: 0 };
     }
     const kids = v.ref ? await children(v.ref).catch(() => []) : [];
     if (!kids.length) return { ...v, type: shownType };

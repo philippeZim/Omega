@@ -47,12 +47,25 @@ describe("mojoValue", () => {
     expect(await mojoValue({ value: simd(4, "si32"), type: simd(4, "si32"), ref: 9 }, kids)).toEqual({ value: "[1, -2, 3, -4]", type: "SIMD[Int32, 4]", ref: 9 });
   });
 
-  test("a bool SIMD uses its text and never its wrong children", async () => {
-    const wrong = async () => ["5", "85", "255", "1"].map((value) => ({ value }));
-    const value = "{\n  (bool) [0] = True\n  (bool) [1] = False\n  (bool) [2] = True\n  (bool) [3] = False\n}";
-    expect(await mojoValue({ value, type: simd(4, "bool"), ref: 9 }, wrong)).toEqual({ value: "[True, False, True, False]", type: "SIMD[Bool, 4]", ref: 0 });
-    const unreadable = simd(4, "bool");
-    expect(await mojoValue({ value: unreadable, type: unreadable, ref: 9 }, wrong)).toEqual({ value: unreadable, type: "SIMD[Bool, 4]", ref: 0 });
+  const boolText = (items: string[]) => `{\n${items.map((x, i) => `  (bool) [${i}] = ${x}`).join("\n")}\n}`;
+  const bytes = (...b: (number | string)[]) => async () => b.map((x) => ({ value: String(x) }));
+
+  test("a bool SIMD decodes its packed bits", async () => {
+    const value = boolText(["True", "False", "True", "False"]);
+    expect(await mojoValue({ value, type: simd(4, "bool"), ref: 9 }, bytes(5, 85, 255, 1))).toEqual({ value: "[True, False, True, False]", type: "SIMD[Bool, 4]", ref: 0 });
+  });
+
+  test("a bool SIMD past 8 elements ignores LLDB's wrong text", async () => {
+    // Real case: all 16 are True, LLDB's text says the last 8 are False.
+    const value = boolText([...Array(8).fill("True"), ...Array(8).fill("False")]);
+    const r = await mojoValue({ value, type: simd(16, "bool"), ref: 9 }, bytes(255, 255, ...Array(14).fill(0)));
+    expect(r.value).toBe(`[${Array(16).fill("True").join(", ")}]`);
+  });
+
+  test("a bool SIMD shows no elements when bytes and text disagree or bytes are unusable", async () => {
+    const value = boolText(["True", "False"]);
+    for (const kids of [bytes(2, 0), bytes("x", 0), bytes(300, 0), bytes()])
+      expect(await mojoValue({ value, type: simd(2, "bool"), ref: 9 }, kids)).toEqual({ value: "SIMD[Bool, 2]", type: "SIMD[Bool, 2]", ref: 0 });
   });
 
   test("a bool scalar never shows a child that isn't 0 or 1", async () => {
