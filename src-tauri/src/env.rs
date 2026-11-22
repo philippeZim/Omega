@@ -216,10 +216,12 @@ pub fn which(cmd: &str) -> Option<PathBuf> {
 
 /// A `Command` with the effective PATH and (on Windows) no console window popping up.
 pub fn command(program: impl AsRef<OsStr>) -> Command {
+    let name = program.as_ref().to_os_string();
     let mut c = process(program);
     c.env("PATH", path());
     c.envs(git_guard_env());
     c.env_remove(GIT_PARAMETERS);
+    crate::tools::golang::apply_go_env(&mut c, &name);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;

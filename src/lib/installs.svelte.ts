@@ -19,7 +19,7 @@ export interface Owner { manager: string; package: string }
 export interface Status { id: string; source: "omega" | "system" | "missing"; path: string | null; version: string | null; owner: Owner | null }
 export interface SysUpdate { available: string | null; command: string | null; full_system: boolean }
 
-const TOOL_IDS: ToolId[] = ["uv", "tectonic", "node", "pnpm", "cmake", "ninja", "jdk", "gradle", "rust", "git", "cc", "scala", "sbt", "ocaml", "mojo"];
+const TOOL_IDS: ToolId[] = ["uv", "tectonic", "node", "pnpm", "cmake", "ninja", "jdk", "gradle", "rust", "git", "cc", "scala", "sbt", "ocaml", "mojo", "go"];
 
 export function catalog(): Item[] {
   return [
@@ -31,11 +31,13 @@ export function catalog(): Item[] {
     { id: "lsp:clangd", group: "lsp", label: "clangd (C/C++)" },
     { id: "lsp:scala", group: "lsp", label: "Metals (Scala)" },
     { id: "lsp:ocaml", group: "lsp", label: "ocaml-lsp-server (OCaml)" },
+    { id: "lsp:go", group: "lsp", label: "gopls (Go)" },
     { id: "debug:codelldb", group: "debug", label: "CodeLLDB (C/C++/Rust)" },
     { id: "debug:debugpy", group: "debug", label: "debugpy (Python)" },
     { id: "debug:jsdebug", group: "debug", label: "js-debug (JS/TS)" },
     { id: "debug:javadebug", group: "debug", label: "java-debug (Java)" },
     { id: "debug:earlybird", group: "debug", label: "Earlybird (OCaml)" },
+    { id: "debug:delve", group: "debug", label: "Delve (Go)" },
   ];
 }
 
@@ -128,7 +130,7 @@ export function manualHint(id: string): string {
   return "";
 }
 
-const LSP_PREREQ: Partial<Record<string, ToolId[]>> = { python: ["node"], typescript: ["node"], java: ["jdk"], rust: ["rust"], scala: ["jdk", "scala"], ocaml: ["ocaml"] };
+const LSP_PREREQ: Partial<Record<string, ToolId[]>> = { python: ["node"], typescript: ["node"], java: ["jdk"], rust: ["rust"], scala: ["jdk", "scala"], ocaml: ["ocaml"], go: ["go"] };
 
 /** opam works for a while: an open editor can start ocamllsp again from the files it is replacing. */
 const usesOcamllsp = (id: string) => id === "lsp:ocaml" || id === "tool:ocaml";
@@ -139,6 +141,7 @@ async function doInstall(id: string) {
     if (id === "lsp:clangd") stopServers("clangd");
     if (usesOcamllsp(id)) stopServers("ocaml");
     if (id === "tool:mojo") stopServers("mojo"); // the update replaces the server's files
+    if (id === "tool:go") stopServers("go"); // gopls calls the go command being replaced
     const ok = await installTool(name as ToolId);
     if (usesOcamllsp(id)) stopServers("ocaml");
     if (id === "tool:mojo") stopServers("mojo");
@@ -160,6 +163,7 @@ async function doInstall(id: string) {
   if (name === "debugpy" && !(await hasTool("uv")) && !(await invoke<string | null>("which_cmd", { cmd: "python3" })) && !(await invoke<string | null>("which_cmd", { cmd: "python" })))
     if (!(await ensureTools(["uv"], t("tools.purpose.debug")))) return false;
   if (name === "earlybird" && !(await ensureTools(["ocaml"], t("tools.purpose.debug")))) return false;
+  if (name === "delve" && !(await ensureTools(["go"], t("tools.purpose.debug")))) return false;
   await withInstallProgress(name, labelOf(id), () => invoke("install_debugger", { kind: name }));
   return true;
 }
@@ -215,6 +219,7 @@ export async function remove(id: string) {
     if (group === "lsp") stopServers(name as ServerKind);
     if (id === "tool:ocaml") stopServers("ocaml"); // ocamllsp lives in the same switch
     if (id === "tool:mojo") stopServers("mojo"); // so does mojo-lsp-server in Mojo's environment
+    if (id === "tool:go") stopServers("go"); // gopls needs the go command
     try {
       await invoke("installs_remove", { id });
     } finally {

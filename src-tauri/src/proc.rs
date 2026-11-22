@@ -498,6 +498,7 @@ pub async fn install_server(app: AppHandle, kind: String) -> Result<String, Stri
             "scala" => crate::tools::install_metals(&app),
             "ocaml" => crate::tools::install_ocaml_package(&app, "lsp-ocaml", "ocaml-lsp-server", "ocamllsp"),
             "mojo" => crate::tools::install_mojo(&app, "lsp-mojo", false),
+            "go" => crate::tools::golang::install_go_tool(&app, "lsp-go", crate::tools::golang::GOPLS, "gopls"),
             _ => Err(format!("proc:no_auto_install:{kind}")),
         }
     })
@@ -606,6 +607,7 @@ pub async fn install_debugger(app: AppHandle, kind: String) -> Result<String, St
         }
         "earlybird" => crate::tools::install_ocaml_package(&app, "earlybird", "earlybird", "ocamlearlybird"),
         "mojo" => crate::tools::install_mojo(&app, "mojo", false),
+        "delve" => crate::tools::golang::install_go_tool(&app, "delve", crate::tools::golang::DELVE, "dlv"),
         _ => Err(format!("proc:unknown_debugger:{kind}")),
     })
     .await
