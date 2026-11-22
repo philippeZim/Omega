@@ -23,7 +23,9 @@ import { dbg } from "./debug/store.svelte";
 import { setTerminalKeyFilter } from "./terminal.svelte";
 import { toggleZone, toggleFocus, showView, moveFocused, resetLayout } from "./layout.svelte";
 import { forwardSync } from "./latex/controller.svelte";
-import { openFind } from "./search/search.svelte";
+import { openFind, find as findPanel } from "./search/search.svelte";
+import { diffState } from "./git/diff.svelte";
+import { zen, toggleZen, exitZen } from "./zen.svelte";
 import { blockedAsGuest, blockedWhileHosting } from "./collab/guard";
 import { collab, startHosting, joinFromClipboard, approveNext, leave as leaveCollab } from "./collab/collab.svelte";
 import { git, push as gitPush, pull as gitPull, newBranch, cloneRepo, publishGitHub, refresh as gitRefresh, connectRemote, initRepo } from "./git/git.svelte";
@@ -137,6 +139,7 @@ const APP_COMMANDS: CommandDef[] = [
   { id: "layout.moveRight", group: "window", keys: ["Mod-Alt-Shift-ArrowRight"], run: () => moveFocused("right"), inTerminal: true },
   { id: "layout.moveBottom", group: "window", keys: ["Mod-Alt-Shift-ArrowDown"], run: () => moveFocused("bottom"), inTerminal: true },
   { id: "layout.reset", group: "window", keys: [], run: resetLayout },
+  { id: "layout.zen", group: "window", keys: ["Mod-Shift-F11"], run: toggleZen, inTerminal: true },
 
   { id: "code.language", group: "code", keys: [], run: () => openLanguageMenu(), modes: ["code"] },
   { id: "run.run", group: "run", keys: ["Shift-F10"], run: () => runAction(runner.project?.run), modes: ["code"] },
@@ -289,7 +292,11 @@ export function conflicts(id: string, key: string): Command[] {
   });
 }
 
+/** Commands that show or rearrange panels: Zen mode hides those, so they stay off until it ends. */
+const PANEL_COMMAND = /^(view\.|layout\.(move|reset)|terminal\.toggle$|debug\.panel$|app\.sidebar$|git\.commit$)/;
+
 function active(c: Command) {
+  if (zen.on && PANEL_COMMAND.test(c.id)) return false;
   return (!c.modes || c.modes.includes(app.mode)) && (!c.when || c.when());
 }
 
@@ -344,6 +351,23 @@ export function handleGlobalKey(e: KeyboardEvent) {
   e.stopPropagation();
   if (c.confirmKey) c.confirmKey().then((ok) => ok && c.run());
   else c.run();
+}
+
+/** Something that Escape should close first. Read before its own handler has closed it. */
+function popupOpen() {
+  return !!(ui.dialog || ui.menu || ui.help || palette.open || settings.open || report.open || collab.open || findPanel.open || diffState.file || runner.newProject || recording.active);
+}
+
+/**
+ * Window keydown, capture phase: Escape ends Zen mode unless something else wants it. Open popups
+ * are checked now; editor handlers (completion, find panel, multiple cursors) run after this and
+ * mark the event as handled, so the decision waits until the event has finished.
+ */
+export function handleZenEscape(e: KeyboardEvent) {
+  if (!zen.on || e.key !== "Escape" || e.repeat || e.isComposing || e.ctrlKey || e.altKey || e.shiftKey || e.metaKey || popupOpen()) return;
+  setTimeout(() => {
+    if (!e.defaultPrevented) void exitZen();
+  });
 }
 
 /** Runs any command by id (palette). Editor commands target the active editor. */

@@ -126,7 +126,11 @@ export interface DropTarget {
   line?: { x: number; y: number; h: number };
 }
 
+/** Layout as it was when Zen mode started; while set, nothing is written to storage. */
+let frozen: { zones: Record<Zone, ZoneState>; open: OpenState; peek: Record<Zone, boolean> } | null = null;
+
 function save() {
+  if (frozen) return;
   try {
     localStorage.setItem("layout", JSON.stringify({ zones: layout.zones, open: layout.open }));
   } catch {}
@@ -297,6 +301,20 @@ export function moveFocused(z: Zone) {
   if (!v || !available(v)) return;
   moveView(v, z);
   setTimeout(() => focusView(v), 50);
+}
+
+/** Zen mode: keeps the current layout and stops saving, so a restart still finds the normal one. */
+export function freezeLayout() {
+  frozen ??= $state.snapshot({ zones: layout.zones, open: layout.open, peek }) as NonNullable<typeof frozen>;
+}
+
+/** Zen mode ended: back to the kept layout, whatever happened to it in between. */
+export function restoreLayout() {
+  if (!frozen) return;
+  layout.zones = frozen.zones;
+  layout.open = frozen.open;
+  Object.assign(peek, frozen.peek);
+  frozen = null;
 }
 
 export function resetLayout() {

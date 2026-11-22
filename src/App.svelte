@@ -55,7 +55,8 @@
   });
   import { find } from "./lib/search/search.svelte";
   import { setConditionHook } from "./lib/debug/editorExt";
-  import { handleGlobalKey, palette } from "./lib/commands.svelte";
+  import { handleGlobalKey, handleZenEscape, palette } from "./lib/commands.svelte";
+  import { zen } from "./lib/zen.svelte";
   import { app } from "./lib/state.svelte";
   import { ui } from "./lib/ui.svelte";
   import { t } from "./lib/i18n/index.svelte";
@@ -88,9 +89,9 @@
 </script>
 
 <!-- Capture phase: app shortcuts win over focused widgets except the editor, which handles its own first. -->
-<svelte:window onkeydown={handleGlobalKey} />
+<svelte:window onkeydown={handleGlobalKey} onkeydowncapture={handleZenEscape} />
 
-<div class="shell">
+<div class="shell" class:zen={zen.on}>
   <TopBar />
   <div class="main" class:floating onpointerdowncapture={centerDown}>
     <DockZone zone="left" />
@@ -169,4 +170,14 @@
     flex-direction: column;
     overflow: hidden;
   }
+  /* Zen mode only hides things with CSS: terminals, debugger and PDF stay mounted and keep running.
+     No transition on purpose (never animate transform/opacity on or over glass). */
+  .shell.zen { padding: 0; }
+  .shell.zen > :global(.topbar),
+  .shell.zen :global(.dock),
+  .shell.zen .workspace > :global(:not(.pane)),
+  .shell.zen :global(.cm-gutters) { display: none; }
+  .shell.zen .center { min-width: 0; }
+  .shell.zen .workspace { border-radius: 0; box-shadow: none; }
+  .shell.zen :global(.cm-editor .cm-content) { max-width: var(--prose-width, 1000px); margin: 0 auto; padding: 48px 32px 40vh; }
 </style>
