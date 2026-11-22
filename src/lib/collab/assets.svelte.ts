@@ -9,6 +9,7 @@ import { sessionEndHooks } from "./collab.svelte";
 import { guestScope, openRemote, share } from "./share.svelte";
 import { AssetCache, imageDataUrl, remoteRel } from "./guestAssets";
 import { imageHooks } from "../markdown/widgets";
+import { viewerHooks } from "../viewerData";
 import { activeTab, collabHooks } from "../state.svelte";
 import { ui } from "../ui.svelte";
 import { t } from "../i18n/index.svelte";
@@ -70,6 +71,8 @@ imageHooks.load = (img, rel) => {
     else img.classList.add("broken");
   });
 };
+
+viewerHooks.remoteImage = fetchImage;
 
 sessionEndHooks.push(() => {
   cache.clear();

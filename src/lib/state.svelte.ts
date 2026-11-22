@@ -19,13 +19,14 @@ import { findHeadingLine } from "./headingAnchor";
 import { blockedAsGuest, guestGuard } from "./collab/guard";
 import { toolsBeforeSave } from "./collab/guestChanges";
 import { byteLength, formatSize } from "./largeFile";
+import { isSvgPath, viewerKind, type ViewerKind } from "./viewer";
 
 setLspHooks({
   workspace: () => app.root,
   askInstall: (_kind, name) =>
     ui.confirm(t("app.lspInstallTitle"), t("app.lspInstallMessage", { name }), t("app.install")),
   navigate: async (path, line, ch) => {
-    await openFile(path);
+    await openFile(path, false, true);
     // The open can be cancelled (large file) or fail: the cursor must not jump in another file.
     const wanted = resolveDots(normPath(path));
     const tab = activeTab();
@@ -85,6 +86,11 @@ export interface Tab {
   headNote?: string;
   /** The whole file, 8 to 64 MiB, opened after a warning: editable, saved by hand, no language features (#174). */
   large?: boolean;
+  /** Read-only image or PDF view of this file. The tab has no `path`, so no text feature applies to it (#159). */
+  viewOf?: string;
+  viewer?: ViewerKind;
+  /** Bumped when the viewed file changed, so the view loads it again. */
+  viewRev?: number;
 }
 
 export const app = $state({
@@ -106,6 +112,8 @@ function cfg(): ed.EditorConfig {
   const tab = activeTab();
   const path = tab?.path ?? null;
   if (tab?.headOf) return { mode: app.mode, path, spell: null, headNote: tab.headNote };
+  // The (empty, hidden) buffer behind a viewer tab must not accept text from any command.
+  if (tab?.viewOf) return { mode: app.mode, path, spell: null, headNote: tab.name };
   if (tab?.large) return { mode: app.mode, path, spell: null, largeNote: t("app.large.reduced") };
   return { mode: app.mode, path, spell: app.spellEnabled ? spellLangFor(path) : null };
 }
@@ -220,6 +228,7 @@ async function autosave(id: string | null) {
 function markDeleted(tab: Tab) {
   if (tab.deleted) return;
   tab.deleted = true;
+  if (tab.viewOf) return ui.toast(t("app.viewer.deleted", { name: tab.name })); // no edits to lose, nothing to write back
   tab.dirty = true;
   ui.toast(t("app.deletedOnDisk", { name: tab.name }));
 }
@@ -273,6 +282,20 @@ async function syncLargeTab(tab: Tab & { path: string }) {
     tab.dirty = ed.isDirty(tab.id);
   }
   if (!writing.has(tab.id) && stampOf(info) !== diskStamps.get(tab.id)) noticeStale(tab);
+}
+
+/** A viewer tab's file: reloads the view when size or time changed, follows deletion and return. */
+async function syncViewerTab(tab: Tab & { viewOf: string }) {
+  const info = await fsApi.fileInfo(tab.viewOf).catch(() => null);
+  if (!info) {
+    if (!tab.deleted && !(await fsApi.exists(tab.viewOf).catch(() => true))) markDeleted(tab);
+    return;
+  }
+  const stamp = stampOf(info);
+  if (!tab.deleted && stamp === diskStamps.get(tab.id)) return;
+  tab.deleted = false;
+  diskStamps.set(tab.id, stamp);
+  tab.viewRev = (tab.viewRev ?? 0) + 1;
 }
 
 /** `raw`: the file content as read from disk. */
@@ -333,6 +356,10 @@ export async function syncFromDisk(paths?: string[]) {
     do {
       syncAgain = false;
       for (const t of app.tabs) {
+        if (t.viewOf) {
+          if (!isRemotePath(t.viewOf) && (!only || only.has(t.viewOf))) await syncViewerTab(t as Tab & { viewOf: string });
+          continue;
+        }
         if (!t.path || isRemotePath(t.path) || (only && !only.has(t.path))) continue;
         if (writing.has(t.id) || conflicts.has(t.id)) continue;
         if (t.large) {
@@ -415,7 +442,7 @@ ed.setCallbacks({
 /** Kick off LaTeX compilation when entering LaTeX mode or switching tabs within it. */
 function latexHook() {
   const t = activeTab();
-  if (app.mode === "latex" && t && !t.headOf && !t.large) latexCtl.schedule(t.id, t.path, 0);
+  if (app.mode === "latex" && t && !t.headOf && !t.large && !t.viewOf) latexCtl.schedule(t.id, t.path, 0);
 }
 
 export function setMode(mode: Mode) {
@@ -445,20 +472,29 @@ export function activate(id: string) {
   app.activeId = id;
   ed.activate(id, cfg());
   latexHook();
-  touchRecent(activeTab()?.path);
+  touchRecent(activeTab()?.path ?? (isRemotePath(activeTab()?.viewOf) ? null : activeTab()?.viewOf));
 }
 
-/** `quiet`: nobody asked for this file right now (session restore), so a too large one is only reported. */
-export async function openFile(path: string, quiet = false) {
+/**
+ * `quiet`: nobody asked for this file right now (session restore), so a too large one is only reported.
+ * `atLine`: the caller goes on to a line or selection in it, so an SVG opens as text. Binary kinds stay viewers.
+ */
+export async function openFile(path: string, quiet = false, atLine = false) {
   path = resolveDots(normPath(path));
-  const existing = app.tabs.find((t) => t.path === path || t.headOf === path);
+  if (atLine && isSvgPath(path)) return openSvgAsText(path, quiet);
+  const existing = app.tabs.find((t) => t.path === path || t.headOf === path || t.viewOf === path);
   if (existing) return activate(existing.id);
   if (isRemotePath(path)) return collabHooks.openRemote(path);
+  const kind = viewerKind(path);
+  if (kind && !wantsText(path)) return openViewerTab(path, kind);
   let content: string;
   try {
     content = await fsApi.readFile(path);
   } catch (e) {
+    // Marked as text, but only an SVG can be: anything else still gets its viewer.
+    if (kind && !isSvgPath(path)) return openViewerTab(path, kind);
     const info = await fsApi.fileInfo(path).catch(() => null);
+    if (kind && !info?.too_large) return openViewerTab(path, kind);
     if (info?.too_large) return info.preview ? openHead(path, info.size, quiet) : openLarge(path, info.size, quiet);
     ui.toast(t("app.cannotOpenFile", { error: String(e) }), "error");
     return;
@@ -473,6 +509,60 @@ export async function openFile(path: string, quiet = false) {
   }
   activate(id);
   collabHooks.tabOpened(id, path);
+}
+
+/** Viewable files the user asked to see as text ("Open as Text"), until that text tab closes. */
+const textViews = new Set<string>();
+/** The file should open as text: the user chose so, here or through a language override. */
+export const wantsText = (path: string) => textViews.has(path) || !!overrideFor(path);
+
+async function openViewerTab(path: string, viewer: ViewerKind) {
+  const info = await fsApi.fileInfo(path).catch(() => null);
+  if (!info && !(await fsApi.exists(path).catch(() => false))) {
+    ui.toast(t("app.cannotOpenFile", { error: t("app.fsErr.not_found", { name: basename(path) }) }), "error");
+    return;
+  }
+  const open = app.tabs.find((x) => x.viewOf === path);
+  if (open) return activate(open.id);
+  const id = addViewerTab(path, viewer);
+  if (info) diskStamps.set(id, stampOf(info));
+  activate(id);
+}
+
+function addViewerTab(path: string, viewer: ViewerKind) {
+  const id = uid();
+  ed.createDoc(id, "");
+  app.tabs.push({ id, path: null, name: basename(path), dirty: false, root: inRoot(path, app.root) ? app.root : null, viewOf: path, viewer, viewRev: 0 });
+  return id;
+}
+
+/** Code Together guest: a viewer tab for a shared file; its bytes come through the host's checks. */
+export function openRemoteViewer(path: string, viewer: ViewerKind) {
+  const open = app.tabs.find((x) => x.viewOf === path);
+  activate(open ? open.id : addViewerTab(path, viewer));
+}
+
+/** The next open of this SVG gives text; a viewer tab of it closes. True if there was one. */
+export async function preferText(path: string) {
+  textViews.add(path);
+  const viewer = app.tabs.find((x) => x.viewOf === path);
+  if (viewer) await closeTab(viewer.id, true);
+  return !!viewer;
+}
+
+async function openSvgAsText(path: string, quiet: boolean) {
+  const hadViewer = await preferText(path);
+  await openFile(path, quiet);
+  // Not readable as text (a toast said why), or the large-file question was declined. A guest's tab arrives later.
+  if (isRemotePath(path) || app.tabs.some((x) => x.path === path || x.headOf === path)) return;
+  textViews.delete(path);
+  if (hadViewer && !app.tabs.some((x) => x.viewOf === path)) await openFile(path, quiet);
+}
+
+/** "Open as Text" on an SVG viewer: replaces the tab by a normal editor tab. */
+export async function openViewerAsText(id: string) {
+  const path = app.tabs.find((x) => x.id === id)?.viewOf;
+  if (path) await openSvgAsText(path, false);
 }
 
 /** 8 to 64 MiB: warns, then opens the whole file, editable, without the expensive features (#174). */
@@ -597,7 +687,7 @@ const closedPaths: string[] = [];
 export async function reopenClosedTab() {
   while (closedPaths.length) {
     const p = closedPaths.pop()!;
-    if (!app.tabs.some((t) => t.path === p) && (await fsApi.exists(p))) return openFile(p);
+    if (!app.tabs.some((t) => t.path === p || t.viewOf === p) && (await fsApi.exists(p))) return openFile(p);
   }
 }
 
@@ -622,10 +712,13 @@ export async function closeTab(id: string, force = false) {
   }
   app.tabs.splice(idx, 1);
   collabHooks.tabClosed(tab.path, tab.id);
-  if (tab.path && !isRemotePath(tab.path)) {
-    closedPaths.push(tab.path);
+  const closedFile = tab.path ?? tab.viewOf;
+  if (closedFile && !isRemotePath(closedFile)) {
+    closedPaths.push(closedFile);
     if (closedPaths.length > 30) closedPaths.shift();
   }
+  const textFile = tab.path ?? tab.headOf;
+  if (textFile) textViews.delete(textFile);
   ed.disposeDoc(id);
   diskStamps.delete(id);
   staleNoticed.delete(id);
@@ -644,6 +737,10 @@ export async function closeTab(id: string, force = false) {
 export async function save(id = app.activeId, forceDialog = false, overwrite = false): Promise<boolean> {
   const tab = app.tabs.find((t) => t.id === id);
   if (!tab) return false;
+  if (tab.viewOf) {
+    ui.toast(t("app.viewer.noSave"), "error");
+    return false;
+  }
   if (tab.headOf) {
     // Only the start of the file is loaded: saving it anywhere would pass for the whole file.
     ui.toast(t("app.large.noSave"), "error");
@@ -749,7 +846,21 @@ watchRoot(app.root);
 export function pathMoved(from: string, to: string | null) {
   moveLanguageOverrides(from, to);
   moveImagePermissions(from, to);
+  for (const p of [...textViews]) {
+    if (p !== from && !p.startsWith(from + "/")) continue;
+    textViews.delete(p);
+    if (to !== null) textViews.add(to + p.slice(from.length));
+  }
   for (const t of app.tabs) {
+    if (t.viewOf && (t.viewOf === from || t.viewOf.startsWith(from + "/"))) {
+      if (to === null) t.deleted = true;
+      else {
+        t.viewOf = to + t.viewOf.slice(from.length);
+        t.name = basename(t.viewOf);
+        t.deleted = false;
+        t.viewRev = (t.viewRev ?? 0) + 1;
+      }
+    }
     if (t.headOf && to !== null && (t.headOf === from || t.headOf.startsWith(from + "/"))) t.headOf = to + t.headOf.slice(from.length);
     if (!t.path) continue;
     if (t.path === from || t.path.startsWith(from + "/")) {

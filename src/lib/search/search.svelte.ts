@@ -191,7 +191,7 @@ export async function gotoHit(h: Hit, keepOpen = find.pinned) {
   if (!keepOpen) find.open = false;
   const remote = activeRemote();
   if (remote) return remote.reveal(h.file, h.line, h.ranges[0]);
-  await openFile(h.file);
+  await openFile(h.file, false, true);
   const v = ed.getView();
   if (!v) return;
   const line = v.state.doc.line(Math.min(h.line, v.state.doc.lines));

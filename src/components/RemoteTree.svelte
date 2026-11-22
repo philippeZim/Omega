@@ -19,7 +19,8 @@
 
   // Host tabs that aren't files in its folder ("Untitled", outside files) – or all tabs without a folder.
   const extraTabs = $derived(depth === 0 ? (share.hostHasRoot ? share.hostTabs.filter((x) => x.key.startsWith("tab:")) : share.hostTabs) : []);
-  const activeRel = $derived(activeTab()?.path?.startsWith("collab:") ? activeTab()!.path!.slice(7) : null);
+  const activePath = $derived(activeTab()?.path ?? activeTab()?.viewOf);
+  const activeRel = $derived(activePath?.startsWith("collab:") ? activePath.slice(7) : null);
   // Guests change the host's project like the host's own tree does (the host carries it out, #133).
   function menu(ev: MouseEvent, e: { rel: string; is_dir: boolean }) {
     ev.preventDefault();
