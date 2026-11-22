@@ -267,6 +267,16 @@ describe("lspExtension signature help", () => {
   });
 });
 
+describe("lspExtension document highlights", () => {
+  test("marks the server's occurrences of the symbol at the cursor", async () => {
+    const c = fakeClient({ capabilities: { documentHighlightProvider: true }, request: vi.fn(async () => [{ range: range(0, 0, 0, 1), kind: 3 }, { range: range(0, 4, 0, 5), kind: 2 }]) });
+    const v = await mountWith(c, "a = a");
+    v.dispatch({ selection: { anchor: 4 } });
+    await vi.waitFor(() => expect(v.contentDOM.querySelectorAll(".cm-lspHighlight").length).toBe(2));
+    expect(c.request).toHaveBeenCalledWith("textDocument/documentHighlight", { textDocument: { uri: URI }, position: pos(0, 4) }, 5000);
+  });
+});
+
 describe("lspExtension diagnostics", () => {
   beforeEach(() => {
     m.client = null;
