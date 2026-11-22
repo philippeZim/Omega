@@ -56,7 +56,27 @@ fn find_java() -> (Option<PathBuf>, Option<u32>) {
     }))
 }
 
+/// The `config_*` folder jdtls starts from on this platform (the frontend picks the same one).
+fn config_name(os: &str, arm: bool) -> String {
+    let base = match os { "windows" => "win", "macos" => "mac", _ => "linux" };
+    format!("config_{base}{}", if arm && os != "windows" { "_arm" } else { "" })
+}
+
+/// Whether the parts needed to start are there: an interrupted unpack can leave only some jars.
+fn complete(target: &Path) -> bool {
+    let launcher = std::fs::read_dir(target.join("plugins")).is_ok_and(|names| {
+        names.flatten().any(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            name.starts_with("org.eclipse.equinox.launcher_") && name.ends_with(".jar")
+        })
+    });
+    launcher && target.join(config_name(std::env::consts::OS, cfg!(target_arch = "aarch64"))).is_dir()
+}
+
 fn installed(target: &Path) -> Option<String> {
+    if !complete(target) {
+        return None;
+    }
     let names = std::fs::read_dir(target.join("plugins")).ok()?;
     names.flatten().find_map(|e| e.file_name().to_string_lossy().strip_prefix("org.eclipse.jdt.ls.core_").and_then(crate::installs::extract_version))
 }
@@ -88,22 +108,23 @@ pub fn install(app: &AppHandle, dir: &Path) -> Result<String, String> {
         crate::tools::tool_install_blocking(app, "jdk")?;
     }
     let target = dir.join("jdtls");
-    let before = installed(&target);
-    if before.as_deref() == Some(VERSION) {
+    if installed(&target).as_deref() == Some(VERSION) {
         return Ok(crate::env::norm(target));
     }
+    let replacing = target.exists();
     let archive = dir.join(".jdtls.tar.gz");
     let r = crate::tools::download(app, "jdtls", &url(), &archive).and_then(|_| {
         if crate::tools::sha256_hex(&archive)? != SHA256 {
             return Err("tools:download_aborted:jdtls checksum mismatch".to_string());
         }
-        let _ = std::fs::remove_dir_all(&target);
-        crate::tools::unpack(&archive, "jdtls.tar.gz", &target, "")
+        crate::tools::unpack_and_swap(&archive, "jdtls.tar.gz", &target, "", |fresh| {
+            if complete(fresh) { Ok(()) } else { Err("tools:unpack_failed:jdtls is incomplete".to_string()) }
+        })
     });
     let _ = std::fs::remove_file(&archive);
     r?;
     // Eclipse doesn't support opening its metadata with another version; both are rebuilt.
-    if before.is_some() {
+    if replacing {
         let _ = std::fs::remove_dir_all(dir.join("jdtls-config"));
         let _ = std::fs::remove_dir_all(dir.join("jdtls-workspace"));
     }
@@ -128,6 +149,27 @@ mod tests {
         assert_eq!(choose([(path.clone(), Some(27)), (managed.clone(), Some(25))]).0, Some(path.clone()));
         assert_eq!(choose([(path.clone(), Some(21)), (managed.clone(), Some(25))]).0, Some(managed.clone()));
         assert_eq!(choose([(path, Some(17)), (managed, Some(21))]), (None, Some(21)));
+    }
+
+    #[test]
+    fn a_half_unpacked_install_does_not_count() {
+        let t = tempfile::tempdir().unwrap();
+        let plugins = t.path().join("plugins");
+        std::fs::create_dir_all(&plugins).unwrap();
+        std::fs::write(plugins.join(format!("org.eclipse.jdt.ls.core_{VERSION}.{BUILD}.jar")), "").unwrap();
+        assert_eq!(installed(t.path()), None);
+        std::fs::write(plugins.join("org.eclipse.equinox.launcher_1.8.0.jar"), "").unwrap();
+        assert_eq!(installed(t.path()), None, "the platform's config folder is missing");
+        std::fs::create_dir_all(t.path().join(config_name(std::env::consts::OS, cfg!(target_arch = "aarch64")))).unwrap();
+        assert_eq!(installed(t.path()).as_deref(), Some(VERSION));
+    }
+
+    #[test]
+    fn config_folder_per_platform() {
+        assert_eq!(config_name("linux", false), "config_linux");
+        assert_eq!(config_name("linux", true), "config_linux_arm");
+        assert_eq!(config_name("macos", true), "config_mac_arm");
+        assert_eq!(config_name("windows", true), "config_win");
     }
 
     #[test]
