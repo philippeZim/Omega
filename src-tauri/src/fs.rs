@@ -169,6 +169,37 @@ pub async fn read_file_view(path: String) -> Result<tauri::ipc::Response, String
     Ok(tauri::ipc::Response::new(bytes))
 }
 
+/// Largest piece of a PDF one `read_file_range` returns.
+const MAX_RANGE_READ: u64 = 4 * 1024 * 1024;
+
+/// `len` bytes from `offset` of a regular file; less at its end.
+fn read_range(path: &str, offset: u64, len: u64, max: u64) -> Result<Vec<u8>, String> {
+    use std::io::{Read, Seek, SeekFrom};
+    if len > max {
+        return Err("fs:too_large".into());
+    }
+    // Checked before opening, because opening a FIFO would block.
+    let meta = fs::metadata(path).map_err(io_err)?;
+    if meta.is_dir() {
+        return Err("fs:is_dir".into());
+    }
+    if !meta.is_file() {
+        return Err("fs:not_file".into());
+    }
+    let mut file = open_for_read(path)?;
+    file.seek(SeekFrom::Start(offset)).map_err(io_err)?;
+    let mut bytes = Vec::with_capacity(len as usize);
+    file.take(len).read_to_end(&mut bytes).map_err(io_err)?;
+    Ok(bytes)
+}
+
+/// A piece of a PDF for pdf.js, which asks for what it needs, so a viewer tab never loads the whole file.
+#[tauri::command]
+pub async fn read_file_range(path: String, offset: u64, length: u64) -> Result<tauri::ipc::Response, String> {
+    let bytes = tauri::async_runtime::spawn_blocking(move || read_range(&path, offset, length, MAX_RANGE_READ)).await.map_err(err)??;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
 #[derive(Serialize)]
 pub struct FileInfo {
     size: u64,
@@ -793,6 +824,29 @@ mod tests {
         assert_eq!(read_view(&s(&file), 3).unwrap_err(), "fs:too_large");
         assert_eq!(read_view(&s(t.path()), 4).unwrap_err(), "fs:is_dir");
         assert_eq!(read_view(&s(&t.path().join("nope.png")), 4).unwrap_err(), "fs:not_found");
+    }
+
+    #[test]
+    fn read_range_returns_the_piece_and_stops_at_the_end() {
+        let t = tempfile::tempdir().unwrap();
+        let file = t.path().join("a.pdf");
+        fs::write(&file, b"0123456789").unwrap();
+        assert_eq!(read_range(&s(&file), 2, 3, 8).unwrap(), b"234");
+        assert_eq!(read_range(&s(&file), 8, 5, 8).unwrap(), b"89");
+        assert!(read_range(&s(&file), 50, 5, 8).unwrap().is_empty());
+        assert_eq!(read_range(&s(&file), 0, 9, 8).unwrap_err(), "fs:too_large");
+        assert_eq!(read_range(&s(t.path()), 0, 1, 8).unwrap_err(), "fs:is_dir");
+        assert_eq!(read_range(&s(&t.path().join("nope.pdf")), 0, 1, 8).unwrap_err(), "fs:not_found");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_range_refuses_a_fifo_without_blocking() {
+        let t = tempfile::tempdir().unwrap();
+        let fifo = t.path().join("pipe.pdf");
+        let c = std::ffi::CString::new(s(&fifo)).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        assert_eq!(read_range(&s(&fifo), 0, 1, 8).unwrap_err(), "fs:not_file");
     }
 
     #[cfg(unix)]
