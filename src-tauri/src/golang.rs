@@ -1,7 +1,9 @@
 //! Go in Omega's tools folder: the official toolchain archive (checksum verified), gopls and Delve.
 //! Everything Go writes for them stays in `tools/go-home`, so a user's own `~/go` is never touched.
 //! No admin rights and no shell profile edits.
-use super::{download, get_json, get_text, record, sha256_hex, tail_chars, unpack, Progress, ARM, OS};
+use super::{download, exe_name, get_json, get_text, record, sha256_hex, tail_chars, unpack, Progress, ARM, OS};
+#[cfg(unix)]
+use super::make_executable;
 use crate::env;
 use serde_json::Value;
 use std::ffi::OsStr;
@@ -41,6 +43,39 @@ pub(crate) fn go_home() -> PathBuf {
 
 pub(crate) fn go_tools_bin() -> PathBuf {
     env::tools_dir().join("go-tools").join("bin")
+}
+
+/// The real `go` of Omega's installation.
+fn real_go() -> PathBuf {
+    go_root().join("bin").join(exe_name("go"))
+}
+
+/// In front of the real programs on Unix. A terminal's shell can export another Go's GOPATH or
+/// GOFLAGS from its profile after Omega started it, so only a launcher can keep them out.
+#[cfg(unix)]
+fn shim_text(program: &str) -> String {
+    format!(
+        "#!/bin/sh\n# Omega's Go, with its own settings (see go.env) instead of those of another Go.\ndir=$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd) || exit 1\nunset {} GOTOOLCHAIN\nGOENV=off\nexport GOENV\nexec \"$dir/../go/bin/{program}\" \"$@\"\n",
+        FOREIGN_VARS.join(" ")
+    )
+}
+
+/// The folder that goes on the PATH.
+#[cfg(unix)]
+fn write_shims(dir: &Path) -> Result<PathBuf, String> {
+    let shim = dir.join("shim");
+    std::fs::create_dir_all(&shim).map_err(|e| format!("tools:go_failed:{e}"))?;
+    for program in ["go", "gofmt"] {
+        let file = shim.join(program);
+        std::fs::write(&file, shim_text(program)).map_err(|e| format!("tools:go_failed:{e}"))?;
+        make_executable(&file);
+    }
+    Ok(shim)
+}
+
+#[cfg(not(unix))]
+fn write_shims(dir: &Path) -> Result<PathBuf, String> {
+    Ok(dir.join("go").join("bin"))
 }
 
 fn go_platform(os: &str, arm: bool) -> (&'static str, &'static str) {
@@ -109,11 +144,23 @@ fn go_env_changes(managed: bool) -> (Vec<(&'static str, &'static str)>, &'static
 pub fn apply_go_env(c: &mut Command, program: &OsStr) {
     let Some(stem) = is_go_program(program) else { return };
     let go = if stem == "go" { env::which(&program.to_string_lossy()) } else { env::which("go") };
-    let (set, remove) = go_env_changes(go.is_some_and(|p| p.starts_with(go_root())));
+    let (set, remove) = go_env_changes(go.is_some_and(|p| p.starts_with(go_dir())));
     for k in remove {
         c.env_remove(k);
     }
     c.envs(set);
+}
+
+/// cmd.exe reads no profile, so on Windows a terminal is kept clean when it starts.
+#[cfg(windows)]
+pub fn apply_go_shell_env(c: &mut portable_pty::CommandBuilder) {
+    if env::which("go").is_some_and(|p| p.starts_with(go_dir())) {
+        for k in FOREIGN_VARS {
+            c.env_remove(k);
+        }
+        c.env_remove("GOTOOLCHAIN");
+        c.env("GOENV", "off");
+    }
 }
 
 /// Deletes a tree that may hold read-only files (Go's module cache and downloaded toolchains).
@@ -171,7 +218,7 @@ pub fn install_go(app: &AppHandle) -> Result<String, String> {
     let _ = std::fs::remove_file(&archive);
     let _ = remove_tree(&fresh);
     result?;
-    let bin = go_root().join("bin");
+    let bin = write_shims(&go_dir())?;
     record("go", &bin)?;
     Ok(env::norm(bin))
 }
@@ -181,6 +228,9 @@ pub fn install_go(app: &AppHandle) -> Result<String, String> {
 pub fn install_go_tool(app: &AppHandle, progress: &str, package: &str, exe: &str) -> Result<String, String> {
     let _work = go_lock();
     let go = env::which("go").ok_or("tools:go_missing")?;
+    // The launcher would drop the settings below.
+    let managed = go.starts_with(go_dir());
+    let go = if managed { real_go() } else { go };
     let (home, bin) = (go_home(), go_tools_bin());
     std::fs::create_dir_all(&bin).map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&home).map_err(|e| e.to_string())?;
@@ -200,7 +250,7 @@ pub fn install_go_tool(app: &AppHandle, progress: &str, package: &str, exe: &str
         .env("GOCACHE", home.join("cache"))
         .env("GOMODCACHE", home.join("mod"))
         .stdin(Stdio::null());
-    if !go.starts_with(go_root()) {
+    if !managed {
         // A system Go keeps its own GOROOT, if the shell names one.
         if let Some(root) = std::env::var_os("GOROOT") {
             c.env("GOROOT", root);
@@ -211,7 +261,7 @@ pub fn install_go_tool(app: &AppHandle, progress: &str, package: &str, exe: &str
         let said = String::from_utf8_lossy(&out.stderr);
         return Err(format!("tools:go_failed:{}", tail_chars(&said, 600).replace('\n', " ")));
     }
-    let file = bin.join(super::exe_name(exe));
+    let file = bin.join(exe_name(exe));
     if !file.is_file() {
         return Err(format!("tools:bin_missing:{exe}"));
     }
@@ -231,7 +281,7 @@ pub fn remove_go() -> Result<(), String> {
 
 pub fn remove_go_tool(exe: &str) -> Result<(), String> {
     let _work = go_lock();
-    match std::fs::remove_file(go_tools_bin().join(super::exe_name(exe))) {
+    match std::fs::remove_file(go_tools_bin().join(exe_name(exe))) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
         _ => Ok(()),
     }
@@ -339,6 +389,20 @@ mod tests {
         let (set, remove) = go_env_changes(false);
         assert!(remove.is_empty());
         assert_eq!(set, vec![("GOTOOLCHAIN", "local")]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_launcher_drops_another_gos_settings_and_passes_arguments() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("with space");
+        std::fs::create_dir_all(root.join("go/bin")).unwrap();
+        let fake = root.join("go/bin/go");
+        std::fs::write(&fake, "#!/bin/sh\nprintf '%s|' \"$#\" \"$1\" \"$GOPATH\" \"$GOFLAGS\" \"$GOTOOLCHAIN\" \"$GOENV\" \"$KEEP\"\n").unwrap();
+        make_executable(&fake);
+        let shim = write_shims(&root).unwrap();
+        let out = Command::new(shim.join("go")).args(["a b", "c"]).env("GOPATH", "/own").env("GOFLAGS", "-mod=mod").env("GOTOOLCHAIN", "auto").env("KEEP", "yes").output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "2|a b||||off|yes|");
     }
 
     #[cfg(unix)]

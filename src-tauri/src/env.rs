@@ -258,6 +258,8 @@ pub fn pty_command(program: impl AsRef<OsStr>) -> portable_pty::CommandBuilder {
             None => c.env_remove(k),
         }
     }
+    #[cfg(windows)]
+    crate::tools::golang::apply_go_shell_env(&mut c);
     c
 }
 
