@@ -49,3 +49,41 @@ jobs:
         run: |
           cargo check --all-targets
           cargo test --lib
+
+  # Separate from `check`: only a new High or Critical advisory fails this job. The release workflow doesn't
+  # depend on it. Ignored advisories and their reasons are in src-tauri/deny.toml.
+  audit:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+        with:
+          version: 10
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: lts/*
+
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable (2026-11-15)
+        with:
+          toolchain: stable
+
+      - name: Install cargo-audit and cargo-deny
+        run: cargo install --locked cargo-audit@0.23.0 cargo-deny@0.22.0
+
+      # These exit non-zero on any finding. The gate below decides what blocks.
+      - name: cargo audit
+        working-directory: src-tauri
+        run: cargo audit --json > "$RUNNER_TEMP/cargo-audit.json" || true
+
+      - name: pnpm audit
+        run: pnpm audit --json > "$RUNNER_TEMP/pnpm-audit.json" || true
+
+      # Advisories, licenses, bans and sources. Findings show in the log but don't block a merge.
+      - name: cargo deny
+        continue-on-error: true
+        run: cargo deny --manifest-path src-tauri/Cargo.toml --locked check
+
+      - name: Fail on new High or Critical advisories
+        run: node dev/audit-gate.mjs "$RUNNER_TEMP/cargo-audit.json" "$RUNNER_TEMP/pnpm-audit.json"

@@ -1,0 +1,47 @@
+# cargo deny policy. CI runs it in the `audit` job of .github/workflows/ci.yml.
+
+[advisories]
+# Also report these for indirect dependencies, not just direct ones.
+unmaintained = "all"
+unsound = "all"
+# Every ignored advisory needs a reason. None of these is a known vulnerability, and all come in through
+# other crates. Remove an entry once the dependency that pulls the crate in has moved on.
+ignore = [
+  { id = "RUSTSEC-2026-0543", reason = "chrono is unmaintained, no known vulnerability; only reached through iroh's netwatch and portmapper" },
+  { id = "RUSTSEC-2024-0370", reason = "proc-macro-error is unmaintained, build-time only; pulled in by glib-macros 0.18 in Tauri's Linux GTK stack" },
+  { id = "RUSTSEC-2026-0371", reason = "zbus_names is unmaintained, no known vulnerability; pulled in by zbus through tauri-plugin-opener" },
+  { id = "RUSTSEC-2026-0370", reason = "zvariant is unmaintained, no known vulnerability; pulled in by zbus through tauri-plugin-opener" },
+  { id = "RUSTSEC-2026-0372", reason = "zvariant_derive is unmaintained, build-time only; pulled in by zvariant" },
+  { id = "RUSTSEC-2024-0429", reason = "glib 0.18 unsoundness in VariantStrIter, which Omega doesn't call; fixed only in newer glib, which Tauri's GTK stack doesn't use yet" },
+]
+
+[licenses]
+# Licenses of the crates actually in Cargo.lock, all compatible with Omega's GPL-3.0-or-later.
+allow = [
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "BSL-1.0",
+  "CC0-1.0",
+  "CDLA-Permissive-2.0",
+  "ISC",
+  "MIT",
+  "MPL-2.0",
+  "Unicode-3.0",
+  "Unlicense",
+  "Zlib",
+]
+confidence-threshold = 0.93
+# Omega's own crate.
+exceptions = [{ allow = ["GPL-3.0-or-later"], crate = "ide" }]
+
+[bans]
+# Tauri's dependency tree contains many duplicate versions that Omega can't influence.
+multiple-versions = "allow"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
