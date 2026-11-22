@@ -26,6 +26,8 @@ export const fsApi = {
   readFileLarge: (path: string) =>
     // ignoreBOM keeps the mark in the text: eol.ts remembers it and save writes it back.
     fsCall<ArrayBuffer>("read_file_large", { path }, path).then((b) => new TextDecoder("utf-8", { ignoreBOM: true }).decode(b)),
+  /** The raw bytes of an image or PDF for a viewer tab, up to 64 MiB. */
+  readFileView: (path: string) => fsCall<ArrayBuffer>("read_file_view", { path }, path).then((b) => new Uint8Array(b)),
   /** Size and change time of a file. `too_large`: readFile refuses it; `preview`: readFileLarge does too. */
   fileInfo: (path: string) => fsCall<{ size: number; too_large: boolean; preview: boolean; modified: number }>("file_info", { path }, path),
   writeFile: (path: string, content: string) => fsCall<void>("write_file", { path, content: wellFormed(content) }, path),
