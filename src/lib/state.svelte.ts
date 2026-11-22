@@ -7,6 +7,7 @@ import { moveLanguageOverrides, overrideFor } from "./code/langOverride.svelte";
 import { ui } from "./ui.svelte";
 import type { SpellLang } from "./spell";
 import { setLinkHandler, resolvePath } from "./markdown/livePreview";
+import { moveImagePermissions } from "./markdown/remoteImages.svelte";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import * as latexCtl from "./latex/controller.svelte";
 import { setLspHooks } from "./code/lspExtension";
@@ -613,6 +614,7 @@ watchRoot(app.root);
 /** Called after a rename/delete in the explorer so open tabs follow the file. */
 export function pathMoved(from: string, to: string | null) {
   moveLanguageOverrides(from, to);
+  moveImagePermissions(from, to);
   for (const t of app.tabs) {
     if (!t.path) continue;
     if (t.path === from || t.path.startsWith(from + "/")) {

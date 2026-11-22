@@ -3,6 +3,7 @@ import { WidgetType, type EditorView } from "@codemirror/view";
 import katex from "katex";
 import "katex/dist/katex.min.css";
 import { t } from "../i18n/index.svelte";
+import { imageHost, isStoredPath, type ImageScope } from "./remoteImages.svelte";
 
 const mathCache = new Map<string, string>();
 
@@ -123,6 +124,47 @@ export class ImageWidget extends WidgetType {
   }
   ignoreEvent() {
     return false;
+  }
+}
+
+/** Stands in for a remote image until it is allowed. Nothing here touches the URL's server. */
+export class RemoteImageWidget extends WidgetType {
+  constructor(
+    readonly url: string,
+    readonly alt: string,
+    readonly path: string | null,
+    readonly allow: (view: EditorView, scope: ImageScope) => void,
+  ) {
+    super();
+  }
+  eq(o: RemoteImageWidget) {
+    return o.url === this.url && o.alt === this.alt && o.path === this.path;
+  }
+  toDOM(view: EditorView) {
+    const el = document.createElement("span");
+    el.className = "md-remote-image";
+    el.title = this.url;
+    const label = document.createElement("span");
+    label.textContent = t("commands.md.remoteImage", { host: imageHost(this.url) });
+    el.append(label);
+    const button = (text: string, scope: ImageScope) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.textContent = text;
+      b.addEventListener("mousedown", (e) => e.preventDefault());
+      b.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        this.allow(view, scope);
+      });
+      el.append(b);
+    };
+    button(t("commands.md.loadImages"), "file");
+    if (isStoredPath(this.path)) button(t("commands.md.loadImagesFolder"), "folder");
+    return el;
+  }
+  ignoreEvent() {
+    return true;
   }
 }
 
