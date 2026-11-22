@@ -45,13 +45,16 @@ enum Parsed {
 }
 
 /// The folder the user ran `omega` in. AppRun changes into the AppImage's `usr` folder before the
-/// app starts, and the runtime keeps the original one in `OWD`.
-fn launch_dir(cwd: PathBuf, appdir: Option<&OsStr>, owd: Option<&OsStr>, home: &Path) -> PathBuf {
+/// app starts. The runtime keeps the original one in `OWD`, but not when it extracts itself
+/// instead of mounting (no FUSE); `PWD` from the AppRun shell still has it then.
+fn launch_dir(cwd: PathBuf, appdir: Option<&OsStr>, owd: Option<&OsStr>, pwd: Option<&OsStr>, home: &Path) -> PathBuf {
     match appdir {
-        Some(appdir) if !appdir.is_empty() && cwd.starts_with(appdir) => match owd.map(Path::new) {
-            Some(owd) if owd.is_absolute() => owd.to_path_buf(),
-            _ => home.to_path_buf(),
-        },
+        Some(appdir) if !appdir.is_empty() && cwd.starts_with(appdir) => [owd, pwd]
+            .into_iter()
+            .flatten()
+            .map(Path::new)
+            .find(|d| d.is_absolute() && !d.starts_with(appdir))
+            .map_or_else(|| home.to_path_buf(), Path::to_path_buf),
         _ => cwd,
     }
 }
@@ -513,7 +516,7 @@ pub fn startup() -> Startup {
         print_info(info);
     }
     let cwd = std::env::current_dir().unwrap_or_else(|_| crate::env::home());
-    let cwd = launch_dir(cwd, std::env::var_os("APPDIR").as_deref(), std::env::var_os("OWD").as_deref(), &crate::env::home());
+    let cwd = launch_dir(cwd, std::env::var_os("APPDIR").as_deref(), std::env::var_os("OWD").as_deref(), std::env::var_os("PWD").as_deref(), &crate::env::home());
     let key = this_profile();
     let private = runtime_dir();
     let told = std::env::var_os(RELAUNCH_ENV);
@@ -601,14 +604,17 @@ mod tests {
 
     #[test]
     fn dot_in_an_appimage_is_the_folder_the_user_was_in() {
-        let (app, owd, home) = (OsStr::new("/tmp/.mount_Omega"), OsStr::new("/home/u/Documents/Prompts"), Path::new("/home/u"));
+        let (app, dir, home) = (OsStr::new("/tmp/.mount_Omega"), OsStr::new("/home/u/Documents/Prompts"), Path::new("/home/u"));
         let inside = PathBuf::from("/tmp/.mount_Omega/usr");
-        assert_eq!(launch_dir(inside.clone(), Some(app), Some(owd), home), Path::new("/home/u/Documents/Prompts"));
-        assert_eq!(launch_dir(inside.clone(), Some(app), None, home), home);
-        assert_eq!(launch_dir(inside, Some(app), Some(OsStr::new("relative")), home), home);
+        let usr = OsStr::new("/tmp/.mount_Omega/usr");
+        assert_eq!(launch_dir(inside.clone(), Some(app), Some(dir), Some(usr), home), Path::new(dir));
+        // Without FUSE the runtime sets no OWD.
+        assert_eq!(launch_dir(inside.clone(), Some(app), None, Some(dir), home), Path::new(dir));
+        assert_eq!(launch_dir(inside.clone(), Some(app), None, Some(usr), home), home);
+        assert_eq!(launch_dir(inside, Some(app), Some(OsStr::new("relative")), None, home), home);
         // Outside an AppImage, or already out of its folder, the real working directory counts.
-        assert_eq!(launch_dir(PathBuf::from("/work"), None, Some(owd), home), Path::new("/work"));
-        assert_eq!(launch_dir(PathBuf::from("/work"), Some(app), Some(owd), home), Path::new("/work"));
+        assert_eq!(launch_dir(PathBuf::from("/work"), None, Some(dir), Some(dir), home), Path::new("/work"));
+        assert_eq!(launch_dir(PathBuf::from("/work"), Some(app), Some(dir), Some(dir), home), Path::new("/work"));
     }
 
     fn os(a: &[&str]) -> Vec<OsString> {
