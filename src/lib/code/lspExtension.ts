@@ -414,11 +414,9 @@ export function lspExtension(path: string, lang: LangInfo): Extension {
     if (!client) return false;
     flush();
     const res: any = await client.request("textDocument/definition", { textDocument: { uri }, position: toPos(view.state.doc, pos) }).catch(() => null);
-    const loc = Array.isArray(res) ? res[0] : res;
-    if (!loc) return false;
-    const target = loc.targetUri ?? loc.uri;
-    const range = loc.targetSelectionRange ?? loc.range;
-    await hooks.navigate(realPathOf(uriPath(target)), range.start.line, range.start.character);
+    const [target] = gotoTargets(res, (u) => realPathOf(uriPath(u)));
+    if (!target) return false;
+    await hooks.navigate(target.path, target.line, target.character);
     return true;
   }
 

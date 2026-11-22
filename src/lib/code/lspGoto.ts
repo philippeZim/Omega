@@ -32,7 +32,12 @@ export function gotoTargets(res: unknown, toPath: (uri: string) => string): Goto
     const uri = loc?.targetUri ?? loc?.uri;
     const start = (loc?.targetSelectionRange ?? loc?.targetRange ?? loc?.range)?.start;
     if (typeof uri !== "string" || !isPos(start)) continue;
-    const path = toPath(uri);
+    let path: string;
+    try {
+      path = toPath(uri);
+    } catch {
+      continue; // malformed percent-encoding: the other results are still good
+    }
     const key = `${path}\0${start.line}\0${start.character}`;
     if (seen.has(key)) continue;
     seen.add(key);

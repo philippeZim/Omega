@@ -298,6 +298,15 @@ describe("lspExtension go to implementation, type definition, declaration", () =
     expect(c.request).toHaveBeenCalledWith(method, { textDocument: { uri: URI }, position: pos(0, 2) });
   });
 
+  test("Go to Definition skips a result whose URI can't be decoded", async () => {
+    const navigate = vi.fn(async () => {});
+    setLspHooks({ workspace: () => null, askInstall: async () => false, navigate });
+    const c = fakeClient({ capabilities: CAPS, request: vi.fn(async () => [hit("file:///a%zz", 1), hit(fileUri("/w/proj/b.py"), 7)]) });
+    const v = await mountWith(c, "abc");
+    runViewAction(v, "lsp.gotoDefinition");
+    await vi.waitFor(() => expect(navigate).toHaveBeenCalledWith("/w/proj/b.py", 7, 2));
+  });
+
   test("several results open a picker that navigates", async () => {
     const navigate = vi.fn(async () => {});
     setLspHooks({ workspace: () => null, askInstall: async () => false, navigate });

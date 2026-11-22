@@ -1,7 +1,8 @@
 // Regression tests for #2 (external changes overwritten on save), #3/#4 (what reaches write_file)
 // and #6 (New File truncated existing files). The editor and dialogs are faked; the file system is
 // an in-memory map behind mockIPC (see src/test/fakes.ts).
-import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, onTestFinished, test, vi } from "vitest";
+import { EditorState } from "@codemirror/state";
 import { mockIPC } from "@tauri-apps/api/mocks";
 import { deferred, fakeFs, flush, type FakeEditor, type FakeFs, type FakeUi } from "../test/fakes";
 
@@ -783,6 +784,56 @@ describe("too large files (#174)", () => {
     expect(ui.choose.mock.calls[0][1]).toContain("1 GB");
     expect(st.app.tabs).toHaveLength(0);
     expect(fs.calls.some((c) => c.cmd === "read_file_head")).toBe(false);
+  });
+
+  describe("going to a place in it from the language server", () => {
+    async function navigator() {
+      const { setLspHooks } = await import("./code/lspExtension");
+      const hooks = vi.mocked(setLspHooks).mock.calls.at(-1)![0];
+      const view = { state: EditorState.create({ doc: "one\ntwo\n" }), dispatch: vi.fn(), focus: vi.fn() };
+      const getView = vi.spyOn(ed as any, "getView").mockReturnValue(view);
+      onTestFinished(() => getView.mockRestore());
+      return { navigate: hooks.navigate, view };
+    }
+
+    test("a cancelled warning leaves the cursor in the open file alone", async () => {
+      await setup({ "/p/a.txt": "one\ntwo\n", "/p/big.log": "" });
+      await open("/p/a.txt");
+      tooLarge("/p/big.log");
+      ui.nextChoice = "cancel";
+      const { navigate, view } = await navigator();
+      await navigate("/p/big.log", 1, 2);
+      expect(st.activeTab()?.path).toBe("/p/a.txt");
+      expect(view.dispatch).not.toHaveBeenCalled();
+    });
+
+    test("a failed open leaves it alone too", async () => {
+      await setup({ "/p/a.txt": "one\ntwo\n" });
+      await open("/p/a.txt");
+      const { navigate, view } = await navigator();
+      await navigate("/p/missing.txt", 1, 2);
+      expect(st.activeTab()?.path).toBe("/p/a.txt");
+      expect(view.dispatch).not.toHaveBeenCalled();
+    });
+
+    test("an opened file gets the cursor, also through a path with dots", async () => {
+      await setup({ "/p/a.txt": "one\ntwo\n", "/p/b.txt": "one\ntwo\n" });
+      await open("/p/a.txt");
+      const { navigate, view } = await navigator();
+      await navigate("/p/x/../b.txt", 1, 2);
+      expect(st.activeTab()?.path).toBe("/p/b.txt");
+      expect(view.dispatch).toHaveBeenCalledWith({ selection: { anchor: 6 }, scrollIntoView: true });
+    });
+
+    test("the read-only start of the file counts as that file", async () => {
+      await setup({ "/p/big.log": "" });
+      tooLarge("/p/big.log");
+      ui.nextChoice = "head";
+      const { navigate, view } = await navigator();
+      await navigate("/p/big.log", 0, 1);
+      expect(headTab()).toBeTruthy();
+      expect(view.dispatch).toHaveBeenCalledWith({ selection: { anchor: 1 }, scrollIntoView: true });
+    });
   });
 
   test("the read-only start has no path and can never be saved over the file", async () => {

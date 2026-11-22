@@ -28,6 +28,14 @@ describe("gotoTargets", () => {
     expect(gotoTargets(res, path).map((t) => t.path)).toEqual(["/ok.c"]);
   });
 
+  test("a URI that can't be decoded is skipped, the others still count", () => {
+    // Decodes like `uriPath`, which throws URIError on bad percent-encoding.
+    const decoded = (u: string) => decodeURIComponent(path(u));
+    const res = [{ uri: "file:///a%zz", range: at(1) }, { uri: "file:///ok.c", range: at(2) }];
+    expect(gotoTargets(res, decoded)).toEqual([{ path: "/ok.c", line: 2, character: 0 }]);
+    expect(gotoTargets({ uri: "file:///a%zz", range: at(1) }, decoded)).toEqual([]);
+  });
+
   test("a private copy maps to its real file, also when two answers meet there", () => {
     const real = (u: string) => (u === "file:///tmp/copy/a.c" ? "/p/a.txt" : path(u));
     const res = [{ uri: "file:///tmp/copy/a.c", range: at(1) }, { uri: "file:///p/a.txt", range: at(1) }];

@@ -26,6 +26,10 @@ setLspHooks({
     ui.confirm(t("app.lspInstallTitle"), t("app.lspInstallMessage", { name }), t("app.install")),
   navigate: async (path, line, ch) => {
     await openFile(path);
+    // The open can be cancelled (large file) or fail: the cursor must not jump in another file.
+    const wanted = resolveDots(normPath(path));
+    const tab = activeTab();
+    if (tab?.path !== wanted && tab?.headOf !== wanted) return;
     const view = ed.getView();
     if (!view) return;
     const l = view.state.doc.line(Math.min(line + 1, view.state.doc.lines));
