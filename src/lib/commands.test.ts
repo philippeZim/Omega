@@ -38,6 +38,17 @@ const ids = COMMANDS.map((c) => c.id);
 const en = dictionaries.en as Record<string, string>;
 
 describe("command registry integrity", () => {
+  test("the Go to commands have keys that clash with nothing, in every keymap", () => {
+    for (const preset of KEYMAPS) {
+      applyKeymap(preset.id, false);
+      for (const id of ["lsp.gotoDeclaration", "lsp.gotoImplementation", "lsp.gotoTypeDefinition"]) {
+        expect(keysFor(id).length, `${preset.id} ${id}`).toBeGreaterThan(0);
+        for (const key of keysFor(id)) expect(conflicts(id, key).map((c) => c.id), `${preset.id} ${key}`).toEqual([]);
+      }
+    }
+    applyKeymap("omega", false);
+  });
+
   test("command ids are unique", () => {
     expect(new Set(ids).size).toBe(ids.length);
   });

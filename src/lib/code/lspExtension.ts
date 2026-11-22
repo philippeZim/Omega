@@ -2,7 +2,7 @@
 import type { Extension, Text } from "@codemirror/state";
 import { indentUnit } from "@codemirror/language";
 import { EditorView, ViewPlugin, hoverTooltip, type ViewUpdate } from "@codemirror/view";
-import { viewActions } from "../editorActions";
+import { viewActionSupport, viewActions } from "../editorActions";
 import { autocompletion, insertCompletionText, snippet, type Completion, type CompletionContext, type CompletionResult } from "@codemirror/autocomplete";
 import { setDiagnostics, forEachDiagnostic, type Diagnostic, type Action } from "@codemirror/lint";
 import { ui } from "../ui.svelte";
@@ -12,6 +12,7 @@ import { formattingOptions, type LangInfo } from "./languages";
 import { keepFileIndent, syncPrivateStyle } from "./clangFormat";
 import { signatureHelp } from "./lspSignature";
 import { documentHighlights } from "./lspHighlight";
+import { GOTO, GOTO_IDS, gotoTargets, pickerItems, type GotoId, type GotoTarget } from "./lspGoto";
 import { isForeignLang } from "./langOverride.svelte";
 import { clangdCommand, shadowForLsp } from "./langRun";
 import { runsAlone } from "./projects";
@@ -413,12 +414,30 @@ export function lspExtension(path: string, lang: LangInfo): Extension {
     if (!client) return false;
     flush();
     const res: any = await client.request("textDocument/definition", { textDocument: { uri }, position: toPos(view.state.doc, pos) }).catch(() => null);
-    const loc = Array.isArray(res) ? res[0] : res;
-    if (!loc) return false;
-    const target = loc.targetUri ?? loc.uri;
-    const range = loc.targetSelectionRange ?? loc.range;
-    await hooks.navigate(realPathOf(uriPath(target)), range.start.line, range.start.character);
+    const [target] = gotoTargets(res, (u) => realPathOf(uriPath(u)));
+    if (!target) return false;
+    await hooks.navigate(target.path, target.line, target.character);
     return true;
+  }
+
+  /** Go to Declaration, Implementation or Type Definition; several results open a picker. */
+  async function gotoRelated(view: EditorView, id: GotoId) {
+    const c = client;
+    const { method, capability } = GOTO[id];
+    if (!c?.capabilities[capability]) return ui.toast(t("code.lsp.gotoUnsupported"));
+    flush();
+    const pos = view.state.selection.main.head;
+    const res = await c.request(method, { textDocument: { uri }, position: toPos(view.state.doc, pos) }).catch(() => null);
+    if (viewRef !== view) return;
+    const targets = gotoTargets(res, (u) => realPathOf(uriPath(u)));
+    const go = (target: GotoTarget) => void hooks.navigate(target.path, target.line, target.character);
+    if (!targets.length) return ui.toast(t("code.lsp.gotoNone"));
+    if (targets.length === 1) return go(targets[0]);
+    const at = view.coordsAtPos(pos);
+    ui.openMenu(
+      new MouseEvent("contextmenu", { clientX: at?.left ?? 200, clientY: (at?.bottom ?? 200) + 4 }),
+      pickerItems(targets, go, (count) => t("code.lsp.gotoMore", { count })),
+    );
   }
 
   async function format(view: EditorView) {
@@ -445,9 +464,11 @@ export function lspExtension(path: string, lang: LangInfo): Extension {
     documentHighlights(() => client, () => uri, flush),
     viewActions.of({
       "lsp.gotoDefinition": (v) => (gotoDefinition(v), true),
+      ...Object.fromEntries(GOTO_IDS.map((id) => [id, (v: EditorView) => (void gotoRelated(v, id), true)])),
       "lsp.format": (v) => (format(v), true),
       "lsp.quickFix": quickFixAtCursor,
     }),
+    viewActionSupport.of(Object.fromEntries(GOTO_IDS.map((id) => [id, () => !!client?.capabilities[GOTO[id].capability]]))),
     EditorView.domEventHandlers({
       mousedown(e, view) {
         if (!(e.ctrlKey || e.metaKey) || e.button !== 0) return false;

@@ -39,6 +39,7 @@ export function activeSignature(help: any): { sig: any; index: number; number: n
   const wanted = help.activeSignature ?? 0;
   const number = Number.isInteger(wanted) && wanted >= 0 && wanted < all.length ? wanted : 0;
   const sig = all[number];
+  if (!sig || typeof sig !== "object") return null;
   const params: any[] = Array.isArray(sig.parameters) ? sig.parameters : [];
   const active = sig.activeParameter !== undefined ? sig.activeParameter : help.activeParameter ?? 0;
   if (active === null || !params.length) return { sig, index: -1, number };

@@ -296,6 +296,9 @@ export const en = {
   "code.large.noRun": "This file is too large to run from Omega.",
   "code.large.noDebug": "This file is too large to debug in Omega.",
   "code.large.noLang": "Language features are off for this large file.",
+  "code.lsp.gotoNone": "Nothing found for this symbol.",
+  "code.lsp.gotoUnsupported": "This language server can't do that.",
+  "code.lsp.gotoMore": "{count} more not shown",
 };
 export const de: Record<keyof typeof en, string> = {
   "code.key.ctrl": "Strg",
@@ -584,6 +587,9 @@ export const de: Record<keyof typeof en, string> = {
   "code.large.noRun": "Diese Datei ist zu groß, um sie aus Omega auszuführen.",
   "code.large.noDebug": "Diese Datei ist zu groß zum Debuggen in Omega.",
   "code.large.noLang": "Sprachfunktionen sind für diese große Datei aus.",
+  "code.lsp.gotoNone": "Für dieses Symbol wurde nichts gefunden.",
+  "code.lsp.gotoUnsupported": "Dieser Sprachserver unterstützt das nicht.",
+  "code.lsp.gotoMore": "{count} weitere nicht angezeigt",
 };
 export const fr: Record<keyof typeof en, string> = {
   "code.key.ctrl": "Ctrl",
@@ -872,4 +878,7 @@ export const fr: Record<keyof typeof en, string> = {
   "code.large.noRun": "Ce fichier est trop volumineux pour être exécuté depuis Omega.",
   "code.large.noDebug": "Ce fichier est trop volumineux pour être débogué dans Omega.",
   "code.large.noLang": "Les fonctions de langage sont désactivées pour ce gros fichier.",
+  "code.lsp.gotoNone": "Rien de trouvé pour ce symbole.",
+  "code.lsp.gotoUnsupported": "Ce serveur de langage ne prend pas cela en charge.",
+  "code.lsp.gotoMore": "{count} autres non affichés",
 };

@@ -34,6 +34,8 @@ describe("activeSignature", () => {
   test("nothing to show", () => {
     expect(activeSignature(null)).toBeNull();
     expect(activeSignature({ signatures: [] })).toBeNull();
+    expect(activeSignature({ signatures: [null] })).toBeNull();
+    expect(activeSignature({ signatures: ["f()"] })).toBeNull();
   });
 });
 

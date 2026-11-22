@@ -12,3 +12,15 @@ export function runViewAction(view: EditorView, id: string): boolean {
   const fn = view.state.facet(viewActions)[id];
   return fn ? fn(view) : false;
 }
+
+/** Whether a contributed action can do anything right now (e.g. the language server supports it). */
+export const viewActionSupport = Facet.define<Record<string, () => boolean>, Record<string, () => boolean>>({
+  combine: (values) => Object.assign({}, ...values),
+});
+
+/** null: this view has no such action. */
+export function viewActionState(view: EditorView, id: string): "enabled" | "disabled" | null {
+  if (!view.state.facet(viewActions)[id]) return null;
+  const supported = view.state.facet(viewActionSupport)[id];
+  return !supported || supported() ? "enabled" : "disabled";
+}
