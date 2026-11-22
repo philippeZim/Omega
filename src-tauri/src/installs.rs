@@ -529,7 +529,7 @@ fn latest(id: &str) -> Result<Option<String>, String> {
         "tool:jdk" => {
             let os = if cfg!(windows) { "windows" } else if cfg!(target_os = "macos") { "mac" } else { "linux" };
             let arch = if cfg!(target_arch = "aarch64") { "aarch64" } else { "x64" };
-            let r = json(&format!("https://api.adoptium.net/v3/assets/latest/21/hotspot?architecture={arch}&image_type=jdk&os={os}&vendor=eclipse"))?;
+            let r = json(&format!("https://api.adoptium.net/v3/assets/latest/{}/hotspot?architecture={arch}&image_type=jdk&os={os}&vendor=eclipse", crate::jdtls::MIN_JAVA))?;
             r[0]["version"]["semver"].as_str().and_then(extract_version).ok_or("installs:no_version:JDK")?
         }
         "tool:scala" => gh_latest("VirtusLab/scala-cli")?,
@@ -556,10 +556,7 @@ fn latest(id: &str) -> Result<Option<String>, String> {
         }
         "lsp:python" => npm_latest("basedpyright")?,
         "lsp:typescript" => npm_latest("typescript-language-server")?,
-        "lsp:java" => {
-            let name = crate::tools::http_text("https://download.eclipse.org/jdtls/snapshots/latest.txt")?;
-            extract_version(name.trim().trim_start_matches("jdt-language-server-")).ok_or("installs:no_version:jdtls")?
-        }
+        "lsp:java" => crate::jdtls::VERSION.to_string(), // pinned: see jdtls.rs
         "debug:codelldb" => gh_latest("vadimcn/codelldb")?,
         "debug:debugpy" => json("https://pypi.org/pypi/debugpy/json")?["info"]["version"].as_str().map(String::from).ok_or("installs:no_version:debugpy")?,
         "debug:jsdebug" => gh_latest("microsoft/vscode-js-debug")?,

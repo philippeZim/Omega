@@ -13,6 +13,7 @@ mod codex_ipc;
 mod env;
 mod tools;
 mod installs;
+mod jdtls;
 mod power;
 mod instance;
 mod lang_shadow;
@@ -179,6 +180,7 @@ pub fn run() {
             proc::proc_send,
             proc::proc_kill,
             proc::install_server,
+            jdtls::jdtls_runtime,
         ])
         .build({
             let mut ctx = tauri::generate_context!();
