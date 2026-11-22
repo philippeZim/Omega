@@ -5,6 +5,7 @@
   import { openUrl } from "../lib/native";
   import { loadPdf, type PageLink } from "../lib/pdfPages";
   import { PdfPager } from "../lib/pdfPager";
+  import { wheelZoom } from "../lib/wheelZoom";
   import { latex, setDark, reverseSync, forwardSync, installLatex, remoteLatex, remotePdfBytes, compileNow } from "../lib/latex/controller.svelte";
   import { app, activeTab, openFile } from "../lib/state.svelte";
   import * as ed from "../lib/editor";
@@ -18,6 +19,7 @@
   let renderSeq = 0;
   let flash = $state<{ left: number; top: number; w: number; h: number } | null>(null);
   let flashTimer = 0;
+  let wheelZoomed = -1;
 
   const errors = $derived(latex.diagnostics.filter((d) => d.severity === "error"));
   const warnings = $derived(latex.diagnostics.filter((d) => d.severity === "warning"));
@@ -58,9 +60,10 @@
   });
 
   $effect(() => {
-    void zoom;
     localStorage.setItem("pdfZoom", String(zoom));
-    pager?.relayout();
+    // Ctrl + wheel has laid out already, around the cursor.
+    if (zoom === wheelZoomed) wheelZoomed = -1;
+    else pager?.relayout();
   });
 
   // Forward sync: scroll to and flash the target box, also on a page that isn't mounted.
@@ -122,6 +125,20 @@
     const line = view.state.doc.lineAt(view.state.selection.main.head).number;
     forwardSync(activeTab()?.path ?? null, line);
   }
+
+  $effect(() =>
+    wheelZoom(scroller, {
+      scale: () => pager?.scale ?? (zoom || 1),
+      min: 0.4, // the limits of the zoom buttons
+      max: 4,
+      apply: (scale, x, y) => {
+        // The box was placed for the old size.
+        clearTimeout(flashTimer);
+        flash = null;
+        pager?.zoomAt(() => (zoom = wheelZoomed = scale), x, y);
+      },
+    }),
+  );
 
   // Fit-width zoom follows the panel width (dock zone resized or moved), debounced.
   let rootEl = $state<HTMLDivElement>();

@@ -61,6 +61,10 @@ beforeEach(() => {
   getDocument.mockImplementation(() => ({ promise: Promise.resolve(pdf.make()) }));
 });
 
+/** The test DOM's WheelEvent drops the modifier keys. */
+const wheelEvent = (o: { deltaY: number; deltaMode?: number; clientX?: number; clientY?: number; ctrlKey?: boolean }) =>
+  Object.assign(new Event("wheel", { bubbles: true, cancelable: true }), { deltaMode: 0, clientX: 0, clientY: 0, ctrlKey: true, ...o });
+
 async function settle() {
   for (let i = 0; i < 20; i++) await tick();
   flushSync();
@@ -181,6 +185,37 @@ describe("PdfPanel", () => {
     unmount(c);
   });
 
+  test("ctrl + wheel zooms within the limits of the buttons and remembers it", async () => {
+    localStorage.removeItem("pdfZoom");
+    const { target, c } = setup();
+    await settle();
+    const scroller = target.querySelector<HTMLElement>(".scroller")!;
+    const event = wheelEvent({ deltaY: 3000 });
+    scroller.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(true);
+    await new Promise((r) => setTimeout(r, 30));
+    await settle();
+    expect(localStorage.getItem("pdfZoom")).toBe("0.4");
+    localStorage.removeItem("pdfZoom");
+    unmount(c);
+  });
+
+  test("ctrl + wheel removes the flash box, which was placed for the old size", async () => {
+    pdf.pages = 20;
+    const { target, c } = setup();
+    await settle();
+    latex.target = { page: 3, x: 10, y: 20, w: 5, h: 5, seq: 3 };
+    await settle();
+    expect(target.querySelector(".flash")).not.toBeNull();
+    target.querySelector<HTMLElement>(".scroller")!.dispatchEvent(wheelEvent({ deltaY: -100 }));
+    await new Promise((r) => setTimeout(r, 30));
+    await settle();
+    expect(target.querySelector(".flash")).toBeNull();
+    latex.target = null;
+    localStorage.removeItem("pdfZoom");
+    unmount(c);
+  });
+
   test("reverse SyncTeX works on a mounted page of a long document", async () => {
     pdf.pages = 1500;
     const sync = vi.spyOn(controller, "reverseSync").mockReturnValue(null);
@@ -203,7 +238,8 @@ describe("PdfPanel", () => {
     scroller.scrollTop = 20_000;
     scroller.dispatchEvent(new Event("scroll"));
     await settle();
-    const page = [...target.querySelectorAll<HTMLElement>(".page")].find((p) => p.querySelector("canvas"))!;
+    // A rendered page in view: rendered pages from before stay mounted further up.
+    const page = [...target.querySelectorAll<HTMLElement>(".page")].find((p) => p.querySelector("canvas") && Math.abs(parseFloat(p.parentElement!.style.top) - 20_000) < 200)!;
     const old = page.querySelector("canvas")!;
     const before = pdf.requested.length;
     pdf.hang = true;
