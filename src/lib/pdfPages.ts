@@ -10,6 +10,21 @@ pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
  */
 export const PDF_LOAD_OPTIONS = { isEvalSupported: false, isOffscreenCanvasSupported: false } as const;
 
+/** One worker for all documents: starting it is the slowest part of opening a small PDF. */
+let worker: pdfjs.PDFWorker | null = null;
+export function pdfWorker() {
+  worker ??= new pdfjs.PDFWorker();
+  return worker;
+}
+
+/** Most pixels one page's canvas may have: enough for a sharp page, and rendering stays fast. */
+export const MAX_CANVAS_PIXELS = 8_000_000;
+
+/** Device pixels per CSS pixel for a page of this size. */
+export function canvasRatio(width: number, height: number, dpr: number) {
+  return Math.min(dpr, Math.sqrt(MAX_CANVAS_PIXELS / Math.max(1, width * height)));
+}
+
 export interface PageLink {
   url?: string;
   dest?: string | unknown[];
@@ -27,11 +42,19 @@ export function createPageShell(index: number, vp: { width: number; height: numb
 
 /** Draws the page on a new canvas inside `wrap`. The returned task can be cancelled. */
 export function paintPage(page: pdfjs.PDFPageProxy, wrap: HTMLElement, vp: pdfjs.PageViewport, dpr: number) {
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.floor(vp.width * dpr);
-  canvas.height = Math.floor(vp.height * dpr);
+  const { canvas, task } = renderPage(page, vp, dpr);
   wrap.appendChild(canvas);
-  return page.render({ canvasContext: canvas.getContext("2d")!, viewport: vp, transform: dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : undefined });
+  return task;
+}
+
+/** Renders on a canvas that isn't in the page yet, so what's on screen stays until it's done. */
+export function renderPage(page: pdfjs.PDFPageProxy, vp: pdfjs.PageViewport, dpr: number) {
+  const ratio = canvasRatio(vp.width, vp.height, dpr);
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.floor(vp.width * ratio);
+  canvas.height = Math.floor(vp.height * ratio);
+  const task = page.render({ canvasContext: canvas.getContext("2d")!, viewport: vp, transform: ratio !== 1 ? [ratio, 0, 0, ratio, 0, 0] : undefined });
+  return { canvas, task };
 }
 
 /**

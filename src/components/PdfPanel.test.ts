@@ -42,7 +42,7 @@ const pdf = vi.hoisted(() => {
   return s;
 });
 const getDocument = vi.hoisted(() => vi.fn());
-vi.mock("pdfjs-dist", () => ({ GlobalWorkerOptions: {}, getDocument }));
+vi.mock("pdfjs-dist", () => ({ GlobalWorkerOptions: {}, getDocument, PDFWorker: class {} }));
 
 import PdfPanel from "./PdfPanel.svelte";
 import { latex } from "../lib/latex/controller.svelte";

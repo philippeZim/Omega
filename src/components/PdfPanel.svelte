@@ -4,7 +4,7 @@
   import { convertFileSrc } from "@tauri-apps/api/core";
   import { openUrl } from "../lib/native";
   import * as pdfjs from "pdfjs-dist";
-  import { PDF_LOAD_OPTIONS, addPageLinks, createPageShell, paintPage, resolvePdfDest } from "../lib/pdfPages";
+  import { PDF_LOAD_OPTIONS, pdfWorker, addPageLinks, createPageShell, paintPage, resolvePdfDest } from "../lib/pdfPages";
   import { latex, setDark, reverseSync, forwardSync, installLatex, remoteLatex, remotePdfBytes, compileNow } from "../lib/latex/controller.svelte";
   import { app, activeTab, openFile } from "../lib/state.svelte";
   import * as ed from "../lib/editor";
@@ -31,7 +31,7 @@
     const seq = ++renderSeq;
     const data = remotePdfBytes();
     const source = data ? { data } : { url: convertFileSrc(path) + "?v=" + latex.pdfVersion };
-    const next = await pdfjs.getDocument({ ...source, ...PDF_LOAD_OPTIONS }).promise.catch(() => null);
+    const next = await pdfjs.getDocument({ ...source, ...PDF_LOAD_OPTIONS, worker: pdfWorker() }).promise.catch(() => null);
     if (!next) return;
     if (seq !== renderSeq) return void next.destroy();
     const old = doc;
