@@ -337,7 +337,7 @@ fn recover_old(target: &Path, old: &Path) -> Result<(), String> {
 
 /// Puts `fresh` at `target`. Until it is there the old version is only moved aside, and it returns
 /// if the move fails (a virus scanner or an open file on Windows).
-fn swap_in(fresh: &Path, target: &Path, old: &Path) -> Result<(), String> {
+pub(crate) fn swap_in(fresh: &Path, target: &Path, old: &Path) -> Result<(), String> {
     recover_old(target, old)?;
     let had_old = target.exists();
     if had_old {

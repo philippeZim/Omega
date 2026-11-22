@@ -125,6 +125,23 @@ pub fn unpack(archive: &Path, _name_hint: &str, dest: &Path, raw_name: &str) -> 
     }
 }
 
+/// Unpacks `archive` beside `dest` and replaces `dest` only once `check` accepts the result, so a
+/// failed or interrupted update keeps the working version.
+pub fn unpack_and_swap<T>(archive: &Path, hint: &str, dest: &Path, raw_name: &str, check: impl FnOnce(&Path) -> Result<T, String>) -> Result<T, String> {
+    let name = dest.file_name().ok_or("tools:unpack_failed:no folder name")?.to_string_lossy().to_string();
+    let parent = dest.parent().ok_or("tools:unpack_failed:no parent folder")?;
+    let (fresh, old) = (parent.join(format!(".{name}.new")), parent.join(format!(".{name}.old")));
+    let result = (|| {
+        golang::remove_tree(&fresh)?;
+        unpack(archive, hint, &fresh, raw_name)?;
+        let checked = check(&fresh)?;
+        golang::swap_in(&fresh, dest, &old).map_err(|e| e.replacen("tools:go_failed:", "tools:unpack_failed:", 1))?;
+        Ok(checked)
+    })();
+    let _ = golang::remove_tree(&fresh);
+    result
+}
+
 fn make_executable(_p: &Path) {
     #[cfg(unix)]
     {
@@ -347,12 +364,14 @@ fn install(app: &AppHandle, id: &str) -> Result<String, String> {
     let tmp = tools.join(format!(".{id}.download"));
     let final_url = download(app, id, &p.url, &tmp)?;
     let dest = tools.join(id);
-    let _ = std::fs::remove_dir_all(&dest);
-    let res = unpack(&tmp, &final_url, &dest, &exe_name(p.exe));
+    let res = unpack_and_swap(&tmp, &final_url, &dest, &exe_name(p.exe), |fresh| {
+        let bin = find_bin(fresh, p.exe).ok_or_else(|| format!("tools:bin_missing:{}", p.exe))?;
+        make_executable(&bin.join(exe_name(p.exe)));
+        bin.strip_prefix(fresh).map(Path::to_path_buf).map_err(|e| e.to_string())
+    });
     let _ = std::fs::remove_file(&tmp);
-    res?;
-    let bin = find_bin(&dest, p.exe).ok_or_else(|| format!("tools:bin_missing:{}", p.exe))?;
-    make_executable(&bin.join(exe_name(p.exe)));
+    let rel = res?;
+    let bin = if rel.as_os_str().is_empty() { dest.clone() } else { dest.join(rel) };
     record(id, &bin)?;
     Ok(env::norm(bin))
 }
@@ -1494,6 +1513,45 @@ mod tests {
         assert_eq!(pick_asset(&v, |n| n.contains("windows")), None);
         assert_eq!(pick_asset(&serde_json::json!({"message": "rate limited"}), pred), None);
         assert_eq!(pick_asset(&serde_json::json!([]), pred), None);
+    }
+
+    fn gz_with(dir: &Path, file: &str, text: &str) -> PathBuf {
+        let archive = dir.join("a.tar.gz");
+        let mut tar = tar::Builder::new(flate2::write::GzEncoder::new(std::fs::File::create(&archive).unwrap(), flate2::Compression::fast()));
+        let mut head = tar::Header::new_gnu();
+        head.set_size(text.len() as u64);
+        head.set_mode(0o644);
+        head.set_cksum();
+        tar.append_data(&mut head, file, text.as_bytes()).unwrap();
+        tar.into_inner().unwrap().finish().unwrap();
+        archive
+    }
+
+    #[test]
+    fn a_broken_archive_keeps_the_installed_tool() {
+        let t = tempfile::tempdir().unwrap();
+        let dest = t.path().join("jdk");
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::write(dest.join("java"), "old").unwrap();
+        let bad = t.path().join("bad.tar.gz");
+        std::fs::write(&bad, [0x1f, 0x8b, 0, 1, 2, 3]).unwrap();
+        assert!(unpack_and_swap(&bad, "x", &dest, "java", |_| Ok(())).is_err());
+        assert_eq!(std::fs::read_to_string(dest.join("java")).unwrap(), "old");
+        assert!(!t.path().join(".jdk.new").exists() && !t.path().join(".jdk.old").exists());
+    }
+
+    #[test]
+    fn a_rejected_unpack_keeps_the_installed_tool_and_a_good_one_replaces_it() {
+        let t = tempfile::tempdir().unwrap();
+        let dest = t.path().join("jdk");
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::write(dest.join("java"), "old").unwrap();
+        let archive = gz_with(t.path(), "java", "new");
+        assert!(unpack_and_swap::<()>(&archive, "x", &dest, "java", |_| Err("incomplete".into())).is_err());
+        assert_eq!(std::fs::read_to_string(dest.join("java")).unwrap(), "old");
+        unpack_and_swap(&archive, "x", &dest, "java", |_| Ok(())).unwrap();
+        assert_eq!(std::fs::read_to_string(dest.join("java")).unwrap(), "new");
+        assert!(!t.path().join(".jdk.new").exists() && !t.path().join(".jdk.old").exists());
     }
 
     /// Ids whose plan is built without network requests (the others query GitHub/nodejs.org/gradle.org).
