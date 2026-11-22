@@ -7,7 +7,8 @@ import { detectProject, runsAlone, pythonEntry, cmakeConfigure, cmakeExecutable 
 import { duneProjectIssue, duneSourcePath, nearestDuneProject, duneTarget, findDuneExecutables, pickExecutable, sameToolchain } from "../code/dune";
 import { OCAML_PROGRAM_ENV, managedOcaml } from "../code/ocamlTools";
 import { mojoCompiles, mojoStem } from "../code/mojo";
-import { toolsDir, clientFor, fileUri, javaDebugBundles, metalsPausedFor, ocamlPauseRoot, registerShadow } from "../code/lsp.svelte";
+import { GO_DEBUG_FLAGS, goRunTarget, isGoTest } from "../code/go";
+import { toolsDir, clientFor, fileUri, goPauseRoot, javaDebugBundles, metalsPausedFor, ocamlPauseRoot, registerShadow } from "../code/lsp.svelte";
 import { onGuestChange, toolPausedBy } from "../collab/guestChanges";
 import { t, type Key } from "../i18n/index.svelte";
 import { exe, tmpPath, venvPython, IS_WIN, OS } from "../platform";
@@ -213,6 +214,21 @@ async function mojoDebugger(tools: string, ctx: Ctx) {
     ctx.log(t("code.ad.installed", { name }));
   }
   return { adapter, mojo: `${tools}/mojo/bin/mojo` };
+}
+
+/** Delve: Omega's build, else one on the PATH. Installed if missing. */
+async function delve(tools: string, ctx: Ctx): Promise<string> {
+  const find = async () => (await which(`${tools}/go-tools/bin/${exe("dlv")}`)) ?? (await which("dlv"));
+  const found = await find();
+  if (found) return found;
+  const name = "Delve";
+  if (!(await ctx.askInstall(name))) throw new Error(t("code.ad.required", { name }));
+  ctx.log(t("code.ad.installing", { name }));
+  await withInstallProgress("delve", name, () => invoke("install_debugger", { kind: "delve" }));
+  ctx.log(t("code.ad.installed", { name }));
+  const cmd = await find();
+  if (!cmd) throw new Error(t("code.ad.required", { name }));
+  return cmd;
 }
 
 export async function planFor(ctx: Ctx): Promise<Plan> {
@@ -451,6 +467,47 @@ export async function planFor(ctx: Ctx): Promise<Plan> {
           return source !== p && (await exists(source)) ? source : p;
         },
       };
+    }
+
+    case "go": {
+      // Building runs the C compiler on cgo code: it waits for the host's decision like gopls.
+      const pauseRoot = await goPauseRoot(ctx.file, ctx.workspace);
+      const paused = () => toolPausedBy("gopls", pauseRoot) !== null || toolPausedBy("gopls", root) !== null;
+      const held = () => {
+        if (paused()) throw new Error(t("code.lsp.goplsPaused"));
+      };
+      held();
+      await need(["go"]);
+      const dlv = await delve(tools, ctx);
+      held();
+      const adapter = { kind: "tcp" as const, cmd: dlv, args: ["dap", "--listen=127.0.0.1:{port}"] };
+      const launch = (program: string) => ({ type: "go", request: "launch", name: "Go", mode: "exec", program, args: [], cwd: root, stopOnEntry: false });
+      const build = (args: string[], cwd: string) => buildUnlessPaused("go", args, cwd, ctx, paused, "code.lsp.goplsPaused");
+      if (alone) {
+        // In the build folder, which holds no links: a go.mod next to the file doesn't apply.
+        const copy = await refreshBinCopy(ctx.file, "omega_main.go");
+        const bin = dirname(copy);
+        const program = `${bin}/${exe("omega_dbg")}`;
+        await build(["build", GO_DEBUG_FLAGS, "-o", program, "omega_main.go"], bin);
+        held();
+        return { label: `Go · ${basename(ctx.file)}`, cwd: root, adapter, launch: launch(program), shadow: { file: ctx.file, copy } };
+      }
+      const stem = basename(ctx.file).replace(/\.go$/, "").replace(/[^\w.-]/g, "_");
+      const program = await tmpPath(exe(`omega-dbg-go-${stem}`));
+      if (project?.kind === "go" && !isGoTest(ctx.file)) {
+        const target = await goRunTarget(root, ctx.file);
+        if (!target) throw new Error(t("code.ad.goNoMain"));
+        await build(["build", GO_DEBUG_FLAGS, "-o", program, target], root);
+      } else if (isGoTest(ctx.file)) {
+        // A test binary of the file's package, or of the file alone when there is no module.
+        const pkg = project?.kind === "go" ? (dirname(ctx.file) === root ? "." : `./${dirname(ctx.file).slice(root.length + 1)}`) : ctx.file;
+        await build(["test", "-c", GO_DEBUG_FLAGS, "-o", program, pkg], root);
+      } else {
+        if (!ctx.file.endsWith(".go")) throw new Error(t("code.ad.goNoMain"));
+        await build(["build", GO_DEBUG_FLAGS, "-o", program, ctx.file], root);
+      }
+      held();
+      return { label: `Go · ${basename(ctx.file)}`, cwd: root, adapter, launch: launch(program) };
     }
 
     case "mojo": {
