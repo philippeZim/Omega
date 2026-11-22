@@ -67,8 +67,8 @@ export function metalsAnswer(params: Json): Json {
  * Errors in source files are ordinary diagnostics.
  */
 export function javaImportError(uri: string, diagnostics: Json[]): string | null {
-  const name = uriPath(uri).split("/").pop() ?? "";
-  if (name.includes(".") && !/^(settings|build)\.gradle(\.kts)?$|^pom\.xml$/.test(name)) return null;
+  // Project folders can have dots too (`my.app`, `demo-0.0.1`).
+  if (/\.(java|kt|groovy|class|properties)$/.test(uriPath(uri))) return null;
   const errors: string[] = (diagnostics ?? []).filter((d) => d.severity === 1).map((d) => String(d.message));
   if (!errors.length) return null;
   // "Can't use Java 27 and Gradle 9.7.1 …" names the cause; the others are stack summaries.
@@ -499,8 +499,9 @@ export async function javaRoot(file: string, workspace: string | null): Promise<
   if ((await has(near, "settings.gradle")) || (await has(near, "settings.gradle.kts"))) return near;
   const gradle = (await has(near, "build.gradle")) || (await has(near, "build.gradle.kts"));
   const maven = await has(near, "pom.xml");
-  if (!gradle && !maven) return near;
-  const stop = workspace ? dirname(workspace) : "/";
+  // Without an open folder nothing bounds the search: a stray build file in $HOME is not this project's.
+  if ((!gradle && !maven) || !workspace) return near;
+  const stop = dirname(workspace);
   let root = near;
   for (let dir = near; !(await has(dir, ".git")); ) {
     dir = dirname(dir);
@@ -508,7 +509,7 @@ export async function javaRoot(file: string, workspace: string | null): Promise<
     if (gradle && ((await has(dir, "settings.gradle")) || (await has(dir, "settings.gradle.kts")))) return dir;
     if (maven && (await has(dir, "pom.xml"))) {
       const module = root.slice(dir.length + 1);
-      const pom = await fsApi.readFile(joinPath(dir, "pom.xml")).catch(() => "");
+      const pom = (await fsApi.readFile(joinPath(dir, "pom.xml")).catch(() => "")).replace(/<!--[\s\S]*?-->/g, "");
       if ([...pom.matchAll(/<module>\s*(?:\.\/)?([^<]+?)\/?\s*<\/module>/g)].some((m) => m[1] === module)) root = dir;
     }
   }

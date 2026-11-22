@@ -61,6 +61,18 @@ describe("Java project root", () => {
     expect(await L.javaRoot("/w/p/core/src/A.java", "/w")).toBe("/w/p/core");
   });
 
+  test("a commented-out module doesn't count", async () => {
+    await setup({ files: { "/w/p/pom.xml": "<modules><!-- <module>core</module> --></modules>", "/w/p/core/pom.xml": "" } });
+    expect(await L.javaRoot("/w/p/core/src/A.java", "/w")).toBe("/w/p/core");
+  });
+
+  test("without an open folder a build file further up is not the root", async () => {
+    await setup({ files: { "/home/me/settings.gradle": "", "/home/me/x/build.gradle": "" } });
+    expect(await L.javaRoot("/home/me/x/src/A.java", null)).toBe("/home/me/x");
+    await setup({ files: { "/home/me/pom.xml": "<module>x</module>", "/home/me/x/pom.xml": "" } });
+    expect(await L.javaRoot("/home/me/x/src/A.java", null)).toBe("/home/me/x");
+  });
+
   test("other languages keep the nearest marker", async () => {
     await setup({ files: { "/w/p/settings.gradle.kts": "", "/w/p/app/pyproject.toml": "" } });
     expect(await L.findRoot("/w/p/app/a.py", ["pyproject.toml"], "/w")).toBe("/w/p/app");
@@ -103,6 +115,9 @@ describe("failed build import", () => {
     expect(L.javaImportError("file:///w/p/app", failure)).toBe("Can't use Java 27 and Gradle 9.7.1 to import Gradle project app.");
     expect(L.javaImportError("file:///w/p/build.gradle.kts", [failure[0]])).toBe("The supplied phased action failed with an exception.");
     expect(L.javaImportError("file:///w/p/A.java", failure)).toBeNull();
+    expect(L.javaImportError("file:///w/my.app", [failure[0]])).toBe("The supplied phased action failed with an exception.");
+    expect(L.javaImportError("file:///w/demo-0.0.1", [failure[0]])).toBe("The supplied phased action failed with an exception.");
+    expect(L.javaImportError("file:///w/p/gradle.properties", failure)).toBeNull();
     expect(L.javaImportError("file:///w/p/app", [{ severity: 2, message: "warn" }])).toBeNull();
   });
 
