@@ -223,6 +223,14 @@ export const en = {
   "app.cli.err.testInstance": "Test instances don't install the command.",
   "app.settings.remoteImages": "Always load remote Markdown images",
   "app.settings.remoteImagesSub": "Image servers can see your IP address and when you open a note",
+  "app.fsErr.too_large": "\"{name}\" is too large to load",
+  "app.large.title": "\"{name}\" is very large",
+  "app.large.message": "This file is {size}. Loading it could freeze Omega. You can open its start as a read-only view: no highlighting, language server, git markers or spell check, and it can't be saved.",
+  "app.large.openHead": "Open start read-only",
+  "app.large.tabName": "{name} (start, read-only)",
+  "app.large.banner": "Read-only: showing the first {shown} of {size}. This view can't be saved.",
+  "app.large.noSave": "This is only the start of a large file, so it can't be saved.",
+  "app.large.skipped": "\"{name}\" ({size}) is too large and was not reopened.",
 };
 export const de: Record<keyof typeof en, string> = {
   "app.report.button": "Problem oder Idee melden",
@@ -443,6 +451,14 @@ export const de: Record<keyof typeof en, string> = {
   "app.cli.err.testInstance": "Testinstanzen installieren den Befehl nicht.",
   "app.settings.remoteImages": "Externe Bilder in Markdown immer laden",
   "app.settings.remoteImagesSub": "Bildserver sehen deine IP-Adresse und wann du eine Notiz öffnest",
+  "app.fsErr.too_large": "„{name}“ ist zu groß zum Laden",
+  "app.large.title": "„{name}“ ist sehr groß",
+  "app.large.message": "Diese Datei hat {size}. Sie zu laden könnte Omega einfrieren. Du kannst ihren Anfang schreibgeschützt öffnen: ohne Hervorhebung, Language Server, Git-Markierungen und Rechtschreibprüfung, und er lässt sich nicht speichern.",
+  "app.large.openHead": "Anfang schreibgeschützt öffnen",
+  "app.large.tabName": "{name} (Anfang, schreibgeschützt)",
+  "app.large.banner": "Schreibgeschützt: die ersten {shown} von {size}. Diese Ansicht lässt sich nicht speichern.",
+  "app.large.noSave": "Das ist nur der Anfang einer großen Datei, er lässt sich nicht speichern.",
+  "app.large.skipped": "„{name}“ ({size}) ist zu groß und wurde nicht wieder geöffnet.",
 };
 export const fr: Record<keyof typeof en, string> = {
   "app.report.button": "Signaler un problème ou une idée",
@@ -663,4 +679,12 @@ export const fr: Record<keyof typeof en, string> = {
   "app.cli.err.testInstance": "Les instances de test n'installent pas la commande.",
   "app.settings.remoteImages": "Toujours charger les images distantes en Markdown",
   "app.settings.remoteImagesSub": "Les serveurs d’images voient votre adresse IP et quand vous ouvrez une note",
+  "app.fsErr.too_large": "« {name} » est trop volumineux pour être chargé",
+  "app.large.title": "« {name} » est très volumineux",
+  "app.large.message": "Ce fichier fait {size}. Le charger pourrait figer Omega. Vous pouvez ouvrir son début en lecture seule : sans coloration, serveur de langage, marqueurs git ni correcteur, et il ne peut pas être enregistré.",
+  "app.large.openHead": "Ouvrir le début en lecture seule",
+  "app.large.tabName": "{name} (début, lecture seule)",
+  "app.large.banner": "Lecture seule : affichage des premiers {shown} sur {size}. Cette vue ne peut pas être enregistrée.",
+  "app.large.noSave": "Ce n'est que le début d'un gros fichier : il ne peut pas être enregistré.",
+  "app.large.skipped": "« {name} » ({size}) est trop volumineux et n'a pas été rouvert.",
 };

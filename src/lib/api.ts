@@ -20,6 +20,10 @@ const fsCall = <T>(cmd: string, args: Record<string, unknown>, path: string) =>
 export const fsApi = {
   listDir: (path: string) => fsCall<Entry[]>("list_dir", { path }, path),
   readFile: (path: string) => fsCall<string>("read_file", { path }, path),
+  /** The start of a file too large for readFile (#174). */
+  readFileHead: (path: string) => fsCall<{ text: string; size: number }>("read_file_head", { path }, path),
+  /** Size of a file and whether readFile refuses it. */
+  fileInfo: (path: string) => fsCall<{ size: number; too_large: boolean }>("file_info", { path }, path),
   writeFile: (path: string, content: string) => fsCall<void>("write_file", { path, content: wellFormed(content) }, path),
   /** Creates an empty file; rejects if it already exists (never truncates). */
   createFile: (path: string) => fsCall<void>("create_file", { path }, path),

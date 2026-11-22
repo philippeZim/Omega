@@ -63,3 +63,23 @@ describe("refreshLanguage", () => {
     expect(modePaths).toEqual([]);
   });
 });
+
+// #174: the start of a too large file: labelled, and nothing can change it.
+describe("read-only head view", () => {
+  test("rejects every change, shows its banner and skips the mode's extensions", () => {
+    ed.mount(document.createElement("div"));
+    modePaths.length = 0;
+    ed.createDoc("head", "first lines");
+    ed.activate("head", { mode: "code", path: null, spell: null, headNote: "Read-only: first 1 MB of 1 GB" });
+    const view = ed.getView()!;
+    expect(modePaths).toEqual([]);
+    expect(view.state.readOnly).toBe(true);
+    expect(view.dom.querySelector(".cm-head-note")?.textContent).toBe("Read-only: first 1 MB of 1 GB");
+    view.dispatch({ changes: { from: 0, insert: "x" } });
+    ed.applyChanges("head", { changes: { from: 0, insert: "y" } });
+    expect(ed.getText("head")).toBe("first lines");
+    expect(ed.isDirty("head")).toBe(false);
+    ed.activate(null, { mode: "code", path: null, spell: null });
+    ed.disposeDoc("head");
+  });
+});
