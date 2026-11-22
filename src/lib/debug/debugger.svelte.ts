@@ -4,7 +4,7 @@ import { DapSession } from "./dap";
 import { planFor, type Plan } from "./adapters";
 import { dbg, dbgHooks, dbgRemote, saveWatches, SHARED_BP, type Frame, type VarNode } from "./store.svelte";
 import { debugRefresh } from "./editorExt";
-import { mojoThreads, mojoValue } from "./mojoValues";
+import { limited, mojoThreads, mojoValue, WORKER_FRAMES } from "./mojoValues";
 import { app, activeTab, openFile, save, setMode, inRoot } from "../state.svelte";
 import { ui } from "../ui.svelte";
 import * as ed from "../editor";
@@ -499,6 +499,7 @@ export function stopReasonLabel(reason: string) {
 }
 
 async function onStopped(s: DapSession, b: Json) {
+  const gen = runGen;
   dbg.status = "stopped";
   dbg.stopReason = b.reason ?? "";
   if (b.reason === "exception") {
@@ -507,7 +508,13 @@ async function onStopped(s: DapSession, b: Json) {
   }
   try {
     const threads: Json[] = (await s.request("threads")).threads ?? [];
-    dbg.threads = mojo ? mojoThreads(threads, b.threadId) : threads;
+    if (mojo) {
+      const stack = async (threadId: number) => (await s.request("stackTrace", { threadId, levels: WORKER_FRAMES })).stackFrames ?? [];
+      const shown = await mojoThreads(threads as { id: number; name: string }[], b.threadId, stack);
+      // Several workers can stop at once: only the newest stop may set the list.
+      if (gen !== runGen) return;
+      dbg.threads = shown;
+    } else dbg.threads = threads;
   } catch {
     dbg.threads = [];
   }
@@ -644,9 +651,13 @@ const rawVars = async (s: DapSession, ref: number): Promise<Json[]> => (await s.
 async function readVars(s: DapSession, ref: number): Promise<Json[]> {
   const vars = await rawVars(s, ref);
   if (!mojo) return vars;
+  // Most values need no request. The rest stay parallel, but bounded, so stepping stays fast.
+  const limit = limited(8);
+  let budget = 32;
+  const children = (r: number) => (budget-- > 0 ? limit(() => rawVars(s, r)) : Promise.reject(new Error("too many")));
   return Promise.all(
     vars.map(async (v) => {
-      const m = await mojoValue({ value: v.value, type: v.type, ref: v.variablesReference }, (r) => rawVars(s, r));
+      const m = await mojoValue({ value: v.value, type: v.type, ref: v.variablesReference }, children);
       return { ...v, value: m.value, type: m.type, variablesReference: m.ref };
     }),
   );
@@ -663,7 +674,10 @@ async function readEvaluate(s: DapSession, args: Json): Promise<Json> {
 async function setVar(s: DapSession, args: Json): Promise<string> {
   const r = await s.request("setVariable", args);
   if (!mojo) return r.value;
-  return (await mojoValue({ value: r.value, type: r.type, ref: r.variablesReference ?? 0 }, (ref) => rawVars(s, ref))).value;
+  if (r.type) return (await mojoValue({ value: r.value, type: r.type, ref: r.variablesReference ?? 0 }, (ref) => rawVars(s, ref))).value;
+  // Without a type the text can't be read safely: ask for the variable again, by name.
+  const fresh = await readVars(s, args.variablesReference).catch(() => [] as Json[]);
+  return fresh.find((v) => v.name === args.name)?.value ?? args.value;
 }
 
 async function fetchVars(ref: number, prefix: string): Promise<VarNode[]> {

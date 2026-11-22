@@ -1,5 +1,5 @@
-import { describe, expect, test } from "vitest";
-import { mojoThreads, mojoValue } from "./mojoValues";
+import { describe, expect, test, vi } from "vitest";
+import { limited, mojoThreads, mojoValue } from "./mojoValues";
 
 const none = async () => [];
 const scalar = (e: string) => `__mlir_type.\`!kgen.scalar<${e}>\``;
@@ -64,8 +64,10 @@ describe("mojoValue", () => {
 
   test("a bool SIMD shows no elements when bytes and text disagree or bytes are unusable", async () => {
     const value = boolText(["True", "False"]);
-    for (const kids of [bytes(2, 0), bytes("x", 0), bytes(300, 0), bytes()])
-      expect(await mojoValue({ value, type: simd(2, "bool"), ref: 9 }, kids)).toEqual({ value: "SIMD[Bool, 2]", type: "SIMD[Bool, 2]", ref: 0 });
+    const wide = boolText(Array(16).fill("True"));
+    for (const kids of [bytes(2, 255), bytes("x", 0), bytes(300, 0), bytes()])
+      expect(await mojoValue({ value: wide, type: simd(16, "bool"), ref: 9 }, kids)).toEqual({ value: "SIMD[Bool, 16]", type: "SIMD[Bool, 16]", ref: 0 });
+    expect((await mojoValue({ value, type: simd(2, "bool"), ref: 9 }, bytes(2, 0))).value).toBe("[True, False]");
   });
 
   test("a bool scalar never shows a child that isn't 0 or 1", async () => {
@@ -95,14 +97,90 @@ describe("mojoValue", () => {
   });
 });
 
-describe("mojoThreads", () => {
-  const threads = [{ id: 1, name: "v" }, { id: 2, name: "🔥 Thread0" }, { id: 3, name: "🔥 Thread1" }];
+describe("requests and parent values", () => {
+  const counted = (kids: { value: string }[]) => {
+    const fn = vi.fn(async () => kids);
+    return fn;
+  };
 
-  test("hides idle runtime workers", () => {
-    expect(mojoThreads(threads, 1).map((t) => t.id)).toEqual([1]);
+  test.each([
+    ["42", "index"],
+    ["-7", "si64"],
+    ["1.5", "f64"],
+    ["True", "bool"],
+    ["NaN", "f32"],
+  ])("a clean parent value %s stays, without a request", async (value, e) => {
+    const kids = counted([{ value: "999" }]);
+    expect(await mojoValue({ value, type: scalar(e), ref: 4 }, kids)).toMatchObject({ value, ref: 0 });
+    expect(kids).not.toHaveBeenCalled();
   });
 
-  test("keeps a worker that stopped, and lists it first", () => {
-    expect(mojoThreads(threads, 3).map((t) => t.id)).toEqual([3, 1]);
+  test.each([
+    ["0x2a", "index"],
+    ["2a00000000000000", "index"],
+    ["2a", "si8"],
+  ])("raw bytes %s use the decoded child", async (value, e) => {
+    const kids = counted([{ value: "42" }]);
+    expect((await mojoValue({ value, type: scalar(e), ref: 4 }, kids)).value).toBe("42");
+    expect(kids).toHaveBeenCalledTimes(1);
+  });
+
+  test("a short bool SIMD and an already readable SIMD need no request", async () => {
+    const kids = counted([]);
+    const text = "{\n  (bool) [0] = True\n  (bool) [1] = False\n}";
+    expect((await mojoValue({ value: text, type: simd(2, "bool"), ref: 9 }, kids)).value).toBe("[True, False]");
+    expect((await mojoValue({ value: "[1, 2]", type: simd(2, "si32"), ref: 9 }, kids)).value).toBe("[1, 2]");
+    expect(kids).not.toHaveBeenCalled();
+  });
+
+  test("a SIMD whose children can't be read shows its Mojo type", async () => {
+    const failing = async () => {
+      throw new Error("too many");
+    };
+    expect(await mojoValue({ value: simd(2, "si32"), type: simd(2, "si32"), ref: 9 }, failing)).toEqual({ value: "SIMD[Int32, 2]", type: "SIMD[Int32, 2]", ref: 9 });
+  });
+
+  test("limited never runs more than its maximum", async () => {
+    const limit = limited(2);
+    let now = 0;
+    let peak = 0;
+    await Promise.all(
+      Array.from({ length: 9 }, () =>
+        limit(async () => {
+          peak = Math.max(peak, ++now);
+          await Promise.resolve();
+          now--;
+        }),
+      ),
+    );
+    expect(peak).toBe(2);
+  });
+});
+
+describe("mojoThreads", () => {
+  const threads = [{ id: 1, name: "v" }, { id: 2, name: "🔥 Thread0" }, { id: 3, name: "🔥 Thread1" }, { id: 4, name: "🔥 Thread2" }];
+  // Shapes from real lldb-dap output: idle workers only have deemphasized libc frames.
+  const idle = [{ source: { path: "/usr/lib/libc.so.6`sym", presentationHint: "deemphasize" } }];
+  const inUserCode = [...idle, { source: { path: "/p/main.mojo" } }];
+  const ids = async (stopped: number, stack: (id: number) => Promise<any[]>) => (await mojoThreads(threads, stopped, stack)).map((t) => t.id);
+
+  test("hides idle runtime workers", async () => {
+    expect(await ids(1, async () => idle)).toEqual([1]);
+  });
+
+  test("keeps a worker that stopped, and lists it first", async () => {
+    expect(await ids(3, async () => idle)).toEqual([3, 1]);
+  });
+
+  test("keeps every worker in user code, even inside a libc call", async () => {
+    expect(await ids(3, async (id) => (id === 2 ? inUserCode : idle))).toEqual([3, 1, 2]);
+  });
+
+  test("keeps a worker whose stack can't be read", async () => {
+    const stack = async (id: number) => {
+      if (id === 2) throw new Error("gone");
+      return id === 3 ? [] : idle;
+    };
+    expect(await ids(1, stack)).toEqual([1, 2, 3]);
   });
 });

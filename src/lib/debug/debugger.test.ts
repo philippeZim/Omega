@@ -516,6 +516,8 @@ describe("Mojo values and threads", () => {
 
   function script() {
     fake.replies.threads = () => ({ threads: [{ id: 2, name: "🔥 Thread0" }, { id: 1, name: "prog" }, { id: 3, name: "🔥 Thread1" }] });
+    const frames = fake.replies.stackTrace;
+    fake.replies.stackTrace = (a, req) => (a.threadId === 1 ? frames(a, req) : { stackFrames: [{ id: 50, name: "wait", line: 1, column: 1, source: { path: "/usr/lib/libc.so.6`wait", presentationHint: "deemphasize" } }] });
     fake.replies.variables = (a) =>
       a.variablesReference === 100
         ? { variables: [{ name: "z", value: raw, type, variablesReference: 7 }, { name: "s", value: '"hi"', type: "String", variablesReference: 8 }, { name: "p", value: "Point", type: "Point", variablesReference: 9 }] }
@@ -538,6 +540,34 @@ describe("Mojo values and threads", () => {
     const z = S.dbg.scopes[0].children![0];
     await D.setVariable(z, "7");
     expect(z.value).toBe("7");
+  });
+
+  test("a set value without a type is read back clean, on the host path too", async () => {
+    m.plan.launch = { type: "mojo-lldb", request: "launch", program: "/p/main" };
+    script();
+    fake.replies.setVariable = () => ({ value: "0700000000000000  7" });
+    await startAndStop();
+    const z = S.dbg.scopes[0].children![0];
+    const scope = fake.replies.variables;
+    fake.replies.variables = (a, req) => (a.variablesReference === 100 ? { variables: [{ name: "z", value: "0700000000000000  7", type, variablesReference: 7 }] } : scope(a, req));
+    await D.setVariable(z, "7");
+    expect(z.value).toBe("7");
+    expect(await D.hostDebug.setVariable(100, "z", "7")).toBe("7");
+  });
+
+  test("two workers stopping at once leave the newest stop selected", async () => {
+    m.plan.launch = { type: "mojo-lldb", request: "launch", program: "/p/main" };
+    script();
+    await startAndStop();
+    fake.replies.threads = () => ({ threads: [{ id: 1, name: "prog" }, { id: 2, name: "🔥 Thread0" }, { id: 3, name: "🔥 Thread1" }] });
+    const user = { stackFrames: [{ id: 60, name: "work", line: 3, column: 1, source: { path: "/p/main.py" } }] };
+    fake.replies.stackTrace = () => user;
+    fake.event("stopped", { reason: "breakpoint", threadId: 2 });
+    fake.event("stopped", { reason: "breakpoint", threadId: 3 });
+    await vi.waitFor(() => expect(S.dbg.threadId).toBe(3));
+    await settle();
+    expect(S.dbg.threadId).toBe(3);
+    expect(S.dbg.threads.map((x) => x.id).sort()).toEqual([1, 2, 3]);
   });
 
   test("another language keeps the adapter's text and all its threads", async () => {
