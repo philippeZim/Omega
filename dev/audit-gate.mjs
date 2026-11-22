@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-// dev/audit-gate.mjs <cargo-audit.json> <pnpm-audit.json> — fails only on a High or Critical advisory that
-// isn't ignored with a reason (Rust: src-tauri/deny.toml, npm: pnpm.auditConfig.ignoreGhsas in package.json).
+// dev/audit-gate.mjs <cargo-audit.json> <pnpm-audit.json> — fails only on a High or Critical advisory.
+// Rust advisories can be ignored with a reason in src-tauri/deny.toml. npm has no ignore list here, so every
+// High or Critical advisory in the pnpm report fails.
 // A Rust advisory without a CVSS 3 score counts as High, so an unknown severity can't slip through.
 // A missing or broken report only warns, so an outage of an advisory service can't block merges.
 import { readFileSync } from "node:fs";
