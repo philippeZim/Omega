@@ -6,6 +6,9 @@ import { t } from "../i18n/index.svelte";
 
 const mathCache = new Map<string, string>();
 
+const escapeHtml = (s: string) =>
+  s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+
 export function renderMath(tex: string, display: boolean): string {
   const key = (display ? "D" : "I") + tex;
   let html = mathCache.get(key);
@@ -13,7 +16,7 @@ export function renderMath(tex: string, display: boolean): string {
     try {
       html = katex.renderToString(tex, { displayMode: display, throwOnError: false, output: "html", strict: "ignore" });
     } catch (e) {
-      html = `<span class="md-math-error">${String(e)}</span>`;
+      html = `<span class="md-math-error">${escapeHtml(String(e))}</span>`;
     }
     if (mathCache.size > 500) mathCache.clear();
     mathCache.set(key, html);
