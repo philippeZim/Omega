@@ -200,7 +200,7 @@ async function runStart(gen: number, file: string, actor: string, byGuest: boole
     log(backendErrorText(e), "error");
     dbg.status = "terminated";
     dbg.actor = "";
-    dbg.label = t("code.dbg.startFailed");
+    dbg.label = `${t("code.dbg.startFailed")}: ${backendErrorText(e).split("\n")[0]}`;
     return;
   }
   if (stale()) return;

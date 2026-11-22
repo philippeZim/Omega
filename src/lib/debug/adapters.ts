@@ -8,7 +8,7 @@ import { duneProjectIssue, duneSourcePath, nearestDuneProject, duneTarget, findD
 import { OCAML_PROGRAM_ENV, managedOcaml } from "../code/ocamlTools";
 import { mojoCompiles, mojoStem } from "../code/mojo";
 import { GO_DEBUG_FLAGS, goInfo, goRunTarget, isGoTest } from "../code/go";
-import { toolsDir, clientFor, fileUri, goPauseRoot, javaDebugBundles, metalsPausedFor, ocamlPauseRoot, registerShadow } from "../code/lsp.svelte";
+import { toolsDir, clientFor, fileUri, goPauseRoot, javaDebugBundles, javaTooOld, metalsPausedFor, ocamlPauseRoot, registerShadow } from "../code/lsp.svelte";
 import { onGuestChange, toolPausedBy } from "../collab/guestChanges";
 import { t, type Key } from "../i18n/index.svelte";
 import { exe, tmpPath, venvPython, IS_WIN, OS } from "../platform";
@@ -373,12 +373,14 @@ export async function planFor(ctx: Ctx): Promise<Plan> {
       if (!hasJar) await ensure("javadebug", `${dir}/__missing__`, t("code.ad.javadebug"), ctx);
       const javaFile = alone ? await ownServerCopy() : ctx.file;
       const lsp = await clientFor(info!, javaFile, ctx.workspace, async () => ctx.askInstall("Eclipse JDT Language Server"), true);
-      if (!lsp) throw new Error(t("code.ad.noJavaLsp"));
+      if (!lsp) throw new Error((await javaTooOld()) ?? t("code.ad.noJavaLsp"));
       ctx.log(t("code.ad.resolvingMain"));
-      const mains: Json[] = (await lsp.request("workspace/executeCommand", { command: "vscode.java.resolveMainClass", arguments: [] }, 60000)) ?? [];
+      // A failed Gradle/Maven import is why these find nothing: say that instead.
+      const orImportError = (e: unknown) => (lsp.importError ? new Error(t("code.lsp.javaImportFailed", { err: lsp.importError })) : e);
+      const mains: Json[] = (await lsp.request<Json[]>("workspace/executeCommand", { command: "vscode.java.resolveMainClass", arguments: [] }, 60000).catch((e) => { throw orImportError(e); })) ?? [];
       const main = mains.find((m) => m.filePath === javaFile) ?? mains[0];
-      if (!main) throw new Error(t("code.ad.noMain"));
-      const [modulePaths, classPaths] = await lsp.request("workspace/executeCommand", { command: "vscode.java.resolveClasspath", arguments: [main.mainClass, main.projectName] }, 60000);
+      if (!main) throw orImportError(new Error(t("code.ad.noMain")));
+      const [modulePaths, classPaths] = await lsp.request("workspace/executeCommand", { command: "vscode.java.resolveClasspath", arguments: [main.mainClass, main.projectName] }, 60000).catch((e) => { throw orImportError(e); });
       const port: number = await lsp.request("workspace/executeCommand", { command: "vscode.java.startDebugSession", arguments: [] }, 30000);
       return {
         label: `Java · ${main.mainClass}`,
