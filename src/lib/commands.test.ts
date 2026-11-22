@@ -2,9 +2,12 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 import { KEYMAPS } from "./keymaps";
 import { formatKey, normalize } from "./keys";
 import { dictionaries } from "./i18n/strings";
-import { COMMANDS, applyKeymap, conflicts, defaultKeysFor, handleGlobalKey, keymapState, keysFor, modeNames, modeSwitchLabel, resetAllKeys, setKeys, shortcutLabel, withShortcut } from "./commands.svelte";
+import { COMMANDS, applyKeymap, availableCommands, conflicts, defaultKeysFor, handleGlobalKey, handleZenEscape, keymapState, keysFor, modeNames, modeSwitchLabel, resetAllKeys, setKeys, shortcutLabel, withShortcut } from "./commands.svelte";
 import { toggleZone } from "./layout.svelte";
 import { settings } from "./settings.svelte";
+import { ui } from "./ui.svelte";
+import { collab } from "./collab/collab.svelte";
+import { enterZen, exitZen, zen } from "./zen.svelte";
 const { stub } = vi.hoisted(() => {
   const stub = (extra: Record<string, unknown> = {}) =>
     new Proxy(extra, {
@@ -230,5 +233,58 @@ describe("guest session guards", () => {
     expect(c.startHosting).not.toHaveBeenCalled();
     expect(c.joinFromClipboard).not.toHaveBeenCalled();
     expect(ui.toast).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("zen mode command", () => {
+  const esc = (init: KeyboardEventInit = {}) => new KeyboardEvent("keydown", { key: "Escape", cancelable: true, ...init });
+  const settle = () => new Promise((r) => setTimeout(r));
+
+  beforeEach(async () => {
+    resetAllKeys();
+    applyKeymap("omega", false);
+    ui.menu = null;
+    // Earlier tests open these through their shortcuts.
+    settings.open = false;
+    collab.open = false;
+    await exitZen();
+  });
+
+  test.each(KEYMAPS.map((k) => k.id))("its default key is free in preset %s", (id) => {
+    applyKeymap(id, false);
+    expect(keysFor("layout.zen")).toEqual(["Mod-Shift-F11"]);
+    expect(conflicts("layout.zen", "Mod-Shift-F11").map((c) => c.id)).toEqual([]);
+  });
+
+  test("Escape ends it", async () => {
+    enterZen();
+    handleZenEscape(esc());
+    await settle();
+    expect(zen.on).toBe(false);
+  });
+
+  test("Escape handled by the editor (completion, find panel) leaves it on", async () => {
+    enterZen();
+    const e = esc();
+    handleZenEscape(e);
+    e.preventDefault();
+    await settle();
+    expect(zen.on).toBe(true);
+  });
+
+  test("Escape that closes an open popup leaves it on", async () => {
+    enterZen();
+    ui.menu = { x: 0, y: 0, items: [] };
+    handleZenEscape(esc());
+    ui.menu = null;
+    await settle();
+    expect(zen.on).toBe(true);
+  });
+
+  test("panel commands are off while it is on, its own command stays", () => {
+    enterZen();
+    const on = availableCommands().map((c) => c.id);
+    expect(on).toContain("layout.zen");
+    for (const id of ["app.sidebar", "terminal.toggle", "view.files", "layout.reset"]) expect(on).not.toContain(id);
   });
 });
