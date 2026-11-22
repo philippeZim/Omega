@@ -602,6 +602,7 @@ pub fn cleanup() {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     #[test]
     fn dot_in_an_appimage_is_the_folder_the_user_was_in() {
         let (app, dir, home) = (OsStr::new("/tmp/.mount_Omega"), OsStr::new("/home/u/Documents/Prompts"), Path::new("/home/u"));
