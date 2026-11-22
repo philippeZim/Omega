@@ -41,10 +41,16 @@ const pdf = vi.hoisted(() => {
   };
   return s;
 });
-vi.mock("pdfjs-dist", () => ({ GlobalWorkerOptions: {}, getDocument: () => ({ promise: Promise.resolve(pdf.make()) }) }));
+const getDocument = vi.hoisted(() => vi.fn());
+vi.mock("pdfjs-dist", () => ({ GlobalWorkerOptions: {}, getDocument }));
 
 import PdfPanel from "./PdfPanel.svelte";
 import { latex } from "../lib/latex/controller.svelte";
+
+beforeEach(() => {
+  getDocument.mockReset();
+  getDocument.mockImplementation(() => ({ promise: Promise.resolve(pdf.make()) }));
+});
 
 async function settle() {
   for (let i = 0; i < 20; i++) await tick();
@@ -68,6 +74,13 @@ describe("PdfPanel", () => {
     st.active = null;
     st.view = null;
     st.openFile = async () => {};
+  });
+
+  test("pdf.js doesn't decode images through OffscreenCanvas, which mixes up pages in WebKitGTK", async () => {
+    const { c } = setup();
+    await settle();
+    expect(getDocument.mock.calls[0][0]).toMatchObject({ isOffscreenCanvasSupported: false, isEvalSupported: false });
+    unmount(c);
   });
 
   test("diagnostics from other files show the file name (#142)", async () => {
