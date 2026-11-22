@@ -1,5 +1,6 @@
 <script lang="ts">
   import { ui } from "../lib/ui.svelte";
+  import LspDot from "./LspDot.svelte";
 
   let el: HTMLDivElement | undefined = $state();
   // Position for the menu it was measured for; until then the menu stays invisible, so it never
@@ -24,6 +25,11 @@
     {#each ui.menu.items as item, i (i)}
       {#if item.separator}
         <div class="sep"></div>
+      {:else if item.info}
+        <div class="info" role="group" aria-label={item.label}>
+          <div class="head"><LspDot status={item.info.status} /><span>{item.label}</span></div>
+          {#if item.info.message}<div class="note">{item.info.message}</div>{/if}
+        </div>
       {:else}
         <button role="menuitem" class:danger={item.danger} disabled={item.disabled} title={item.title} onclick={() => { close(); item.action?.(); }}>
           <span>{item.label}</span>
@@ -62,6 +68,11 @@
   button.danger { color: var(--red); }
   button.danger:hover { background: var(--red); color: white; }
   .sc { color: var(--label-3); }
+
+  .info { max-width: 320px; padding: 7px 12px; font-size: 13px; }
+  .head { display: flex; align-items: center; gap: 8px; font-weight: 500; }
+  /* Error output can be long: it wraps, and scrolls instead of pushing the menu off screen. */
+  .note { max-height: 120px; margin-top: 4px; overflow-y: auto; color: var(--label-2); font-size: 12px; line-height: 1.4; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
 
   .sep { height: 1px; margin: 5px 10px; background: rgba(var(--fg-rgb), 0.07); }
 </style>
