@@ -28,7 +28,7 @@
   }
 
   async function gotoBp(p: string, line: number) {
-    await openFile(p);
+    await openFile(p, false, true);
     const v = ed.getView();
     if (v && line <= v.state.doc.lines) {
       v.dispatch({ selection: { anchor: v.state.doc.line(line).from }, scrollIntoView: true });

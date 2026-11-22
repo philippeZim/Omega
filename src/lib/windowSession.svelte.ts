@@ -14,7 +14,7 @@ async function restoreTabs(saved: Session) {
   // Opening a file switches to its mode; the window comes back in the mode it was in.
   const mode = app.mode as Mode;
   for (const f of saved.files) if (await fsApi.exists(f).catch(() => false)) await openFile(f, true);
-  const active = app.tabs.find((t) => t.path === saved.active);
+  const active = app.tabs.find((t) => (t.path ?? t.viewOf) === saved.active);
   if (active) activate(active.id);
   if (app.mode !== mode) setMode(mode);
 }
@@ -52,7 +52,7 @@ export async function bootWindow() {
   // Saved from here on, so the empty start can't overwrite the session.
   $effect.root(() => {
     $effect(() => {
-      const text = JSON.stringify(sessionOf(app.tabs.map((t) => ({ id: t.id, path: t.path })), app.activeId));
+      const text = JSON.stringify(sessionOf(app.tabs.map((t) => ({ id: t.id, path: t.path ?? t.viewOf })), app.activeId));
       try {
         localStorage.setItem(KEY, text);
       } catch {}

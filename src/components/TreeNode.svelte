@@ -30,7 +30,7 @@
   let open = $state(untrack(() => root || expanded.has(path)));
   let children = $state<Entry[] | null>(null);
   const isDir = $derived(root || entry?.is_dir);
-  const active = $derived(activeTab()?.path === path);
+  const active = $derived((activeTab()?.path ?? activeTab()?.viewOf) === path);
 
   async function load() {
     try {

@@ -306,7 +306,7 @@ export async function restartDebugging() {
   try {
     await stopped;
     if (gen !== startGen) return; // stopped or started again meanwhile
-    if (file && activeTab()?.path !== file) await openFile(file);
+    if (file && activeTab()?.path !== file) await openFile(file, false, true);
     if (gen !== startGen) return;
     await startDebugging();
   } finally {
@@ -580,7 +580,7 @@ async function applyFrame(f: Frame) {
   if (f.path) {
     dbg.exec = { path: f.path, line: f.line };
     if (!quiet) {
-      if (activeTab()?.path !== f.path) await openFile(f.path);
+      if (activeTab()?.path !== f.path) await openFile(f.path, false, true);
       const view = ed.getView();
       if (view && f.line <= view.state.doc.lines) {
         const line = view.state.doc.line(f.line);

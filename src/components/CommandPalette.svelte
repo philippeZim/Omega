@@ -203,7 +203,7 @@
       const col = (it.col ?? 1) - 1;
       return remote.reveal(it.path, it.line, [col, col]);
     }
-    await openFile(it.path!);
+    await openFile(it.path!, false, !!it.line);
     const v = ed.getView();
     if (v && it.line) {
       const l = v.state.doc.line(Math.min(it.line, v.state.doc.lines));

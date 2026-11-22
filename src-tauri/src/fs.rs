@@ -146,6 +146,29 @@ pub async fn read_file_large(path: String) -> Result<tauri::ipc::Response, Strin
     Ok(tauri::ipc::Response::new(bytes))
 }
 
+/// Largest image or PDF a viewer tab loads.
+const MAX_VIEW_FILE: u64 = MAX_LARGE_FILE;
+
+/// A whole regular file for a viewer tab, at most `max` bytes also if it grows while being read.
+fn read_view(path: &str, max: u64) -> Result<Vec<u8>, String> {
+    // Checked before opening, because opening a FIFO would block.
+    let meta = fs::metadata(path).map_err(io_err)?;
+    if meta.is_dir() {
+        return Err("fs:is_dir".into());
+    }
+    if !meta.is_file() {
+        return Err("fs:not_file".into());
+    }
+    read_limited(path, max)
+}
+
+/// The bytes of an image or PDF for a read-only viewer tab, sent raw like `read_file_large`.
+#[tauri::command]
+pub async fn read_file_view(path: String) -> Result<tauri::ipc::Response, String> {
+    let bytes = tauri::async_runtime::spawn_blocking(move || read_view(&path, MAX_VIEW_FILE)).await.map_err(err)??;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
 #[derive(Serialize)]
 pub struct FileInfo {
     size: u64,
@@ -761,6 +784,27 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[test]
+    fn read_view_returns_binary_and_enforces_the_limit() {
+        let t = tempfile::tempdir().unwrap();
+        let file = t.path().join("a.png");
+        fs::write(&file, [0x89, 0, 0xff, 0x50]).unwrap();
+        assert_eq!(read_view(&s(&file), 4).unwrap(), vec![0x89, 0, 0xff, 0x50]);
+        assert_eq!(read_view(&s(&file), 3).unwrap_err(), "fs:too_large");
+        assert_eq!(read_view(&s(t.path()), 4).unwrap_err(), "fs:is_dir");
+        assert_eq!(read_view(&s(&t.path().join("nope.png")), 4).unwrap_err(), "fs:not_found");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_view_refuses_a_fifo_without_blocking() {
+        let t = tempfile::tempdir().unwrap();
+        let fifo = t.path().join("pipe.png");
+        let c = std::ffi::CString::new(s(&fifo)).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        assert_eq!(read_view(&s(&fifo), 4).unwrap_err(), "fs:not_file");
+    }
+
     #[test]
     fn read_limited_bounds_files_without_a_size() {
         assert_eq!(read_limited("/dev/zero", 1024).unwrap_err(), "fs:too_large");

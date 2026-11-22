@@ -401,9 +401,13 @@ let remoteTermId: string | null = null;
 /** Puts the guest's own workspace aside before showing the host's. */
 async function stashOwnWorkspace() {
   await flushAutosave();
-  const snap: Snapshot = { root: app.root, mode: app.mode, active: activeTab()?.path ?? null, tabs: [] };
+  const snap: Snapshot = { root: app.root, mode: app.mode, active: activeTab()?.path ?? activeTab()?.viewOf ?? null, tabs: [] };
   for (const tab of [...app.tabs]) {
-    if (isRemote(tab.path) || tab.headOf) continue; // a too large file's read-only view isn't kept
+    if (isRemote(tab.path ?? tab.viewOf) || tab.headOf) continue; // a too large file's read-only view isn't kept
+    if (tab.viewOf) {
+      snap.tabs.push({ path: tab.viewOf, name: tab.name });
+      continue;
+    }
     if (tab.large && tab.dirty) {
       // Large files aren't autosaved and don't fit the snapshot: the tab stays open, unsaved (#174).
       ui.toast(t("app.large.keptOpen", { name: tab.name }));
@@ -416,7 +420,7 @@ async function stashOwnWorkspace() {
   try {
     localStorage.setItem(SNAP_KEY, JSON.stringify(snap));
   } catch {}
-  for (const tab of [...app.tabs]) if (!isRemote(tab.path) && !(tab.large && tab.dirty)) await closeTab(tab.id, true);
+  for (const tab of [...app.tabs]) if (!isRemote(tab.path ?? tab.viewOf) && !(tab.large && tab.dirty)) await closeTab(tab.id, true);
   setRoot(null);
 }
 
@@ -445,7 +449,7 @@ async function restoreOwnWorkspace() {
     ed.replaceDocText(x.id, tab.content);
     x.dirty = true;
   }
-  const active = snap.active && app.tabs.find((x) => x.path === snap!.active);
+  const active = snap.active && app.tabs.find((x) => (x.path ?? x.viewOf) === snap!.active);
   if (active) activate(active.id);
   refreshProject();
 }
