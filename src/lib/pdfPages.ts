@@ -1,5 +1,6 @@
 /** pdf.js page helpers shared by the LaTeX PDF panel and the PDF viewer tab. */
 import * as pdfjs from "pdfjs-dist";
+import type { DocumentInitParameters } from "pdfjs-dist/types/src/display/api";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
@@ -12,9 +13,59 @@ export const PDF_LOAD_OPTIONS = { isEvalSupported: false, isOffscreenCanvasSuppo
 
 /** One worker for all documents: starting it is the slowest part of opening a small PDF. */
 let worker: pdfjs.PDFWorker | null = null;
+/** Who loaded through which worker, so a replaced worker can end once its documents are closed. */
+const loads = new Map<pdfjs.PDFWorker, Set<pdfjs.PDFDocumentLoadingTask>>();
+
 export function pdfWorker() {
-  worker ??= new pdfjs.PDFWorker();
+  if (!worker || worker.destroyed) worker = new pdfjs.PDFWorker();
   return worker;
+}
+
+function endUnusedWorkers() {
+  for (const [w, tasks] of loads) {
+    for (const t of tasks) if (t.destroyed) tasks.delete(t);
+    if (w === worker || tasks.size) continue;
+    loads.delete(w);
+    w.destroy();
+  }
+}
+
+/** The file is the problem (password, not a PDF), so another worker wouldn't help. */
+const isDocumentError = (e: unknown) => ["PasswordException", "InvalidPDFException"].includes((e as { name?: string })?.name ?? "");
+
+/**
+ * Loads a document on the shared worker. If that fails for a reason other than the file, the worker
+ * may be dead: the next loads get a new one and this one is tried once more. The old worker stays
+ * for documents still open on it. `params` is called per attempt, as pdf.js consumes its sources.
+ */
+export function loadPdf(params: () => Omit<DocumentInitParameters, "worker">) {
+  let stopped = false;
+  const begin = () => {
+    const w = pdfWorker();
+    const task = pdfjs.getDocument({ ...params(), ...PDF_LOAD_OPTIONS, worker: w });
+    if (!loads.has(w)) loads.set(w, new Set());
+    loads.get(w)!.add(task);
+    task.promise.catch(() => loads.get(w)?.delete(task)); // a failed load holds no document
+    endUnusedWorkers();
+    return { w, task };
+  };
+  let current = begin();
+  const promise = current.task.promise.catch(async (e: unknown) => {
+    if (stopped || isDocumentError(e)) throw e;
+    const failed = current;
+    if (worker === failed.w) worker = null;
+    await failed.task.destroy();
+    if (stopped) throw e;
+    current = begin();
+    return current.task.promise;
+  });
+  return {
+    promise,
+    destroy() {
+      stopped = true;
+      return current.task.destroy();
+    },
+  };
 }
 
 /** Most pixels one page's canvas may have: enough for a sharp page, and rendering stays fast. */
