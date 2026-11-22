@@ -18,7 +18,8 @@ import { guestMayWrite, hookLocked, refreshHookLocks, resetHookLocks } from "./h
 import { moveGuestChange, noteGuestChange } from "./guestChanges";
 import { checkUpdate } from "./yjsDeps";
 import { call, fits, forgetRpcPeer, hasCapability, isApproved, isObj, onCapabilitiesChanged, registerMethod, rpcErrorText, RpcFail } from "./rpc.svelte";
-import { app, openFile, activeTab, activate, collabHooks, setMode, pathMoved, type Tab } from "../state.svelte";
+import { app, openFile, activeTab, activate, collabHooks, setMode, pathMoved, openRemoteViewer, wantsText, type Tab } from "../state.svelte";
+import { viewerKind } from "../viewer";
 import type { Mode } from "../modes";
 import { MODES } from "../modeList";
 import { onFilesChanged } from "../fsWatch.svelte";
@@ -276,7 +277,7 @@ const shareableRel = (abs: string) => {
  * relative path (so the guest's file tree finds them), unsaved "Untitled" tabs their id
  * ("tab:<id>"). Files on disk outside the project and in a git folder aren't shared.
  */
-export const hostKey = (tab: Tab): string | null => (tab.headOf || tab.large ? null : tab.path ? shareableRel(tab.path) : `tab:${tab.id}`);
+export const hostKey = (tab: Tab): string | null => (tab.headOf || tab.large || tab.viewOf ? null : tab.path ? shareableRel(tab.path) : `tab:${tab.id}`);
 
 /** Like `hostKey`, but also resolves symlinks. Use it before telling guests about a tab. */
 export async function hostKeyChecked(tab: Tab): Promise<string | null> {
@@ -575,7 +576,7 @@ async function hostDoc(rel: string): Promise<SharedDoc | null> {
   if (rel.startsWith("tab:")) {
     // Only unsaved tabs are shared by id: a path here would be a file outside the project.
     const tab = app.tabs.find((t) => t.id === rel.slice(4));
-    if (!tab || tab.path || tab.headOf) return null;
+    if (!tab || tab.path || tab.headOf || tab.viewOf) return null;
     const shared = docs.get(rel);
     if (shared) return shared;
     if (byteLength(ed.getText(tab.id)) > MAX_TEXT_BYTES) return null;
@@ -752,6 +753,8 @@ const pendingOpens = new Map<string, { line?: number; range?: [number, number] }
  * those columns of the line (a search hit).
  */
 export async function openRemote(rel: string, line?: number, range?: [number, number]) {
+  const viewer = rel.startsWith("tab:") ? null : viewerKind(rel);
+  if (viewer && !wantsText(REMOTE + rel)) return openRemoteViewer(REMOTE + rel, viewer);
   const existing = docs.get(rel);
   if (existing?.tabId && app.tabs.some((t) => t.id === existing.tabId)) {
     const { activate } = await import("../state.svelte");
@@ -1365,6 +1368,8 @@ export async function teardownShare() {
     }
     dispose(d);
   }
+  // Guest viewer tabs have no shared doc.
+  for (const tab of [...app.tabs]) if (isRemote(tab.viewOf)) await closeTab(tab.id, true);
   docs.clear();
   renamed.clear();
   presenceOrder.clear();

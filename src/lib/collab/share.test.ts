@@ -242,6 +242,15 @@ test("the read-only head of a too large file is never shared (#174)", async () =
   expect(sent.some((s) => s.msg.t === "doc.state")).toBe(false);
 });
 
+test("a viewer tab is never shared as text (#159)", async () => {
+  hostFs({});
+  const view = { id: "v1", path: null, name: "a.pdf", viewOf: "/p/a.pdf", viewer: "pdf" };
+  app.tabs.push(view);
+  expect(share.hostKey(view as any)).toBeNull();
+  await receive("g1", { t: "doc.open", path: "tab:v1" });
+  expect(sent.some((s) => s.msg.t === "doc.state")).toBe(false);
+});
+
 test("a host tab with a large file gives guests nothing (#174)", async () => {
   hostFs({ "/p/mid.log": "on disk" });
   const tab = { id: "m1", path: "/p/mid.log", name: "mid.log", large: true };
