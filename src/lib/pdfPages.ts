@@ -10,7 +10,7 @@ export interface PageLink {
 }
 
 /** The empty, correctly sized element of one page. */
-export function createPageShell(index: number, vp: pdfjs.PageViewport): HTMLDivElement {
+export function createPageShell(index: number, vp: { width: number; height: number }): HTMLDivElement {
   const wrap = document.createElement("div");
   wrap.className = "page";
   wrap.dataset.page = String(index);

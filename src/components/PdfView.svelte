@@ -9,12 +9,21 @@
 
   let { bytes }: { bytes: Uint8Array } = $props();
 
+  /** One page. Its proxy is only held while the page is near the view. */
   interface Entry {
-    page: pdfjs.PDFPageProxy;
+    index: number;
     wrap: HTMLDivElement;
-    vp: pdfjs.PageViewport;
+    /** Size at scale 1: page 1's until the real page has been loaded. */
+    w: number;
+    h: number;
+    scale: number;
+    page: pdfjs.PDFPageProxy | null;
+    loading: boolean;
+    failed: boolean;
     task: ReturnType<typeof paintPage> | null;
   }
+
+  const NEAR_PX = 800;
 
   let zoom = $state(0); // 0 = fit width
   let shownScale = $state(1);
@@ -27,56 +36,111 @@
   let entries: Entry[] = [];
   let tops: number[] = [];
   let heights: number[] = [];
+  /** Pages holding a proxy, a canvas or a pending load. */
+  const live = new Set<Entry>();
   let seq = 0;
 
   const scaleFor = (pageW: number) => zoom || Math.max(0.3, ((scroller?.clientWidth ?? 800) - 32) / pageW);
 
-  function release(e: Entry) {
+  function clearCanvas(e: Entry) {
     e.task?.cancel();
     e.task = null;
     e.wrap.replaceChildren();
   }
 
+  function drop(e: Entry) {
+    clearCanvas(e);
+    live.delete(e);
+    const page = e.page;
+    e.page = null;
+    page?.cleanup();
+  }
+
   function paint(e: Entry) {
-    if (e.task) return;
-    const task = paintPage(e.page, e.wrap, e.vp, window.devicePixelRatio || 1);
+    if (e.task || !e.page) return;
+    const page = e.page;
+    const vp = page.getViewport({ scale: e.scale });
+    const task = paintPage(page, e.wrap, vp, window.devicePixelRatio || 1);
     e.task = task;
     task.promise.then(
       () => {
-        if (e.task === task) void addPageLinks(e.page, e.vp, e.wrap, openLink);
+        if (e.task === task) void addPageLinks(page, vp, e.wrap, openLink);
       },
       () => {}, // cancelled, or one bad page: the others still show
     );
+  }
+
+  /** Paints the page, fetching it first if needed. */
+  function show(e: Entry) {
+    if (e.failed) return;
+    live.add(e);
+    if (e.page) return paint(e);
+    if (e.loading || !doc) return;
+    e.loading = true;
+    const owner = doc;
+    owner.getPage(e.index + 1).then(
+      (page) => {
+        if (doc !== owner) return;
+        e.loading = false;
+        e.page = page;
+        applyRealSize(e, page);
+        onScroll(); // paints it, or lets it go if the view moved on
+      },
+      () => {
+        if (doc !== owner) return;
+        e.loading = false;
+        e.failed = true;
+        live.delete(e);
+      },
+    );
+  }
+
+  function sizeShell(e: Entry) {
+    e.scale = scaleFor(e.w);
+    e.wrap.style.width = `${e.w * e.scale}px`;
+    e.wrap.style.height = `${e.h * e.scale}px`;
+  }
+
+  /** Real offsets, after all sizes are written (one reflow): with UI zoom the browser snaps sizes, so a sum would drift. */
+  function measure() {
+    tops = entries.map((e) => e.wrap.offsetTop);
+    heights = entries.map((e) => e.wrap.offsetHeight);
+  }
+
+  /** The page differs from page 1's size: fixes its shell and keeps the view where it was. */
+  function applyRealSize(e: Entry, page: pdfjs.PDFPageProxy) {
+    const base = page.getViewport({ scale: 1 });
+    if (base.width === e.w && base.height === e.h) return;
+    const oldHeight = e.h * e.scale;
+    const above = !!scroller && tops[e.index] + oldHeight <= scroller.scrollTop;
+    clearCanvas(e);
+    e.w = base.width;
+    e.h = base.height;
+    sizeShell(e);
+    measure();
+    if (above && scroller) scroller.scrollTop += e.h * e.scale - oldHeight;
   }
 
   /** Sizes every page for the current zoom; only pages near the view hold a canvas. */
   function layout() {
     if (!entries.length || !scroller) return;
     const ratio = scroller.scrollTop / Math.max(1, scroller.scrollHeight);
-    for (const e of entries) {
-      release(e);
-      const base = e.page.getViewport({ scale: 1 });
-      e.vp = e.page.getViewport({ scale: scaleFor(base.width) });
-      e.wrap.style.width = `${e.vp.width}px`;
-      e.wrap.style.height = `${e.vp.height}px`;
-    }
-    shownScale = entries[0].vp.scale;
+    for (const e of live) clearCanvas(e);
+    for (const e of entries) sizeShell(e);
+    shownScale = entries[0].scale;
+    measure();
     scroller.scrollTop = ratio * scroller.scrollHeight;
-    tops = entries.map((e) => e.wrap.offsetTop);
-    heights = entries.map((e) => e.vp.height);
     onScroll();
   }
 
-  /** Keeps a canvas only for pages near the view, so long PDFs stay light. */
+  /** Keeps pages near the view loaded and painted, and lets go of the others, so long PDFs stay light. */
   function onScroll() {
     if (!scroller || !tops.length) return;
     current = pageAt(tops, scroller.scrollTop + scroller.clientHeight / 3);
-    const near = pagesNear(tops, heights, scroller.scrollTop, scroller.clientHeight, 800);
+    const near = pagesNear(tops, heights, scroller.scrollTop, scroller.clientHeight, NEAR_PX);
     if (!near) return;
-    entries.forEach((e, i) => {
-      if (i >= near[0] && i <= near[1]) paint(e);
-      else if (e.task) release(e);
-    });
+    for (const e of [...live]) if (!e.loading && (e.index < near[0] || e.index > near[1])) drop(e);
+    for (let i = near[0]; i <= near[1]; i++) show(entries[i]);
   }
 
   async function openLink(link: PageLink) {
@@ -86,16 +150,23 @@
       return;
     }
     if (!doc || !link.dest || !scroller) return;
-    const target = await resolvePdfDest(doc, link.dest);
+    const owner = doc;
+    const target = await resolvePdfDest(owner, link.dest);
     const e = target && entries[target.index];
-    if (!target || !e) return;
-    const base = e.page.getViewport({ scale: 1 });
-    const top = target.y !== null ? (base.height - target.y) * e.vp.scale : 0;
-    scroller.scrollTo({ top: e.wrap.offsetTop + top - 12 });
+    if (!target || !e || doc !== owner) return;
+    // The target may not be loaded yet, and its real height decides where the destination lies.
+    const page = e.page ?? (await owner.getPage(target.index + 1).catch(() => null));
+    if (doc !== owner || !scroller) return;
+    if (page) applyRealSize(e, page);
+    // A destination above the page edge (common with a y meant for another page size) is its top.
+    const top = target.y !== null ? Math.max(0, (e.h - target.y) * e.scale) : 0;
+    scroller.scrollTo({ top: tops[e.index] + top - 12 });
+    onScroll(); // no waiting for the scroll event
   }
 
   function teardown() {
-    for (const e of entries) e.task?.cancel();
+    for (const e of live) e.task?.cancel();
+    live.clear();
     entries = [];
     tops = [];
     heights = [];
@@ -120,17 +191,21 @@
     }
     if (mine !== seq) return void next.destroy();
     try {
+      // Only page 1 is needed to show the document: the others take its size until they are near.
+      const first = await next.getPage(1);
+      if (mine !== seq) return void next.destroy();
+      const base = first.getViewport({ scale: 1 });
       const built: Entry[] = [];
-      for (let i = 1; i <= next.numPages; i++) {
-        const page = await next.getPage(i);
-        if (mine !== seq) return void next.destroy();
-        const base = page.getViewport({ scale: 1 });
-        const vp = page.getViewport({ scale: scaleFor(base.width) });
-        built.push({ page, vp, wrap: createPageShell(i, vp), task: null });
+      for (let index = 0; index < next.numPages; index++) {
+        const scale = scaleFor(base.width);
+        const wrap = createPageShell(index + 1, { width: base.width * scale, height: base.height * scale });
+        built.push({ index, wrap, w: base.width, h: base.height, scale, page: null, loading: false, failed: false, task: null });
       }
+      built[0].page = first;
       teardown();
       doc = next;
       entries = built;
+      live.add(built[0]);
       error = null;
       total = next.numPages;
       await tick(); // a previous error hid the scroller, and fit width needs its size
@@ -139,6 +214,9 @@
       layout();
     } catch {
       if (mine !== seq) return;
+      teardown();
+      pagesEl?.replaceChildren();
+      total = 0;
       void next.destroy();
       error = t("app.viewer.brokenPdf");
     }
