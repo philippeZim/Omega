@@ -70,7 +70,7 @@ describe("cheat sheets", () => {
     expect(sheetIdFor("code", "rust")).toBe("rust");
     expect(sheetIdFor("code", "json")).toBe("python");
     expect(sheetIdFor("code", null)).toBe("python");
-    for (const id of ["scala", "ocaml", "mojo"]) expect(sheetIdFor("code", id)).toBe(id);
+    for (const id of ["scala", "ocaml", "mojo", "go"]) expect(sheetIdFor("code", id)).toBe(id);
     expect(sheetIdFor("text", null)).toBe("shortcuts");
     expect(sheetIdFor("markdown", null)).toBe("markdown");
     expect(sheetIdFor("latex", "rust")).toBe("latex");
