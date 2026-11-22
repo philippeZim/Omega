@@ -117,7 +117,10 @@ export class PdfPager {
 
   private sizeSpacer() {
     const { pages, scroller } = this.host;
-    pages.style.height = this.layout ? `${this.layout.scrollHeight}px` : "";
+    pages.style.height = this.layout ? `${this.layout.spacerHeight(scroller.clientHeight)}px` : "";
+    // Compressed, pages are placed relative to the view and may reach past the scroll area: they
+    // must not add to it, or the scroll position would no longer map to the document.
+    pages.style.overflow = this.layout && this.layout.compress !== 1 ? "hidden" : "";
     pages.style.width = this.layout ? `${Math.max(scroller.clientWidth, this.layout.widest + 32)}px` : "";
   }
 
@@ -152,10 +155,14 @@ export class PdfPager {
     const y = this.docY();
     this.syncedTop = scroller.scrollTop;
     const [first, last] = this.near();
+    // Compressed, a page far from the view has no place in the scroll area, so it isn't kept.
+    const [keepFrom, keepTo] = l.compress === 1 ? [0, l.count - 1] : l.range(y, scroller.clientHeight, Math.max(NEAR_PX, 2 * scroller.clientHeight));
     for (const s of [...this.slots.values()]) {
+      const out = s.index < first || s.index > last;
       // A bitmap of an older version of the document is worthless once it's out of sight.
-      if ((s.index < first || s.index > last) && (!s.canvas || s.stale)) this.freeSlot(s);
+      if ((out && (!s.canvas || s.stale)) || s.index < keepFrom || s.index > keepTo) this.freeSlot(s);
     }
+    if (l.compress !== 1) this.sizeSpacer(); // the view's height may have changed
     for (let i = first; i <= last; i++) if (!this.slots.has(i)) this.makeSlot(i);
     // Rendered pages stay mounted when they leave the view: taking a canvas out of the DOM and
     // putting it back is what can leave it white in WebKitGTK.
@@ -264,6 +271,7 @@ export class PdfPager {
     const { scroller } = this.host;
     const old = this.doc;
     const before = this.layout;
+    this.zoomGesture = null; // its page may not exist in the new version
     const anchor = resume ?? before?.anchor(this.docY()) ?? null;
     this.cancelJob();
     const base = first.getViewport({ scale: 1 });

@@ -68,6 +68,14 @@ export class PdfLayout {
     return this.total * this.compress;
   }
 
+  /**
+   * Height of the scroll area for a view of `viewHeight`. When compressed, it is chosen so that the
+   * largest scroll position is exactly the end of the document.
+   */
+  spacerHeight(viewHeight: number) {
+    return this.compress === 1 ? this.total : (this.total - viewHeight) * this.compress + viewHeight;
+  }
+
   /** Takes over the page sizes of the previous version of this document. */
   adopt(old: PdfLayout) {
     const n = Math.min(this.count, old.count);

@@ -131,7 +131,12 @@
       scale: () => pager?.scale ?? (zoom || 1),
       min: 0.4, // the limits of the zoom buttons
       max: 4,
-      apply: (scale, x, y) => pager?.zoomAt(() => (zoom = wheelZoomed = scale), x, y),
+      apply: (scale, x, y) => {
+        // The box was placed for the old size.
+        clearTimeout(flashTimer);
+        flash = null;
+        pager?.zoomAt(() => (zoom = wheelZoomed = scale), x, y);
+      },
     }),
   );
 

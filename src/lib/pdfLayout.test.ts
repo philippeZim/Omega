@@ -55,6 +55,14 @@ describe("PdfLayout", () => {
     expect(l.scrollHeight).toBeCloseTo(MAX_SCROLL_HEIGHT);
     expect(new PdfLayout(10, 600, 800, fixed(1)).compress).toBe(1);
   });
+
+  test("the largest scroll position of a compressed document is exactly its end", () => {
+    const l = new PdfLayout(100_000, 600, 800, fixed(1));
+    const view = 700;
+    expect((l.spacerHeight(view) - view) / l.compress).toBeCloseTo(l.total - view, 3);
+    const short = new PdfLayout(10, 600, 800, fixed(1));
+    expect(short.spacerHeight(view)).toBe(short.total);
+  });
 });
 
 test("the page in the middle of the view renders first", () => {

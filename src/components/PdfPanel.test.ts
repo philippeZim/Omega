@@ -200,6 +200,22 @@ describe("PdfPanel", () => {
     unmount(c);
   });
 
+  test("ctrl + wheel removes the flash box, which was placed for the old size", async () => {
+    pdf.pages = 20;
+    const { target, c } = setup();
+    await settle();
+    latex.target = { page: 3, x: 10, y: 20, w: 5, h: 5, seq: 3 };
+    await settle();
+    expect(target.querySelector(".flash")).not.toBeNull();
+    target.querySelector<HTMLElement>(".scroller")!.dispatchEvent(wheelEvent({ deltaY: -100 }));
+    await new Promise((r) => setTimeout(r, 30));
+    await settle();
+    expect(target.querySelector(".flash")).toBeNull();
+    latex.target = null;
+    localStorage.removeItem("pdfZoom");
+    unmount(c);
+  });
+
   test("reverse SyncTeX works on a mounted page of a long document", async () => {
     pdf.pages = 1500;
     const sync = vi.spyOn(controller, "reverseSync").mockReturnValue(null);

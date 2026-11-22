@@ -430,6 +430,79 @@ describe("scrolling back and forth", () => {
   });
 });
 
+describe("a document long enough to compress", () => {
+  const open = async () => {
+    forgetViewer("long");
+    rememberViewer("long", { zoom: 4, anchor: { page: 2900, fraction: 0 } }); // 3000 x 800 px is near the limit
+    pdf.pages = 30_000;
+    const target = document.createElement("div");
+    document.body.append(target);
+    const cmp = mount(PdfView, { target, props: { tabId: "long", source: { path: "/p/long.pdf", size: 1000, modified: 1 } } });
+    flushSync();
+    await settle();
+    return { target, cmp, scroller: target.querySelector<HTMLElement>(".scroller")! };
+  };
+  const finish = (cmp: Record<string, unknown>) => {
+    unmount(cmp);
+    forgetViewer("long");
+    pdf.pages = 3000;
+  };
+
+  test("pages far from the view aren't kept, so they can't stretch the scroll range", async () => {
+    const { target, scroller, cmp } = await open();
+    const spacer = target.querySelector<HTMLElement>(".pages")!;
+    const height = spacer.style.height;
+    await scrollTo(scroller, parseFloat(height) - 400); // the end
+    expect(target.querySelector('[data-page="30000"]')).not.toBeNull();
+    await scrollTo(scroller, 0); // the start
+    expect(target.querySelector('[data-page="30000"]')).toBeNull();
+    expect(spacer.style.height).toBe(height);
+    expect(spacer.style.overflow).toBe("hidden");
+    for (const h of target.querySelectorAll<HTMLElement>(".slot")) expect(Math.abs(parseFloat(h.style.top))).toBeLessThan(3 * 400 + 2 * 814);
+    finish(cmp);
+  });
+
+  test("an uncompressed document keeps its rendered pages mounted", async () => {
+    const { target, scroller, cmp } = await view();
+    expect(target.querySelector<HTMLElement>(".pages")!.style.overflow).toBe("");
+    await scrollTo(scroller, topOf(20));
+    expect(target.querySelector('[data-page="1"]')).not.toBeNull();
+    unmount(cmp);
+  });
+});
+
+test("a zoom gesture doesn't survive a reload to a shorter document", async () => {
+  const props = $state({ source: { path: "/p/a.pdf", size: 1000, modified: 1 } });
+  const target = document.createElement("div");
+  document.body.append(target);
+  const cmp = mount(PdfView, { target, props });
+  flushSync();
+  await settle();
+  const scroller = target.querySelector<HTMLElement>(".scroller")!;
+  let top = 0;
+  const written: number[] = [];
+  Object.defineProperty(scroller, "scrollTop", { configurable: true, get: () => top, set: (v: number) => { written.push(v); top = v; } });
+  await scrollTo(scroller, topOf(2000));
+  const wheel = () => scroller.dispatchEvent(Object.assign(new Event("wheel", { bubbles: true, cancelable: true }), { deltaY: -40, deltaMode: 0, clientX: 40, clientY: 100, ctrlKey: true }));
+  wheel();
+  await new Promise((r) => setTimeout(r, 30));
+  await settle();
+  const atGesture = top;
+  pdf.pages = 3;
+  props.source = { path: "/p/a.pdf", size: 1000, modified: 2 };
+  flushSync();
+  await settle();
+  top = atGesture; // what the gesture remembers
+  written.length = 0;
+  wheel();
+  await new Promise((r) => setTimeout(r, 30));
+  await settle();
+  expect(written.length).toBeGreaterThan(0);
+  expect(written.every(Number.isFinite)).toBe(true);
+  pdf.pages = 3000;
+  unmount(cmp);
+});
+
 describe("ctrl + wheel", () => {
   const wheel = (el: HTMLElement, deltaY: number, x = 40, y = 100, ctrlKey = true) => {
     const e = Object.assign(new Event("wheel", { bubbles: true, cancelable: true }), { deltaY, deltaMode: 0, clientX: x, clientY: y, ctrlKey }); // the test DOM's WheelEvent drops ctrlKey
