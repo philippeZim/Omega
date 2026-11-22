@@ -2,7 +2,7 @@
   import Glyph from "./Glyph.svelte";
   import { onDestroy, tick } from "svelte";
   import * as pdfjs from "pdfjs-dist";
-  import { addPageLinks, createPageShell, paintPage, resolvePdfDest, type PageLink } from "../lib/pdfPages";
+  import { PDF_LOAD_OPTIONS, addPageLinks, createPageShell, paintPage, resolvePdfDest, type PageLink } from "../lib/pdfPages";
   import { MAX_PDF_ZOOM, pageAt, pagesNear, safePdfUrl, stepZoom } from "../lib/viewer";
   import { openUrl } from "../lib/native";
   import { t } from "../lib/i18n/index.svelte";
@@ -40,7 +40,9 @@
   const live = new Set<Entry>();
   let seq = 0;
 
-  const scaleFor = (pageW: number) => zoom || Math.max(0.3, ((scroller?.clientWidth ?? 800) - 32) / pageW);
+  /** Width for fit-width. Read once per pass: reading it after a size was written forces a full reflow. */
+  const availableWidth = () => scroller?.clientWidth ?? 800;
+  const scaleFor = (pageW: number, width: number) => zoom || Math.max(0.3, (width - 32) / pageW);
 
   function clearCanvas(e: Entry) {
     e.task?.cancel();
@@ -95,8 +97,8 @@
     );
   }
 
-  function sizeShell(e: Entry) {
-    e.scale = scaleFor(e.w);
+  function sizeShell(e: Entry, width: number) {
+    e.scale = scaleFor(e.w, width);
     e.wrap.style.width = `${e.w * e.scale}px`;
     e.wrap.style.height = `${e.h * e.scale}px`;
   }
@@ -116,7 +118,7 @@
     clearCanvas(e);
     e.w = base.width;
     e.h = base.height;
-    sizeShell(e);
+    sizeShell(e, availableWidth());
     measure();
     if (above && scroller) scroller.scrollTop += e.h * e.scale - oldHeight;
   }
@@ -126,7 +128,8 @@
     if (!entries.length || !scroller) return;
     const ratio = scroller.scrollTop / Math.max(1, scroller.scrollHeight);
     for (const e of live) clearCanvas(e);
-    for (const e of entries) sizeShell(e);
+    const width = availableWidth();
+    for (const e of entries) sizeShell(e, width);
     shownScale = entries[0].scale;
     measure();
     scroller.scrollTop = ratio * scroller.scrollHeight;
@@ -177,7 +180,7 @@
   async function open(data: Uint8Array) {
     const mine = ++seq;
     // pdf.js takes the buffer over, so it gets its own copy.
-    const task = pdfjs.getDocument({ data: data.slice(), isEvalSupported: false });
+    const task = pdfjs.getDocument({ ...PDF_LOAD_OPTIONS, data: data.slice() });
     let next: pdfjs.PDFDocumentProxy;
     try {
       next = await task.promise;
@@ -196,8 +199,8 @@
       if (mine !== seq) return void next.destroy();
       const base = first.getViewport({ scale: 1 });
       const built: Entry[] = [];
+      const scale = scaleFor(base.width, availableWidth());
       for (let index = 0; index < next.numPages; index++) {
-        const scale = scaleFor(base.width);
         const wrap = createPageShell(index + 1, { width: base.width * scale, height: base.height * scale });
         built.push({ index, wrap, w: base.width, h: base.height, scale, page: null, loading: false, failed: false, task: null });
       }
