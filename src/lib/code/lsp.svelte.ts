@@ -160,6 +160,9 @@ export class LspClient {
           hover: { contentFormat: ["markdown", "plaintext"] },
           signatureHelp: { signatureInformation: { documentationFormat: ["markdown", "plaintext"], parameterInformation: { labelOffsetSupport: true } } },
           definition: { linkSupport: true },
+          declaration: { linkSupport: true },
+          implementation: { linkSupport: true },
+          typeDefinition: { linkSupport: true },
           documentHighlight: {},
           formatting: {},
           // codeActionsInline: clangd extension – fixes (e.g. "Include <stdio.h>") arrive with the diagnostic.

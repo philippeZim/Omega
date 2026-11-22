@@ -2,9 +2,11 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { forEachDiagnostic, type Diagnostic } from "@codemirror/lint";
-import { applyItem, lspExtension, renderDoc, toOffset, toPos } from "./lspExtension";
-import { fileUri } from "./lsp.svelte";
-import { runViewAction } from "../editorActions";
+import { applyItem, lspExtension, renderDoc, setLspHooks, toOffset, toPos } from "./lspExtension";
+import { fileUri, registerShadow } from "./lsp.svelte";
+import { ui } from "../ui.svelte";
+import { t } from "../i18n/index.svelte";
+import { runViewAction, viewActionState } from "../editorActions";
 import { indentFor, langFor } from "./languages";
 
 const m = vi.hoisted(() => ({ client: null as any }));
@@ -274,6 +276,71 @@ describe("lspExtension document highlights", () => {
     v.dispatch({ selection: { anchor: 4 } });
     await vi.waitFor(() => expect(v.contentDOM.querySelectorAll(".cm-lspHighlight").length).toBe(2));
     expect(c.request).toHaveBeenCalledWith("textDocument/documentHighlight", { textDocument: { uri: URI }, position: pos(0, 4) }, 5000);
+  });
+});
+
+describe("lspExtension go to implementation, type definition, declaration", () => {
+  const CAPS = { implementationProvider: true, typeDefinitionProvider: true, declarationProvider: true };
+  const hit = (uri: string, line: number) => ({ uri, range: range(line, 2, line, 3) });
+
+  test.each([
+    ["lsp.gotoImplementation", "textDocument/implementation"],
+    ["lsp.gotoTypeDefinition", "textDocument/typeDefinition"],
+    ["lsp.gotoDeclaration", "textDocument/declaration"],
+  ])("%s asks the server and goes to the one result", async (id, method) => {
+    const navigate = vi.fn(async () => {});
+    setLspHooks({ workspace: () => null, askInstall: async () => false, navigate });
+    const c = fakeClient({ capabilities: CAPS, request: vi.fn(async () => [hit(fileUri("/w/proj/b.py"), 7)]) });
+    const v = await mountWith(c, "abc");
+    v.dispatch({ selection: { anchor: 2 } });
+    runViewAction(v, id);
+    await vi.waitFor(() => expect(navigate).toHaveBeenCalledWith("/w/proj/b.py", 7, 2));
+    expect(c.request).toHaveBeenCalledWith(method, { textDocument: { uri: URI }, position: pos(0, 2) });
+  });
+
+  test("several results open a picker that navigates", async () => {
+    const navigate = vi.fn(async () => {});
+    setLspHooks({ workspace: () => null, askInstall: async () => false, navigate });
+    const c = fakeClient({ capabilities: CAPS, request: vi.fn(async () => [hit(fileUri("/w/proj/b.py"), 1), hit(fileUri("/w/proj/c.py"), 2)]) });
+    const v = await mountWith(c, "abc");
+    vi.mocked(ui.openMenu).mockClear();
+    runViewAction(v, "lsp.gotoImplementation");
+    await vi.waitFor(() => expect(ui.openMenu).toHaveBeenCalled());
+    expect(navigate).not.toHaveBeenCalled();
+    const items = vi.mocked(ui.openMenu).mock.calls[0][1];
+    expect(items.map((i) => i.label)).toEqual(["b.py:2", "c.py:3"]);
+    items[1].action!();
+    expect(navigate).toHaveBeenCalledWith("/w/proj/c.py", 2, 2);
+  });
+
+  test("a result in a private copy opens the real file", async () => {
+    const navigate = vi.fn(async () => {});
+    setLspHooks({ workspace: () => null, askInstall: async () => false, navigate });
+    registerShadow("/w/proj/real.txt", "/priv/lsp/real.py", "/priv/lsp");
+    const c = fakeClient({ capabilities: CAPS, request: vi.fn(async () => [hit(fileUri("/priv/lsp/real.py"), 3)]) });
+    const v = await mountWith(c, "abc");
+    runViewAction(v, "lsp.gotoTypeDefinition");
+    await vi.waitFor(() => expect(navigate).toHaveBeenCalledWith("/w/proj/real.txt", 3, 2));
+  });
+
+  test("no result, or a server without the feature, says so", async () => {
+    const c = fakeClient({ capabilities: { implementationProvider: true }, request: vi.fn(async () => null) });
+    const v = await mountWith(c, "abc");
+    vi.mocked(ui.toast).mockClear();
+    runViewAction(v, "lsp.gotoImplementation");
+    await vi.waitFor(() => expect(ui.toast).toHaveBeenCalledWith(t("code.lsp.gotoNone")));
+    vi.mocked(ui.toast).mockClear();
+    runViewAction(v, "lsp.gotoDeclaration");
+    expect(ui.toast).toHaveBeenCalledWith(t("code.lsp.gotoUnsupported"));
+    expect(c.request).toHaveBeenCalledTimes(1);
+  });
+
+  test("the context menu can tell what the server supports", async () => {
+    const c = fakeClient({ capabilities: { implementationProvider: true } });
+    const v = await mountWith(c, "abc");
+    expect(viewActionState(v, "lsp.gotoImplementation")).toBe("enabled");
+    expect(viewActionState(v, "lsp.gotoDeclaration")).toBe("disabled");
+    expect(viewActionState(v, "lsp.nothing")).toBeNull();
   });
 });
 

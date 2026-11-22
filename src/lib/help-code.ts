@@ -11,6 +11,9 @@ const editor: Section = {
   rows: [
     ["{cmd:editor.complete}", "Completion", "Vervollständigung", "Complétion"],
     ["{cmd:lsp.gotoDefinition} · Ctrl Click", "Go to definition", "Gehe zu Definition", "Aller à la définition"],
+    ["{cmd:lsp.gotoDeclaration}", "Go to declaration", "Gehe zu Deklaration", "Aller à la déclaration"],
+    ["{cmd:lsp.gotoImplementation}", "Go to implementation", "Gehe zu Implementierung", "Aller à l’implémentation"],
+    ["{cmd:lsp.gotoTypeDefinition}", "Go to type definition", "Gehe zu Typdefinition", "Aller à la définition de type"],
     ["{cmd:lsp.format}", "Format document", "Dokument formatieren", "Formater le document"],
     [["Hover a symbol", "Maus über Symbol", "Survol d'un symbole"], "Type & documentation", "Typ & Dokumentation", "Type et documentation"],
     ["{cmd:run.run}", "Run", "Ausführen", "Exécuter"],
