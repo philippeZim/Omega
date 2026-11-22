@@ -182,7 +182,7 @@ describe("Run for a file set to another language", () => {
     files.set("/w/f", "x");
     for (const l of LANGUAGES) {
       const r = await overrideRun(l.id, "/w/f", "tsx");
-      if (l.id === "json" || l.id === "toml") expect(r).toBeNull();
+      if (!l.server) expect(r).toBeNull();
       else expect(r?.cmd).toBeTruthy();
     }
   });

@@ -1,0 +1,130 @@
+/** pdf.js page helpers shared by the LaTeX PDF panel and the PDF viewer tab. */
+import * as pdfjs from "pdfjs-dist";
+import type { DocumentInitParameters } from "pdfjs-dist/types/src/display/api";
+import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+
+pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
+
+/**
+ * For every getDocument. Without OffscreenCanvas: in WebKitGTK the images pdf.js decodes through it
+ * in the worker came out as the last decoded image, so each page showed the last page's picture.
+ */
+export const PDF_LOAD_OPTIONS = { isEvalSupported: false, isOffscreenCanvasSupported: false } as const;
+
+/** One worker for all documents: starting it is the slowest part of opening a small PDF. */
+let worker: pdfjs.PDFWorker | null = null;
+/** Who loaded through which worker, so a replaced worker can end once its documents are closed. */
+const loads = new Map<pdfjs.PDFWorker, Set<pdfjs.PDFDocumentLoadingTask>>();
+
+export function pdfWorker() {
+  if (!worker || worker.destroyed) worker = new pdfjs.PDFWorker();
+  return worker;
+}
+
+function endUnusedWorkers() {
+  for (const [w, tasks] of loads) {
+    for (const t of tasks) if (t.destroyed) tasks.delete(t);
+    if (w === worker || tasks.size) continue;
+    loads.delete(w);
+    w.destroy();
+  }
+}
+
+/** The file is the problem (password, not a PDF), so another worker wouldn't help. */
+const isDocumentError = (e: unknown) => ["PasswordException", "InvalidPDFException"].includes((e as { name?: string })?.name ?? "");
+
+/**
+ * Loads a document on the shared worker. If that fails for a reason other than the file, the worker
+ * may be dead: the next loads get a new one and this one is tried once more. The old worker stays
+ * for documents still open on it. `params` is called per attempt, as pdf.js consumes its sources.
+ */
+export function loadPdf(params: () => Omit<DocumentInitParameters, "worker">) {
+  let stopped = false;
+  const begin = () => {
+    const w = pdfWorker();
+    const task = pdfjs.getDocument({ ...params(), ...PDF_LOAD_OPTIONS, worker: w });
+    if (!loads.has(w)) loads.set(w, new Set());
+    loads.get(w)!.add(task);
+    task.promise.catch(() => loads.get(w)?.delete(task)); // a failed load holds no document
+    endUnusedWorkers();
+    return { w, task };
+  };
+  let current = begin();
+  const promise = current.task.promise.catch(async (e: unknown) => {
+    if (stopped || isDocumentError(e)) throw e;
+    const failed = current;
+    if (worker === failed.w) worker = null;
+    await failed.task.destroy();
+    if (stopped) throw e;
+    current = begin();
+    return current.task.promise;
+  });
+  return {
+    promise,
+    destroy() {
+      stopped = true;
+      return current.task.destroy();
+    },
+  };
+}
+
+/** Most pixels one page's canvas may have: enough for a sharp page, and rendering stays fast. */
+export const MAX_CANVAS_PIXELS = 8_000_000;
+
+/** Device pixels per CSS pixel for a page of this size. */
+export function canvasRatio(width: number, height: number, dpr: number) {
+  return Math.min(dpr, Math.sqrt(MAX_CANVAS_PIXELS / Math.max(1, width * height)));
+}
+
+export interface PageLink {
+  url?: string;
+  dest?: string | unknown[];
+}
+
+/** Renders on a canvas that isn't in the page yet, so what's on screen stays until it's done. */
+export function renderPage(page: pdfjs.PDFPageProxy, vp: pdfjs.PageViewport, dpr: number) {
+  const ratio = canvasRatio(vp.width, vp.height, dpr);
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.floor(vp.width * ratio);
+  canvas.height = Math.floor(vp.height * ratio);
+  const task = page.render({ canvasContext: canvas.getContext("2d")!, viewport: vp, transform: ratio !== 1 ? [ratio, 0, 0, ratio, 0, 0] : undefined });
+  return { canvas, task };
+}
+
+/**
+ * The canvas is only a picture: overlays the PDF's link annotations (hyperref: table of contents,
+ * \ref, \cite, \url) as clickable boxes.
+ */
+export async function addPageLinks(page: pdfjs.PDFPageProxy, vp: pdfjs.PageViewport, wrap: HTMLElement, open: (link: PageLink) => void) {
+  const annots = await page.getAnnotations({ intent: "display" }).catch(() => []);
+  for (const a of annots) {
+    if (a.subtype !== "Link" || (!a.dest && !a.url)) continue;
+    const [x1, y1, x2, y2] = vp.convertToViewportRectangle(a.rect);
+    const el = document.createElement("a");
+    el.className = "link";
+    el.style.left = `${Math.min(x1, x2)}px`;
+    el.style.top = `${Math.min(y1, y2)}px`;
+    el.style.width = `${Math.abs(x2 - x1)}px`;
+    el.style.height = `${Math.abs(y2 - y1)}px`;
+    if (a.url) el.title = a.url;
+    el.onclick = (e) => {
+      e.preventDefault();
+      open({ url: a.url, dest: a.dest });
+    };
+    el.ondblclick = (e) => e.stopPropagation(); // don't trigger reverse sync
+    wrap.appendChild(el);
+  }
+}
+
+/** A PDF destination (named, or explicit `[pageRef, {name}, …args]`) as page index and PDF y. */
+export async function resolvePdfDest(doc: pdfjs.PDFDocumentProxy, dest: string | unknown[]): Promise<{ index: number; y: number | null } | null> {
+  const explicit = typeof dest === "string" ? await doc.getDestination(dest).catch(() => null) : dest;
+  if (!explicit?.length) return null;
+  const ref = explicit[0] as number | { num: number; gen: number };
+  const index = typeof ref === "number" ? ref : await doc.getPageIndex(ref).catch(() => -1);
+  if (index < 0) return null;
+  // PDF y runs bottom-up; XYZ carries (left, top, zoom), FitH/FitBH carry (top).
+  const kind = (explicit[1] as { name?: string } | undefined)?.name;
+  const y = kind === "XYZ" ? explicit[3] : kind === "FitH" || kind === "FitBH" ? explicit[2] : null;
+  return { index, y: typeof y === "number" ? y : null };
+}

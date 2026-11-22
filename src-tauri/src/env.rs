@@ -4,6 +4,7 @@
 //!
 //! Paths handed to the frontend always use `/` as separator (Windows accepts it everywhere), so
 //! the UI can treat paths uniformly.
+use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -38,6 +39,7 @@ pub fn tools_dir() -> PathBuf {
 pub fn init(tools: PathBuf) {
     let _ = std::fs::create_dir_all(&tools);
     let _ = TOOLS_DIR.set(tools);
+    crate::tools::golang::recover_go();
     *BASE_PATH.write().unwrap() = Some(user_path());
     rebuild();
 }
@@ -50,7 +52,7 @@ pub fn refresh() {
 
 /// Recomputes the effective PATH (after a managed tool was installed).
 pub fn rebuild() {
-    let base = BASE_PATH.read().unwrap().clone().unwrap_or_else(|| std::env::var_os("PATH").unwrap_or_default());
+    let base = BASE_PATH.read().unwrap().clone().unwrap_or_else(inherited_path);
     let mut dirs: Vec<PathBuf> = std::env::split_paths(&base).collect();
     let mut add = |p: PathBuf| {
         if !dirs.contains(&p) {
@@ -84,16 +86,16 @@ pub fn rebuild() {
 }
 
 pub fn path() -> OsString {
-    PATH.read().unwrap().clone().unwrap_or_else(|| std::env::var_os("PATH").unwrap_or_default())
+    PATH.read().unwrap().clone().unwrap_or_else(inherited_path)
 }
 
 #[cfg(unix)]
 fn user_path() -> OsString {
     // GUI apps started from Finder / a desktop launcher don't get the PATH of the user's shell
     // profile (Homebrew, ~/.cargo/bin, uv, …). Ask the login shell, with a timeout.
-    let current = std::env::var_os("PATH").unwrap_or_default();
+    let current = inherited_path();
     let shell = std::env::var("SHELL").unwrap_or_else(|_| if cfg!(target_os = "macos") { "/bin/zsh".into() } else { "/bin/bash".into() });
-    let child = Command::new(&shell)
+    let child = process(&shell)
         .args(["-l", "-c", "printf '__OMEGA_PATH__%s__END__' \"$PATH\""])
         .envs(git_guard_env())
         .env_remove(GIT_PARAMETERS)
@@ -215,10 +217,12 @@ pub fn which(cmd: &str) -> Option<PathBuf> {
 
 /// A `Command` with the effective PATH and (on Windows) no console window popping up.
 pub fn command(program: impl AsRef<OsStr>) -> Command {
-    let mut c = Command::new(program);
+    let name = program.as_ref().to_os_string();
+    let mut c = process(program);
     c.env("PATH", path());
     c.envs(git_guard_env());
     c.env_remove(GIT_PARAMETERS);
+    crate::tools::golang::apply_go_env(&mut c, &name);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -226,6 +230,203 @@ pub fn command(program: impl AsRef<OsStr>) -> Command {
         c.creation_flags(CREATE_NO_WINDOW);
     }
     c
+}
+
+/// A bare `Command` with the user's environment instead of the AppImage's. Every process Omega
+/// starts goes through this, `command` or `pty_command` (see the audit test below).
+pub fn process(program: impl AsRef<OsStr>) -> Command {
+    let mut c = Command::new(program);
+    let fix = appimage_fix();
+    for (k, v) in &fix.vars {
+        match v {
+            Some(v) => c.env(k, v),
+            None => c.env_remove(k),
+        };
+    }
+    // AppRun changes into the AppDir, which is gone once this process ends.
+    if fix.leave_cwd {
+        c.current_dir(home());
+    }
+    c
+}
+
+/// `process` for a terminal.
+pub fn pty_command(program: impl AsRef<OsStr>) -> portable_pty::CommandBuilder {
+    let mut c = portable_pty::CommandBuilder::new(program);
+    for (k, v) in &appimage_fix().vars {
+        match v {
+            Some(v) => c.env(k, v),
+            None => c.env_remove(k),
+        }
+    }
+    #[cfg(windows)]
+    crate::tools::golang::apply_go_shell_env(&mut c);
+    c
+}
+
+/// Set by the AppImage runtime about itself. Never meant for children.
+const APPIMAGE_RUNTIME: [&str; 4] = ["APPDIR", "APPIMAGE", "ARGV0", "OWD"];
+/// Overwritten by AppRun or its GTK hook: the earlier value only survives in the launch environment.
+const APPIMAGE_REPLACED: [&str; 10] = ["PYTHONHOME", "GTK_DATA_PREFIX", "GTK_THEME", "GTK_EXE_PREFIX", "GTK_PATH", "GTK_IM_MODULE_FILE", "GDK_PIXBUF_MODULE_FILE", "GSETTINGS_SCHEMA_DIR", "GI_TYPELIB_PATH", "GIO_MODULE_DIR"];
+/// AppRun puts its folders in front of these and keeps the earlier value behind them.
+const APPIMAGE_PREPENDED: [&str; 8] = ["PATH", "LD_LIBRARY_PATH", "PYTHONPATH", "XDG_DATA_DIRS", "PERLLIB", "QT_PLUGIN_PATH", "GST_PLUGIN_SYSTEM_PATH", "GST_PLUGIN_SYSTEM_PATH_1_0"];
+
+#[derive(Default)]
+struct AppImageFix {
+    /// What children need changed: a value to set, or `None` to remove the variable.
+    vars: Vec<(String, Option<String>)>,
+    leave_cwd: bool,
+}
+
+/// True for a folder of this AppImage or of an earlier one (a restart inherits its dead mount).
+fn is_appimage_entry(entry: &str, appdir: &str) -> bool {
+    let p = Path::new(entry);
+    p.starts_with(appdir) || p.components().any(|c| c.as_os_str().to_str().is_some_and(|n| n.starts_with(".mount_") || n.starts_with("appimage_extracted_")))
+}
+
+/// Removes AppImage folders and the empty entries AppRun leaves (an empty entry means the current
+/// directory). `None`: nothing is left of it.
+pub(crate) fn strip_appdir(value: &str, appdir: &str) -> Option<String> {
+    let kept: Vec<&str> = value.split(':').filter(|e| !e.is_empty() && !is_appimage_entry(e, appdir)).collect();
+    (!kept.is_empty()).then(|| kept.join(":"))
+}
+
+/// The changes that give a child the user's environment. `launch` is the environment the AppImage
+/// was started with, when it could be read; otherwise AppRun's edits are undone from the values.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn appimage_changes(appdir: &str, current: &dyn Fn(&str) -> Option<String>, launch: Option<&HashMap<String, String>>) -> Vec<(String, Option<String>)> {
+    let mut out = Vec::new();
+    for name in APPIMAGE_RUNTIME.iter().chain(&APPIMAGE_REPLACED).chain(&APPIMAGE_PREPENDED) {
+        let Some(now) = current(name) else { continue };
+        let value = if APPIMAGE_RUNTIME.contains(name) {
+            None
+        } else if let Some(launch) = launch {
+            launch.get(*name).and_then(|v| strip_appdir(v, appdir))
+        } else if APPIMAGE_PREPENDED.contains(name) {
+            let clean = strip_appdir(&now, appdir);
+            // The GTK hook also adds one /usr/share in front of the user's value.
+            if *name == "XDG_DATA_DIRS" {
+                clean.and_then(|v| match v.strip_prefix("/usr/share") {
+                    Some("") => None,
+                    Some(rest) if rest.starts_with(':') => Some(rest[1..].to_string()),
+                    _ => Some(v),
+                })
+            } else {
+                clean
+            }
+        } else {
+            None
+        };
+        if value.as_deref() != Some(now.as_str()) {
+            out.push((name.to_string(), value));
+        }
+    }
+    out
+}
+
+/// True if the value names the AppDir itself, not a neighbour that only shares its prefix.
+fn mentions_appdir(value: &str, appdir: &str) -> bool {
+    value.match_indices(appdir).any(|(i, _)| !value[i + appdir.len()..].starts_with(|c: char| c.is_alphanumeric() || matches!(c, '_' | '-' | '.')))
+}
+
+/// Variables outside the lists that still point into the AppDir (a GTK or GStreamer module path
+/// from a newer linuxdeploy, say): AppDir entries leave a path list, anything else is removed.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn appdir_leftovers(appdir: &str, vars: impl Iterator<Item = (String, String)>) -> Vec<(String, Option<String>)> {
+    let listed = |k: &str| APPIMAGE_RUNTIME.contains(&k) || APPIMAGE_REPLACED.contains(&k) || APPIMAGE_PREPENDED.contains(&k);
+    vars.filter(|(k, v)| !listed(k) && mentions_appdir(v, appdir))
+        .map(|(k, v)| {
+            let clean = strip_appdir(&v, appdir).filter(|c| !mentions_appdir(c, appdir));
+            (k, clean)
+        })
+        .collect()
+}
+
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn parse_environ(bytes: &[u8]) -> HashMap<String, String> {
+    bytes
+        .split(|b| *b == 0)
+        .filter_map(|e| std::str::from_utf8(e).ok()?.split_once('='))
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect()
+}
+
+/// The environment from before AppRun: the AppImage runtime keeps running next to Omega, as its
+/// parent (extract-and-run) or its child (FUSE mount), with its original environment.
+#[cfg(target_os = "linux")]
+fn launch_env(appimage: &str) -> Option<HashMap<String, String>> {
+    let target = std::fs::canonicalize(appimage).ok()?;
+    let me = std::process::id();
+    let mut pids = vec![unsafe { libc::getppid() } as u32];
+    if let Ok(kids) = std::fs::read_to_string(format!("/proc/{me}/task/{me}/children")) {
+        pids.extend(kids.split_whitespace().filter_map(|p| p.parse::<u32>().ok()));
+    }
+    let pid = pids.into_iter().find(|p| std::fs::read_link(format!("/proc/{p}/exe")).is_ok_and(|e| e == target))?;
+    Some(parse_environ(&std::fs::read(format!("/proc/{pid}/environ")).ok()?))
+}
+
+#[cfg(target_os = "linux")]
+fn detect_appimage_fix() -> AppImageFix {
+    let (Ok(appdir), Ok(appimage)) = (std::env::var("APPDIR"), std::env::var("APPIMAGE")) else { return AppImageFix::default() };
+    // A variable inherited from another AppImage says nothing about this binary.
+    if !std::env::current_exe().is_ok_and(|e| e.starts_with(&appdir)) {
+        return AppImageFix::default();
+    }
+    let launch = launch_env(&appimage);
+    let mut vars = appimage_changes(&appdir, &|k| std::env::var(k).ok(), launch.as_ref());
+    // A value that isn't UTF-8 can't be edited safely, so it goes if it names the AppDir.
+    let all: Vec<(String, String, bool)> = std::env::vars_os()
+        .filter_map(|(k, v)| Some((k.into_string().ok()?, v.to_string_lossy().into_owned(), v.to_str().is_some())))
+        .collect();
+    vars.extend(appdir_leftovers(&appdir, all.iter().filter(|e| e.2).map(|e| (e.0.clone(), e.1.clone()))));
+    vars.extend(all.iter().filter(|e| !e.2 && mentions_appdir(&e.1, &appdir)).map(|e| (e.0.clone(), None)));
+    AppImageFix {
+        vars,
+        leave_cwd: std::env::current_dir().is_ok_and(|d| d.starts_with(&appdir)),
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn detect_appimage_fix() -> AppImageFix {
+    AppImageFix::default()
+}
+
+fn appimage_fix() -> &'static AppImageFix {
+    static FIX: OnceLock<AppImageFix> = OnceLock::new();
+    FIX.get_or_init(detect_appimage_fix)
+}
+
+/// PATH as the user had it, without the AppImage's folders.
+fn inherited_path() -> OsString {
+    match appimage_fix().vars.iter().find(|(k, _)| k == "PATH") {
+        Some((_, v)) => v.clone().map(OsString::from).unwrap_or_default(),
+        None => std::env::var_os("PATH").unwrap_or_default(),
+    }
+}
+
+/// Opens a link in the default application, outside the AppImage's environment. Same schemes as
+/// the opener plugin's default scope.
+#[tauri::command]
+pub fn open_external(url: String) -> Result<(), String> {
+    let lower = url.to_ascii_lowercase();
+    if !["http://", "https://", "mailto:", "tel:"].iter().any(|s| lower.starts_with(s)) {
+        return Err(format!("not allowed: {url}"));
+    }
+    if appimage_fix().vars.is_empty() {
+        return tauri_plugin_opener::open_url(&url, None::<&str>).map_err(|e| e.to_string());
+    }
+    let launchers: [(&str, &[&str]); 2] = [("xdg-open", &[]), ("gio", &["open"])];
+    for (program, args) in launchers {
+        let mut c = command(program);
+        c.args(args).arg(&url).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+        if let Ok(mut child) = c.spawn() {
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+            return Ok(());
+        }
+    }
+    Err("no program to open links found".into())
 }
 
 pub const GIT_PARAMETERS: &str = "GIT_CONFIG_PARAMETERS";
@@ -345,6 +546,121 @@ mod tests {
     fn commands_drop_inherited_git_parameters() {
         let c = command("anything");
         assert!(c.get_envs().any(|(k, v)| k == GIT_PARAMETERS && v.is_none()), "must be removed, an inherited value beats the guard");
+    }
+
+    fn vars(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    fn changes(now: &[(&str, &str)], launch: Option<&[(&str, &str)]>) -> HashMap<String, Option<String>> {
+        let now = vars(now);
+        let launch = launch.map(vars);
+        appimage_changes("/tmp/appimage_extracted_a", &|k| now.get(k).cloned(), launch.as_ref()).into_iter().collect()
+    }
+
+    #[test]
+    fn strip_appdir_keeps_only_the_users_entries() {
+        assert_eq!(strip_appdir("/tmp/.mount_x/usr/bin:/usr/bin", "/tmp/.mount_x").as_deref(), Some("/usr/bin"));
+        assert_eq!(strip_appdir("/tmp/.mount_x/usr/lib", "/tmp/.mount_x"), None);
+        // AppRun's trailing ":" would put the current directory on PYTHONPATH.
+        assert_eq!(strip_appdir("/tmp/.mount_x/usr/share/pyshared/:", "/tmp/.mount_x"), None);
+        // A dead mount inherited through a restart, and a neighbour that only shares the prefix.
+        assert_eq!(strip_appdir("/tmp/.mount_old/usr/bin:/tmp/appimage_extracted_a2/x:/opt/b", "/tmp/.mount_new").as_deref(), Some("/opt/b"));
+        assert_eq!(strip_appdir("/data/app/bin", "/data/app/b").as_deref(), Some("/data/app/bin"));
+    }
+
+    #[test]
+    fn the_real_apprun_values_are_undone_without_a_launch_environment() {
+        let a = "/tmp/appimage_extracted_a";
+        let c = changes(
+            &[
+                ("APPDIR", a),
+                ("APPIMAGE", "/h/Omega.AppImage"),
+                ("PYTHONHOME", "/tmp/appimage_extracted_a/usr/"),
+                ("PYTHONPATH", "/tmp/appimage_extracted_a/usr/share/pyshared/:"),
+                ("GTK_THEME", "Adwaita:dark"),
+                ("PATH", "/tmp/appimage_extracted_a/usr/bin/:/tmp/appimage_extracted_a/bin/:/home/u/bin:/usr/bin"),
+                ("LD_LIBRARY_PATH", "/tmp/appimage_extracted_a/usr/lib/:/opt/lib"),
+                ("XDG_DATA_DIRS", "/tmp/appimage_extracted_a/usr/share/:/tmp/appimage_extracted_a/usr/share:/usr/share:/usr/local/share:/usr/share"),
+                ("HOME", "/home/u"),
+            ],
+            None,
+        );
+        for gone in ["APPDIR", "APPIMAGE", "PYTHONHOME", "PYTHONPATH", "GTK_THEME"] {
+            assert_eq!(c[gone], None, "{gone}");
+        }
+        assert_eq!(c["PATH"].as_deref(), Some("/home/u/bin:/usr/bin"));
+        assert_eq!(c["LD_LIBRARY_PATH"].as_deref(), Some("/opt/lib"));
+        assert_eq!(c["XDG_DATA_DIRS"].as_deref(), Some("/usr/local/share:/usr/share"));
+        assert!(!c.contains_key("HOME"));
+    }
+
+    #[test]
+    fn the_launch_environment_restores_what_apprun_overwrote() {
+        let c = changes(
+            &[("APPDIR", "/tmp/appimage_extracted_a"), ("GTK_THEME", "Adwaita:dark"), ("PYTHONHOME", "/tmp/appimage_extracted_a/usr/"), ("PYTHONPATH", "/tmp/appimage_extracted_a/usr/share/pyshared/:/mine"), ("XDG_DATA_DIRS", "/tmp/appimage_extracted_a/usr/share/:/usr/share:/custom")],
+            Some(&[("GTK_THEME", "Nord"), ("PYTHONHOME", "/opt/py"), ("PYTHONPATH", "/mine"), ("XDG_DATA_DIRS", "/custom")]),
+        );
+        assert_eq!(c["GTK_THEME"].as_deref(), Some("Nord"));
+        assert_eq!(c["PYTHONHOME"].as_deref(), Some("/opt/py"));
+        assert_eq!(c["PYTHONPATH"].as_deref(), Some("/mine"));
+        assert_eq!(c["XDG_DATA_DIRS"].as_deref(), Some("/custom"));
+        assert_eq!(c["APPDIR"], None);
+    }
+
+    #[test]
+    fn a_value_the_user_set_and_apprun_kept_is_left_alone() {
+        let c = changes(&[("APPDIR", "/tmp/appimage_extracted_a"), ("PERLLIB", "/mine")], Some(&[("PERLLIB", "/mine")]));
+        assert!(!c.contains_key("PERLLIB"));
+    }
+
+    #[test]
+    fn any_other_variable_pointing_into_the_appdir_is_cleaned() {
+        let a = "/tmp/appimage_extracted_a";
+        let env = [
+            ("GIO_EXTRA_MODULES", "/tmp/appimage_extracted_a/usr/lib/gio:/opt/gio"),
+            ("GST_PLUGIN_PATH", "/tmp/appimage_extracted_a/usr/lib/gst"),
+            ("GDK_FLAGS", "--dir=/tmp/appimage_extracted_a/usr/share"),
+            ("NEIGHBOUR", "/tmp/appimage_extracted_ab/bin"),
+            ("EDITOR", "vim"),
+            ("PATH", "/tmp/appimage_extracted_a/usr/bin:/usr/bin"),
+        ];
+        let got: HashMap<_, _> = appdir_leftovers(a, env.iter().map(|(k, v)| (k.to_string(), v.to_string()))).into_iter().collect();
+        assert_eq!(got["GIO_EXTRA_MODULES"].as_deref(), Some("/opt/gio"));
+        assert_eq!(got["GST_PLUGIN_PATH"], None);
+        assert_eq!(got["GDK_FLAGS"], None);
+        assert_eq!(got.len(), 3, "the lists handle PATH, others stay: {got:?}");
+    }
+
+    #[test]
+    fn environ_is_parsed_with_equals_signs_in_values() {
+        let e = parse_environ(b"A=1\0B=x=y\0broken\0");
+        assert_eq!((e["A"].as_str(), e["B"].as_str(), e.len()), ("1", "x=y", 2));
+    }
+
+    /// Every process must get the user's environment, so spawning directly is a bug outside env.rs.
+    #[test]
+    fn no_process_is_started_around_the_central_helpers() {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut bad = Vec::new();
+        let mut dirs = vec![src];
+        while let Some(d) = dirs.pop() {
+            for e in std::fs::read_dir(d).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    dirs.push(p);
+                } else if p.extension().is_some_and(|x| x == "rs") && p.file_name().unwrap() != "env.rs" {
+                    let text = std::fs::read_to_string(&p).unwrap();
+                    let code = text.split("mod tests {").next().unwrap();
+                    for (i, l) in code.lines().enumerate() {
+                        if l.contains("Command::new(") || l.contains("CommandBuilder::new(") {
+                            bad.push(format!("{}:{}", p.display(), i + 1));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(bad.is_empty(), "use env::process, env::command or env::pty_command: {bad:?}");
     }
 
     #[test]

@@ -82,11 +82,190 @@ pub fn list_dir(path: String) -> Result<Vec<Entry>, String> {
     Ok(out)
 }
 
+/// Largest file read whole into memory. Above it a file only opens as a read-only head (#174).
+pub(crate) const MAX_TEXT_FILE: u64 = 8 * 1024 * 1024;
+/// Largest file that can still be opened whole, editable, with reduced features, after a warning.
+pub(crate) const MAX_LARGE_FILE: u64 = 64 * 1024 * 1024;
+/// How much of a too large file the read-only view shows.
+const HEAD_BYTES: u64 = 1024 * 1024;
+
+fn open_for_read(path: &str) -> Result<fs::File, String> {
+    // Windows reports opening a folder as "access denied".
+    let file = fs::File::open(path).map_err(|e| if Path::new(path).is_dir() { "fs:is_dir".to_string() } else { io_err(e) })?;
+    if file.metadata().is_ok_and(|m| m.is_dir()) {
+        return Err("fs:is_dir".into());
+    }
+    Ok(file)
+}
+
+/// The whole file, or `fs:too_large` above `max` bytes. The read is bounded as well as the size
+/// check, because a file can grow in between and devices report no size.
+pub(crate) fn read_limited(path: &str, max: u64) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let file = open_for_read(path)?;
+    if file.metadata().is_ok_and(|m| m.len() > max) {
+        return Err("fs:too_large".into());
+    }
+    let mut bytes = Vec::new();
+    file.take(max + 1).read_to_end(&mut bytes).map_err(io_err)?;
+    if bytes.len() as u64 > max {
+        return Err("fs:too_large".into());
+    }
+    Ok(bytes)
+}
+
 #[tauri::command]
 pub fn read_file(path: String) -> Result<String, String> {
-    // Windows reports reading a folder as "access denied".
-    let bytes = fs::read(&path).map_err(|e| if Path::new(&path).is_dir() { "fs:is_dir".to_string() } else { io_err(e) })?;
+    let bytes = read_limited(&path, MAX_TEXT_FILE)?;
     String::from_utf8(bytes).map_err(|_| "fs:not_utf8".into())
+}
+
+/// A whole file for the large-file tier: regular, valid UTF-8 text without NUL bytes, and at most
+/// `MAX_LARGE_FILE` bytes also if it grows while being read.
+fn read_large(path: &str) -> Result<Vec<u8>, String> {
+    // Checked before opening, because opening a FIFO would block.
+    let meta = fs::metadata(path).map_err(io_err)?;
+    if meta.is_dir() {
+        return Err("fs:is_dir".into());
+    }
+    if !meta.is_file() {
+        return Err("fs:not_utf8".into());
+    }
+    let bytes = read_limited(path, MAX_LARGE_FILE)?;
+    if bytes.contains(&0) || std::str::from_utf8(&bytes).is_err() {
+        return Err("fs:not_utf8".into());
+    }
+    Ok(bytes)
+}
+
+/// `read_file` for files of 8 to 64 MiB the user chose to open. Off the main thread, and sent as
+/// raw bytes, because JSON would double the memory for the transfer.
+#[tauri::command]
+pub async fn read_file_large(path: String) -> Result<tauri::ipc::Response, String> {
+    let bytes = tauri::async_runtime::spawn_blocking(move || read_large(&path)).await.map_err(err)??;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
+/// Largest image or PDF a viewer tab loads.
+const MAX_VIEW_FILE: u64 = MAX_LARGE_FILE;
+
+/// A whole regular file for a viewer tab, at most `max` bytes also if it grows while being read.
+fn read_view(path: &str, max: u64) -> Result<Vec<u8>, String> {
+    // Checked before opening, because opening a FIFO would block.
+    let meta = fs::metadata(path).map_err(io_err)?;
+    if meta.is_dir() {
+        return Err("fs:is_dir".into());
+    }
+    if !meta.is_file() {
+        return Err("fs:not_file".into());
+    }
+    read_limited(path, max)
+}
+
+/// The bytes of an image or PDF for a read-only viewer tab, sent raw like `read_file_large`.
+#[tauri::command]
+pub async fn read_file_view(path: String) -> Result<tauri::ipc::Response, String> {
+    let bytes = tauri::async_runtime::spawn_blocking(move || read_view(&path, MAX_VIEW_FILE)).await.map_err(err)??;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
+/// Largest piece of a PDF one `read_file_range` returns.
+const MAX_RANGE_READ: u64 = 4 * 1024 * 1024;
+
+fn modified_ms(m: &fs::Metadata) -> u64 {
+    m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_millis() as u64)
+}
+
+/// `len` bytes from `offset` of a regular file; less at its end. `fs:changed` if the open file no
+/// longer has the size and time the document was opened with, so two versions never mix.
+fn read_range(path: &str, offset: u64, len: u64, max: u64, size: u64, modified: u64) -> Result<Vec<u8>, String> {
+    use std::io::{Read, Seek, SeekFrom};
+    if len > max {
+        return Err("fs:too_large".into());
+    }
+    // Checked before opening, because opening a FIFO would block.
+    let meta = fs::metadata(path).map_err(io_err)?;
+    if meta.is_dir() {
+        return Err("fs:is_dir".into());
+    }
+    if !meta.is_file() {
+        return Err("fs:not_file".into());
+    }
+    let file = open_for_read(path)?;
+    let same = || file.metadata().is_ok_and(|m| m.is_file() && m.len() == size && modified_ms(&m) == modified);
+    if !same() {
+        return Err("fs:changed".into());
+    }
+    let mut reader = &file;
+    reader.seek(SeekFrom::Start(offset)).map_err(io_err)?;
+    let mut bytes = Vec::with_capacity(len as usize);
+    reader.take(len).read_to_end(&mut bytes).map_err(io_err)?;
+    // A write during the read would leave a mix in `bytes`.
+    if !same() {
+        return Err("fs:changed".into());
+    }
+    Ok(bytes)
+}
+
+/// A piece of a PDF for pdf.js, which asks for what it needs, so a viewer tab never loads the whole file.
+#[tauri::command]
+pub async fn read_file_range(path: String, offset: u64, length: u64, size: u64, modified: u64) -> Result<tauri::ipc::Response, String> {
+    let bytes = tauri::async_runtime::spawn_blocking(move || read_range(&path, offset, length, MAX_RANGE_READ, size, modified)).await.map_err(err)??;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
+#[derive(Serialize)]
+pub struct FileInfo {
+    size: u64,
+    /// `read_file` refuses it.
+    too_large: bool,
+    /// Even `read_file_large` refuses it: only the read-only start can be shown.
+    preview: bool,
+    /// Last change in ms since the epoch (0 if unknown).
+    modified: u64,
+}
+
+/// Size of a file and which tier it falls into.
+#[tauri::command]
+pub fn file_info(path: String) -> Result<FileInfo, String> {
+    let m = fs::metadata(&path).map_err(io_err)?;
+    let modified = modified_ms(&m);
+    Ok(FileInfo { size: m.len(), too_large: m.is_file() && m.len() > MAX_TEXT_FILE, preview: m.is_file() && m.len() > MAX_LARGE_FILE, modified })
+}
+
+#[derive(Serialize)]
+pub struct FileHead {
+    text: String,
+    size: u64,
+}
+
+/// The start of a regular file as text. Binary content stays `fs:not_utf8`, like in `read_file`.
+#[tauri::command]
+pub fn read_file_head(path: String) -> Result<FileHead, String> {
+    read_head(&path, HEAD_BYTES)
+}
+
+fn read_head(path: &str, max: u64) -> Result<FileHead, String> {
+    use std::io::Read;
+    let file = open_for_read(path)?;
+    let meta = file.metadata().map_err(io_err)?;
+    if !meta.is_file() {
+        return Err("fs:not_utf8".into());
+    }
+    let mut bytes = Vec::new();
+    file.take(max).read_to_end(&mut bytes).map_err(io_err)?;
+    // The cut can fall inside a character; anything else that isn't UTF-8 is binary.
+    if let Err(e) = std::str::from_utf8(&bytes) {
+        if e.error_len().is_some() {
+            return Err("fs:not_utf8".into());
+        }
+        bytes.truncate(e.valid_up_to());
+    }
+    if bytes.contains(&0) {
+        return Err("fs:not_utf8".into());
+    }
+    let text = String::from_utf8(bytes).map_err(|_| "fs:not_utf8".to_string())?;
+    Ok(FileHead { text, size: meta.len() })
 }
 
 #[tauri::command]
@@ -290,6 +469,12 @@ struct FsChanged {
 ///    included file was edited outside the editor).
 /// Changes inside HIDDEN folders (.git, node_modules, target, …) are ignored.
 /// Calling it again replaces the previous watch; `None` stops watching.
+/// Whether a changed path sits in a skipped folder inside the project. Folders above the project
+/// don't count: a project in `~/target/app` still gets live updates.
+fn hidden_below(root: &Path, path: &Path) -> bool {
+    path.strip_prefix(root).unwrap_or(path).components().any(|c| HIDDEN.contains(&c.as_os_str().to_string_lossy().as_ref()))
+}
+
 #[tauri::command]
 pub fn watch_dir(app: tauri::AppHandle, window: tauri::WebviewWindow, path: Option<String>) -> Result<(), String> {
     use notify::{EventKind, RecursiveMode, Watcher};
@@ -311,6 +496,7 @@ pub fn watch_dir(app: tauri::AppHandle, window: tauri::WebviewWindow, path: Opti
 
     // (path, structural): structural = created/removed/renamed, i.e. the parent listing changed.
     let (tx, rx) = mpsc::channel::<(PathBuf, bool)>();
+    let root = PathBuf::from(&path);
     let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
         let Ok(ev) = res else { return };
         let structural = matches!(ev.kind, EventKind::Create(_) | EventKind::Remove(_) | EventKind::Modify(notify::event::ModifyKind::Name(_)));
@@ -318,7 +504,7 @@ pub fn watch_dir(app: tauri::AppHandle, window: tauri::WebviewWindow, path: Opti
             return; // access events etc.
         }
         for p in ev.paths {
-            if p.components().any(|c| HIDDEN.contains(&c.as_os_str().to_string_lossy().as_ref())) {
+            if hidden_below(&root, &p) {
                 continue;
             }
             let _ = tx.send((p, structural));
@@ -358,6 +544,15 @@ pub fn watch_dir(app: tauri::AppHandle, window: tauri::WebviewWindow, path: Opti
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn only_folders_inside_the_project_are_skipped() {
+        let root = Path::new("/home/me/build/target/app");
+        assert!(!hidden_below(root, &root.join("src/main.rs")));
+        assert!(hidden_below(root, &root.join("target/debug/x")));
+        assert!(hidden_below(root, &root.join("sub/node_modules/a.js")));
+    }
 
     #[test]
     fn create_file_keeps_existing_content() {
@@ -571,6 +766,167 @@ mod tests {
             std::os::unix::fs::symlink(t.path().join("gone"), &link).unwrap();
             assert_eq!(create_file_for("t", s(&link)).unwrap_err(), "fs:exists");
         }
+    }
+
+    fn sparse(path: &Path, head: &[u8], len: u64) {
+        fs::write(path, head).unwrap();
+        fs::OpenOptions::new().write(true).open(path).unwrap().set_len(len).unwrap();
+    }
+
+    #[test]
+    fn read_file_stops_at_the_limit() {
+        let t = tempfile::tempdir().unwrap();
+        let (fits, big) = (t.path().join("fits.log"), t.path().join("big.log"));
+        sparse(&fits, b"ok", MAX_TEXT_FILE);
+        sparse(&big, b"ok", MAX_TEXT_FILE + 1);
+        assert_eq!(read_file(s(&fits)).unwrap().len() as u64, MAX_TEXT_FILE);
+        assert_eq!(read_file(s(&big)).unwrap_err(), "fs:too_large");
+        assert!(!file_info(s(&fits)).unwrap().too_large);
+        let info = file_info(s(&big)).unwrap();
+        assert!(info.too_large);
+        assert_eq!(info.size, MAX_TEXT_FILE + 1);
+    }
+
+    #[test]
+    fn tiers_change_exactly_at_8_and_64_mib() {
+        let t = tempfile::tempdir().unwrap();
+        let f = t.path().join("f.log");
+        let tier = |len: u64| {
+            sparse(&f, b"x", len);
+            let i = file_info(s(&f)).unwrap();
+            (i.too_large, i.preview)
+        };
+        assert_eq!(tier(MAX_TEXT_FILE), (false, false));
+        assert_eq!(tier(MAX_TEXT_FILE + 1), (true, false));
+        assert_eq!(tier(MAX_LARGE_FILE), (true, false));
+        assert_eq!(tier(MAX_LARGE_FILE + 1), (true, true));
+    }
+
+    #[test]
+    fn large_read_takes_64_mib_and_refuses_one_byte_more() {
+        let t = tempfile::tempdir().unwrap();
+        let f = t.path().join("f.log");
+        fs::write(&f, vec![b'a'; MAX_LARGE_FILE as usize]).unwrap();
+        assert_eq!(read_large(&s(&f)).unwrap().len() as u64, MAX_LARGE_FILE);
+        assert_eq!(read_file(s(&f)).unwrap_err(), "fs:too_large");
+        fs::OpenOptions::new().append(true).open(&f).unwrap().write_all(b"a").unwrap();
+        assert_eq!(read_large(&s(&f)).unwrap_err(), "fs:too_large");
+    }
+
+    #[test]
+    fn large_read_keeps_bytes_and_refuses_binary() {
+        let t = tempfile::tempdir().unwrap();
+        let f = t.path().join("f.txt");
+        fs::write(&f, "\u{feff}a\r\nä\r\n").unwrap();
+        assert_eq!(read_large(&s(&f)).unwrap(), "\u{feff}a\r\nä\r\n".as_bytes());
+        fs::write(&f, b"a\0b").unwrap();
+        assert_eq!(read_large(&s(&f)).unwrap_err(), "fs:not_utf8");
+        fs::write(&f, [b'a', 0xff]).unwrap();
+        assert_eq!(read_large(&s(&f)).unwrap_err(), "fs:not_utf8");
+        assert_eq!(read_large(&s(t.path())).unwrap_err(), "fs:is_dir");
+        #[cfg(unix)]
+        assert_eq!(read_large("/dev/zero").unwrap_err(), "fs:not_utf8");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_view_returns_binary_and_enforces_the_limit() {
+        let t = tempfile::tempdir().unwrap();
+        let file = t.path().join("a.png");
+        fs::write(&file, [0x89, 0, 0xff, 0x50]).unwrap();
+        assert_eq!(read_view(&s(&file), 4).unwrap(), vec![0x89, 0, 0xff, 0x50]);
+        assert_eq!(read_view(&s(&file), 3).unwrap_err(), "fs:too_large");
+        assert_eq!(read_view(&s(t.path()), 4).unwrap_err(), "fs:is_dir");
+        assert_eq!(read_view(&s(&t.path().join("nope.png")), 4).unwrap_err(), "fs:not_found");
+    }
+
+    fn stamp(p: &Path) -> (u64, u64) {
+        let m = fs::metadata(p).unwrap();
+        (m.len(), modified_ms(&m))
+    }
+
+    #[test]
+    fn read_range_returns_the_piece_and_stops_at_the_end() {
+        let t = tempfile::tempdir().unwrap();
+        let file = t.path().join("a.pdf");
+        fs::write(&file, b"0123456789").unwrap();
+        let (size, time) = stamp(&file);
+        assert_eq!(read_range(&s(&file), 2, 3, 8, size, time).unwrap(), b"234");
+        assert_eq!(read_range(&s(&file), 8, 5, 8, size, time).unwrap(), b"89");
+        assert!(read_range(&s(&file), 50, 5, 8, size, time).unwrap().is_empty());
+        assert_eq!(read_range(&s(&file), 0, 9, 8, size, time).unwrap_err(), "fs:too_large");
+        assert_eq!(read_range(&s(t.path()), 0, 1, 8, size, time).unwrap_err(), "fs:is_dir");
+        assert_eq!(read_range(&s(&t.path().join("nope.pdf")), 0, 1, 8, size, time).unwrap_err(), "fs:not_found");
+    }
+
+    #[test]
+    fn read_range_refuses_another_version_of_the_file() {
+        let t = tempfile::tempdir().unwrap();
+        let file = t.path().join("a.pdf");
+        fs::write(&file, b"0123456789").unwrap();
+        let (size, time) = stamp(&file);
+        // Same size, rewritten in place: only the time differs.
+        fs::write(&file, b"abcdefghij").unwrap();
+        let f = fs::OpenOptions::new().write(true).open(&file).unwrap();
+        f.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_millis(time + 5000)).unwrap();
+        assert_eq!(read_range(&s(&file), 0, 4, 8, size, time).unwrap_err(), "fs:changed");
+        // Larger, with the old time.
+        fs::write(&file, b"0123456789AB").unwrap();
+        f.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_millis(time)).unwrap();
+        assert_eq!(read_range(&s(&file), 0, 4, 8, size, time).unwrap_err(), "fs:changed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_range_refuses_a_fifo_without_blocking() {
+        let t = tempfile::tempdir().unwrap();
+        let fifo = t.path().join("pipe.pdf");
+        let c = std::ffi::CString::new(s(&fifo)).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        assert_eq!(read_range(&s(&fifo), 0, 1, 8, 0, 0).unwrap_err(), "fs:not_file");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_view_refuses_a_fifo_without_blocking() {
+        let t = tempfile::tempdir().unwrap();
+        let fifo = t.path().join("pipe.png");
+        let c = std::ffi::CString::new(s(&fifo)).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        assert_eq!(read_view(&s(&fifo), 4).unwrap_err(), "fs:not_file");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_limited_bounds_files_without_a_size() {
+        assert_eq!(read_limited("/dev/zero", 1024).unwrap_err(), "fs:too_large");
+        assert!(!file_info("/dev/zero".into()).unwrap().too_large);
+        assert_eq!(read_head("/dev/zero", 1024).err().unwrap(), "fs:not_utf8");
+    }
+
+    #[test]
+    fn head_of_a_1_gb_sparse_file_is_bounded() {
+        let t = tempfile::tempdir().unwrap();
+        let f = t.path().join("huge.log");
+        let line = "log line\n".repeat(200_000);
+        sparse(&f, line.as_bytes(), 1024 * 1024 * 1024);
+        let head = read_file_head(s(&f)).unwrap();
+        assert_eq!(head.text.len() as u64, HEAD_BYTES);
+        assert_eq!(head.size, 1024 * 1024 * 1024);
+        assert_eq!(read_file(s(&f)).unwrap_err(), "fs:too_large");
+    }
+
+    #[test]
+    fn head_cuts_before_a_split_character_and_refuses_binary() {
+        let t = tempfile::tempdir().unwrap();
+        let f = t.path().join("a.txt");
+        fs::write(&f, "aä").unwrap();
+        assert_eq!(read_head(&s(&f), 2).unwrap().text, "a");
+        fs::write(&f, [b'a', 0xff, b'b']).unwrap();
+        assert_eq!(read_head(&s(&f), 3).err().unwrap(), "fs:not_utf8");
+        fs::write(&f, b"a\0b").unwrap();
+        assert_eq!(read_head(&s(&f), 3).err().unwrap(), "fs:not_utf8");
+        assert_eq!(read_head(&s(t.path()), 3).err().unwrap(), "fs:is_dir");
     }
 
     #[cfg(unix)]

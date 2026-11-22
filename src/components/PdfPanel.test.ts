@@ -15,6 +15,8 @@ vi.mock("pdfjs-dist/build/pdf.worker.min.mjs?url", () => ({ default: "" }));
 const pdf = vi.hoisted(() => {
   const s = {
     hang: false,
+    pages: 2,
+    requested: [] as number[],
     docs: [] as { destroyed: boolean; destroy: () => void }[],
     make() {
       const pending: ((e: Error) => void)[] = [];
@@ -23,13 +25,19 @@ const pdf = vi.hoisted(() => {
         getViewport: () => vp,
         render: () => ({
           promise: s.hang ? new Promise<void>((_, reject) => pending.push(reject)) : Promise.resolve(),
+          cancel: () => pending.splice(0).forEach((r) => r(new Error("cancelled"))),
         }),
         getAnnotations: async () => [],
+        cleanup: () => {},
       };
       const doc = {
-        numPages: 2,
+        numPages: s.pages,
         destroyed: false,
-        getPage: async () => page,
+        getPage: async (n: number) => {
+          s.requested.push(n);
+          return page;
+        },
+        getPageIndex: async (ref: { num: number }) => ref.num,
         destroy() {
           doc.destroyed = true;
           pending.splice(0).forEach((r) => r(new Error("Worker was destroyed")));
@@ -41,10 +49,21 @@ const pdf = vi.hoisted(() => {
   };
   return s;
 });
-vi.mock("pdfjs-dist", () => ({ GlobalWorkerOptions: {}, getDocument: () => ({ promise: Promise.resolve(pdf.make()) }) }));
+const getDocument = vi.hoisted(() => vi.fn());
+vi.mock("pdfjs-dist", () => ({ GlobalWorkerOptions: {}, getDocument, PDFWorker: class {} }));
 
 import PdfPanel from "./PdfPanel.svelte";
+import * as controller from "../lib/latex/controller.svelte";
 import { latex } from "../lib/latex/controller.svelte";
+
+beforeEach(() => {
+  getDocument.mockReset();
+  getDocument.mockImplementation(() => ({ promise: Promise.resolve(pdf.make()) }));
+});
+
+/** The test DOM's WheelEvent drops the modifier keys. */
+const wheelEvent = (o: { deltaY: number; deltaMode?: number; clientX?: number; clientY?: number; ctrlKey?: boolean }) =>
+  Object.assign(new Event("wheel", { bubbles: true, cancelable: true }), { deltaMode: 0, clientX: 0, clientY: 0, ctrlKey: true, ...o });
 
 async function settle() {
   for (let i = 0; i < 20; i++) await tick();
@@ -64,10 +83,20 @@ function setup() {
 describe("PdfPanel", () => {
   beforeEach(() => {
     pdf.hang = false;
+    pdf.pages = 2;
+    pdf.requested = [];
+    latex.target = null;
     pdf.docs.length = 0;
     st.active = null;
     st.view = null;
     st.openFile = async () => {};
+  });
+
+  test("pdf.js doesn't decode images through OffscreenCanvas, which mixes up pages in WebKitGTK", async () => {
+    const { c } = setup();
+    await settle();
+    expect(getDocument.mock.calls[0][0]).toMatchObject({ isOffscreenCanvasSupported: false, isEvalSupported: false });
+    unmount(c);
   });
 
   test("diagnostics from other files show the file name (#142)", async () => {
@@ -113,6 +142,118 @@ describe("PdfPanel", () => {
     expect(st.active).toBe("/p/chapters/one.tex");
     expect(dispatch).toHaveBeenCalledWith({ selection: { anchor: 30 }, scrollIntoView: true });
     latex.diagnostics = [];
+    unmount(c);
+  });
+
+  test("a long document mounts and loads only the pages near the view", async () => {
+    pdf.pages = 1500;
+    const { target, c } = setup();
+    await settle();
+    expect(target.querySelectorAll(".pages .page").length).toBeLessThan(25);
+    expect(pdf.requested.length).toBeLessThan(25);
+    unmount(c);
+  });
+
+  test("forward SyncTeX reaches a page that isn't mounted and flashes the box there", async () => {
+    pdf.pages = 1500;
+    const { target, c } = setup();
+    await settle();
+    expect(target.querySelector('[data-page="900"]')).toBeNull();
+    latex.target = { page: 900, x: 10, y: 20, w: 5, h: 5, seq: 1 };
+    await settle();
+    expect(pdf.requested).toContain(900);
+    expect(target.querySelector('[data-page="900"]')).not.toBeNull();
+    const box = target.querySelector<HTMLElement>(".flash")!;
+    const holder = target.querySelector<HTMLElement>('[data-page="900"]')!.parentElement!;
+    expect(parseFloat(box.style.top)).toBeCloseTo(parseFloat(holder.style.top) + 20 * 0.3 - 3);
+    latex.target = null;
+    unmount(c);
+  });
+
+  test("in a compressed document the flash box lands on the page after the jump", async () => {
+    pdf.pages = 40_000;
+    localStorage.setItem("pdfZoom", "4");
+    const { target, c } = setup();
+    await settle();
+    latex.target = { page: 30_000, x: 10, y: 20, w: 5, h: 5, seq: 2 };
+    await settle();
+    const box = target.querySelector<HTMLElement>(".flash")!;
+    const holder = target.querySelector<HTMLElement>('[data-page="30000"]')!.parentElement!;
+    expect(parseFloat(box.style.top)).toBeCloseTo(parseFloat(holder.style.top) + 20 * 4 - 3, 0);
+    latex.target = null;
+    localStorage.removeItem("pdfZoom");
+    unmount(c);
+  });
+
+  test("ctrl + wheel zooms within the limits of the buttons and remembers it", async () => {
+    localStorage.removeItem("pdfZoom");
+    const { target, c } = setup();
+    await settle();
+    const scroller = target.querySelector<HTMLElement>(".scroller")!;
+    const event = wheelEvent({ deltaY: 3000 });
+    scroller.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(true);
+    await new Promise((r) => setTimeout(r, 30));
+    await settle();
+    expect(localStorage.getItem("pdfZoom")).toBe("0.4");
+    localStorage.removeItem("pdfZoom");
+    unmount(c);
+  });
+
+  test("ctrl + wheel removes the flash box, which was placed for the old size", async () => {
+    pdf.pages = 20;
+    const { target, c } = setup();
+    await settle();
+    latex.target = { page: 3, x: 10, y: 20, w: 5, h: 5, seq: 3 };
+    await settle();
+    expect(target.querySelector(".flash")).not.toBeNull();
+    target.querySelector<HTMLElement>(".scroller")!.dispatchEvent(wheelEvent({ deltaY: -100 }));
+    await new Promise((r) => setTimeout(r, 30));
+    await settle();
+    expect(target.querySelector(".flash")).toBeNull();
+    latex.target = null;
+    localStorage.removeItem("pdfZoom");
+    unmount(c);
+  });
+
+  test("reverse SyncTeX works on a mounted page of a long document", async () => {
+    pdf.pages = 1500;
+    const sync = vi.spyOn(controller, "reverseSync").mockReturnValue(null);
+    const { target, c } = setup();
+    await settle();
+    const page = target.querySelector<HTMLElement>('[data-page="2"]')!;
+    page.getBoundingClientRect = () => ({ left: 0, top: 0, width: 200, height: 280 }) as DOMRect;
+    page.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, clientX: 50, clientY: 70 }));
+    await settle();
+    expect(sync).toHaveBeenCalledWith(2, 25, 35); // 2 px per PDF unit
+    sync.mockRestore();
+    unmount(c);
+  });
+
+  test("a recompile keeps the view and the old bitmap until the new one is ready", async () => {
+    pdf.pages = 1500;
+    const { target, c } = setup();
+    await settle();
+    const scroller = target.querySelector<HTMLElement>(".scroller")!;
+    scroller.scrollTop = 20_000;
+    scroller.dispatchEvent(new Event("scroll"));
+    await settle();
+    // A rendered page in view: rendered pages from before stay mounted further up.
+    const page = [...target.querySelectorAll<HTMLElement>(".page")].find((p) => p.querySelector("canvas") && Math.abs(parseFloat(p.parentElement!.style.top) - 20_000) < 200)!;
+    const old = page.querySelector("canvas")!;
+    const before = pdf.requested.length;
+    pdf.hang = true;
+    latex.pdfVersion = 2;
+    await settle();
+    expect(scroller.scrollTop).toBeCloseTo(20_000, -1);
+    expect(page.isConnected).toBe(true);
+    expect(page.querySelector("canvas")).toBe(old); // not blank while the new version renders
+    expect(pdf.requested.length - before).toBeLessThan(25); // not the whole document
+    pdf.hang = false;
+    latex.pdfVersion = 3;
+    for (let i = 0; i < 12 && page.querySelector("canvas") === old; i++) await settle();
+    expect(page.querySelector("canvas")).not.toBe(old);
+    expect(pdf.docs.at(-2)!.destroyed).toBe(true);
     unmount(c);
   });
 

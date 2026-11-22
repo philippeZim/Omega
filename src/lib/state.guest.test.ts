@@ -17,7 +17,7 @@ vi.mock("./latex/controller.svelte", () => ({ schedule: vi.fn() }));
 vi.mock("./code/lspExtension", () => ({ setLspHooks: vi.fn() }));
 vi.mock("./code/lsp.svelte", () => ({ allClients: () => [], fileUri: (p: string) => "file://" + p, closeLspDoc: () => {}, saveLspDoc: async () => {} }));
 vi.mock("./markdown/livePreview", () => ({ setLinkHandler: vi.fn(), resolvePath: vi.fn() }));
-vi.mock("./modes", () => ({ modeForExtension: () => null }));
+vi.mock("./modes", () => ({ modeForPath: () => null }));
 vi.mock("./fsWatch.svelte", () => ({ onFilesChanged: vi.fn(), watchRoot: vi.fn() }));
 vi.mock("./i18n/index.svelte", () => ({ t: (k: string) => k }));
 vi.mock("./collab/share.svelte", () => ({ share: h.share, remoteCreate: h.remoteCreate }));

@@ -1,6 +1,6 @@
 import { t, type Key } from "./i18n/index.svelte";
 
-const CODES = ["not_utf8", "not_found", "permission_denied", "exists", "is_dir", "not_dir", "not_empty", "outside_project"] as const;
+const CODES = ["not_utf8", "not_found", "permission_denied", "exists", "is_dir", "not_dir", "not_empty", "outside_project", "too_large", "not_file"] as const;
 
 const baseName = (p: string) => p.split(/[\\/]/).filter(Boolean).pop() ?? p;
 

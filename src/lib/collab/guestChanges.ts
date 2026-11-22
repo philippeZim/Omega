@@ -14,6 +14,8 @@ const KEY = "latex.guestChanged";
 const METALS_KEY = "metals.guestChanged";
 /** The same for ocamllsp: Merlin runs the preprocessors a `.merlin` file or the build config names. */
 const OCAML_KEY = "ocaml.guestChanged";
+/** The same for gopls: loading a package runs the C compiler, linker and pkg-config on cgo code. */
+const GOPLS_KEY = "gopls.guestChanged";
 
 const parseRoots = (text: string) =>
   new Map<string, string>(Object.entries(JSON.parse(text)).filter((e): e is [string, string] => typeof e[1] === "string"));
@@ -87,7 +89,8 @@ const toolPause = (key: string, seeds: Map<string, string>[]): ToolPause => ({ k
 
 const metals = toolPause(METALS_KEY, [roots]);
 const ocaml = toolPause(OCAML_KEY, [roots, metals.roots]);
-const PAUSES = { metals, ocaml };
+const gopls = toolPause(GOPLS_KEY, [roots, metals.roots, ocaml.roots]);
+const PAUSES = { metals, ocaml, gopls };
 export type PausedTool = keyof typeof PAUSES;
 const allPauses = Object.values(PAUSES);
 
@@ -96,7 +99,7 @@ function fresh() {
   refresh(KEY, roots);
   for (const tool of allPauses) refresh(tool.key, tool.roots);
 }
-onGlobalChange([KEY, METALS_KEY, OCAML_KEY], () => {
+onGlobalChange([KEY, METALS_KEY, OCAML_KEY, GOPLS_KEY], () => {
   fresh();
   for (const fn of listeners) fn();
 });

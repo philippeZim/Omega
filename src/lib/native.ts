@@ -3,6 +3,7 @@
  * instances (OMEGA_INSTANCE) run on an invisible desktop, but native windows would open on the
  * user's desktop. There `sandboxNative()` (control MCP) reroutes them into the app.
  */
+import { invoke } from "@tauri-apps/api/core";
 import { open, save, type OpenDialogOptions, type SaveDialogOptions } from "@tauri-apps/plugin-dialog";
 import { openUrl as sysOpenUrl, revealItemInDir as sysReveal } from "@tauri-apps/plugin-opener";
 
@@ -30,7 +31,27 @@ export function saveDialog(options: SaveDialogOptions = {}): Promise<string | nu
 
 export async function openUrl(url: string | URL, openWith?: string) {
   if (sandbox) return sandbox.open(String(url));
-  return sysOpenUrl(url, openWith);
+  if (openWith) return sysOpenUrl(url, openWith);
+  return invoke<void>("open_external", { url: String(url) });
+}
+
+/** Links that want a new window open in the browser (replaces the opener plugin's click script). */
+export function linkTarget(e: MouseEvent): string | null {
+  if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.altKey) return null;
+  const a = e.composedPath().find((n) => n instanceof Node && n.nodeName.toUpperCase() === "A") as HTMLAnchorElement | undefined;
+  const target = a?.getAttribute("target") ?? a?.ownerDocument.querySelector("base[target]")?.getAttribute("target");
+  if (!a?.href || (target !== "_blank" && !e.ctrlKey && !e.shiftKey)) return null;
+  const url = new URL(a.href);
+  return ["http:", "https:", "mailto:", "tel:"].includes(url.protocol) ? url.href : null;
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("click", (e) => {
+    const url = linkTarget(e);
+    if (!url) return;
+    e.preventDefault();
+    void openUrl(url);
+  });
 }
 
 export async function revealItemInDir(path: string | string[]) {

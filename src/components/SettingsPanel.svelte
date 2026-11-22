@@ -15,6 +15,7 @@
   import * as ed from "../lib/editor";
   import KeybindingEditor from "./KeybindingEditor.svelte";
   import { app, activeTab, toggleSpell, setSpellLang, spellLangFor } from "../lib/state.svelte";
+  import { remoteImages, setAlwaysAllowImages } from "../lib/markdown/remoteImages.svelte";
   import { SPELL_LANGS } from "../lib/spell";
   import { control, setControlEnabled, regenerateToken, mcpAddCommand, setControlPort } from "../lib/ai/control.svelte";
   import { ideLink, AGENTS, startAgent, isConnected, detectAgents, type Agent } from "../lib/ai/ide.svelte";
@@ -140,6 +141,10 @@
           <div class="srow">
             <div><b>{t("app.settings.gitBlame")}</b><span class="sub2">{t("app.settings.gitBlameSub")}</span></div>
             <button class="switch" class:on={blameSettings.enabled} onclick={() => setGitBlame(!blameSettings.enabled)} role="switch" aria-checked={blameSettings.enabled} aria-label={t("app.settings.gitBlame")}><span></span></button>
+          </div>
+          <div class="srow">
+            <div><b>{t("app.settings.remoteImages")}</b><span class="sub2">{t("app.settings.remoteImagesSub")}</span></div>
+            <button class="switch" class:on={remoteImages.always} onclick={() => setAlwaysAllowImages(!remoteImages.always)} role="switch" aria-checked={remoteImages.always} aria-label={t("app.settings.remoteImages")}><span></span></button>
           </div>
           <div class="srow">
             <div><b>{t("app.settings.defaultShell")}</b><span class="sub2">{t("app.settings.defaultShellSub")}</span></div>

@@ -12,7 +12,8 @@ import { Highlight, InlineMath, BlockMath, WikiLink } from "./markdown/syntax";
 import { livePreview } from "./markdown/livePreview";
 import { codeHighlight, proseLayout } from "./theme";
 import { latexExtensions } from "./latex/language";
-import { indentFor } from "./code/languages";
+import { indentFor, isNamedCodeFile } from "./code/languages";
+import { extname } from "./api";
 import { effectiveLang } from "./code/langOverride.svelte";
 import { lspExtension } from "./code/lspExtension";
 import { remoteLsp } from "./code/remoteLsp";
@@ -23,7 +24,7 @@ import { gitBlame } from "./git/blame.svelte";
 export { MODES, type Mode } from "./modeList";
 import type { Mode } from "./modeList";
 
-const CODE_EXT = new Set(["py", "c", "h", "cpp", "cc", "cxx", "hpp", "hh", "java", "js", "mjs", "cjs", "jsx", "ts", "tsx", "mts", "rs", "toml", "json", "scala", "sc", "ml", "mli", "mojo", "🔥"]);
+const CODE_EXT = new Set(["py", "c", "h", "cpp", "cc", "cxx", "hpp", "hh", "java", "js", "mjs", "cjs", "jsx", "ts", "tsx", "mts", "rs", "toml", "json", "scala", "sc", "ml", "mli", "mojo", "🔥", "sql", "yaml", "yml", "sh", "bash", "zsh", "ksh", "dockerfile", "containerfile", "xml", "xsd", "xsl", "xslt", "svg", "mk", "mak", "go"]);
 
 /** Returns a mode only for extensions that clearly belong to one; unknown files keep the current mode. */
 export function modeForExtension(ext: string): Mode | null {
@@ -33,6 +34,9 @@ export function modeForExtension(ext: string): Mode | null {
   if (ext === "txt") return "text";
   return null;
 }
+
+/** Like `modeForExtension`, but also knows files by name (`Dockerfile`, `Makefile`, `.bashrc`). */
+export const modeForPath = (path: string): Mode | null => (isNamedCodeFile(path) ? "code" : modeForExtension(extname(path)));
 
 const markdownLang = markdown({ base: markdownLanguage, codeLanguages: languages, extensions: [Highlight, InlineMath, BlockMath, WikiLink] });
 

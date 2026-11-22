@@ -111,7 +111,8 @@ fn including_document(dir: &Path, file: &Path) -> Option<PathBuf> {
         .collect();
     docs.sort();
     docs.into_iter().find(|p| {
-        let Ok(text) = std::fs::read_to_string(p) else { return false };
+        // A huge sibling is never read whole (#174).
+        let Some(text) = p.to_str().and_then(|p| crate::fs::read_limited(p, crate::fs::MAX_TEXT_FILE).ok()).and_then(|b| String::from_utf8(b).ok()) else { return false };
         text.contains("\\documentclass") && includes(&text, rel)
     })
 }
@@ -715,6 +716,16 @@ mod tests {
         std::fs::write(dir.path().join("main.tex"), "\\documentclass{article}").unwrap();
         assert_eq!(find_root(&ch, "\\section{A}"), dir.path().join("main.tex"));
         assert_eq!(find_root(&ch, "\\documentclass{article}"), ch);
+    }
+
+    #[test]
+    fn including_document_skips_a_huge_sibling() {
+        let t = tempfile::tempdir().unwrap();
+        let (huge, part) = (t.path().join("huge.tex"), t.path().join("part.tex"));
+        std::fs::write(&huge, "\\documentclass{article}\n\\input{part}\n").unwrap();
+        std::fs::OpenOptions::new().write(true).open(&huge).unwrap().set_len(crate::fs::MAX_TEXT_FILE + 1).unwrap();
+        std::fs::write(&part, "x").unwrap();
+        assert_eq!(including_document(t.path(), &part), None);
     }
 
     #[test]

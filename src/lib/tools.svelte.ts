@@ -11,7 +11,7 @@ import { ui } from "./ui.svelte";
 import { t } from "./i18n/index.svelte";
 import { OS } from "./platform";
 
-export type ToolId = "uv" | "tectonic" | "node" | "pnpm" | "cmake" | "ninja" | "clangd" | "jdk" | "gradle" | "rust" | "git" | "cc" | "scala" | "sbt" | "ocaml" | "mojo";
+export type ToolId = "uv" | "tectonic" | "node" | "pnpm" | "cmake" | "ninja" | "clangd" | "jdk" | "gradle" | "rust" | "git" | "cc" | "scala" | "sbt" | "ocaml" | "mojo" | "go";
 
 interface ToolInfo {
   label: string;
@@ -31,7 +31,7 @@ export const TOOLS: Record<ToolId, ToolInfo> = {
   cmake: { label: "CMake", cmds: ["cmake"], mb: 50 },
   ninja: { label: "Ninja", cmds: ["ninja"], mb: 1 },
   clangd: { label: "clangd (C/C++)", cmds: ["clangd"], mb: 40 },
-  jdk: { label: "Java JDK 21", cmds: ["java"], mb: 190 },
+  jdk: { label: "Java JDK 25", cmds: ["java"], mb: 190 },
   gradle: { label: "Gradle", cmds: ["gradle"], mb: 140 },
   rust: { label: "Rust (rustup)", cmds: ["cargo"], mb: 300 },
   git: { label: "Git", cmds: ["git"], mb: 60 },
@@ -39,6 +39,7 @@ export const TOOLS: Record<ToolId, ToolInfo> = {
   sbt: { label: "sbt", cmds: ["sbt"], mb: 60 },
   ocaml: { label: "OCaml (opam, dune)", cmds: ["dune"], mb: 600 },
   mojo: { label: "Mojo (compiler, LSP, LLDB)", cmds: ["mojo"], mb: 300 },
+  go: { label: "Go", cmds: ["go"], mb: 75 },
   cc: {
     // A getter so the label follows the UI language (#63).
     get label() {

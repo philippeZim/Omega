@@ -52,11 +52,11 @@ const markdown: RawSheet = {
     {
       title: "Text",
       rows: [
-        [["**bold**", "**fett**", "**gras**"], "Bold · Ctrl B", "Fett · Strg B", "Gras · Ctrl B"],
-        [["*italic*  _italic_", "*kursiv*  _kursiv_", "*italique*  _italique_"], "Italic · Ctrl I", "Kursiv · Strg I", "Italique · Ctrl I"],
-        [["~~strike~~", "~~durch~~", "~~barré~~"], "Strikethrough · Ctrl ⇧ X", "Durchgestrichen · Strg ⇧ X", "Barré · Ctrl ⇧ X"],
-        [["==marked==", "==markiert==", "==surligné=="], "Highlight · Ctrl ⇧ H", "Hervorheben · Strg ⇧ H", "Surligner · Ctrl ⇧ H"],
-        ["`code`", "Inline code · Ctrl E", "Inline-Code · Strg E", "Code en ligne · Ctrl E"],
+        [["**bold**  ·  {cmd:md.bold}", "**fett**  ·  {cmd:md.bold}", "**gras**  ·  {cmd:md.bold}"], "Bold", "Fett", "Gras"],
+        [["*italic*  ·  {cmd:md.italic}", "*kursiv*  ·  {cmd:md.italic}", "*italique*  ·  {cmd:md.italic}"], "Italic", "Kursiv", "Italique"],
+        [["~~strike~~  ·  {cmd:md.strike}", "~~durch~~  ·  {cmd:md.strike}", "~~barré~~  ·  {cmd:md.strike}"], "Strikethrough", "Durchgestrichen", "Barré"],
+        [["==marked==  ·  {cmd:md.highlight}", "==markiert==  ·  {cmd:md.highlight}", "==surligné==  ·  {cmd:md.highlight}"], "Highlight", "Hervorheben", "Surligner"],
+        ["`code`  ·  {cmd:md.code}", "Inline code", "Inline-Code", "Code en ligne"],
         ["\\*", "Escape a character", "Zeichen escapen", "Échapper un caractère"],
       ],
     },
@@ -83,7 +83,11 @@ const markdown: RawSheet = {
     {
       title: ["Links & Images", "Links & Bilder", "Liens et images"],
       rows: [
-        [["[Text](https://…)", "[Text](https://…)", "[Texte](https://…)"], "Link · Ctrl K (click opens)", "Link · Strg K (Klick öffnet)", "Lien · Ctrl K (un clic l'ouvre)"],
+        [["[Text](https://…)  ·  {cmd:md.link}", "[Text](https://…)  ·  {cmd:md.link}", "[Texte](https://…)  ·  {cmd:md.link}"], "Link (click opens)", "Link (Klick öffnet)", "Lien (un clic l'ouvre)"],
+        [["[[Note]]  [[Note#Heading]]", "[[Notiz]]  [[Notiz#Überschrift]]", "[[Note]]  [[Note#Titre]]"], "Link to a note (no .md needed)", "Link auf eine Notiz (ohne .md)", "Lien vers une note (sans .md)"],
+        ["[[Note|shown text]]", "Wiki link with its own text", "Wiki-Link mit eigenem Text", "Lien wiki avec son propre texte"],
+        [["[Text](#heading-name)", "[Text](#ueberschrift)", "[Texte](#titre)"], "Link to a heading in this file", "Link auf eine Überschrift in dieser Datei", "Lien vers un titre de ce fichier"],
+        [["[Text][ref]  ·  [ref]: https://…", "[Text][ref]  ·  [ref]: https://…", "[Texte][ref]  ·  [ref]: https://…"], "Reference-style link", "Link mit Referenz", "Lien par référence"],
         [["[Text](note.md)", "[Text](notiz.md)", "[Texte](note.md)"], "Link to a local file", "Link auf lokale Datei", "Lien vers un fichier local"],
         ["<https://…>", "Automatic link", "Automatischer Link", "Lien automatique"],
         [["![Alt](image.png)", "![Alt](bild.png)", "![Alt](image.png)"], "Image (relative to the file)", "Bild (relativ zur Datei)", "Image (relative au fichier)"],
@@ -128,6 +132,7 @@ const markdown: RawSheet = {
         ["$$\n\\int_0^1 x\\,dx\n$$", "Block formula", "Block-Formel", "Formule en bloc"],
         ["\\frac{a}{b}  \\sqrt{x}", "Fraction, root", "Bruch, Wurzel", "Fraction, racine"],
         ["x^2  x_i", "Superscript, subscript", "Hoch-, Tiefgestellt", "Exposant, indice"],
+        ["\\begin{aligned} a &= b \\\\ c &= d \\end{aligned}", "Aligned equations (inside $$)", "Ausgerichtete Gleichungen (in $$)", "Équations alignées (dans $$)"],
         ["\\alpha \\beta \\pi", "Greek letters", "Griechische Buchstaben", "Lettres grecques"],
         ["\\sum_{i=1}^n  \\int_a^b", "Sum, integral", "Summe, Integral", "Somme, intégrale"],
       ],
@@ -152,7 +157,10 @@ const latex: RawSheet = {
         ["\\documentclass{article}", "Document class (article, report, book, beamer)", "Dokumentklasse (article, report, book, beamer)", "Classe de document (article, report, book, beamer)"],
         [["\\usepackage[english]{babel}", "\\usepackage[ngerman]{babel}", "\\usepackage[french]{babel}"], "Language hyphenation & terms", "Deutsche Silbentrennung & Begriffe", "Césure et termes français"],
         ["\\usepackage{amsmath, amssymb}", "Math extensions", "Mathe-Erweiterungen", "Extensions mathématiques"],
-        ["\\usepackage{graphicx}", "Include images", "Bilder einbinden", "Insérer des images"],
+        ["\\usepackage{graphicx, hyperref}", "Images, links (\\href)", "Bilder, Links (\\href)", "Images, liens (\\href)"],
+        ["\\usepackage[margin=2.5cm]{geometry}", "Page margins", "Seitenränder", "Marges de page"],
+        ["\\newcommand{\\R}{\\mathbb{R}}", "Own command", "Eigener Befehl", "Commande personnalisée"],
+        ["\\input{chapter1}", "Include a .tex file", "Eine .tex-Datei einbinden", "Inclure un fichier .tex"],
         ["\\begin{document} … \\end{document}", "Document body", "Dokumentinhalt", "Corps du document"],
         ["\\title{} \\author{} \\maketitle", "Title block", "Titelei", "Page de titre"],
         [["% Comment", "% Kommentar", "% Commentaire"], "Comment line", "Kommentarzeile", "Ligne de commentaire"],
@@ -219,18 +227,17 @@ const latex: RawSheet = {
       rows: [
         ["\\cite{key}", "Cite (keys from .bib are completed)", "Zitieren (Keys aus .bib vervollständigt)", "Citer (clés du .bib complétées)"],
         ["\\bibliography{refs}", "BibTeX file refs.bib", "BibTeX-Datei refs.bib", "Fichier BibTeX refs.bib"],
-        ["\\usepackage{biblatex} \\addbibresource{refs.bib}", "biblatex"],
-        ["\\printbibliography", "Bibliography (biblatex)", "Literaturverzeichnis (biblatex)", "Bibliographie (biblatex)"],
+        ["\\bibliographystyle{plain}", "Citation style (before \\bibliography)", "Zitierstil (vor \\bibliography)", "Style de citation (avant \\bibliography)"],
       ],
     },
     {
       title: ["Editor", "Editor", "Éditeur"],
       rows: [
         [["Typing", "Tippen", "Saisie"], "Compiles automatically (~1 s pause)", "Kompiliert automatisch (~1 s Pause)", "Compile automatiquement (pause d'env. 1 s)"],
-        ["Ctrl J", "Jump to cursor position in PDF", "Zur Cursor-Stelle im PDF springen", "Aller à la position du curseur dans le PDF"],
+        ["{cmd:latex.sync}", "Jump to cursor position in PDF", "Zur Cursor-Stelle im PDF springen", "Aller à la position du curseur dans le PDF"],
         [["Double-click in PDF", "Doppelklick ins PDF", "Double-clic dans le PDF"], "Jump to source line", "Zur Quellzeile springen", "Aller à la ligne source"],
         [["\\ + letters", "\\ + Buchstaben", "\\ + lettres"], "Complete commands & environments", "Befehle & Umgebungen vervollständigen", "Compléter commandes et environnements"],
-        ["Ctrl Space", "Open completion", "Vervollständigung öffnen", "Ouvrir la complétion"],
+        ["{cmd:editor.complete}", "Open completion", "Vervollständigung öffnen", "Ouvrir la complétion"],
         [["Cursor in formula", "Cursor in Formel", "Curseur dans une formule"], "Rendered preview above", "Gerenderte Vorschau darüber", "Aperçu rendu au-dessus"],
         ["% !TEX root = main.tex", "Set main file for subfiles", "Hauptdatei für Unterdateien festlegen", "Définir le fichier principal des sous-fichiers"],
       ],
@@ -245,6 +252,7 @@ const ORDER: [string, RawSheet | undefined][] = [
   ["shortcuts", shortcuts], ["markdown", markdown], ["latex", latex],
   ["python", codeSheets.python], ["c", codeSheets.c], ["cpp", codeSheets.cpp], ["java", codeSheets.java],
   ["javascript", codeSheets.javascript], ["typescript", codeSheets.typescript], ["rust", codeSheets.rust],
+  ["scala", codeSheets.scala], ["ocaml", codeSheets.ocaml], ["mojo", codeSheets.mojo], ["go", codeSheets.go],
 ];
 
 const cache = new Map<Locale, { id: string; label: string; sheet: Sheet }[]>();

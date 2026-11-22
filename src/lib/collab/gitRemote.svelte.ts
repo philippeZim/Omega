@@ -231,7 +231,7 @@ registerMethod({
     let deleted = false;
     let binary = false;
     let large = false;
-    if (tab) current = ed.getText(tab.id);
+    if (tab && !tab.large) current = ed.getText(tab.id);
     else {
       const read = await readBounded(scope, path);
       if (read.kind === "text") current = read.text;
@@ -336,6 +336,7 @@ async function settle(scope: GuestScope) {
 async function saveShared(scope: GuestScope) {
   for (const tab of app.tabs) {
     if (!tab.dirty || !tab.path || tab.deleted || scope.rel(tab.path) === null) continue;
+    if (tab.large) throw new RpcFail("unsaved_text"); // saved by hand only (#174)
     await save(tab.id);
     if (tab.dirty) throw new RpcFail("unsaved_text");
   }

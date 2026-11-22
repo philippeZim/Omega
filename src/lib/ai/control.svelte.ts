@@ -154,7 +154,7 @@ export const TOOLS: Tool[] = [
     run: () => ({
       mode: app.mode,
       projectRoot: app.root,
-      tabs: app.tabs.map((t) => ({ path: t.path, name: t.name, dirty: t.dirty, active: t.id === app.activeId })),
+      tabs: app.tabs.map((t) => ({ path: t.path ?? t.viewOf ?? null, name: t.name, dirty: t.dirty, active: t.id === app.activeId })),
       editor: editorInfo(),
       layout: Object.fromEntries(ZONES.map((z) => [z, { shown: zoneShown(z), active: activeView(z), views: layout.zones[z].views, available: visibleViews(z), size: layout.zones[z].size }])),
       overlays: {
@@ -216,7 +216,7 @@ export const TOOLS: Tool[] = [
     inputSchema: obj({ path: str("Dateipfad"), line: num("Zeile (1-basiert)") }, ["path"]),
     run: async ({ path, line }) => {
       const abs = path.startsWith("/") ? path : `${app.root}/${path}`;
-      await openFile(abs);
+      await openFile(abs, false, !!line);
       if (line) {
         const v = ed.getView();
         v?.dispatch({ selection: { anchor: posOf(line, 1) }, scrollIntoView: true });

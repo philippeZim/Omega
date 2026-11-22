@@ -1,5 +1,5 @@
 import { StateField, type Extension, type Text } from "@codemirror/state";
-import { StreamLanguage, indentService, indentUnit } from "@codemirror/language";
+import { StreamLanguage, indentService, indentUnit, type IndentContext } from "@codemirror/language";
 import { python } from "@codemirror/lang-python";
 import { cpp } from "@codemirror/lang-cpp";
 import { java } from "@codemirror/lang-java";
@@ -9,10 +9,18 @@ import { json } from "@codemirror/lang-json";
 import { toml } from "@codemirror/legacy-modes/mode/toml";
 import { scala } from "@codemirror/legacy-modes/mode/clike";
 import { oCaml } from "@codemirror/legacy-modes/mode/mllike";
-import { extname } from "../api";
+import { standardSQL } from "@codemirror/legacy-modes/mode/sql";
+import { yaml } from "@codemirror/legacy-modes/mode/yaml";
+import { shell } from "@codemirror/legacy-modes/mode/shell";
+import { dockerFile } from "@codemirror/legacy-modes/mode/dockerfile";
+import { xml } from "@codemirror/legacy-modes/mode/xml";
+import { go } from "@codemirror/legacy-modes/mode/go";
+import { basename, extname } from "../api";
 import { mojoIndentStep, mojoParser } from "./mojoMode";
+import { goModParser } from "./go";
+import { dockerContinues, makefileOpensRecipe, makefileParser, shellClosesBlock, shellOpensBlock, yamlIndentAfter } from "./configModes";
 
-export type LangId = "python" | "c" | "cpp" | "java" | "javascript" | "typescript" | "rust" | "json" | "toml" | "scala" | "ocaml" | "mojo";
+export type LangId = "python" | "c" | "cpp" | "java" | "javascript" | "typescript" | "rust" | "json" | "toml" | "scala" | "ocaml" | "mojo" | "sql" | "yaml" | "shell" | "dockerfile" | "xml" | "makefile" | "go";
 
 export interface LangInfo {
   id: LangId;
@@ -20,7 +28,7 @@ export interface LangInfo {
   /** LSP languageId */
   lspId: string;
   /** Which language server handles it (null = none). */
-  server: "python" | "clangd" | "java" | "typescript" | "rust" | "scala" | "ocaml" | "mojo" | null;
+  server: "python" | "clangd" | "java" | "typescript" | "rust" | "scala" | "ocaml" | "mojo" | "go" | null;
   ext: () => Extension;
 }
 
@@ -45,6 +53,34 @@ reg(["scala", "sc"], L("scala", "Scala", "scala", "scala", () => [StreamLanguage
 reg(["ml"], L("ocaml", "OCaml", "ocaml", "ocaml", () => [StreamLanguage.define(oCaml), ocamlIndent]));
 reg(["mli"], L("ocaml", "OCaml", "ocaml.interface", "ocaml", () => [StreamLanguage.define(oCaml), ocamlIndent]));
 reg(["mojo", "🔥"], L("mojo", "Mojo", "mojo", "mojo", () => [StreamLanguage.define(mojoParser), mojoIndent]));
+reg(["sql"], L("sql", "SQL", "sql", null, () => StreamLanguage.define(standardSQL)));
+reg(["yaml", "yml"], L("yaml", "YAML", "yaml", null, () => [StreamLanguage.define(yaml), yamlIndent]));
+reg(["sh", "bash", "zsh", "ksh"], L("shell", "Shell", "shellscript", null, () => [StreamLanguage.define(shellWithIndent), shellIndent]));
+reg(["dockerfile", "containerfile"], L("dockerfile", "Dockerfile", "dockerfile", null, () => [StreamLanguage.define(dockerFile), dockerIndent]));
+reg(["xml", "xsd", "xsl", "xslt", "svg"], L("xml", "XML", "xml", null, () => StreamLanguage.define(xml)));
+reg(["mk", "mak"], L("makefile", "Makefile", "makefile", null, () => [StreamLanguage.define(makefileParser), makefileIndent]));
+reg(["go"], L("go", "Go", "go", "go", () => StreamLanguage.define(go)));
+// gopls parses by languageId. go.sum is a list of hashes it has no features for.
+const GO_MOD = L("go", "Go", "go.mod", "go", () => StreamLanguage.define(goModParser));
+const GO_WORK = L("go", "Go", "go.work", "go", () => StreamLanguage.define(goModParser));
+const GO_SUM = L("go", "Go", "go.sum", null, () => StreamLanguage.define(goModParser));
+
+const SHELL_DOTFILES = new Set([".bashrc", ".bash_profile", ".bash_login", ".bash_logout", ".bash_aliases", ".profile", ".zshrc", ".zshenv", ".zprofile", ".zlogin", ".zlogout", ".kshrc"]);
+
+/** The language a file's name stands for when its extension doesn't say (`Dockerfile.dev`, `Makefile`, `.bashrc`). */
+function langForName(path: string): LangInfo | null {
+  const name = basename(path);
+  if (name === "go.mod") return GO_MOD;
+  if (name === "go.work") return GO_WORK;
+  if (name === "go.sum" || name === "go.work.sum") return GO_SUM;
+  // `Dockerfile.dev` is a Dockerfile; `Dockerfile.md` and `Dockerfile.dockerignore` are not.
+  if (/^(?:docker|container)file(?:\.[^.]+)*$/i.test(name) && !/\.(?:md|markdown|txt|tex|bib|sty|cls|dockerignore)$/i.test(name)) return BY_EXT.dockerfile;
+  if (/^(?:gnu)?makefile(?:\.(?:am|in))?$/i.test(name)) return BY_EXT.mk;
+  return SHELL_DOTFILES.has(name) ? BY_EXT.sh : null;
+}
+
+/** Whether the file's name alone (no known extension) makes it a code file. */
+export const isNamedCodeFile = (path: string) => !BY_EXT[extname(path)] && !!langForName(path);
 
 /** Whether a Scala line opens an indented block without braces (Scala 3 syntax, `def f =`, `case x =>`). */
 export function scalaOpensBlock(line: string): boolean {
@@ -79,6 +115,52 @@ const mojoIndent = indentService.of((cx, pos) => {
   return Math.max(0, cx.lineIndent(line.from, -1) + mojoIndentStep(line.text) * cx.unit);
 });
 
+/** The nearest line above `pos` that isn't blank, or the first line of the document. */
+function lineAbove(cx: IndentContext, pos: number) {
+  let line = cx.lineAt(pos, -1);
+  if (line.from === pos && pos > 0) line = cx.lineAt(pos - 1, -1);
+  while (!line.text.trim() && line.from > 0) line = cx.lineAt(line.from - 1, -1);
+  return line;
+}
+
+const yamlIndent = indentService.of((cx, pos) => {
+  const line = lineAbove(cx, pos);
+  return cx.lineIndent(line.from, -1) + yamlIndentAfter(line.text, cx.unit);
+});
+
+/** The mode has no indentation of its own; closers like `fi` re-indent as they are typed. */
+const shellWithIndent = { ...shell, languageData: { ...shell.languageData, indentOnInput: /^\s*(?:fi|done|esac|else|elif|\}|\))$/ } };
+
+const shellIndent = indentService.of((cx, pos) => {
+  const line = lineAbove(cx, pos);
+  const step = (shellOpensBlock(line.text) ? 1 : 0) - (shellClosesBlock(cx.textAfterPos(pos)) ? 1 : 0);
+  return Math.max(0, cx.lineIndent(line.from, -1) + step * cx.unit);
+});
+
+/** A `RUN a \\` continuation is one step in; the line after the last continuation is back at the start. */
+const dockerIndent = indentService.of((cx, pos) => {
+  let line = cx.lineAt(pos, -1);
+  if (line.from === pos && pos > 0) line = cx.lineAt(pos - 1, -1);
+  const above = line.from > 0 ? cx.lineAt(line.from - 1, -1) : null;
+  const inChain = !!above && dockerContinues(above.text);
+  if (dockerContinues(line.text)) return cx.lineIndent(line.from, -1) + (inChain ? 0 : cx.unit);
+  if (!inChain) return cx.lineIndent(line.from, -1);
+  let start = above!;
+  while (start.from > 0) {
+    const prev = cx.lineAt(start.from - 1, -1);
+    if (!dockerContinues(prev.text)) break;
+    start = prev;
+  }
+  return cx.lineIndent(start.from, -1);
+});
+
+/** After a rule's line comes its recipe; a recipe line keeps its tab, everything else starts at column 0. */
+const makefileIndent = indentService.of((cx, pos) => {
+  let line = cx.lineAt(pos, -1);
+  if (line.from === pos && pos > 0) line = cx.lineAt(pos - 1, -1);
+  return makefileOpensRecipe(line.text) ? cx.unit : cx.lineIndent(line.from, -1);
+});
+
 /**
  * The indentation a file already uses: "\t", or the most common step between the indents of
  * neighbouring lines (2, 4 or 8 spaces). null if the file has (almost) no indented lines.
@@ -107,21 +189,39 @@ export function detectIndent(doc: Text | string): string | null {
   return best ? " ".repeat(best) : null;
 }
 
+/** The indentation a language conventionally uses. */
+export function conventionalIndent(lang: LangInfo | null): string {
+  const two = lang && ["javascript", "typescript", "json", "scala", "ocaml", "yaml", "shell", "xml"].includes(lang.id);
+  return two ? "  " : "    ";
+}
+
+/** The indentation for this text: its own, within what the language allows, else `fallback`. */
+function chooseIndent(doc: Text | string, lang: LangInfo | null, fallback: string): string {
+  if (lang?.id === "makefile" || lang?.id === "go") return "\t"; // make only accepts tabs before a recipe; gofmt always uses them
+  const found = detectIndent(doc);
+  return lang?.id === "yaml" && found === "\t" ? fallback : found ?? fallback; // YAML forbids tabs
+}
+
+/** LSP `FormattingOptions` for this text. */
+export function formattingOptions(doc: Text | string, lang: LangInfo | null, fallback = conventionalIndent(lang), tabSize = 4): { tabSize: number; insertSpaces: boolean } {
+  const unit = chooseIndent(doc, lang, fallback);
+  return unit.includes("\t") ? { tabSize, insertSpaces: false } : { tabSize: unit.length, insertSpaces: true };
+}
+
 /** The file's own indentation (detected when it is loaded), else the language's convention (PEP 8, rustfmt, Google Java, Prettier, scalafmt, ocamlformat). */
 export function indentFor(lang: LangInfo | null): Extension {
-  const two = lang && ["javascript", "typescript", "json", "scala", "ocaml"].includes(lang.id);
-  const fallback = two ? "  " : "    ";
-  const unit = StateField.define<string>({ create: (state) => detectIndent(state.doc) ?? fallback, update: (v) => v });
+  const fallback = conventionalIndent(lang);
+  const unit = StateField.define<string>({ create: (state) => chooseIndent(state.doc, lang, fallback), update: (v) => v });
   return [unit, indentUnit.from(unit)];
 }
 
 /** The language the file's extension stands for. Use `effectiveLang` where a user's choice counts. */
 export function langFor(path: string | null): LangInfo | null {
   if (!path) return null;
-  return BY_EXT[extname(path)] ?? null;
+  return BY_EXT[extname(path)] ?? langForName(path);
 }
 
 /** Every language once, in the order of the picker; the plain variant (no JSX, no interface file). */
-export const LANGUAGES: LangInfo[] = ["py", "c", "cpp", "java", "js", "ts", "rs", "json", "toml", "scala", "ml", "mojo"].map((e) => BY_EXT[e]);
+export const LANGUAGES: LangInfo[] = ["py", "c", "cpp", "java", "js", "ts", "rs", "json", "toml", "scala", "ml", "mojo", "sql", "yaml", "sh", "dockerfile", "xml", "mk", "go"].map((e) => BY_EXT[e]);
 
 export const langById = (id: string): LangInfo | null => LANGUAGES.find((l) => l.id === id) ?? null;

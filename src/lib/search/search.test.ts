@@ -7,7 +7,13 @@ vi.mock("../state.svelte", () => ({ app: { tabs: [], root: null }, openFile: vi.
 vi.mock("../editor", () => ({ getView: () => null, getText: () => "", replaceDocText: vi.fn() }));
 vi.mock("../ui.svelte", () => ({ ui: { confirm, toast: vi.fn() } }));
 
-import { find, replaceAll, replaceInFile } from "./search.svelte";
+import { find, gotoHit, replaceAll, replaceInFile } from "./search.svelte";
+import { openFile } from "../state.svelte";
+
+it("a hit opens its file for a line jump, so an SVG comes up as text (#159)", async () => {
+  await gotoHit({ file: "/w/a.svg", line: 2, ranges: [[0, 3]], text: "abc" });
+  expect(openFile).toHaveBeenCalledWith("/w/a.svg", false, true);
+});
 
 describe("replaceAll", () => {
   it("says 5000+ in the confirmation when the result list is capped", async () => {

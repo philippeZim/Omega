@@ -1,4 +1,4 @@
-/** Project detection and the recommended tool per language: cargo, uv, pnpm, CMake, Gradle, scala-cli, sbt, dune, Mojo. */
+/** Project detection and the recommended tool per language: cargo, uv, pnpm, CMake, Gradle, scala-cli, sbt, dune, Mojo, Go. */
 import { invoke } from "@tauri-apps/api/core";
 import { fsApi, basename, dirname, joinPath, isRoot } from "../api";
 import { q, cd, exe, IS_WIN, OS, runRel, rmrf, tmpPath } from "../platform";
@@ -10,10 +10,11 @@ import { suggestPythonAdd, suggestPythonRemove, pythonRemoveArg, suggestNodeAdd,
 import { validScriptName } from "./packageInput";
 import { duneTarget, findDuneExecutables, pickExecutable } from "./dune";
 import { ocamlShellPrefix } from "./ocamlTools";
+import { goModuleName, goPatterns, goPrefix, goRunTarget, isGoTest } from "./go";
 import { isMojoFile, mojoCompiles, mojoEntry, mojoStem, pixiMojoLauncher, pixiUsesMojo } from "./mojo";
 import { t, i18n, type Key } from "../i18n/index.svelte";
 
-export type ProjectKind = "cargo" | "uv" | "pnpm" | "cmake" | "gradle" | "sbt" | "scala-cli" | "dune" | "mojo" | "file";
+export type ProjectKind = "cargo" | "uv" | "pnpm" | "cmake" | "gradle" | "sbt" | "scala-cli" | "dune" | "mojo" | "go" | "file";
 
 export interface Action {
   id: string;
@@ -72,6 +73,9 @@ const MARKERS: [string, ProjectKind][] = [
   ["dune-project", "dune"],
   ["package.json", "pnpm"],
   ["project.scala", "scala-cli"],
+  // Last: a repository with a Go backend keeps its other tools for their files. Go files look first (see findProject).
+  ["go.mod", "go"],
+  ["go.work", "go"],
 ];
 
 const mojoInstallable = async () => (await invoke<string[]>("tool_installable").catch((): string[] => [])).includes("mojo");
@@ -95,6 +99,13 @@ async function findProject(file: string | null, workspace: string | null): Promi
   // A Python, C or other source file in a pixi folder keeps the behaviour it has without Mojo.
   const lang = file ? effectiveLang(file)?.id : undefined;
   const mayBeMojo = !lang || lang === "mojo" || lang === "toml";
+  if (lang === "go") {
+    // The nearest module: `go` itself finds a go.work above it.
+    for (let d = dir; d && d !== stop && !isRoot(d); d = dirname(d)) {
+      if ((await fsApi.exists(joinPath(d, "go.mod"))) || (await fsApi.exists(joinPath(d, "go.work")))) return { kind: "go", root: d };
+    }
+    return null;
+  }
   while (dir && dir !== stop && !isRoot(dir)) {
     if (mojoFile && (await isMojoProject(dir, true))) return found ?? { kind: "mojo", root: dir };
     let marked = false;
@@ -260,8 +271,8 @@ const askPkg = (example: string) => () => t("code.act.askPackage", { example });
 const askPkgPlain = () => t("code.act.askPackagePlain");
 
 /**
- * Which project kinds a file set to another language still belongs to. pnpm is missing on purpose:
- * node and tsx go by the extension, so such a file always runs through its private copy.
+ * Which project kinds a file set to another language still belongs to. pnpm and Go are missing on
+ * purpose: node, tsx and go go by the extension, so such a file always runs through its private copy.
  */
 const PROJECT_LANGS: Partial<Record<ProjectKind, LangId[]>> = { cargo: ["rust"], uv: ["python"], cmake: ["c", "cpp"], gradle: ["java"], sbt: ["scala"], "scala-cli": ["scala"], dune: ["ocaml"], mojo: ["mojo"] };
 
@@ -464,6 +475,27 @@ export async function detectProject(file: string | null, workspace: string | nul
     };
   }
 
+  if (p?.kind === "go") {
+    const target = await goRunTarget(p.root, file);
+    const all = await goPatterns(p.root);
+    const module = await fsApi.exists(joinPath(p.root, "go.mod"));
+    const go = `${await goPrefix()}go`;
+    return {
+      ...p,
+      label: "Go",
+      needs: ["go"],
+      run: target ? act("run", "common.run", `${go} run ${q(target)}`, { shortcut: RUN, usesFile: true }) : null,
+      build: act("build", "code.act.build", `${go} build ${all}`, { shortcut: BUILD }),
+      test: act("test", "code.act.test", `${go} test ${all}`),
+      more: [
+        { id: "vet", label: "go vet", cmd: `${go} vet ${all}` },
+        { id: "fmt", label: "go fmt", cmd: `${go} fmt ${all}` },
+        ...(module ? [{ id: "tidy", label: "go mod tidy", cmd: `${go} mod tidy` }, act("add", "code.act.addDep", `${go} get {}`, { ask: askPkg("golang.org/x/text") })] : [{ id: "sync", label: "go work sync", cmd: `${go} work sync` }]),
+        { id: "clean", label: "go clean", cmd: `${go} clean` },
+      ],
+    };
+  }
+
   // No project: run the single file with the language's default tool.
   if (!file) return null;
   if (alone) {
@@ -493,7 +525,7 @@ export async function detectProject(file: string | null, workspace: string | nul
     get label() { return t("code.project.file"); },
     run: act("run", "common.run", cmd, { shortcut: RUN, pre, usesFile: true }),
     build: pre ? act("build", "code.act.build", pre, { shortcut: BUILD, usesFile: true }) : null,
-    test: null,
+    test: lang === "go" && isGoTest(file) ? act("test", "code.act.test", cmd, { usesFile: true }) : null,
     more: [],
   };
 }
@@ -528,6 +560,9 @@ async function singleFileRun(lang: LangId | undefined, file: string): Promise<[s
     case "typescript": return [`${TSX_DLX} ${f}`, ["node", "pnpm"]];
     case "rust": return [out, ["rust"], `rustc -g ${f} -o ${out}`];
     case "scala": return [`scala-cli run ${f}`, ["scala"]];
+    case "go":
+      if (!file.endsWith(".go")) return null; // go.mod and go.sum without a module around them
+      return isGoTest(file) ? [`${await goPrefix()}go test ${f}`, ["go"]] : [out, ["go"], `${await goPrefix()}go build -o ${out} ${f}`];
     case "mojo": return mojoCompiles(file) ? [`mojo run ${f}`, ["mojo", "cc"]] : null; // Mojo 1.x refuses .🔥
     case "ocaml": return file.endsWith(".ml") ? [`${await ocamlShellPrefix()}ocaml ${f}`, ["ocaml"]] : null; // an interface doesn't run
     default: return null;
@@ -619,7 +654,7 @@ export const TEMPLATES: Template[] = [
   // Plain folder, no tooling: created directly via the fs API (see createProject).
   { id: "empty", get label() { return t("code.tpl.empty"); }, get tool() { return t("code.tpl.folderOnly"); }, needs: [], marker: "", open: [], create: async () => ({ cmds: [] }) },
   { id: "rust", label: "Rust", tool: "cargo new", needs: ["rust"], marker: "Cargo.toml", open: ["src/main.rs"], create: async (n) => ({ inParent: true, cmds: [`cargo new ${q(n)}`] }) },
-  { id: "python", label: "Python", tool: "uv init", needs: ["uv"], marker: "pyproject.toml", open: ["main.py", "src/{name}/__init__.py", "hello.py"], create: async (n) => ({ inParent: true, cmds: [`uv init --app --no-package ${q(n)}`, cd(n), "uv sync"] }) },
+  { id: "python", label: "Python", tool: "uv init", needs: ["uv"], marker: "pyproject.toml", open: ["main.py", "src/{name}/__init__.py", "hello.py"], create: async (n) => ({ inParent: true, cmds: [`uv init ${q(n)}`, cd(n), "uv sync"] }) },
   {
     id: "typescript",
     label: "TypeScript",
@@ -717,6 +752,21 @@ export const TEMPLATES: Template[] = [
         ".gitignore": ".pixi/\nbuild/\n",
       },
       cmds: [...(await gitInit())],
+    }),
+  },
+  {
+    id: "go",
+    label: "Go",
+    tool: "go mod",
+    needs: ["go"],
+    marker: "go.mod",
+    open: ["main.go"],
+    create: async (n) => ({
+      files: {
+        "main.go": `package main\n\nimport "fmt"\n\nfunc main() {\n\tfmt.Println("${t("code.tpl.hello")}")\n}\n`,
+        ".gitignore": `/${goModuleName(n)}\n*.exe\n*.test\n*.out\n`,
+      },
+      cmds: [...(await gitInit()), `go mod init ${q(goModuleName(n))}`],
     }),
   },
   {

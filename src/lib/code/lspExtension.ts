@@ -1,13 +1,18 @@
 /** CodeMirror integration for the LSP client: sync, completion, hover, diagnostics, definition, formatting. */
 import type { Extension, Text } from "@codemirror/state";
+import { indentUnit } from "@codemirror/language";
 import { EditorView, ViewPlugin, hoverTooltip, type ViewUpdate } from "@codemirror/view";
-import { viewActions } from "../editorActions";
+import { viewActionSupport, viewActions } from "../editorActions";
 import { autocompletion, insertCompletionText, snippet, type Completion, type CompletionContext, type CompletionResult } from "@codemirror/autocomplete";
 import { setDiagnostics, forEachDiagnostic, type Diagnostic, type Action } from "@codemirror/lint";
 import { ui } from "../ui.svelte";
 import { t } from "../i18n/index.svelte";
 import { clientFor, fileUri, lspState, realPathOf, registerShadow, releasePrivate, restartListeners, restartServer, setLspRoute, setLspWorkspace, uriPath, type LspClient, type ServerKind } from "./lsp.svelte";
-import type { LangInfo } from "./languages";
+import { formattingOptions, type LangInfo } from "./languages";
+import { keepFileIndent, syncPrivateStyle } from "./clangFormat";
+import { signatureHelp } from "./lspSignature";
+import { documentHighlights } from "./lspHighlight";
+import { GOTO, GOTO_IDS, gotoTargets, pickerItems, type GotoId, type GotoTarget } from "./lspGoto";
 import { isForeignLang } from "./langOverride.svelte";
 import { clangdCommand, shadowForLsp } from "./langRun";
 import { runsAlone } from "./projects";
@@ -49,9 +54,18 @@ const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replac
 export function renderDoc(content: any): HTMLElement | null {
   let md = "";
   if (!content) return null;
+  if (content.kind === "plaintext") {
+    // Set as text, so it needs no escaping and markdown characters in it stay literal.
+    const text = String(content.value ?? "").trim();
+    if (!text) return null;
+    const plain = document.createElement("div");
+    plain.className = "lsp-doc lsp-plain";
+    plain.textContent = text;
+    return plain;
+  }
   if (typeof content === "string") md = content;
   else if (Array.isArray(content)) md = content.map((c) => (typeof c === "string" ? c : "```\n" + c.value + "\n```")).join("\n\n");
-  else if (content.kind === "markdown" || content.kind === "plaintext") md = content.kind === "plaintext" ? esc(content.value) : content.value;
+  else if (content.kind === "markdown") md = content.value;
   else if (content.value) md = "```\n" + content.value + "\n```";
   md = md.trim();
   if (!md) return null;
@@ -239,6 +253,7 @@ export const lspTheme = EditorView.baseTheme({
   ".lsp-doc": { padding: "8px 12px", maxWidth: "560px", maxHeight: "320px", overflow: "auto", fontFamily: "var(--font)", fontSize: "12.5px", lineHeight: "1.5", color: "var(--label-2)" },
   ".lsp-doc pre, .lsp-detail": { fontFamily: "var(--mono)", fontSize: "12px", color: "var(--label)", whiteSpace: "pre-wrap", margin: "4px 0" },
   ".lsp-detail": { padding: "8px 12px 0" },
+  ".lsp-plain": { whiteSpace: "pre-wrap" },
   ".lsp-doc code": { fontFamily: "var(--mono)", fontSize: "0.92em", color: "var(--label)" },
   ".cm-completionIcon": { opacity: "0.8", width: "1.2em" },
 });
@@ -399,20 +414,44 @@ export function lspExtension(path: string, lang: LangInfo): Extension {
     if (!client) return false;
     flush();
     const res: any = await client.request("textDocument/definition", { textDocument: { uri }, position: toPos(view.state.doc, pos) }).catch(() => null);
-    const loc = Array.isArray(res) ? res[0] : res;
-    if (!loc) return false;
-    const target = loc.targetUri ?? loc.uri;
-    const range = loc.targetSelectionRange ?? loc.range;
-    await hooks.navigate(realPathOf(uriPath(target)), range.start.line, range.start.character);
+    const [target] = gotoTargets(res, (u) => realPathOf(uriPath(u)));
+    if (!target) return false;
+    await hooks.navigate(target.path, target.line, target.character);
     return true;
   }
 
-  async function format(view: EditorView) {
-    if (!client?.capabilities.documentFormattingProvider) return false;
+  /** Go to Declaration, Implementation or Type Definition; several results open a picker. */
+  async function gotoRelated(view: EditorView, id: GotoId) {
+    const c = client;
+    const { method, capability } = GOTO[id];
+    if (!c?.capabilities[capability]) return ui.toast(t("code.lsp.gotoUnsupported"));
     flush();
-    const edits: any[] = await client.request("textDocument/formatting", { textDocument: { uri }, options: { tabSize: 4, insertSpaces: true } }).catch(() => null);
-    if (!edits?.length) return true;
+    const pos = view.state.selection.main.head;
+    const res = await c.request(method, { textDocument: { uri }, position: toPos(view.state.doc, pos) }).catch(() => null);
+    if (viewRef !== view) return;
+    const targets = gotoTargets(res, (u) => realPathOf(uriPath(u)));
+    const go = (target: GotoTarget) => void hooks.navigate(target.path, target.line, target.character);
+    if (!targets.length) return ui.toast(t("code.lsp.gotoNone"));
+    if (targets.length === 1) return go(targets[0]);
+    const at = view.coordsAtPos(pos);
+    ui.openMenu(
+      new MouseEvent("contextmenu", { clientX: at?.left ?? 200, clientY: (at?.bottom ?? 200) + 4 }),
+      pickerItems(targets, go, (count) => t("code.lsp.gotoMore", { count })),
+    );
+  }
+
+  async function format(view: EditorView) {
+    const c = client;
+    if (!c?.capabilities.documentFormattingProvider) return false;
+    flush();
     const doc = view.state.doc;
+    const clangd = lang.server === "clangd";
+    if (clangd && uri !== fileUri(path)) await syncPrivateStyle(path, dirname(uriPath(uri))).catch(() => {});
+    const options = formattingOptions(doc, lang, view.state.facet(indentUnit), view.state.tabSize);
+    let edits: any[] | null = await c.request("textDocument/formatting", { textDocument: { uri }, options }).catch(() => null);
+    if (clangd && edits?.length) edits = await keepFileIndent(path, doc.toString(), edits, options);
+    // Typed while waiting: these positions no longer fit.
+    if (!edits?.length || view.state.doc !== doc) return true;
     view.dispatch({ changes: edits.map((e) => ({ from: toOffset(doc, e.range.start), to: toOffset(doc, e.range.end), insert: e.newText })) });
     return true;
   }
@@ -421,11 +460,15 @@ export function lspExtension(path: string, lang: LangInfo): Extension {
     plugin,
     autocompletion({ override: [completionSource(() => client, () => uri, flush)], icons: true, activateOnTypingDelay: 60 }),
     hover,
+    signatureHelp(() => client, () => uri, flush, renderDoc),
+    documentHighlights(() => client, () => uri, flush),
     viewActions.of({
       "lsp.gotoDefinition": (v) => (gotoDefinition(v), true),
+      ...Object.fromEntries(GOTO_IDS.map((id) => [id, (v: EditorView) => (void gotoRelated(v, id), true)])),
       "lsp.format": (v) => (format(v), true),
       "lsp.quickFix": quickFixAtCursor,
     }),
+    viewActionSupport.of(Object.fromEntries(GOTO_IDS.map((id) => [id, () => !!client?.capabilities[GOTO[id].capability]]))),
     EditorView.domEventHandlers({
       mousedown(e, view) {
         if (!(e.ctrlKey || e.metaKey) || e.button !== 0) return false;

@@ -134,6 +134,29 @@
   margin: 6px 0;
 }
 .mode-markdown .md-image.broken { display: inline-block; min-width: 120px; min-height: 30px; background: var(--fill); }
+.mode-markdown .md-remote-image {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  margin: 6px 0;
+  padding: 6px 10px;
+  border-radius: 10px;
+  background: var(--fill);
+  color: var(--label-2);
+  font-family: var(--font);
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.mode-markdown .md-remote-image button {
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: var(--fill);
+  color: var(--label);
+  font-size: 12px;
+}
 
 /* Fenced / indented code */
 .mode-markdown .cm-line.md-codeblock {

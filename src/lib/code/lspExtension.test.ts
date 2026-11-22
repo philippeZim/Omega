@@ -2,8 +2,12 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { forEachDiagnostic, type Diagnostic } from "@codemirror/lint";
-import { applyItem, lspExtension, toOffset, toPos } from "./lspExtension";
-import { fileUri } from "./lsp.svelte";
+import { applyItem, lspExtension, renderDoc, setLspHooks, toOffset, toPos } from "./lspExtension";
+import { fileUri, registerShadow } from "./lsp.svelte";
+import { ui } from "../ui.svelte";
+import { t } from "../i18n/index.svelte";
+import { runViewAction, viewActionState } from "../editorActions";
+import { indentFor, langFor } from "./languages";
 
 const m = vi.hoisted(() => ({ client: null as any }));
 
@@ -45,6 +49,35 @@ describe("toPos / toOffset", () => {
 });
 
 // ---------------------------------------------------------------- completion apply
+
+describe("renderDoc", () => {
+  test("plaintext shows <, > and & literally", () => {
+    const el = renderDoc({ kind: "plaintext", value: "Vec<T> && Option<&str>" })!;
+    expect(el.textContent).toBe("Vec<T> && Option<&str>");
+  });
+
+  test("plaintext cannot inject markup", () => {
+    const el = renderDoc({ kind: "plaintext", value: '<img src=x onerror="alert(1)"><script>x</script>' })!;
+    expect(el.children.length).toBe(0);
+    expect(el.textContent).toContain("<img");
+  });
+
+  test("plaintext keeps markdown characters and line breaks", () => {
+    const el = renderDoc({ kind: "plaintext", value: "a `b` **c**\nnext" })!;
+    expect(el.children.length).toBe(0);
+    expect(el.textContent).toBe("a `b` **c**\nnext");
+  });
+
+  test("empty plaintext renders nothing", () => {
+    expect(renderDoc({ kind: "plaintext", value: "  " })).toBeNull();
+  });
+
+  test("markdown is still escaped once", () => {
+    const el = renderDoc({ kind: "markdown", value: "`Vec<T>` <img src=x>" })!;
+    expect(el.querySelector("img")).toBeNull();
+    expect(el.querySelector("code")!.textContent).toBe("Vec<T>");
+  });
+});
 
 describe("applyItem", () => {
   test("insertText replaces from..to", () => {
@@ -176,6 +209,149 @@ async function mountWith(client: any, doc: string) {
   await vi.waitFor(() => expect(client.open).toHaveBeenCalled());
   return v;
 }
+
+describe("lspExtension formatting", () => {
+  const optionsFor = async (path: string, doc: string) => {
+    const c = fakeClient({ capabilities: { documentFormattingProvider: true } });
+    m.client = c;
+    const v = view(doc, [indentFor(langFor(path)), lspExtension(PATH, LANG)]);
+    await vi.waitFor(() => expect(c.open).toHaveBeenCalled());
+    runViewAction(v, "lsp.format");
+    await vi.waitFor(() => expect(c.request).toHaveBeenCalled());
+    const call = c.request.mock.calls.find((x: any[]) => x[0] === "textDocument/formatting") as any[];
+    return call[1].options;
+  };
+
+  test("a file indented with tabs is formatted with tabs", async () => {
+    expect(await optionsFor("a.py", "def f():\n\tif x:\n\t\treturn 1\n")).toEqual({ tabSize: 4, insertSpaces: false });
+  });
+
+  test("a file indented with two spaces keeps two spaces", async () => {
+    expect(await optionsFor("a.py", "def f():\n  if x:\n    return 1\n")).toEqual({ tabSize: 2, insertSpaces: true });
+  });
+
+  test("clangd's result keeps the file's tabs", async () => {
+    const edits = [{ range: range(1, 0, 1, 1), newText: "  " }, { range: range(1, 3, 1, 4), newText: "" }, { range: range(2, 0, 2, 1), newText: "  " }];
+    const c = fakeClient({ capabilities: { documentFormattingProvider: true }, request: vi.fn(async () => edits) });
+    m.client = c;
+    const v = view("void f() {\n\tg( );\n\th();\n}\n", [lspExtension("/w/proj/main.c", { server: "clangd", lspId: "c" } as any)]);
+    await vi.waitFor(() => expect(c.open).toHaveBeenCalled());
+    runViewAction(v, "lsp.format");
+    await vi.waitFor(() => expect(v.state.doc.toString()).toBe("void f() {\n\tg();\n\th();\n}\n"));
+  });
+
+  test("clangd edits that make no sense change nothing and don't throw", async () => {
+    const c = fakeClient({ capabilities: { documentFormattingProvider: true }, request: vi.fn(async () => [{ range: range(2, 0, 0, 0), newText: "x" }]) });
+    m.client = c;
+    const text = "void f() {\n\tg();\n\th();\n}\n";
+    const v = view(text, [lspExtension("/w/proj/main.c", { server: "clangd", lspId: "c" } as any)]);
+    await vi.waitFor(() => expect(c.open).toHaveBeenCalled());
+    runViewAction(v, "lsp.format");
+    await vi.waitFor(() => expect(c.request).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 20));
+    expect(v.state.doc.toString()).toBe(text);
+  });
+
+  test("without indentation the language's convention counts", async () => {
+    expect(await optionsFor("a.ts", "let x = 1;\n")).toEqual({ tabSize: 2, insertSpaces: true });
+    expect(await optionsFor("a.py", "x = 1\n")).toEqual({ tabSize: 4, insertSpaces: true });
+  });
+});
+
+describe("lspExtension signature help", () => {
+  test("typing a trigger character shows the server's signature", async () => {
+    const help = { signatures: [{ label: "f(int a)", parameters: [{ label: "int a" }] }], activeParameter: 0 };
+    const c = fakeClient({ capabilities: { signatureHelpProvider: { triggerCharacters: ["("] } }, request: vi.fn(async () => help) });
+    const v = await mountWith(c, "f");
+    v.dispatch({ changes: { from: 1, insert: "(" }, selection: { anchor: 2 }, userEvent: "input.type" });
+    await vi.waitFor(() => expect(v.dom.querySelector(".lsp-signature-active")?.textContent).toBe("int a"));
+    expect(c.request).toHaveBeenCalledWith("textDocument/signatureHelp", expect.objectContaining({ textDocument: { uri: URI } }), 5000);
+  });
+});
+
+describe("lspExtension document highlights", () => {
+  test("marks the server's occurrences of the symbol at the cursor", async () => {
+    const c = fakeClient({ capabilities: { documentHighlightProvider: true }, request: vi.fn(async () => [{ range: range(0, 0, 0, 1), kind: 3 }, { range: range(0, 4, 0, 5), kind: 2 }]) });
+    const v = await mountWith(c, "a = a");
+    v.dispatch({ selection: { anchor: 4 } });
+    await vi.waitFor(() => expect(v.contentDOM.querySelectorAll(".cm-lspHighlight").length).toBe(2));
+    expect(c.request).toHaveBeenCalledWith("textDocument/documentHighlight", { textDocument: { uri: URI }, position: pos(0, 4) }, 5000);
+  });
+});
+
+describe("lspExtension go to implementation, type definition, declaration", () => {
+  const CAPS = { implementationProvider: true, typeDefinitionProvider: true, declarationProvider: true };
+  const hit = (uri: string, line: number) => ({ uri, range: range(line, 2, line, 3) });
+
+  test.each([
+    ["lsp.gotoImplementation", "textDocument/implementation"],
+    ["lsp.gotoTypeDefinition", "textDocument/typeDefinition"],
+    ["lsp.gotoDeclaration", "textDocument/declaration"],
+  ])("%s asks the server and goes to the one result", async (id, method) => {
+    const navigate = vi.fn(async () => {});
+    setLspHooks({ workspace: () => null, askInstall: async () => false, navigate });
+    const c = fakeClient({ capabilities: CAPS, request: vi.fn(async () => [hit(fileUri("/w/proj/b.py"), 7)]) });
+    const v = await mountWith(c, "abc");
+    v.dispatch({ selection: { anchor: 2 } });
+    runViewAction(v, id);
+    await vi.waitFor(() => expect(navigate).toHaveBeenCalledWith("/w/proj/b.py", 7, 2));
+    expect(c.request).toHaveBeenCalledWith(method, { textDocument: { uri: URI }, position: pos(0, 2) });
+  });
+
+  test("Go to Definition skips a result whose URI can't be decoded", async () => {
+    const navigate = vi.fn(async () => {});
+    setLspHooks({ workspace: () => null, askInstall: async () => false, navigate });
+    const c = fakeClient({ capabilities: CAPS, request: vi.fn(async () => [hit("file:///a%zz", 1), hit(fileUri("/w/proj/b.py"), 7)]) });
+    const v = await mountWith(c, "abc");
+    runViewAction(v, "lsp.gotoDefinition");
+    await vi.waitFor(() => expect(navigate).toHaveBeenCalledWith("/w/proj/b.py", 7, 2));
+  });
+
+  test("several results open a picker that navigates", async () => {
+    const navigate = vi.fn(async () => {});
+    setLspHooks({ workspace: () => null, askInstall: async () => false, navigate });
+    const c = fakeClient({ capabilities: CAPS, request: vi.fn(async () => [hit(fileUri("/w/proj/b.py"), 1), hit(fileUri("/w/proj/c.py"), 2)]) });
+    const v = await mountWith(c, "abc");
+    vi.mocked(ui.openMenu).mockClear();
+    runViewAction(v, "lsp.gotoImplementation");
+    await vi.waitFor(() => expect(ui.openMenu).toHaveBeenCalled());
+    expect(navigate).not.toHaveBeenCalled();
+    const items = vi.mocked(ui.openMenu).mock.calls[0][1];
+    expect(items.map((i) => i.label)).toEqual(["b.py:2", "c.py:3"]);
+    items[1].action!();
+    expect(navigate).toHaveBeenCalledWith("/w/proj/c.py", 2, 2);
+  });
+
+  test("a result in a private copy opens the real file", async () => {
+    const navigate = vi.fn(async () => {});
+    setLspHooks({ workspace: () => null, askInstall: async () => false, navigate });
+    registerShadow("/w/proj/real.txt", "/priv/lsp/real.py", "/priv/lsp");
+    const c = fakeClient({ capabilities: CAPS, request: vi.fn(async () => [hit(fileUri("/priv/lsp/real.py"), 3)]) });
+    const v = await mountWith(c, "abc");
+    runViewAction(v, "lsp.gotoTypeDefinition");
+    await vi.waitFor(() => expect(navigate).toHaveBeenCalledWith("/w/proj/real.txt", 3, 2));
+  });
+
+  test("no result, or a server without the feature, says so", async () => {
+    const c = fakeClient({ capabilities: { implementationProvider: true }, request: vi.fn(async () => null) });
+    const v = await mountWith(c, "abc");
+    vi.mocked(ui.toast).mockClear();
+    runViewAction(v, "lsp.gotoImplementation");
+    await vi.waitFor(() => expect(ui.toast).toHaveBeenCalledWith(t("code.lsp.gotoNone")));
+    vi.mocked(ui.toast).mockClear();
+    runViewAction(v, "lsp.gotoDeclaration");
+    expect(ui.toast).toHaveBeenCalledWith(t("code.lsp.gotoUnsupported"));
+    expect(c.request).toHaveBeenCalledTimes(1);
+  });
+
+  test("the context menu can tell what the server supports", async () => {
+    const c = fakeClient({ capabilities: { implementationProvider: true } });
+    const v = await mountWith(c, "abc");
+    expect(viewActionState(v, "lsp.gotoImplementation")).toBe("enabled");
+    expect(viewActionState(v, "lsp.gotoDeclaration")).toBe("disabled");
+    expect(viewActionState(v, "lsp.nothing")).toBeNull();
+  });
+});
 
 describe("lspExtension diagnostics", () => {
   beforeEach(() => {

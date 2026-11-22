@@ -242,6 +242,17 @@ describe("TypeScript template (#80)", () => {
   });
 });
 
+describe("Python template", () => {
+  test("plain uv init (package layout), then sync inside the new folder", async () => {
+    const tpl = TEMPLATES.find((t) => t.id === "python")!;
+    const plan = await tpl.create("demo");
+    expect(plan.inParent).toBe(true);
+    expect(plan.cmds[0]).toMatch(/^uv init ['"]?demo['"]?$/);
+    expect(plan.cmds.at(-1)).toBe("uv sync");
+    expect(tpl.open).toContain("src/{name}/__init__.py");
+  });
+});
+
 describe("template hello world follows the UI language (#82)", () => {
   test.each([["en", "Hello, world!"], ["de", "Hallo, Welt!"]] as const)("%s", async (locale, hello) => {
     const before = i18n.locale;

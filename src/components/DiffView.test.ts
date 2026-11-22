@@ -17,6 +17,8 @@ import { diffState } from "../lib/git/diff.svelte";
 let cmp: ReturnType<typeof mount> | null = null;
 let ipc: { cmd: string; args: Record<string, unknown> }[] = [];
 
+const TOO_LARGE = "<too large>";
+
 /** `disk`: path → text, or null for a file that exists but is not UTF-8 (read_file rejects). */
 async function open(file: string, head: Record<string, string>, disk: Record<string, string | null>) {
   ipc = [];
@@ -24,9 +26,14 @@ async function open(file: string, head: Record<string, string>, disk: Record<str
     const a = (args ?? {}) as Record<string, unknown>;
     const p = a.path as string;
     ipc.push({ cmd, args: a });
-    if (cmd === "git_head_file") return head[p] ?? null;
+    if (cmd === "git_head_file") {
+      if (head[p] === TOO_LARGE) throw "fs:too_large";
+      return head[p] ?? null;
+    }
+    if (cmd === "file_info") return { size: 9e9, too_large: disk[p] === TOO_LARGE };
     if (cmd === "path_exists") return p in disk;
     if (cmd === "read_file") {
+      if (disk[p] === TOO_LARGE) throw "fs:too_large";
       if (typeof disk[p] === "string") return disk[p];
       throw new Error(p in disk ? "not UTF-8" : "not found");
     }
@@ -102,3 +109,25 @@ describe("binary file (#66)", () => {
     expect(document.querySelector(".cm-mergeView")).not.toBeNull();
   });
 });
+
+describe("too large files (#174)", () => {
+  test.each([
+    ["on disk", { "/r/big.log": "x\n" }, { "/r/big.log": TOO_LARGE }],
+    ["in HEAD", { "/r/big.log": TOO_LARGE }, { "/r/big.log": "x\n" }],
+  ])("%s: no editor that could write the file", async (_where, head, disk) => {
+    await open("/r/big.log", head, disk);
+    expect(document.querySelector(".cm-mergeView")).toBeNull();
+    expect(document.querySelector(".binary")?.textContent).toBe("git.diff.tooLargeLocal");
+    expect(ipc.some((c) => c.cmd === "write_file")).toBe(false);
+  });
+});
+
+test("a large file open in a tab gets no text diff (#174)", async () => {
+  const { app } = await import("../lib/state.svelte");
+  (app.tabs as unknown[]).push({ id: "l", path: "/r/mid.log", large: true });
+  await open("/r/mid.log", { "/r/mid.log": "x\n" }, { "/r/mid.log": "y\n" });
+  (app.tabs as unknown[]).length = 0;
+  expect(document.querySelector(".cm-mergeView")).toBeNull();
+  expect(document.querySelector(".binary")?.textContent).toBe("git.diff.tooLargeLocal");
+});
+

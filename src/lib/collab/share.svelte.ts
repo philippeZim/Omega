@@ -6,6 +6,7 @@
  *  - Remote cursors via Yjs awareness (y-codemirror.next), presence messages drive "follow mode".
  */
 import * as Y from "yjs";
+import { MAX_TEXT_BYTES, byteLength } from "../largeFile";
 import { Awareness, encodeAwarenessUpdate, applyAwarenessUpdate, removeAwarenessStates } from "y-protocols/awareness";
 import { yCollab, ySyncAnnotation } from "y-codemirror.next";
 import { invoke } from "@tauri-apps/api/core";
@@ -17,7 +18,8 @@ import { guestMayWrite, hookLocked, refreshHookLocks, resetHookLocks } from "./h
 import { moveGuestChange, noteGuestChange } from "./guestChanges";
 import { checkUpdate } from "./yjsDeps";
 import { call, fits, forgetRpcPeer, hasCapability, isApproved, isObj, onCapabilitiesChanged, registerMethod, rpcErrorText, RpcFail } from "./rpc.svelte";
-import { app, openFile, activeTab, activate, collabHooks, setMode, pathMoved, type Tab } from "../state.svelte";
+import { app, openFile, activeTab, activate, collabHooks, setMode, pathMoved, openRemoteViewer, preferText, wantsText, type Tab } from "../state.svelte";
+import { isSvgPath, viewerKind } from "../viewer";
 import type { Mode } from "../modes";
 import { MODES } from "../modeList";
 import { onFilesChanged } from "../fsWatch.svelte";
@@ -275,7 +277,7 @@ const shareableRel = (abs: string) => {
  * relative path (so the guest's file tree finds them), unsaved "Untitled" tabs their id
  * ("tab:<id>"). Files on disk outside the project and in a git folder aren't shared.
  */
-export const hostKey = (tab: Tab): string | null => (tab.path ? shareableRel(tab.path) : `tab:${tab.id}`);
+export const hostKey = (tab: Tab): string | null => (tab.headOf || tab.large || tab.viewOf ? null : tab.path ? shareableRel(tab.path) : `tab:${tab.id}`);
 
 /** Like `hostKey`, but also resolves symlinks. Use it before telling guests about a tab. */
 export async function hostKeyChecked(tab: Tab): Promise<string | null> {
@@ -330,7 +332,7 @@ export function hostLiveText(scope: GuestScope, rel: string): string | undefined
   const d = docs.get(rel);
   if (d && d.root === scope.root) return d.ytext.toString();
   const tab = app.tabs.find((x) => x.path === scope.abs(rel));
-  return tab ? ed.getText(tab.id) : undefined;
+  return tab && !tab.large ? ed.getText(tab.id) : undefined;
 }
 
 /**
@@ -339,14 +341,16 @@ export function hostLiveText(scope: GuestScope, rel: string): string | undefined
  */
 export function hostLiveTexts(scope: GuestScope, maxFile = Infinity, maxTotal = Infinity) {
   const live = new Map<string, string>();
+  const large: string[] = []; // never handed out, whatever the limits (#174)
   for (const tab of app.tabs) {
     const rel = tab.path ? scope.rel(tab.path) : null;
-    if (rel) live.set(rel, ed.getText(tab.id));
+    if (rel && tab.large) large.push(rel);
+    else if (rel) live.set(rel, ed.getText(tab.id));
   }
   // A shared doc is the newest copy, also of a file with a tab.
   for (const d of docs.values()) if (d.root === scope.root && !d.rel.startsWith("tab:")) live.set(d.rel, d.ytext.toString());
   const texts: Record<string, string> = {};
-  const omitted: string[] = [];
+  const omitted = large.filter((rel) => !live.has(rel));
   let total = 0;
   for (const [rel, text] of live) {
     if (text.length > maxFile || total + text.length > maxTotal) omitted.push(rel);
@@ -475,6 +479,8 @@ async function writeBackgroundDoc(d: SharedDoc) {
   if (now !== undefined && d.disk !== undefined && now !== d.disk) return d.ytext.toString() !== text ? keepTyped(d, now) : applyDisk(d, now);
   // Deleted meanwhile: don't bring the file back (#134).
   if (now === undefined && d.disk !== undefined && !(await fsApi.exists(abs).catch(() => true))) return hostFileGone(d);
+  // Grown past the read limit: it can't be compared, and the shared text must not replace it (#174).
+  if (now === undefined && (await fsApi.fileInfo(abs).catch(() => null))?.too_large) return;
   const before = d.disk;
   d.disk = text;
   await fsApi.writeFile(abs, text).catch(() => (d.disk = before));
@@ -570,9 +576,10 @@ async function hostDoc(rel: string): Promise<SharedDoc | null> {
   if (rel.startsWith("tab:")) {
     // Only unsaved tabs are shared by id: a path here would be a file outside the project.
     const tab = app.tabs.find((t) => t.id === rel.slice(4));
-    if (!tab || tab.path) return null;
+    if (!tab || tab.path || tab.headOf || tab.viewOf) return null;
     const shared = docs.get(rel);
     if (shared) return shared;
+    if (byteLength(ed.getText(tab.id)) > MAX_TEXT_BYTES) return null;
     const d = makeDoc(rel, true);
     d.ytext.insert(0, ed.getText(tab.id));
     bindHostTab(d, tab.id);
@@ -592,12 +599,14 @@ async function hostDoc(rel: string): Promise<SharedDoc | null> {
   }
   const abs = joinPath(root, rel);
   const tab = app.tabs.find((t) => t.path === abs);
+  if (tab?.large) return null; // guests get nothing over 8 MiB (#174)
   let text: string;
   try {
     text = tab ? ed.getText(tab.id) : await fsApi.readFile(abs);
   } catch {
     return null;
   }
+  if (byteLength(text) > MAX_TEXT_BYTES) return null;
   if (app.root !== root) return null; // the host opened another folder meanwhile
   const d = makeDoc(rel, true);
   d.ytext.insert(0, text);
@@ -744,6 +753,10 @@ const pendingOpens = new Map<string, { line?: number; range?: [number, number] }
  * those columns of the line (a search hit).
  */
 export async function openRemote(rel: string, line?: number, range?: [number, number]) {
+  const viewer = rel.startsWith("tab:") ? null : viewerKind(rel);
+  // Going to a line: an SVG is text there. Binary kinds stay viewers.
+  if (viewer && line && isSvgPath(rel)) await preferText(REMOTE + rel);
+  if (viewer && !wantsText(REMOTE + rel)) return openRemoteViewer(REMOTE + rel, viewer);
   const existing = docs.get(rel);
   if (existing?.tabId && app.tabs.some((t) => t.id === existing.tabId)) {
     const { activate } = await import("../state.svelte");
@@ -852,7 +865,7 @@ export function hostCompileTexts(key: string, peer: string) {
   if (!d || !d.subscribers.has(peer)) return null;
   const overlays = new Map<string, string>();
   for (const t of app.tabs) {
-    const rel = t.path && t.dirty ? shareableRel(t.path) : null;
+    const rel = t.path && t.dirty && !t.large ? shareableRel(t.path) : null;
     if (rel) overlays.set(rel, ed.getText(t.id));
   }
   for (const o of docs.values()) if (!o.rel.startsWith("tab:") && o.root === app.root) overlays.set(o.rel, o.ytext.toString());
@@ -1132,7 +1145,8 @@ async function applyFollow() {
     if (app.tabs.some((t) => t.id === id && !t.path)) activate(id);
     scrollToLine(p.line);
   } else if (app.root && (await guestPathOk(p.file))) {
-    await openFile(joinPath(app.root, p.file));
+    // Quiet: following a guest must never start the read of a large file on the host (#174).
+    await openFile(joinPath(app.root, p.file), true, !!p.line);
     scrollToLine(p.line);
   }
 }
@@ -1356,6 +1370,8 @@ export async function teardownShare() {
     }
     dispose(d);
   }
+  // Guest viewer tabs have no shared doc.
+  for (const tab of [...app.tabs]) if (isRemote(tab.viewOf)) await closeTab(tab.id, true);
   docs.clear();
   renamed.clear();
   presenceOrder.clear();

@@ -28,7 +28,7 @@
   }
 
   async function gotoBp(p: string, line: number) {
-    await openFile(p);
+    await openFile(p, false, true);
     const v = ed.getView();
     if (v && line <= v.state.doc.lines) {
       v.dispatch({ selection: { anchor: v.state.doc.line(line).from }, scrollIntoView: true });
@@ -87,7 +87,7 @@
   <div class="status {dbg.status}">
     <span class="dot"></span>
     <span class="st">{t(`code.dbg.status.${dbg.status}`)}{stopped && dbg.stopReason ? ` · ${stopReasonLabel(dbg.stopReason)}` : ""}</span>
-    {#if dbg.label && dbg.status !== "idle"}<span class="label">{dbg.label}</span>{/if}
+    {#if dbg.label && dbg.status !== "idle"}<span class="label" title={dbg.label}>{dbg.label}</span>{/if}
     {#if dbg.actor && dbg.status !== "idle"}<span class="label">{t("ai.collab.dbg.by", { name: dbg.actor })}</span>{/if}
   </div>
 

@@ -40,7 +40,7 @@ export function openNewProject() {
 }
 
 // Editing a project file outside the editor (or git) can change the actions too.
-const PROJECT_FILES = new Set(["Cargo.toml", "pyproject.toml", "package.json", "CMakeLists.txt", "settings.gradle.kts", "settings.gradle", "build.gradle.kts", "build.gradle", "build.sbt", "project.scala", "dune-project", "dune-workspace", "dune", "mojoproject.toml", "pixi.toml"]);
+const PROJECT_FILES = new Set(["Cargo.toml", "pyproject.toml", "package.json", "CMakeLists.txt", "settings.gradle.kts", "settings.gradle", "build.gradle.kts", "build.gradle", "build.sbt", "project.scala", "dune-project", "dune-workspace", "dune", "mojoproject.toml", "pixi.toml", "go.mod", "go.work"]);
 onFilesChanged((files) => {
   if (files.some((f) => PROJECT_FILES.has(basename(f)))) refreshProject();
 });
@@ -135,7 +135,12 @@ export async function chooseVersion(s: VersionSetting) {
 }
 
 async function saveAll() {
-  for (const t of app.tabs) if (t.dirty && t.path && !t.deleted) await save(t.id);
+  for (const x of app.tabs) {
+    if (!x.dirty || !x.path || x.deleted) continue;
+    // Large files are only saved by hand (#174).
+    if (x.large) ui.toast(t("app.large.notSaved", { name: x.name }));
+    else await save(x.id);
+  }
 }
 
 /** Actions whose output belongs in the Build tab. */
@@ -159,6 +164,7 @@ async function current(a: Action, p: Project): Promise<[Action | null | undefine
 export async function runAction(action: Action | null | undefined, checkedArg?: string) {
   if (!action?.cmd || !runner.project) return;
   if (runnerRemote.run) return runnerRemote.run(action);
+  if (activeTab()?.large && fileDependent(action)) return ui.toast(t("code.large.noRun"), "error");
   const [a, p] = await current(action, runner.project);
   if (!a?.cmd || !p) return;
   await launch(a, p, () => activeTab()?.path, checkedArg);
@@ -278,7 +284,7 @@ export async function createProject(templateId: string, parent: string, name: st
     // Give the tool a moment to write its source files, then open the best candidate.
     for (let j = 0; j < 20; j++) {
       for (const rel of tpl.open) {
-        const f = joinPath(dir, rel.replace("{name}", name.replace(/-/g, "_")));
+        const f = joinPath(dir, rel.replace("{name}", name.toLowerCase().replace(/[-_.]+/g, "_")));
         const found = await fsApi.exists(f);
         if (keptOutOfSession(dir)) return;
         if (found) {

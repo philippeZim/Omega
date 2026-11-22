@@ -13,6 +13,7 @@ mod codex_ipc;
 mod env;
 mod tools;
 mod installs;
+mod jdtls;
 mod power;
 mod instance;
 mod lang_shadow;
@@ -25,7 +26,8 @@ pub fn run() {
     // Hands over to a running Omega and exits, or detaches from the terminal.
     let startup = std::sync::Mutex::new(Some(cli::startup()));
     tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
+        // Links go through env::open_external (native.ts), so the browser gets the user's environment.
+        .plugin(tauri_plugin_opener::Builder::new().open_js_links_on_click(false).build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -74,11 +76,13 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             env::platform_info,
+            env::open_external,
             lang_shadow::lang_workdir,
             lang_shadow::lang_copy,
             env::refresh_path,
             tools::tool_install,
             tools::tool_installable,
+            tools::golang::go_info,
             installs::installs_status,
             installs::installs_latest,
             installs::installs_remove,
@@ -90,6 +94,11 @@ pub fn run() {
             fs::list_dir,
             fs::watch_dir,
             fs::read_file,
+            fs::read_file_head,
+            fs::read_file_large,
+            fs::read_file_view,
+            fs::read_file_range,
+            fs::file_info,
             fs::write_file,
             fs::create_file,
             fs::write_file_base64,
@@ -167,12 +176,14 @@ pub fn run() {
             proc::proc_spawn_tcp,
             proc::proc_connect,
             proc::run_capture,
+            proc::mojo_debug_build,
             proc::run_killable,
             proc::run_shared_install,
             proc::install_debugger,
             proc::proc_send,
             proc::proc_kill,
             proc::install_server,
+            jdtls::jdtls_runtime,
         ])
         .build({
             let mut ctx = tauri::generate_context!();

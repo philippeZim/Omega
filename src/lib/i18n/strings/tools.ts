@@ -84,6 +84,8 @@ export const en = {
   "tools.err.tools.mojo_failed": "Mojo setup failed: {detail}",
   "tools.mojoWindows": "Mojo has no Windows build. Highlighting works here; Run, the language server and Debug need WSL.",
   "tools.mojoUnsupported": "Mojo can't run on this system. It needs Linux with glibc 2.34 or newer (x86-64 or ARM64) or an Apple Silicon Mac.",
+  "tools.err.tools.go_missing": "gopls and Delve are built with Go. Install Go first.",
+  "tools.err.tools.go_failed": "Go setup failed: {detail}",
 };
 
 export const de: typeof en = {
@@ -171,6 +173,8 @@ export const de: typeof en = {
   "tools.err.tools.mojo_failed": "Mojo-Einrichtung fehlgeschlagen: {detail}",
   "tools.mojoWindows": "Für Windows gibt es keinen Mojo-Build. Die Syntaxhervorhebung funktioniert hier; Ausführen, Sprachserver und Debuggen brauchen WSL.",
   "tools.mojoUnsupported": "Mojo läuft auf diesem System nicht. Es braucht Linux mit glibc 2.34 oder neuer (x86-64 oder ARM64) oder einen Mac mit Apple Silicon.",
+  "tools.err.tools.go_missing": "gopls und Delve werden mit Go gebaut. Installiere zuerst Go.",
+  "tools.err.tools.go_failed": "Go-Einrichtung fehlgeschlagen: {detail}",
 };
 
 export const fr: typeof en = {
@@ -258,4 +262,6 @@ export const fr: typeof en = {
   "tools.err.tools.mojo_failed": "Échec de l’installation de Mojo : {detail}",
   "tools.mojoWindows": "Mojo n’a pas de version Windows. La coloration syntaxique fonctionne ici ; l’exécution, le serveur de langage et le débogage nécessitent WSL.",
   "tools.mojoUnsupported": "Mojo ne peut pas fonctionner sur ce système. Il nécessite Linux avec glibc 2.34 ou plus récent (x86-64 ou ARM64) ou un Mac Apple Silicon.",
+  "tools.err.tools.go_missing": "gopls et Delve sont compilés avec Go. Installez d’abord Go.",
+  "tools.err.tools.go_failed": "Échec de l’installation de Go : {detail}",
 };

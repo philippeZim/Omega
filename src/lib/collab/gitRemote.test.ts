@@ -439,6 +439,20 @@ describe("open shared documents", () => {
     expect(sh("branch", "--show-current")).toBe("main");
   });
 
+  test("a host's large tab: its text stays private and a guest's git command doesn't save it (#174)", async () => {
+    const path = join(repo, "a.txt");
+    write("a.txt", "on disk\n");
+    h.app.tabs.push({ id: "t1", path, dirty: false, large: true } as never);
+    h.tabText.set("t1", "THE WHOLE LARGE TEXT");
+    const diff = await rpc("git.diff", { path: "a.txt" });
+    expect(JSON.stringify(diff.result)).not.toContain("THE WHOLE LARGE TEXT");
+    expect(diff.result).toMatchObject({ current: "on disk\n" });
+    (h.app.tabs[0] as { dirty: boolean }).dirty = true;
+    branchWithOtherText();
+    expect(await code("git.switch", { name: "other", remote: false })).toBe("unsaved_text");
+    expect(sh("branch", "--show-current")).toBe("main");
+  });
+
   test("discard refuses a file with unsaved text in a host tab", async () => {
     const path = join(repo, "a.txt");
     write("a.txt", "saved change\n");

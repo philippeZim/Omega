@@ -26,9 +26,9 @@ pub struct Owner {
     package: String,
 }
 
-const TOOLS: &[&str] = &["uv", "tectonic", "node", "pnpm", "cmake", "ninja", "jdk", "gradle", "rust", "git", "cc", "scala", "sbt", "ocaml", "mojo"];
-const LSPS: &[&str] = &["python", "typescript", "java", "rust", "clangd", "scala", "ocaml"];
-const DEBUGGERS: &[&str] = &["codelldb", "debugpy", "jsdebug", "javadebug", "earlybird"];
+const TOOLS: &[&str] = &["uv", "tectonic", "node", "pnpm", "cmake", "ninja", "jdk", "gradle", "rust", "git", "cc", "scala", "sbt", "ocaml", "mojo", "go"];
+const LSPS: &[&str] = &["python", "typescript", "java", "rust", "clangd", "scala", "ocaml", "go"];
+const DEBUGGERS: &[&str] = &["codelldb", "debugpy", "jsdebug", "javadebug", "earlybird", "delve"];
 
 fn all_ids() -> Vec<String> {
     let mut v: Vec<String> = TOOLS.iter().map(|t| format!("tool:{t}")).collect();
@@ -59,6 +59,7 @@ fn tool_cmds(id: &str) -> &'static [&'static str] {
         "sbt" => &["sbt"],
         "ocaml" => &["dune"],
         "mojo" => &["mojo"],
+        "go" => &["go"],
         _ => &[],
     }
 }
@@ -102,6 +103,7 @@ fn version_arg(cmd: &str) -> &'static [&'static str] {
         "cl" => &[],
         // Plain `sbt --version` boots sbt and creates project/ and target/ in the current folder.
         "sbt" | "sbt.bat" => &["--script-version"],
+        "go" | "gopls" | "dlv" => &["version"],
         _ => &["--version"],
     }
 }
@@ -212,6 +214,8 @@ fn locate(id: &str) -> (&'static str, Option<PathBuf>, Option<String>) {
         }
         ("lsp", "ocaml") => ocaml_package("ocamllsp"),
         ("debug", "earlybird") => ocaml_package("ocamlearlybird"),
+        ("lsp", "go") => go_package("gopls"),
+        ("debug", "delve") => go_package("dlv"),
         ("debug", "codelldb") => {
             let d = t.join("codelldb").join("extension");
             if d.is_dir() { omega(t.join("codelldb"), json_version(&d.join("package.json"))) } else { ("missing", None, None) }
@@ -245,6 +249,17 @@ fn ocaml_package(cmd: &str) -> (&'static str, Option<PathBuf>, Option<String>) {
     match env::which(&env::norm(crate::tools::ocaml_bin().join(cmd))) {
         Some(p) => {
             let v = exe_version(&p, &["--version"]);
+            omega(p, v)
+        }
+        None => system_tool(&[cmd], true),
+    }
+}
+
+/// gopls or Delve: Omega's build, else one from the system.
+fn go_package(cmd: &str) -> (&'static str, Option<PathBuf>, Option<String>) {
+    match env::which(&env::norm(crate::tools::golang::go_tools_bin().join(cmd))) {
+        Some(p) => {
+            let v = exe_version(&p, version_arg(cmd));
             omega(p, v)
         }
         None => system_tool(&[cmd], true),
@@ -514,7 +529,7 @@ fn latest(id: &str) -> Result<Option<String>, String> {
         "tool:jdk" => {
             let os = if cfg!(windows) { "windows" } else if cfg!(target_os = "macos") { "mac" } else { "linux" };
             let arch = if cfg!(target_arch = "aarch64") { "aarch64" } else { "x64" };
-            let r = json(&format!("https://api.adoptium.net/v3/assets/latest/21/hotspot?architecture={arch}&image_type=jdk&os={os}&vendor=eclipse"))?;
+            let r = json(&format!("https://api.adoptium.net/v3/assets/latest/{}/hotspot?architecture={arch}&image_type=jdk&os={os}&vendor=eclipse", crate::jdtls::MIN_JAVA))?;
             r[0]["version"]["semver"].as_str().and_then(extract_version).ok_or("installs:no_version:JDK")?
         }
         "tool:scala" => gh_latest("VirtusLab/scala-cli")?,
@@ -522,6 +537,9 @@ fn latest(id: &str) -> Result<Option<String>, String> {
         "lsp:scala" => crate::tools::metals_latest()?,
         "tool:ocaml" => crate::tools::ocaml_latest("dune")?,
         "tool:mojo" => crate::tools::mojo_latest()?,
+        "tool:go" => crate::tools::golang::go_latest()?,
+        "lsp:go" => crate::tools::golang::module_latest("golang.org/x/tools/gopls")?,
+        "debug:delve" => crate::tools::golang::module_latest("github.com/go-delve/delve")?,
         "lsp:ocaml" => crate::tools::ocaml_latest("ocaml-lsp-server")?,
         "debug:earlybird" => crate::tools::ocaml_latest("earlybird")?,
         "tool:gradle" => json("https://services.gradle.org/versions/current")?["version"].as_str().map(String::from).ok_or("installs:no_version:Gradle")?,
@@ -538,10 +556,7 @@ fn latest(id: &str) -> Result<Option<String>, String> {
         }
         "lsp:python" => npm_latest("basedpyright")?,
         "lsp:typescript" => npm_latest("typescript-language-server")?,
-        "lsp:java" => {
-            let name = crate::tools::http_text("https://download.eclipse.org/jdtls/snapshots/latest.txt")?;
-            extract_version(name.trim().trim_start_matches("jdt-language-server-")).ok_or("installs:no_version:jdtls")?
-        }
+        "lsp:java" => crate::jdtls::VERSION.to_string(), // pinned: see jdtls.rs
         "debug:codelldb" => gh_latest("vadimcn/codelldb")?,
         "debug:debugpy" => json("https://pypi.org/pypi/debugpy/json")?["info"]["version"].as_str().map(String::from).ok_or("installs:no_version:debugpy")?,
         "debug:jsdebug" => gh_latest("microsoft/vscode-js-debug")?,
@@ -616,6 +631,9 @@ fn uninstall(id: &str) -> Result<(), String> {
             remove_dir(&t.join("mojo"))?;
             crate::tools::forget("mojo")
         }
+        ("tool", "go") => crate::tools::golang::remove_go(),
+        ("lsp", "go") => crate::tools::golang::remove_go_tool("gopls"),
+        ("debug", "delve") => crate::tools::golang::remove_go_tool("dlv"),
         ("tool", name) | ("lsp", name @ "clangd") => {
             if !manifest.contains_key(name) {
                 return Err(format!("installs:not_ours:{name}"));

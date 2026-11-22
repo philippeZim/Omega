@@ -6,7 +6,7 @@ import { onRpc } from "../rpc";
 import { t, type Key } from "../i18n/index.svelte";
 import { ui } from "../ui.svelte";
 import { fsApi, dirname, joinPath, isRoot } from "../api";
-import { IS_WIN, OS, platform } from "../platform";
+import { IS_WIN, OS, platform, exe } from "../platform";
 import { ensureTools, mojoInstallHint, withInstallProgress, serverProgressId, type ToolId } from "../tools.svelte";
 import { metalsPausedBy, onGuestChange, resumeTool, toolChangeCount, toolPausedBy, type PausedTool } from "../collab/guestChanges";
 import type { LangInfo } from "./languages";
@@ -62,6 +62,20 @@ export function metalsAnswer(params: Json): Json {
   return actions.find((a) => /^(import build|import changes)$/i.test(a.title)) ?? actions.find((a) => a.title.toLowerCase() === "sbt") ?? null;
 }
 
+/**
+ * Why jdtls couldn't import a build, from the errors it reports on a project folder or build file.
+ * Errors in source files are ordinary diagnostics.
+ */
+export function javaImportError(uri: string, diagnostics: Json[]): string | null {
+  // Project folders can have dots too (`my.app`, `demo-0.0.1`).
+  if (/\.(java|kt|groovy|class|properties)$/.test(uriPath(uri))) return null;
+  const errors: string[] = (diagnostics ?? []).filter((d) => d.severity === 1).map((d) => String(d.message));
+  if (!errors.length) return null;
+  // "Can't use Java 27 and Gradle 9.7.1 …" names the cause; the others are stack summaries.
+  const line = (errors.find((m) => m.startsWith("Can't use Java")) ?? errors[0]).split("\n")[0].trim();
+  return line.length > 200 ? line.slice(0, 199) + "…" : line;
+}
+
 export class LspClient {
   readonly id: string;
   private seq = 1;
@@ -88,6 +102,8 @@ export class LspClient {
   quiet = false;
   /** Runs on a private copy of one file, so it ends with that file (see `releasePrivate`). */
   privateCopy = false;
+  /** jdtls: uri -> why the build of that project or build file could not be imported. */
+  importErrors = new Map<string, string>();
   /** Documents an editor has open (between `open` and `close`). */
   private editorDocs = new Set<string>();
   /** uri -> live text of a document kept open for Code Together guests (see `feed`). */
@@ -160,6 +176,10 @@ export class LspClient {
           hover: { contentFormat: ["markdown", "plaintext"] },
           signatureHelp: { signatureInformation: { documentationFormat: ["markdown", "plaintext"], parameterInformation: { labelOffsetSupport: true } } },
           definition: { linkSupport: true },
+          declaration: { linkSupport: true },
+          implementation: { linkSupport: true },
+          typeDefinition: { linkSupport: true },
+          documentHighlight: {},
           formatting: {},
           // codeActionsInline: clangd extension – fixes (e.g. "Include <stdio.h>") arrive with the diagnostic.
           publishDiagnostics: { relatedInformation: false, codeActionsInline: true },
@@ -172,7 +192,27 @@ export class LspClient {
     }, this.kind === "scala" ? METALS_INIT_MS : undefined);
     this.capabilities = res?.capabilities ?? {};
     this.notify("initialized", {});
-    if (this.current) lspState.status[this.key] = "ready";
+    if (this.current) lspState.status[this.key] = this.importErrors.size ? "error" : "ready";
+  }
+
+  /** The server keeps running after a failed Gradle/Maven import, but knows nothing about the project. */
+  private noteImport(uri: string, diagnostics: Json[]) {
+    const err = javaImportError(uri, diagnostics);
+    if (err) this.importErrors.set(uri, err);
+    else if (!this.importErrors.delete(uri)) return;
+    if (!this.current) return;
+    const first = this.importError;
+    if (first) {
+      lspState.status[this.key] = "error";
+      lspState.message[this.key] = t("code.lsp.javaImportFailed", { err: first });
+    } else {
+      lspState.status[this.key] = "ready";
+      delete lspState.message[this.key];
+    }
+  }
+
+  get importError(): string | undefined {
+    return this.importErrors.values().next().value;
   }
 
   private send(msg: Json) {
@@ -224,6 +264,7 @@ export class LspClient {
       const uri = fileUri(uriPath(msg.params.uri));
       this.diagnostics.set(uri, msg.params.diagnostics);
       this.diagnosticVersions.set(uri, Number.isInteger(msg.params.version) ? msg.params.version : undefined);
+      if (this.kind === "java") this.noteImport(uri, msg.params.diagnostics);
       for (const l of this.diagnosticListeners) l(uri);
     } else if (msg.method === "window/showMessage" && msg.params?.type <= 2 && this.current) {
       lspState.message[this.key] = msg.params.message;
@@ -425,12 +466,13 @@ const ROOT_MARKERS: Record<ServerKind, string[]> = {
   scala: ["build.sbt", "project.scala", ".bsp", ".scala-build", ".git"],
   ocaml: ["dune-project", "dune-workspace"],
   mojo: ["mojoproject.toml", "pixi.toml", ".git"],
+  go: ["go.work", "go.mod"],
 };
 
 const within = (path: string, dir: string) => path === dir || path.startsWith(dir.endsWith("/") ? dir : dir + "/");
 
 /** Build systems whose root is the outermost marker, so a multi-package repo gets one server. */
-const OUTERMOST_ROOT = new Set(["Cargo.toml", "dune-project"]);
+const OUTERMOST_ROOT = new Set(["Cargo.toml", "dune-project", "go.work"]);
 
 /** Walks up from the file to find the project root (stops at the workspace root's parent). */
 export async function findRoot(file: string, markers: string[], workspace: string | null): Promise<string> {
@@ -444,6 +486,50 @@ export async function findRoot(file: string, markers: string[], workspace: strin
   }
   // For Cargo and dune workspaces the outermost marker is the root.
   return candidates.length ? candidates[candidates.length - 1] : (workspace ?? dirname(file));
+}
+
+/**
+ * The Java project root: the nearest marker, unless that is a subproject. A `settings.gradle(.kts)`
+ * above a `build.gradle(.kts)` or a parent `pom.xml` listing the module is the real build root:
+ * only there does jdtls find the Gradle wrapper and the sibling modules. Stops at a `.git`.
+ */
+export async function javaRoot(file: string, workspace: string | null): Promise<string> {
+  const near = await findRoot(file, ROOT_MARKERS.java, workspace);
+  const has = (dir: string, name: string) => fsApi.exists(joinPath(dir, name));
+  if ((await has(near, "settings.gradle")) || (await has(near, "settings.gradle.kts"))) return near;
+  const gradle = (await has(near, "build.gradle")) || (await has(near, "build.gradle.kts"));
+  const maven = await has(near, "pom.xml");
+  // Without an open folder nothing bounds the search: a stray build file in $HOME is not this project's.
+  if ((!gradle && !maven) || !workspace) return near;
+  const stop = dirname(workspace);
+  let root = near;
+  for (let dir = near; !(await has(dir, ".git")); ) {
+    dir = dirname(dir);
+    if (!dir || dir === stop || isRoot(dir)) break;
+    if (gradle && ((await has(dir, "settings.gradle")) || (await has(dir, "settings.gradle.kts")))) return dir;
+    if (maven && (await has(dir, "pom.xml"))) {
+      const module = root.slice(dir.length + 1);
+      const pom = (await fsApi.readFile(joinPath(dir, "pom.xml")).catch(() => "")).replace(/<!--[\s\S]*?-->/g, "");
+      if ([...pom.matchAll(/<module>\s*(?:\.\/)?([^<]+?)\/?\s*<\/module>/g)].some((m) => m[1] === module)) root = dir;
+    }
+  }
+  return root;
+}
+
+const rootFor = (kind: ServerKind, file: string, workspace: string | null) => (kind === "java" ? javaRoot(file, workspace) : findRoot(file, ROOT_MARKERS[kind], workspace));
+
+/** Says which Java jdtls needs if none here can run it. */
+export async function javaTooOld(): Promise<string | null> {
+  const rt = await invoke<JdtlsRuntime | null>("jdtls_runtime").catch(() => null);
+  if (!rt || rt.java || !rt.found) return null;
+  return t("code.lsp.javaTooOld", { required: rt.required, found: rt.found });
+}
+
+interface JdtlsRuntime {
+  java: string | null;
+  found: number | null;
+  required: number;
+  current: boolean;
 }
 
 let toolsDirCache: string | null = null;
@@ -472,7 +558,7 @@ export const lspSettings = $state({ strictPython: localStorage.getItem("strictPy
 function serverSetting(kind: ServerKind, section?: string): Json {
   if (kind === "python" && (section === "basedpyright" || section === "python"))
     return { analysis: { typeCheckingMode: lspSettings.strictPython ? "recommended" : "standard" } };
-  if (kind === "scala") return {}; // Metals reads its section as an object
+  if (kind === "scala" || kind === "go") return {}; // Metals and gopls read their section as an object
   return null;
 }
 
@@ -510,7 +596,7 @@ async function resolveCommand(kind: ServerKind, root: string): Promise<{ cmd: st
     }
     case "clangd": {
       const cmd = await first("clangd");
-      return cmd ? { cmd, args: ["--background-index", "--clang-tidy", "--header-insertion=never", "--completion-style=detailed"] } : null;
+      return cmd ? { cmd, args: ["--background-index", "--clang-tidy", "--header-insertion=never", "--completion-style=detailed", "--fallback-style=LLVM"] } : null;
     }
     case "rust": {
       const ok = await invoke<boolean>("cmd_works", { cmd: "rust-analyzer" });
@@ -528,7 +614,9 @@ async function resolveCommand(kind: ServerKind, root: string): Promise<{ cmd: st
       // Omega's own jdtls is started with `java -jar` directly (its bin/jdtls wrapper needs Python).
       const home = `${tools}/jdtls`;
       const launcher = (await fsApi.listDir(`${home}/plugins`).catch(() => [])).find((e) => /^org\.eclipse\.equinox\.launcher_.*\.jar$/.test(e.name));
-      const java = await which("java");
+      const rt = await invoke<JdtlsRuntime | null>("jdtls_runtime").catch(() => null);
+      // An older install may be a snapshot needing another Java: it counts as missing and is replaced.
+      const java = rt?.current ? rt.java : null;
       if (launcher && java) {
         const arm = (await platform()).arch === "aarch64";
         const config = `${home}/config_${OS === "windows" ? "win" : OS === "macos" ? "mac" : "linux"}${arm && OS !== "windows" ? "_arm" : ""}`;
@@ -553,7 +641,8 @@ async function resolveCommand(kind: ServerKind, root: string): Promise<{ cmd: st
           init,
         };
       }
-      const cmd = await first("jdtls");
+      // Not when Omega's own is there but can't run: that one gets repaired through the install prompt.
+      const cmd = launcher ? null : await first("jdtls");
       return cmd ? { cmd, args: ["-data", data], init } : null;
     }
     case "scala": {
@@ -568,6 +657,10 @@ async function resolveCommand(kind: ServerKind, root: string): Promise<{ cmd: st
       const cmd = await first(`${tools}/mojo/bin/mojo-lsp-server`, "mojo-lsp-server");
       return cmd ? { cmd, args: [] } : null;
     }
+    case "go": {
+      const cmd = await first(`${tools}/go-tools/bin/${exe("gopls")}`, "gopls");
+      return cmd ? { cmd, args: [] } : null;
+    }
   }
 }
 
@@ -580,13 +673,14 @@ export const INSTALLABLE: Partial<Record<ServerKind, string>> = {
   // On Windows it can only come from the user's own opam: there is nothing to offer.
   ocaml: IS_WIN ? undefined : "ocaml-lsp-server (OCaml)",
   mojo: "Mojo (compiler, LSP, LLDB)",
+  go: "gopls (Go)",
   get rust() {
     return t("code.lsp.rustAnalyzer");
   },
 };
 
 /** Tools a language server installation builds on. */
-const PREREQ: Partial<Record<ServerKind, ToolId[]>> = { python: ["node"], typescript: ["node"], java: ["jdk"], rust: ["rust"], scala: ["jdk", "scala"], ocaml: ["ocaml"] };
+const PREREQ: Partial<Record<ServerKind, ToolId[]>> = { python: ["node"], typescript: ["node"], java: ["jdk"], rust: ["rust"], scala: ["jdk", "scala"], ocaml: ["ocaml"], go: ["go"] };
 
 /** `askInstall` for work the host didn't start itself: never prompts, and doesn't count as declining. */
 export const neverInstall = async (_kind: ServerKind, _name: string) => false;
@@ -620,6 +714,7 @@ async function guestMayStart(kind: ServerKind, root: string, key: string) {
 const PAUSABLE: Partial<Record<ServerKind, { tool: PausedTool; paused: Key; title: Key; msg: Key; ok: Key }>> = {
   scala: { tool: "metals", paused: "code.lsp.metalsPaused", title: "code.lsp.metalsResumeTitle", msg: "code.lsp.metalsResumeMsg", ok: "code.lsp.metalsResumeOk" },
   ocaml: { tool: "ocaml", paused: "code.lsp.ocamlPaused", title: "code.lsp.ocamlResumeTitle", msg: "code.lsp.ocamlResumeMsg", ok: "code.lsp.ocamlResumeOk" },
+  go: { tool: "gopls", paused: "code.lsp.goplsPaused", title: "code.lsp.goplsResumeTitle", msg: "code.lsp.goplsResumeMsg", ok: "code.lsp.goplsResumeOk" },
 };
 
 /** A guest without `run` changed this project: the server would execute that text, so it stays off. */
@@ -636,6 +731,9 @@ export const metalsPausedFor = async (file: string, workspace: string | null) =>
 
 /** The folder ocamllsp's guest pause is checked against for this file. */
 export const ocamlPauseRoot = (file: string, workspace: string | null) => findRoot(file, ROOT_MARKERS.ocaml, workspace);
+
+/** The folder gopls' guest pause is checked against for this file. */
+export const goPauseRoot = (file: string, workspace: string | null) => findRoot(file, ROOT_MARKERS.go, workspace);
 
 onGuestChange(() => {
   for (const [key, c] of clients) {
@@ -687,7 +785,7 @@ export async function clientFor(
     // Never index the toolchain itself (rust-analyzer's flycheck writes target/ into it).
     if (kind === "rust" && /\/lib\/rustlib\/src\//.test(file)) return null;
   }
-  const root = shadowRoot ?? (await findRoot(file, ROOT_MARKERS[kind], workspace));
+  const root = shadowRoot ?? (await rootFor(kind, file, workspace));
   const key = `${kind}|${root}`;
   if (serverHeld(kind, key, root)) return null;
   if (askInstall !== neverInstall) guestServers.delete(key); // the host wants this one itself
@@ -704,6 +802,10 @@ export async function clientFor(
     let cmd = await resolveCommand(kind, root);
     if (!cmd) {
       lspState.status[key] = "missing";
+      if (kind === "java") {
+        const old = await javaTooOld();
+        if (old) lspState.message[key] = old;
+      }
       const name = INSTALLABLE[kind];
       if (kind === "ocaml" && !name) lspState.message[key] = t("tools.ocamlWindows");
       if (kind === "mojo") {
@@ -850,7 +952,7 @@ export async function restartServer(
     }
   }
   file = shadowOf(file);
-  const root = copies.get(file)?.root ?? (await findRoot(file, ROOT_MARKERS[kind], workspace));
+  const root = copies.get(file)?.root ?? (await rootFor(kind, file, workspace));
   const key = `${kind}|${root}`;
   if (starting.has(key)) return starting.get(key)!;
   const pausable = PAUSABLE[kind];

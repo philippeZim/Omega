@@ -1,7 +1,8 @@
 // Regression tests for #2 (external changes overwritten on save), #3/#4 (what reaches write_file)
 // and #6 (New File truncated existing files). The editor and dialogs are faked; the file system is
 // an in-memory map behind mockIPC (see src/test/fakes.ts).
-import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, onTestFinished, test, vi } from "vitest";
+import { EditorState } from "@codemirror/state";
 import { mockIPC } from "@tauri-apps/api/mocks";
 import { deferred, fakeFs, flush, type FakeEditor, type FakeFs, type FakeUi } from "../test/fakes";
 
@@ -21,7 +22,7 @@ vi.mock("./code/lspExtension", () => ({ setLspHooks: vi.fn() }));
 const lspDocs = vi.hoisted(() => ({ close: vi.fn(), save: vi.fn(async () => {}) }));
 vi.mock("./code/lsp.svelte", () => ({ allClients: () => [], fileUri: (p: string) => "file://" + p, closeLspDoc: lspDocs.close, saveLspDoc: lspDocs.save }));
 vi.mock("./markdown/livePreview", () => ({ setLinkHandler: vi.fn(), resolvePath: vi.fn() }));
-vi.mock("./modes", () => ({ modeForExtension: () => null }));
+vi.mock("./modes", () => ({ modeForPath: () => null }));
 vi.mock("./fsWatch.svelte", () => ({ onFilesChanged: vi.fn(), watchRoot: vi.fn() }));
 vi.mock("./i18n/index.svelte", () => ({ t: (k: string, p?: object) => (p ? `${k} ${JSON.stringify(p)}` : k) }));
 
@@ -579,7 +580,7 @@ describe("file deleted outside Omega (#32)", () => {
     expect(tab.deleted).toBe(true);
     expect(tab.dirty).toBe(true);
     expect(ui.toast).toHaveBeenCalledWith(expect.stringContaining("app.deletedOnDisk"));
-    ui.choose.mockResolvedValueOnce("cancel");
+    ui.nextChoice = "cancel";
     await st.closeTab(tab.id);
     expect(ui.choose).toHaveBeenCalledTimes(1);
     expect(st.app.tabs).toHaveLength(1);
@@ -755,5 +756,593 @@ describe("language server documents follow the tab", () => {
 
     await st.closeTab(b.id);
     expect(lspDocs.close).toHaveBeenCalledWith("/p/b");
+  });
+});
+
+describe("too large files (#174)", () => {
+  const SIZE = 1024 * 1024 * 1024;
+  /** `path` is refused by read_file; its start is "head text". */
+  function tooLarge(path: string) {
+    const read = fs.other;
+    fs.other = (cmd: string, args: any) => {
+      if (cmd === "file_info") return args.path === path ? { size: SIZE, too_large: true, preview: true, modified: 1 } : { size: 1, too_large: false, preview: false, modified: 1 };
+      if (cmd === "read_file_head") return { text: "head text", size: SIZE };
+      return read(cmd, args);
+    };
+    fs.beforeRead = async (p: string) => {
+      if (p === path) throw "fs:too_large";
+    };
+  }
+  const headTab = () => st.app.tabs.find((t) => t.headOf === "/p/big.log");
+
+  test("warns, and Cancel opens nothing", async () => {
+    await setup({ "/p/big.log": "" });
+    tooLarge("/p/big.log");
+    ui.nextChoice = "cancel";
+    await st.openFile("/p/big.log");
+    expect(ui.choose).toHaveBeenCalledTimes(1);
+    expect(ui.choose.mock.calls[0][1]).toContain("1 GB");
+    expect(st.app.tabs).toHaveLength(0);
+    expect(fs.calls.some((c) => c.cmd === "read_file_head")).toBe(false);
+  });
+
+  describe("going to a place in it from the language server", () => {
+    async function navigator() {
+      const { setLspHooks } = await import("./code/lspExtension");
+      const hooks = vi.mocked(setLspHooks).mock.calls.at(-1)![0];
+      const view = { state: EditorState.create({ doc: "one\ntwo\n" }), dispatch: vi.fn(), focus: vi.fn() };
+      const getView = vi.spyOn(ed as any, "getView").mockReturnValue(view);
+      onTestFinished(() => getView.mockRestore());
+      return { navigate: hooks.navigate, view };
+    }
+
+    test("a cancelled warning leaves the cursor in the open file alone", async () => {
+      await setup({ "/p/a.txt": "one\ntwo\n", "/p/big.log": "" });
+      await open("/p/a.txt");
+      tooLarge("/p/big.log");
+      ui.nextChoice = "cancel";
+      const { navigate, view } = await navigator();
+      await navigate("/p/big.log", 1, 2);
+      expect(st.activeTab()?.path).toBe("/p/a.txt");
+      expect(view.dispatch).not.toHaveBeenCalled();
+    });
+
+    test("a failed open leaves it alone too", async () => {
+      await setup({ "/p/a.txt": "one\ntwo\n" });
+      await open("/p/a.txt");
+      const { navigate, view } = await navigator();
+      await navigate("/p/missing.txt", 1, 2);
+      expect(st.activeTab()?.path).toBe("/p/a.txt");
+      expect(view.dispatch).not.toHaveBeenCalled();
+    });
+
+    test("an opened file gets the cursor, also through a path with dots", async () => {
+      await setup({ "/p/a.txt": "one\ntwo\n", "/p/b.txt": "one\ntwo\n" });
+      await open("/p/a.txt");
+      const { navigate, view } = await navigator();
+      await navigate("/p/x/../b.txt", 1, 2);
+      expect(st.activeTab()?.path).toBe("/p/b.txt");
+      expect(view.dispatch).toHaveBeenCalledWith({ selection: { anchor: 6 }, scrollIntoView: true });
+    });
+
+    test("the read-only start of the file counts as that file", async () => {
+      await setup({ "/p/big.log": "" });
+      tooLarge("/p/big.log");
+      ui.nextChoice = "head";
+      const { navigate, view } = await navigator();
+      await navigate("/p/big.log", 0, 1);
+      expect(headTab()).toBeTruthy();
+      expect(view.dispatch).toHaveBeenCalledWith({ selection: { anchor: 1 }, scrollIntoView: true });
+    });
+  });
+
+  test("the read-only start has no path and can never be saved over the file", async () => {
+    await setup({ "/p/big.log": "original" });
+    tooLarge("/p/big.log");
+    ui.nextChoice = "head";
+    await st.openFile("/p/big.log");
+    const tab = headTab()!;
+    expect(tab.path).toBeNull();
+    expect(ed.getText(tab.id)).toBe("head text");
+    expect(await st.save(tab.id)).toBe(false);
+    expect(await st.save(tab.id, true)).toBe(false);
+    await st.flushAutosave();
+    expect(writes()).toEqual([]);
+    expect(fs.files.get("/p/big.log")).toBe("original");
+    // Opening it again finds the same tab, without asking.
+    await st.openFile("/p/big.log");
+    expect(st.app.tabs).toHaveLength(1);
+    expect(ui.choose).toHaveBeenCalledTimes(1);
+  });
+
+  test("session restore doesn't ask, it only reports the file", async () => {
+    await setup({ "/p/big.log": "" });
+    tooLarge("/p/big.log");
+    await st.openFile("/p/big.log", true);
+    expect(ui.choose).not.toHaveBeenCalled();
+    expect(ui.toast).toHaveBeenCalledTimes(1);
+    expect(st.app.tabs).toHaveLength(0);
+  });
+
+  test("a file that grew past the limit isn't overwritten by a save", async () => {
+    await setup({ "/p/big.log": "small" });
+    const tab = await open("/p/big.log");
+    ed.type(tab.id, "small edit");
+    tooLarge("/p/big.log");
+    ui.nextChoice = null;
+    expect(await st.save(tab.id)).toBe(false);
+    expect(ui.choose).toHaveBeenCalledTimes(1);
+    expect(writes()).toEqual([]);
+  });
+
+  test("a large file we wrote ourselves saves without a question", async () => {
+    await setup({ "/p/big.log": "small" });
+    const tab = await open("/p/big.log");
+    ed.type(tab.id, "small edit");
+    const read = fs.other;
+    fs.other = (cmd: string, args: any) => (cmd === "file_info" ? { size: 5, too_large: true, preview: true, modified: 1 } : read(cmd, args));
+    fs.beforeRead = async () => {
+      throw "fs:too_large";
+    };
+    expect(await st.save(tab.id)).toBe(true);
+    expect(ui.choose).not.toHaveBeenCalled();
+    expect(writes()).toHaveLength(1);
+  });
+});
+
+describe("large files opened in full, 8 to 64 MiB (#174)", () => {
+  const MIB = 1024 * 1024;
+  const PATH = "/p/mid.log";
+  const bytes = (s: string) => new TextEncoder().encode(s).buffer;
+  /** read_file refuses PATH; read_file_large returns what is in the fake file system. */
+  function midSize(info: { size?: number; preview?: boolean; modified?: number } = {}) {
+    const state = { size: 50 * MIB, preview: false, modified: 1, ...info };
+    const other = fs.other;
+    fs.other = (cmd: string, args: any) => {
+      if (args?.path !== PATH) return other(cmd, args);
+      if (cmd === "file_info") return { size: state.size, too_large: true, preview: state.preview, modified: state.modified };
+      if (cmd === "read_file_large") {
+        if (state.preview) throw "fs:too_large";
+        return bytes(fs.files.get(PATH)!);
+      }
+      if (cmd === "read_file_head") return { text: "head", size: state.size };
+      return other(cmd, args);
+    };
+    fs.beforeRead = async (p: string) => {
+      if (p === PATH) throw "fs:too_large";
+    };
+    return state;
+  }
+  async function openMid(content = "one\ntwo\n", info = {}) {
+    await setup({ [PATH]: content });
+    const state = midSize(info);
+    ui.nextChoice = "full";
+    await st.openFile(PATH);
+    ui.nextChoice = undefined;
+    ui.choose.mockClear();
+    const tab = st.app.tabs.find((t) => t.path === PATH)!;
+    return { tab, state };
+  }
+  const largeReads = () => fs.calls.filter((c) => c.cmd === "read_file_large").length;
+
+  test("warns first, Cancel reads nothing", async () => {
+    await setup({ [PATH]: "x" });
+    midSize();
+    ui.nextChoice = "cancel";
+    await st.openFile(PATH);
+    expect(ui.choose.mock.calls[0][1]).toContain("app.large.fullMessage");
+    expect(largeReads()).toBe(0);
+    expect(st.app.tabs).toHaveLength(0);
+  });
+
+  test.each([
+    [8 * MIB + 1, false, "app.large.fullMessage"],
+    [64 * MIB, false, "app.large.fullMessage"],
+    [64 * MIB + 1, true, "app.large.message"],
+  ])("%d bytes get the matching offer", async (size, preview, message) => {
+    await setup({ [PATH]: "x" });
+    midSize({ size, preview });
+    ui.nextChoice = "cancel";
+    await st.openFile(PATH);
+    expect(ui.choose.mock.calls[0][1]).toContain(message);
+  });
+
+  test("a file past 64 MiB by the time it's read falls back to the preview offer", async () => {
+    await setup({ [PATH]: "x" });
+    const state = midSize();
+    ui.choose.mockImplementationOnce(async () => {
+      state.preview = true;
+      return "full";
+    });
+    ui.nextChoice = "head";
+    await st.openFile(PATH);
+    expect(st.app.tabs[0].headOf).toBe(PATH);
+    expect(st.app.tabs[0].path).toBeNull();
+  });
+
+  test("keeps its real path, and Save round-trips CRLF and the BOM", async () => {
+    const { tab } = await openMid("\uFEFFone\r\ntwo\r\n");
+    expect(tab.path).toBe(PATH);
+    expect(tab.large).toBe(true);
+    expect(ed.getText(tab.id)).toBe("one\ntwo\n");
+    ed.type(tab.id, "one\nTWO\n");
+    expect(await st.save(tab.id)).toBe(true);
+    expect(fs.files.get(PATH)).toBe("\uFEFFone\r\nTWO\r\n");
+    expect(tab.dirty).toBe(false);
+  });
+
+  test("is never autosaved, and counts as unsaved when quitting", async () => {
+    const { tab } = await openMid();
+    ed.type(tab.id, "edited\n");
+    await vi.advanceTimersByTimeAsync(5000);
+    await st.flushAutosave();
+    expect(writes()).toEqual([]);
+    expect(st.unsavedTabs().map((t) => t.id)).toEqual([tab.id]);
+  });
+
+  test("an outside change is not overwritten without asking", async () => {
+    const { tab } = await openMid();
+    ed.type(tab.id, "mine\n");
+    fs.files.set(PATH, "theirs\n");
+    ui.nextChoice = null;
+    expect(await st.save(tab.id)).toBe(false);
+    expect(ui.choose).toHaveBeenCalledTimes(1);
+    expect(writes()).toEqual([]);
+  });
+
+  test("a file grown past 64 MiB is not overwritten without asking", async () => {
+    const { tab, state } = await openMid();
+    ed.type(tab.id, "mine\n");
+    state.preview = true;
+    state.size = 65 * MIB;
+    ui.nextChoice = null;
+    expect(await st.save(tab.id)).toBe(false);
+    expect(ui.choose).toHaveBeenCalledTimes(1);
+    expect(writes()).toEqual([]);
+  });
+
+  test("session restore only reports it and reads nothing", async () => {
+    await setup({ [PATH]: "x" });
+    midSize();
+    await st.openFile(PATH, true);
+    expect(ui.choose).not.toHaveBeenCalled();
+    expect(ui.toast).toHaveBeenCalledTimes(1);
+    expect(largeReads()).toBe(0);
+    expect(st.app.tabs).toHaveLength(0);
+  });
+
+  test("an outside change shows one notice, without re-reading the file", async () => {
+    const { tab, state } = await openMid();
+    const reads = largeReads();
+    await st.syncFromDisk();
+    expect(ui.toast).not.toHaveBeenCalled();
+    state.modified = 2;
+    await st.syncFromDisk();
+    state.modified = 3;
+    await st.syncFromDisk();
+    expect(ui.toasts.filter((x) => x.text.includes("app.large.changedOnDisk"))).toHaveLength(1);
+    expect(largeReads()).toBe(reads);
+    expect(ed.getText(tab.id)).toBe("one\ntwo\n");
+  });
+
+  test("our own save doesn't count as an outside change", async () => {
+    const { tab, state } = await openMid();
+    ed.type(tab.id, "edited\n");
+    state.modified = 2;
+    await st.save(tab.id);
+    await st.syncFromDisk();
+    expect(ui.toast).not.toHaveBeenCalled();
+  });
+
+  test("a clean normal tab whose file grew past the limit shows one notice", async () => {
+    await setup({ [PATH]: "small" });
+    const tab = await open(PATH);
+    midSize();
+    await st.syncFromDisk();
+    await st.syncFromDisk();
+    expect(ui.toasts.filter((x) => x.text.includes("app.large.changedOnDisk"))).toHaveLength(1);
+    expect(ed.getText(tab.id)).toBe("small");
+  });
+
+  test("a normal tab holding a 8-64 MiB text it wrote itself saves normally", async () => {
+    await setup({ [PATH]: "small" });
+    const tab = await open(PATH);
+    ed.type(tab.id, "bigger");
+    await st.save(tab.id);
+    midSize();
+    ed.type(tab.id, "bigger still");
+    fs.files.set(PATH, "bigger");
+    expect(await st.save(tab.id)).toBe(true);
+    expect(ui.choose).not.toHaveBeenCalled();
+    expect(fs.files.get(PATH)).toBe("bigger still");
+  });
+});
+
+
+describe("viewer tabs (#159)", () => {
+  /** `file_info` answers from this stamp; null means the file is gone. */
+  let modified: number | null;
+  async function viewerSetup(files: Record<string, string>) {
+    await setup(files);
+    modified = 1;
+    fs.other = (cmd: string, args: any) => {
+      if (cmd !== "file_info") return null;
+      if (modified === null || !fs.files.has(args.path)) throw "fs:not_found";
+      return { size: 10, too_large: false, preview: false, modified };
+    };
+  }
+  const viewer = (path: string) => st.app.tabs.find((t) => t.viewOf === path)!;
+
+  test("images and PDFs open as viewers without reading text, in any case", async () => {
+    await viewerSetup({ "/p/a.PNG": "\x89", "/p/b.pdf": "%PDF" });
+    await st.openFile("/p/a.PNG");
+    await st.openFile("/p/b.pdf");
+    expect(viewer("/p/a.PNG").viewer).toBe("image");
+    expect(viewer("/p/b.pdf").viewer).toBe("pdf");
+    expect(viewer("/p/b.pdf").path).toBeNull();
+    expect(fs.calls.some((c) => c.cmd === "read_file")).toBe(false);
+  });
+
+  test("opening it again activates the same tab", async () => {
+    await viewerSetup({ "/p/a.png": "", "/p/t.txt": "x" });
+    await st.openFile("/p/a.png");
+    await open("/p/t.txt");
+    await st.openFile("/p/a.png");
+    expect(st.app.tabs).toHaveLength(2);
+    expect(st.app.activeId).toBe(viewer("/p/a.png").id);
+  });
+
+  test("a missing file opens no tab and says so", async () => {
+    await viewerSetup({});
+    await st.openFile("/p/nope.png");
+    expect(st.app.tabs).toHaveLength(0);
+    expect(ui.toast).toHaveBeenCalled();
+  });
+
+  test("can't be saved, and stays clean", async () => {
+    await viewerSetup({ "/p/a.png": "bytes" });
+    await st.openFile("/p/a.png");
+    expect(await st.save(viewer("/p/a.png").id)).toBe(false);
+    expect(await st.save(viewer("/p/a.png").id, true)).toBe(false);
+    expect(writes()).toHaveLength(0);
+    expect(viewer("/p/a.png").dirty).toBe(false);
+    expect(fs.files.get("/p/a.png")).toBe("bytes");
+  });
+
+  test("the editor behind it has no path, spell check or write access", async () => {
+    await viewerSetup({ "/p/a.pdf": "" });
+    await st.openFile("/p/a.pdf");
+    const cfg = ed.activate.mock.calls.at(-1)![1] as { path: string | null; spell: unknown; headNote?: string };
+    expect(cfg.path).toBeNull();
+    expect(cfg.spell).toBeNull();
+    expect(cfg.headNote).toBeTruthy();
+  });
+
+  test("a PDF tab in LaTeX mode starts no compile", async () => {
+    await viewerSetup({ "/p/a.pdf": "" });
+    const latex = await import("./latex/controller.svelte");
+    st.setMode("latex");
+    vi.mocked(latex.schedule).mockClear();
+    await st.openFile("/p/a.pdf");
+    expect(latex.schedule).not.toHaveBeenCalled();
+    st.setMode("text");
+  });
+
+  test("an external change reloads the view, an unchanged file doesn't", async () => {
+    await viewerSetup({ "/p/a.png": "" });
+    await st.openFile("/p/a.png");
+    await st.syncFromDisk(["/p/a.png"]);
+    expect(viewer("/p/a.png").viewRev).toBe(0);
+    modified = 2;
+    await st.syncFromDisk(["/p/a.png"]);
+    await vi.advanceTimersByTimeAsync(320); // a single quick write reloads promptly
+    expect(viewer("/p/a.png").viewRev).toBe(1);
+  });
+
+  test("a deleted file marks the tab, closing asks nothing, and its return reloads", async () => {
+    await viewerSetup({ "/p/a.png": "" });
+    await st.openFile("/p/a.png");
+    const tab = viewer("/p/a.png");
+    fs.files.delete("/p/a.png");
+    await st.syncFromDisk();
+    expect(tab.deleted).toBe(true);
+    expect(tab.dirty).toBe(false);
+    expect(st.unsavedTabs()).toHaveLength(0);
+    // The text tabs' message promises that Ctrl+S writes the file again; a viewer can't.
+    expect(ui.toasts.at(-1)!.text).toContain("app.viewer.deleted");
+    fs.files.set("/p/a.png", "");
+    await st.syncFromDisk();
+    await vi.advanceTimersByTimeAsync(320);
+    expect(tab.deleted).toBe(false);
+    expect(tab.viewRev).toBe(1);
+    fs.files.delete("/p/a.png");
+    await st.syncFromDisk();
+    await st.closeTab(tab.id);
+    expect(ui.choose).not.toHaveBeenCalled();
+    expect(st.app.tabs).toHaveLength(0);
+  });
+
+  test("closing a viewer tab forgets its place", async () => {
+    await viewerSetup({ "/p/a.pdf": "" });
+    await st.openFile("/p/a.pdf");
+    const tab = viewer("/p/a.pdf");
+    const memory = await import("./viewerMemory");
+    memory.rememberViewer(tab.id, { zoom: 2, anchor: { page: 5, fraction: 0 } });
+    await st.closeTab(tab.id);
+    expect(memory.viewerPlace(tab.id)).toBeUndefined();
+  });
+
+  test("a changed file reloads the view even when the stamp already looks known", async () => {
+    await viewerSetup({ "/p/a.pdf": "" });
+    await st.openFile("/p/a.pdf");
+    const tab = viewer("/p/a.pdf");
+    st.reloadViewerTab(tab.id);
+    await vi.advanceTimersByTimeAsync(320);
+    expect(tab.viewRev).toBe(1);
+    await st.syncFromDisk(["/p/a.pdf"]);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(tab.viewRev).toBe(1); // the reload took the stamp, so no second one follows
+  });
+
+  describe("a file that is still being written", () => {
+    const infoCalls = () => fs.calls.filter((c) => c.cmd === "file_info").length;
+
+    test("reloads only when it has settled, and exactly once", async () => {
+      await viewerSetup({ "/p/a.pdf": "" });
+      await st.openFile("/p/a.pdf");
+      const tab = viewer("/p/a.pdf");
+      for (let i = 0; i < 40; i++) {
+        modified = 100 + i;
+        st.reloadViewerTab(tab.id); // every read of the open document fails meanwhile
+        await st.syncFromDisk(["/p/a.pdf"]);
+        await vi.advanceTimersByTimeAsync(100);
+      }
+      expect(tab.viewRev).toBe(0);
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(tab.viewRev).toBe(1);
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(tab.viewRev).toBe(1);
+    });
+
+    test("polls gently, with one wait per tab", async () => {
+      await viewerSetup({ "/p/a.pdf": "" });
+      await st.openFile("/p/a.pdf");
+      const tab = viewer("/p/a.pdf");
+      const before = infoCalls();
+      for (let i = 0; i < 50; i++) st.reloadViewerTab(tab.id);
+      for (let i = 0; i < 40; i++) {
+        modified = 200 + i;
+        await vi.advanceTimersByTimeAsync(100);
+      }
+      expect(infoCalls() - before).toBeLessThan(10);
+    });
+
+    test("never settling keeps the view without spinning, and the next event tries again", async () => {
+      await viewerSetup({ "/p/a.pdf": "" });
+      await st.openFile("/p/a.pdf");
+      const tab = viewer("/p/a.pdf");
+      st.reloadViewerTab(tab.id);
+      for (let i = 0; i < 200; i++) {
+        modified = 1000 + i;
+        await vi.advanceTimersByTimeAsync(100);
+      }
+      expect(tab.viewRev).toBe(0);
+      const idle = infoCalls();
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(infoCalls()).toBe(idle); // given up: no polling
+      expect(tab.viewRev).toBe(0);
+      await st.syncFromDisk(["/p/a.pdf"]);
+      await vi.advanceTimersByTimeAsync(320);
+      expect(tab.viewRev).toBe(1);
+    });
+
+    test("closing the tab or moving its file cancels the wait", async () => {
+      await viewerSetup({ "/p/a.pdf": "", "/p/b.pdf": "" });
+      await st.openFile("/p/a.pdf");
+      await st.openFile("/p/b.pdf");
+      const a = viewer("/p/a.pdf");
+      const b = viewer("/p/b.pdf");
+      st.reloadViewerTab(a.id);
+      st.reloadViewerTab(b.id);
+      await st.closeTab(a.id);
+      st.pathMoved("/p/b.pdf", "/p/c.pdf");
+      const rev = b.viewRev;
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(b.viewRev).toBe(rev);
+    });
+  });
+
+  test("a rename moves the tab", async () => {
+    await viewerSetup({ "/p/d/a.png": "" });
+    await st.openFile("/p/d/a.png");
+    const tab = viewer("/p/d/a.png");
+    st.pathMoved("/p/d", "/p/e");
+    expect(tab.viewOf).toBe("/p/e/a.png");
+    expect(tab.name).toBe("a.png");
+  });
+
+  test("an SVG opens as text on request, and as an image again after that tab closes", async () => {
+    await viewerSetup({ "/p/a.svg": "<svg/>" });
+    await st.openFile("/p/a.svg");
+    await st.openViewerAsText(viewer("/p/a.svg").id);
+    const text = st.app.tabs.find((t) => t.path === "/p/a.svg")!;
+    expect(ed.getText(text.id)).toBe("<svg/>");
+    expect(viewer("/p/a.svg")).toBeUndefined();
+    await st.closeTab(text.id);
+    await st.openFile("/p/a.svg");
+    expect(viewer("/p/a.svg")).toBeDefined();
+  });
+
+  test("an SVG that isn't text falls back to the image", async () => {
+    await viewerSetup({ "/p/a.svg": "x" });
+    fs.beforeRead = async () => {
+      throw "fs:not_utf8";
+    };
+    await st.openFile("/p/a.svg");
+    await st.openViewerAsText(viewer("/p/a.svg").id);
+    expect(viewer("/p/a.svg")).toBeDefined();
+  });
+
+  test("a line-targeted open shows an SVG as text, also over its viewer tab", async () => {
+    await viewerSetup({ "/p/a.svg": "<svg/>", "/p/b.svg": "<svg/>" });
+    await st.openFile("/p/a.svg", false, true);
+    expect(st.app.tabs.find((t) => t.path === "/p/a.svg")).toBeDefined();
+    await st.openFile("/p/b.svg");
+    expect(viewer("/p/b.svg")).toBeDefined();
+    await st.openFile("/p/b.svg", false, true);
+    expect(viewer("/p/b.svg")).toBeUndefined();
+    expect(st.activeTab()?.path).toBe("/p/b.svg");
+  });
+
+  test("a line-targeted open leaves binary kinds in their viewer", async () => {
+    await viewerSetup({ "/p/a.png": "x", "/p/a.pdf": "x" });
+    await st.openFile("/p/a.png", false, true);
+    await st.openFile("/p/a.pdf", false, true);
+    expect(viewer("/p/a.png")).toBeDefined();
+    expect(viewer("/p/a.pdf")).toBeDefined();
+    expect(fs.calls.some((c) => c.cmd === "read_file")).toBe(false);
+  });
+
+  test("closing the read-only head of an SVG clears its text choice", async () => {
+    await viewerSetup({ "/p/a.svg": "<svg/>" });
+    await st.openFile("/p/a.svg");
+    const other = fs.other;
+    fs.other = (cmd: string, args: any) => {
+      if (cmd === "file_info") return { size: 1e9, too_large: true, preview: true, modified: 1 };
+      if (cmd === "read_file_head") return { text: "<svg", size: 1e9 };
+      return other(cmd, args);
+    };
+    fs.beforeRead = async () => {
+      throw "fs:too_large";
+    };
+    ui.nextChoice = "head";
+    await st.openViewerAsText(viewer("/p/a.svg").id);
+    const head = st.app.tabs.find((t) => t.headOf === "/p/a.svg")!;
+    expect(head).toBeDefined();
+    await st.closeTab(head.id);
+    await st.openFile("/p/a.svg");
+    expect(viewer("/p/a.svg")).toBeDefined();
+  });
+
+  test("a language override keeps an SVG as text", async () => {
+    await viewerSetup({ "/p/a.svg": "<svg/>" });
+    const { setLanguageOverride } = await import("./code/langOverride.svelte");
+    setLanguageOverride("/p/a.svg", "xml");
+    await st.openFile("/p/a.svg");
+    expect(st.app.tabs[0].path).toBe("/p/a.svg");
+    expect(st.app.tabs[0].viewOf).toBeUndefined();
+    setLanguageOverride("/p/a.svg", null);
+  });
+
+  test("a language override on a binary image still shows the image", async () => {
+    await viewerSetup({ "/p/a.png": "x" });
+    fs.beforeRead = async () => {
+      throw "fs:not_utf8";
+    };
+    const { setLanguageOverride } = await import("./code/langOverride.svelte");
+    setLanguageOverride("/p/a.png", "xml");
+    await st.openFile("/p/a.png");
+    expect(viewer("/p/a.png")).toBeDefined();
+    setLanguageOverride("/p/a.png", null);
   });
 });

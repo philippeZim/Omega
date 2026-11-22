@@ -258,7 +258,7 @@ describe("debugger controller with a fake adapter", () => {
   test("selecting a frame in another file opens it", async () => {
     await startAndStop();
     await D.selectFrame(S.dbg.frames[0]);
-    expect(m.openFile).toHaveBeenCalledWith("/usr/lib/runpy.py");
+    expect(m.openFile).toHaveBeenCalledWith("/usr/lib/runpy.py", false, true);
     expect(S.dbg.exec).toEqual({ path: "/usr/lib/runpy.py", line: 5 });
     await D.selectFrame(S.dbg.frames[2]);
     expect(S.dbg.exec).toBeNull();
@@ -497,6 +497,7 @@ describe("debugger controller with a fake adapter", () => {
     await D.startDebugging();
     expect(S.dbg.status).toBe("terminated");
     expect(S.dbg.console.at(-1)).toEqual({ text: "no debugger for .xyz", kind: "error" });
+    expect(S.dbg.label).toContain("no debugger for .xyz");
     expect(ipc.some(([c]) => c === "proc_spawn")).toBe(false);
     vi.doMock("./adapters", () => ({ planFor: async () => m.plan })); // back to the file's own mock
   });
@@ -506,6 +507,118 @@ describe("debugger controller with a fake adapter", () => {
     await D.startDebugging();
     expect(m.toast).toHaveBeenCalledWith(expect.any(String), "error");
     expect(S.dbg.status).toBe("idle");
+  });
+});
+
+describe("Mojo values and threads", () => {
+  const raw = "5600000000000000  86";
+  const type = "__mlir_type.`!kgen.scalar<index>`";
+
+  function script() {
+    fake.replies.threads = () => ({ threads: [{ id: 2, name: "🔥 Thread0" }, { id: 1, name: "prog" }, { id: 3, name: "🔥 Thread1" }] });
+    const frames = fake.replies.stackTrace;
+    fake.replies.stackTrace = (a, req) => (a.threadId === 1 ? frames(a, req) : { stackFrames: [{ id: 50, name: "wait", line: 1, column: 1, source: { path: "/usr/lib/libc.so.6`wait", presentationHint: "deemphasize" } }] });
+    fake.replies.variables = (a) =>
+      a.variablesReference === 100
+        ? { variables: [{ name: "z", value: raw, type, variablesReference: 7 }, { name: "s", value: '"hi"', type: "String", variablesReference: 8 }, { name: "p", value: "Point", type: "Point", variablesReference: 9 }] }
+        : { variables: [] };
+    fake.replies.evaluate = () => ({ result: raw, type, variablesReference: 7 });
+    fake.replies.setVariable = () => ({ value: "0700000000000000  7", type, variablesReference: 7 });
+  }
+
+  test("a Mojo session shows real values and hides idle runtime threads", async () => {
+    m.plan.launch = { type: "mojo-lldb", request: "launch", program: "/p/main" };
+    script();
+    await startAndStop();
+    expect(S.dbg.scopes[0].children!.map((v) => [v.name, v.value, v.type, v.ref])).toEqual([
+      ["z", "86", "Int", 0],
+      ["s", '"hi"', "String", 8],
+      ["p", "Point", "Point", 9],
+    ]);
+    expect(S.dbg.threads.map((x) => x.name)).toEqual(["prog"]);
+    expect(await D.hoverValue("z")).toBe("86");
+    const z = S.dbg.scopes[0].children![0];
+    await D.setVariable(z, "7");
+    expect(z.value).toBe("7");
+  });
+
+  test("a set value without a type is read back clean, on the host path too", async () => {
+    m.plan.launch = { type: "mojo-lldb", request: "launch", program: "/p/main" };
+    script();
+    fake.replies.setVariable = () => ({ value: "0700000000000000  7" });
+    await startAndStop();
+    const z = S.dbg.scopes[0].children![0];
+    const scope = fake.replies.variables;
+    fake.replies.variables = (a, req) => (a.variablesReference === 100 ? { variables: [{ name: "z", value: "0700000000000000  7", type, variablesReference: 7 }] } : scope(a, req));
+    await D.setVariable(z, "7");
+    expect(z.value).toBe("7");
+    expect(await D.hostDebug.setVariable(100, "z", "7")).toBe("7");
+  });
+
+  test("a failed read-back keeps the old value instead of the typed text", async () => {
+    m.plan.launch = { type: "mojo-lldb", request: "launch", program: "/p/main" };
+    script();
+    fake.replies.setVariable = () => ({ value: "0700000000000000  7" });
+    await startAndStop();
+    const z = S.dbg.scopes[0].children![0];
+    fake.replies.variables = () => {
+      throw new Error("gone");
+    };
+    await D.setVariable(z, "1234");
+    expect(z.value).toBe("86");
+    expect(await D.hostDebug.setVariable(100, "z", "1234")).toBe("86");
+  });
+
+  test("past the request budget a raw scalar shows a placeholder, not its bytes", async () => {
+    m.plan.launch = { type: "mojo-lldb", request: "launch", program: "/p/main" };
+    script();
+    const many = Array.from({ length: 40 }, (_, i) => ({ name: `v${i}`, value: "2a00000000000000", type, variablesReference: 1000 + i }));
+    fake.replies.variables = (a) => (a.variablesReference === 100 ? { variables: many } : { variables: [{ value: "42" }] });
+    S.dbg.breakpoints["/p/main.py"] = [{ line: 3 }];
+    await D.startDebugging();
+    await vi.waitFor(() => expect(S.dbg.scopes[0]?.children?.length).toBe(40));
+    const values = S.dbg.scopes[0].children!.map((v) => v.value);
+    expect(values.filter((v) => v === "42")).toHaveLength(32);
+    expect(values.filter((v) => v === "<not available>")).toHaveLength(8);
+    expect(values).not.toContain("2a00000000000000");
+  });
+
+  test("a stop shows at once while worker lookups hang", async () => {
+    m.plan.launch = { type: "mojo-lldb", request: "launch", program: "/p/main" };
+    script();
+    const send = fake.onSend.bind(fake);
+    fake.onSend = (msg: string) => {
+      const r = JSON.parse(msg);
+      if (r.command === "stackTrace" && r.arguments.levels === 8) return;
+      send(msg);
+    };
+    await startAndStop();
+    expect(S.dbg.threadId).toBe(1);
+    expect(S.dbg.frames.length).toBeGreaterThan(0);
+    expect(S.dbg.threads.map((x) => x.name)).toEqual(["prog"]);
+  });
+
+  test("two workers stopping at once leave the newest stop selected", async () => {
+    m.plan.launch = { type: "mojo-lldb", request: "launch", program: "/p/main" };
+    script();
+    await startAndStop();
+    fake.replies.threads = () => ({ threads: [{ id: 1, name: "prog" }, { id: 2, name: "🔥 Thread0" }, { id: 3, name: "🔥 Thread1" }] });
+    const user = { stackFrames: [{ id: 60, name: "work", line: 3, column: 1, source: { path: "/p/main.py" } }] };
+    fake.replies.stackTrace = () => user;
+    fake.event("stopped", { reason: "breakpoint", threadId: 2 });
+    fake.event("stopped", { reason: "breakpoint", threadId: 3 });
+    await vi.waitFor(() => expect(S.dbg.threadId).toBe(3));
+    await settle();
+    expect(S.dbg.threadId).toBe(3);
+    expect(S.dbg.threads.map((x) => x.id).sort()).toEqual([1, 2, 3]);
+  });
+
+  test("another language keeps the adapter's text and all its threads", async () => {
+    script();
+    await startAndStop();
+    expect(S.dbg.scopes[0].children![0]).toMatchObject({ value: raw, type, ref: 7 });
+    expect(S.dbg.threads).toHaveLength(3);
+    expect(await D.hoverValue("z")).toBe(raw);
   });
 });
 
@@ -935,3 +1048,18 @@ describe("a stop or a second start during a start", () => {
     expect(S.dbg.actor).toBe("");
   });
 });
+
+test("a large file says why it can't be debugged and starts nothing (#174)", async () => {
+  const { app } = await import("../state.svelte");
+  (app.tabs as unknown[]).push({ id: "t1", path: "/p/main.py", dirty: false, large: true });
+  try {
+    await D.startDebugging();
+    expect(m.toast).toHaveBeenCalledTimes(1);
+    expect(m.toast.mock.calls[0][1]).toBe("error");
+    expect(S.dbg.status).toBe("idle");
+    expect(ipc.some(([cmd]) => cmd === "proc_spawn")).toBe(false);
+  } finally {
+    (app.tabs as unknown[]).length = 0;
+  }
+});
+

@@ -12,8 +12,13 @@
   import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
   import { selectAll } from "@codemirror/commands";
   import { openNewProject } from "../lib/code/runner.svelte";
-  import { t } from "../lib/i18n/index.svelte";
+  import { t, type Key } from "../lib/i18n/index.svelte";
   import { modeSwitchLabel, shortcutLabel } from "../lib/commands.svelte";
+  import { runViewAction, viewActionState } from "../lib/editorActions";
+  import { GOTO_IDS } from "../lib/code/lspGoto";
+  import FileViewer from "./FileViewer.svelte";
+
+  const NAV_COMMANDS = ["lsp.gotoDefinition", ...GOTO_IDS];
 
   let host: HTMLDivElement;
   onMount(() => ed.mount(host));
@@ -42,6 +47,17 @@
         { separator: true, label: "" },
       );
     }
+    // Language server navigation, where this editor has it.
+    const nav = NAV_COMMANDS.flatMap((id) => {
+      const state = viewActionState(view, id);
+      if (!state) return [];
+      const run = () => {
+        if (pos !== null) view.dispatch({ selection: { anchor: pos } });
+        runViewAction(view, id);
+      };
+      return [{ label: t(`commands.cmd.${id}` as Key), shortcut: shortcutLabel(id) || undefined, disabled: state === "disabled", action: run }];
+    });
+    if (nav.length) items.push(...nav, { separator: true, label: "" });
     const s = view.state.selection.main;
     const hasSel = !s.empty;
     const ctrl = IS_MAC ? "⌘" : t("code.key.ctrl");
@@ -59,6 +75,7 @@
     ui.menu = { x: e.clientX, y: e.clientY, items };
   }
 
+  const viewerTab = $derived(activeTab()?.viewOf ? activeTab() : null);
   const modeLabel = $derived(MODES.find((m) => m.id === app.mode)?.label);
   /** Hints follow the configured keymap; unbound commands are left out. */
   const newKey = $derived(shortcutLabel("file.new"));
@@ -70,7 +87,10 @@
 </script>
 
 <div class="pane">
-  <div class="host" class:hidden={!app.activeId} bind:this={host} oncontextmenu={contextMenu} role="presentation"></div>
+  <div class="host" class:hidden={!app.activeId || !!viewerTab} bind:this={host} oncontextmenu={contextMenu} role="presentation"></div>
+  {#if viewerTab}
+    {#key viewerTab.id}<FileViewer tab={viewerTab} />{/key}
+  {/if}
   {#if !app.activeId}
     <div class="welcome">
       <div class="inner">

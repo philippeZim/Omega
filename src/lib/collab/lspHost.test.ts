@@ -1,11 +1,12 @@
 // Code Together language sessions (lspHost.svelte.ts) with fake shared docs and a fake server client.
-import { beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import * as Y from "yjs";
 
 const h = vi.hoisted(() => ({
   collab: { role: "host" as "host" | "guest" | null, participants: [] as any[] },
   app: { root: "/p" as string | null },
   docs: [] as any[],
+  styleFiles: new Set<string>(),
   listeners: new Set<() => void>(),
   endHooks: [] as (() => unknown)[],
   restart: new Set<() => void>(),
@@ -42,8 +43,12 @@ vi.mock("./share.svelte", () => ({
 }));
 vi.mock("@tauri-apps/api/path", () => ({ tempDir: async () => "/tmp" }));
 vi.mock("../state.svelte", () => ({ app: h.app }));
-vi.mock("../api", () => ({ joinPath: (a: string, b: string) => `${a}/${b}`, fsApi: { homeDir: async () => "/home/me" } }));
-vi.mock("../code/languages", () => ({ langById: (id: string) => ({ id }), langFor: (p: string) => (p.endsWith(".py") ? { id: "python", server: "python", lspId: "python" } : null) }));
+vi.mock("../api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../api")>()),
+  joinPath: (a: string, b: string) => `${a}/${b}`,
+  fsApi: { homeDir: async () => "/home/me", exists: async (p: string) => h.styleFiles.has(p) },
+}));
+vi.mock("../code/languages", async (importOriginal) => ({ ...(await importOriginal<typeof import("../code/languages")>()), langById: (id: string) => ({ id }), langFor: (p: string) => (p.endsWith(".py") ? { id: "python", server: "python", lspId: "python" } : p.endsWith(".c") ? { id: "c", server: "clangd", lspId: "c" } : null) }));
 vi.mock("../code/lsp.svelte", () => ({
   clientFor: h.clientFor,
   fileUri: (p: string) => `file://${p}`,
@@ -456,6 +461,49 @@ test("format: edits are tied to the text they were computed for", async () => {
   const edits = [{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 3 } }, newText: "x = 1" }];
   h.client.request.mockResolvedValue(edits);
   expect(await run("lsp.format", { path: "a.py", at: at("x=1\n") })).toEqual({ base: at("x=1\n"), edits });
+});
+
+test.each([
+  ["tabs", "def f():\n\tif x:\n\t\treturn 1\n", { tabSize: 4, insertSpaces: false }],
+  ["two spaces", "def f():\n  if x:\n    return 1\n", { tabSize: 2, insertSpaces: true }],
+  ["no indentation: the language's convention", "x=1\n", { tabSize: 4, insertSpaces: true }],
+])("format for a guest uses the file's indentation: %s", async (_name, text, options) => {
+  await ready(text);
+  h.client.request.mockResolvedValue([]);
+  await run("lsp.format", { path: "a.py", at: at(text) });
+  const call = h.client.request.mock.calls.find((c: any[]) => c[0] === "textDocument/formatting")!;
+  expect(call[1].options).toEqual(options);
+});
+
+describe("format with clangd, which ignores the options", () => {
+  const text = "void f() {\n\tg( );\n\th();\n}\n";
+  const edits = [
+    { range: { start: { line: 1, character: 0 }, end: { line: 1, character: 1 } }, newText: "  " },
+    { range: { start: { line: 1, character: 3 }, end: { line: 1, character: 4 } }, newText: "" },
+    { range: { start: { line: 2, character: 0 }, end: { line: 2, character: 1 } }, newText: "  " },
+  ];
+  afterEach(() => h.styleFiles.clear());
+
+  test("keeps the file's tabs", async () => {
+    await ready(text, "a.c");
+    h.client.request.mockResolvedValue(edits);
+    const r = await run("lsp.format", { path: "a.c", at: at(text) });
+    expect(r.edits).toEqual([edits[1]]);
+  });
+
+  test("edits that make no sense are not applied", async () => {
+    await ready(text, "a.c");
+    h.client.request.mockResolvedValue([{ range: { start: { line: 2, character: 0 }, end: { line: 0, character: 0 } }, newText: "x" }]);
+    expect((await run("lsp.format", { path: "a.c", at: at(text) })).edits).toEqual([]);
+  });
+
+  test("a style file in the project wins", async () => {
+    const d = await ready(text, "a.c");
+    h.styleFiles.add(`${d.root}/.clang-format`);
+    h.client.request.mockResolvedValue(edits);
+    const r = await run("lsp.format", { path: "a.c", at: at(text) });
+    expect(r.edits).toEqual(edits);
+  });
 });
 
 test("format refuses when the guest's text never arrives", async () => {

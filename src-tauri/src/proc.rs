@@ -295,7 +295,7 @@ fn kill_tree(child: &Child) {
     let mut groups = HashSet::new();
     let mut alive = HashSet::new();
     for _ in 0..KILL_TREE_ROUNDS {
-        let ps = Command::new("/bin/ps").args(["-A", "-o", "pid=,ppid=,pgid="]).stdin(Stdio::null()).stderr(Stdio::null()).output();
+        let ps = crate::env::process("/bin/ps").args(["-A", "-o", "pid=,ppid=,pgid="]).stdin(Stdio::null()).stderr(Stdio::null()).output();
         let text = ps.map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
         groups.extend(descendant_groups(&text, pid, own));
         alive = descendants(&ps_rows(&text), pid);
@@ -336,6 +336,21 @@ pub struct Captured {
 pub async fn run_capture(cmd: String, args: Vec<String>, cwd: Option<String>) -> Result<Captured, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let out = command(&cmd, &args, cwd, None)?.output().map_err(|e| e.to_string())?;
+        Ok(Captured {
+            code: out.status.code().unwrap_or(-1),
+            stdout: String::from_utf8_lossy(&out.stdout).into(),
+            stderr: String::from_utf8_lossy(&out.stderr).into(),
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// `mojo build` for the debugger, see `tools::mojo_debug_build`.
+#[tauri::command]
+pub async fn mojo_debug_build(source: String, program: String, cwd: Option<String>) -> Result<Captured, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let out = crate::tools::mojo_debug_build(&source, &program, cwd.as_deref())?;
         Ok(Captured {
             code: out.status.code().unwrap_or(-1),
             stdout: String::from_utf8_lossy(&out.stdout).into(),
@@ -480,16 +495,7 @@ pub async fn install_server(app: AppHandle, kind: String) -> Result<String, Stri
                 let bin = if kind == "python" { "basedpyright-langserver" } else { "typescript-language-server" };
                 Ok(crate::env::norm(target.join("node_modules").join(".bin").join(bin)))
             }
-            "java" => {
-                let archive = dir.join(".jdtls.tar.gz");
-                crate::tools::download(&app, "jdtls", "https://download.eclipse.org/jdtls/snapshots/jdt-language-server-latest.tar.gz", &archive)?;
-                let target = dir.join("jdtls");
-                let _ = std::fs::remove_dir_all(&target);
-                let r = crate::tools::unpack(&archive, "jdtls.tar.gz", &target, "");
-                let _ = std::fs::remove_file(archive);
-                r?;
-                Ok(crate::env::norm(target))
-            }
+            "java" => crate::jdtls::install(&app, &dir),
             "rust" => {
                 run(crate::env::tool("rustup")?.args(["component", "add", "rust-analyzer"]))?;
                 Ok("rust-analyzer".into())
@@ -498,6 +504,7 @@ pub async fn install_server(app: AppHandle, kind: String) -> Result<String, Stri
             "scala" => crate::tools::install_metals(&app),
             "ocaml" => crate::tools::install_ocaml_package(&app, "lsp-ocaml", "ocaml-lsp-server", "ocamllsp"),
             "mojo" => crate::tools::install_mojo(&app, "lsp-mojo", false),
+            "go" => crate::tools::golang::install_go_tool(&app, "lsp-go", crate::tools::golang::GOPLS, "gopls"),
             _ => Err(format!("proc:no_auto_install:{kind}")),
         }
     })
@@ -582,6 +589,7 @@ pub async fn install_debugger(app: AppHandle, kind: String) -> Result<String, St
             let r = crate::tools::unpack(&archive, "js-debug.tar.gz", &dir, "");
             let _ = std::fs::remove_file(&archive);
             r?;
+            mark_commonjs(&dir.join("js-debug").join("src"))?;
             if let Some(v) = crate::installs::extract_version(&url.rsplit('/').next().unwrap_or_default()) {
                 let _ = std::fs::write(dir.join("js-debug").join(".omega-version"), v);
             }
@@ -606,15 +614,36 @@ pub async fn install_debugger(app: AppHandle, kind: String) -> Result<String, St
         }
         "earlybird" => crate::tools::install_ocaml_package(&app, "earlybird", "earlybird", "ocamlearlybird"),
         "mojo" => crate::tools::install_mojo(&app, "mojo", false),
+        "delve" => crate::tools::golang::install_go_tool(&app, "delve", crate::tools::golang::DELVE, "dlv"),
         _ => Err(format!("proc:unknown_debugger:{kind}")),
     })
     .await
     .map_err(|e| e.to_string())?
 }
 
+/// js-debug ships CommonJS without its own package.json, so a `"type": "module"` in any parent
+/// folder (a package.json in the home folder, say) would make Node load it as an ES module.
+fn mark_commonjs(dir: &std::path::Path) -> Result<(), String> {
+    std::fs::write(dir.join("package.json"), "{\"type\":\"commonjs\"}\n").map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{npm_packages, read_message, run_registered};
+    use super::{mark_commonjs, npm_packages, read_message, run_registered};
+
+    #[test]
+    fn js_debug_stays_commonjs_under_a_module_package() {
+        let Some(node) = crate::proc::which("node") else { return };
+        let t = tempfile::tempdir().unwrap();
+        std::fs::write(t.path().join("package.json"), r#"{"type":"module"}"#).unwrap();
+        let src = t.path().join("js-debug").join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let script = src.join("server.js");
+        std::fs::write(&script, "require('fs'); module.exports = 1;").unwrap();
+        assert!(!crate::env::command(&node).arg(&script).output().unwrap().status.success());
+        mark_commonjs(&src).unwrap();
+        assert!(crate::env::command(&node).arg(&script).output().unwrap().status.success());
+    }
     #[cfg(unix)]
     use super::{descendant_groups, descendants, kill_registered, ps_rows};
     use std::collections::{HashMap, HashSet};
