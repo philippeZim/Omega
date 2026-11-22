@@ -20,7 +20,8 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { CalloutFoldWidget, CalloutHeadWidget, parseCalloutHead } from "./callout";
 import { TableWidget } from "./table";
 import { ASSET_PREFIX, remoteRel } from "../collab/guestAssets";
-import { BulletWidget, CheckboxWidget, CodeHeaderWidget, HrWidget, ImageWidget, MathWidget, renderMath } from "./widgets";
+import { BulletWidget, CheckboxWidget, CodeHeaderWidget, HrWidget, ImageWidget, MathWidget, RemoteImageWidget, renderMath } from "./widgets";
+import { allowImages, imagesAllowed, isForeignScheme, isRemoteImage, isStoredPath, onRemoteImagesChange, type ImageScope } from "./remoteImages.svelte";
 import "./markdown.css";
 
 // ------------------------------------------------------------ link handling (wired up by the app)
@@ -66,12 +67,32 @@ export function linkDest(raw: string) {
   return /^<.*>$/.test(raw) ? raw.slice(1, -1) : raw;
 }
 
-function imageSrc(url: string, fromPath: string | null) {
-  if (/^(https?|data):/i.test(url)) return url;
+export function imageSrc(url: string, fromPath: string | null) {
+  if (isRemoteImage(url) || /^data:/i.test(url)) return url;
+  // ftp:, file:, a hand-written collab-asset: … are no image source; this shows them as broken.
+  if (isForeignScheme(url)) return ASSET_PREFIX;
   // A guest's shared doc: the host resolves it. Nothing here may touch this machine's files.
   if (fromPath?.startsWith("collab:")) return ASSET_PREFIX + (remoteRel(url, fromPath) ?? "");
   const abs = resolvePath(url, fromPath);
   return abs ? convertFileSrc(abs) : url;
+}
+
+// ------------------------------------------------------------ remote image permission
+
+const allowInDoc = StateEffect.define<null>();
+const permissionChanged = StateEffect.define<null>();
+
+/** "Load images" for a doc without a stored permission: a shared doc or an unsaved tab. */
+const docImagesAllowed = StateField.define<boolean>({
+  create: () => false,
+  update: (v, tr) => v || tr.effects.some((e) => e.is(allowInDoc)),
+});
+
+function allowFrom(path: string | null) {
+  return (view: EditorView, scope: ImageScope) => {
+    if (isStoredPath(path)) allowImages(path, scope);
+    else view.dispatch({ effects: allowInDoc.of(null) });
+  };
 }
 
 // ------------------------------------------------------------ reveal state
@@ -352,7 +373,12 @@ function buildInline(view: EditorView, path: string | null): DecorationSet {
             const urlNode = node.getChild("URL");
             const marks = node.getChildren("LinkMark");
             const alt = marks.length >= 2 ? slice(marks[0].to, marks[1].from) : "";
-            if (urlNode) widget(n.from, n.to, new ImageWidget(imageSrc(linkDest(slice(urlNode.from, urlNode.to)), path), alt));
+            if (urlNode) {
+              const url = linkDest(slice(urlNode.from, urlNode.to));
+              if (isRemoteImage(url) && !imagesAllowed(path) && !state.field(docImagesAllowed, false))
+                widget(n.from, n.to, new RemoteImageWidget(url, alt, path, allowFrom(path)));
+              else widget(n.from, n.to, new ImageWidget(imageSrc(url, path), alt));
+            }
           } else mark(n.from, n.to, "md-formatting");
           return false;
         }
@@ -454,12 +480,18 @@ function inlinePlugin(path: string | null) {
   return ViewPlugin.fromClass(
     class {
       decorations: DecorationSet;
+      stopListening: () => void;
       constructor(view: EditorView) {
         this.decorations = buildInline(view, path);
+        this.stopListening = onRemoteImagesChange(() => view.dispatch({ effects: permissionChanged.of(null) }));
+      }
+      destroy() {
+        this.stopListening();
       }
       update(u: ViewUpdate) {
         if (
           u.docChanged ||
+          u.transactions.some((tr) => tr.effects.some((e) => e.is(allowInDoc) || e.is(permissionChanged))) ||
           u.viewportChanged ||
           u.state.field(reveal, false) !== u.startState.field(reveal, false) ||
           syntaxTree(u.state) !== syntaxTree(u.startState)
@@ -554,6 +586,7 @@ export function insertLink(view: EditorView) {
 export function livePreview(path: string | null): Extension {
   return [
     reveal,
+    docImagesAllowed,
     blocks,
     inlinePlugin(path),
     dragTracker,

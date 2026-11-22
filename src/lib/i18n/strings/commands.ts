@@ -346,6 +346,9 @@ export const en = {
   "commands.cm.selectionDeleted": "Selection deleted",
   "commands.cmd.code.language": "Choose Language of This File…",
   "commands.cmd.window.new": "New Window",
+  "commands.md.remoteImage": "Remote image from {host} blocked",
+  "commands.md.loadImages": "Load images",
+  "commands.md.loadImagesFolder": "Allow for this folder",
 };
 export const de: Record<keyof typeof en, string> = {
   "commands.group.window": "Fenster & Layout",
@@ -694,6 +697,9 @@ export const de: Record<keyof typeof en, string> = {
   "commands.cm.selectionDeleted": "Auswahl gelöscht",
   "commands.cmd.code.language": "Sprache dieser Datei wählen …",
   "commands.cmd.window.new": "Neues Fenster",
+  "commands.md.remoteImage": "Externes Bild von {host} blockiert",
+  "commands.md.loadImages": "Bilder laden",
+  "commands.md.loadImagesFolder": "Für diesen Ordner erlauben",
 };
 export const fr: Record<keyof typeof en, string> = {
   "commands.group.window": "Fenêtres et disposition",
@@ -1042,4 +1048,7 @@ export const fr: Record<keyof typeof en, string> = {
   "commands.cm.selectionDeleted": "Sélection supprimée",
   "commands.cmd.code.language": "Choisir le langage de ce fichier…",
   "commands.cmd.window.new": "Nouvelle fenêtre",
+  "commands.md.remoteImage": "Image distante de {host} bloquée",
+  "commands.md.loadImages": "Charger les images",
+  "commands.md.loadImagesFolder": "Autoriser pour ce dossier",
 };
