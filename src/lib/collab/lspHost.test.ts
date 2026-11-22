@@ -43,7 +43,7 @@ vi.mock("./share.svelte", () => ({
 vi.mock("@tauri-apps/api/path", () => ({ tempDir: async () => "/tmp" }));
 vi.mock("../state.svelte", () => ({ app: h.app }));
 vi.mock("../api", () => ({ joinPath: (a: string, b: string) => `${a}/${b}`, fsApi: { homeDir: async () => "/home/me" } }));
-vi.mock("../code/languages", () => ({ langById: (id: string) => ({ id }), langFor: (p: string) => (p.endsWith(".py") ? { id: "python", server: "python", lspId: "python" } : null) }));
+vi.mock("../code/languages", async (importOriginal) => ({ ...(await importOriginal<typeof import("../code/languages")>()), langById: (id: string) => ({ id }), langFor: (p: string) => (p.endsWith(".py") ? { id: "python", server: "python", lspId: "python" } : null) }));
 vi.mock("../code/lsp.svelte", () => ({
   clientFor: h.clientFor,
   fileUri: (p: string) => `file://${p}`,
@@ -456,6 +456,18 @@ test("format: edits are tied to the text they were computed for", async () => {
   const edits = [{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 3 } }, newText: "x = 1" }];
   h.client.request.mockResolvedValue(edits);
   expect(await run("lsp.format", { path: "a.py", at: at("x=1\n") })).toEqual({ base: at("x=1\n"), edits });
+});
+
+test.each([
+  ["tabs", "def f():\n\tif x:\n\t\treturn 1\n", { tabSize: 4, insertSpaces: false }],
+  ["two spaces", "def f():\n  if x:\n    return 1\n", { tabSize: 2, insertSpaces: true }],
+  ["no indentation: the language's convention", "x=1\n", { tabSize: 4, insertSpaces: true }],
+])("format for a guest uses the file's indentation: %s", async (_name, text, options) => {
+  await ready(text);
+  h.client.request.mockResolvedValue([]);
+  await run("lsp.format", { path: "a.py", at: at(text) });
+  const call = h.client.request.mock.calls.find((c: any[]) => c[0] === "textDocument/formatting")!;
+  expect(call[1].options).toEqual(options);
 });
 
 test("format refuses when the guest's text never arrives", async () => {

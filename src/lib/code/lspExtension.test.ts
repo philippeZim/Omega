@@ -4,6 +4,8 @@ import { EditorView } from "@codemirror/view";
 import { forEachDiagnostic, type Diagnostic } from "@codemirror/lint";
 import { applyItem, lspExtension, renderDoc, toOffset, toPos } from "./lspExtension";
 import { fileUri } from "./lsp.svelte";
+import { runViewAction } from "../editorActions";
+import { indentFor, langFor } from "./languages";
 
 const m = vi.hoisted(() => ({ client: null as any }));
 
@@ -205,6 +207,32 @@ async function mountWith(client: any, doc: string) {
   await vi.waitFor(() => expect(client.open).toHaveBeenCalled());
   return v;
 }
+
+describe("lspExtension formatting", () => {
+  const optionsFor = async (path: string, doc: string) => {
+    const c = fakeClient({ capabilities: { documentFormattingProvider: true } });
+    m.client = c;
+    const v = view(doc, [indentFor(langFor(path)), lspExtension(PATH, LANG)]);
+    await vi.waitFor(() => expect(c.open).toHaveBeenCalled());
+    runViewAction(v, "lsp.format");
+    await vi.waitFor(() => expect(c.request).toHaveBeenCalled());
+    const call = c.request.mock.calls.find((x: any[]) => x[0] === "textDocument/formatting") as any[];
+    return call[1].options;
+  };
+
+  test("a file indented with tabs is formatted with tabs", async () => {
+    expect(await optionsFor("a.py", "def f():\n\tif x:\n\t\treturn 1\n")).toEqual({ tabSize: 4, insertSpaces: false });
+  });
+
+  test("a file indented with two spaces keeps two spaces", async () => {
+    expect(await optionsFor("a.py", "def f():\n  if x:\n    return 1\n")).toEqual({ tabSize: 2, insertSpaces: true });
+  });
+
+  test("without indentation the language's convention counts", async () => {
+    expect(await optionsFor("a.ts", "let x = 1;\n")).toEqual({ tabSize: 2, insertSpaces: true });
+    expect(await optionsFor("a.py", "x = 1\n")).toEqual({ tabSize: 4, insertSpaces: true });
+  });
+});
 
 describe("lspExtension diagnostics", () => {
   beforeEach(() => {

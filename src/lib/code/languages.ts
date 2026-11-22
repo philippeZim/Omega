@@ -179,18 +179,29 @@ export function detectIndent(doc: Text | string): string | null {
   return best ? " ".repeat(best) : null;
 }
 
+/** The indentation a language conventionally uses. */
+export function conventionalIndent(lang: LangInfo | null): string {
+  const two = lang && ["javascript", "typescript", "json", "scala", "ocaml", "yaml", "shell", "xml"].includes(lang.id);
+  return two ? "  " : "    ";
+}
+
+/** The indentation for this text: its own, within what the language allows, else `fallback`. */
+function chooseIndent(doc: Text | string, lang: LangInfo | null, fallback: string): string {
+  if (lang?.id === "makefile") return "\t"; // make only accepts tabs before a recipe
+  const found = detectIndent(doc);
+  return lang?.id === "yaml" && found === "\t" ? fallback : found ?? fallback; // YAML forbids tabs
+}
+
+/** LSP `FormattingOptions` for this text. */
+export function formattingOptions(doc: Text | string, lang: LangInfo | null, fallback = conventionalIndent(lang), tabSize = 4): { tabSize: number; insertSpaces: boolean } {
+  const unit = chooseIndent(doc, lang, fallback);
+  return unit.includes("\t") ? { tabSize, insertSpaces: false } : { tabSize: unit.length, insertSpaces: true };
+}
+
 /** The file's own indentation (detected when it is loaded), else the language's convention (PEP 8, rustfmt, Google Java, Prettier, scalafmt, ocamlformat). */
 export function indentFor(lang: LangInfo | null): Extension {
-  const two = lang && ["javascript", "typescript", "json", "scala", "ocaml", "yaml", "shell", "xml"].includes(lang.id);
-  const fallback = two ? "  " : "    ";
-  const unit = StateField.define<string>({
-    create: (state) => {
-      if (lang?.id === "makefile") return "\t"; // make only accepts tabs before a recipe
-      const found = detectIndent(state.doc);
-      return lang?.id === "yaml" && found === "\t" ? fallback : found ?? fallback; // YAML forbids tabs
-    },
-    update: (v) => v,
-  });
+  const fallback = conventionalIndent(lang);
+  const unit = StateField.define<string>({ create: (state) => chooseIndent(state.doc, lang, fallback), update: (v) => v });
   return [unit, indentUnit.from(unit)];
 }
 

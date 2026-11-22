@@ -1,5 +1,6 @@
 /** CodeMirror integration for the LSP client: sync, completion, hover, diagnostics, definition, formatting. */
 import type { Extension, Text } from "@codemirror/state";
+import { indentUnit } from "@codemirror/language";
 import { EditorView, ViewPlugin, hoverTooltip, type ViewUpdate } from "@codemirror/view";
 import { viewActions } from "../editorActions";
 import { autocompletion, insertCompletionText, snippet, type Completion, type CompletionContext, type CompletionResult } from "@codemirror/autocomplete";
@@ -7,7 +8,7 @@ import { setDiagnostics, forEachDiagnostic, type Diagnostic, type Action } from 
 import { ui } from "../ui.svelte";
 import { t } from "../i18n/index.svelte";
 import { clientFor, fileUri, lspState, realPathOf, registerShadow, releasePrivate, restartListeners, restartServer, setLspRoute, setLspWorkspace, uriPath, type LspClient, type ServerKind } from "./lsp.svelte";
-import type { LangInfo } from "./languages";
+import { formattingOptions, type LangInfo } from "./languages";
 import { isForeignLang } from "./langOverride.svelte";
 import { clangdCommand, shadowForLsp } from "./langRun";
 import { runsAlone } from "./projects";
@@ -420,7 +421,7 @@ export function lspExtension(path: string, lang: LangInfo): Extension {
   async function format(view: EditorView) {
     if (!client?.capabilities.documentFormattingProvider) return false;
     flush();
-    const edits: any[] = await client.request("textDocument/formatting", { textDocument: { uri }, options: { tabSize: 4, insertSpaces: true } }).catch(() => null);
+    const edits: any[] = await client.request("textDocument/formatting", { textDocument: { uri }, options: formattingOptions(view.state.doc, lang, view.state.facet(indentUnit), view.state.tabSize) }).catch(() => null);
     if (!edits?.length) return true;
     const doc = view.state.doc;
     view.dispatch({ changes: edits.map((e) => ({ from: toOffset(doc, e.range.start), to: toOffset(doc, e.range.end), insert: e.newText })) });
