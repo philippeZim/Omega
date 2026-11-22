@@ -275,7 +275,7 @@ const shareableRel = (abs: string) => {
  * relative path (so the guest's file tree finds them), unsaved "Untitled" tabs their id
  * ("tab:<id>"). Files on disk outside the project and in a git folder aren't shared.
  */
-export const hostKey = (tab: Tab): string | null => (tab.path ? shareableRel(tab.path) : `tab:${tab.id}`);
+export const hostKey = (tab: Tab): string | null => (tab.headOf ? null : tab.path ? shareableRel(tab.path) : `tab:${tab.id}`);
 
 /** Like `hostKey`, but also resolves symlinks. Use it before telling guests about a tab. */
 export async function hostKeyChecked(tab: Tab): Promise<string | null> {
@@ -475,6 +475,8 @@ async function writeBackgroundDoc(d: SharedDoc) {
   if (now !== undefined && d.disk !== undefined && now !== d.disk) return d.ytext.toString() !== text ? keepTyped(d, now) : applyDisk(d, now);
   // Deleted meanwhile: don't bring the file back (#134).
   if (now === undefined && d.disk !== undefined && !(await fsApi.exists(abs).catch(() => true))) return hostFileGone(d);
+  // Grown past the read limit: it can't be compared, and the shared text must not replace it (#174).
+  if (now === undefined && (await fsApi.fileInfo(abs).catch(() => null))?.too_large) return;
   const before = d.disk;
   d.disk = text;
   await fsApi.writeFile(abs, text).catch(() => (d.disk = before));
@@ -570,7 +572,7 @@ async function hostDoc(rel: string): Promise<SharedDoc | null> {
   if (rel.startsWith("tab:")) {
     // Only unsaved tabs are shared by id: a path here would be a file outside the project.
     const tab = app.tabs.find((t) => t.id === rel.slice(4));
-    if (!tab || tab.path) return null;
+    if (!tab || tab.path || tab.headOf) return null;
     const shared = docs.get(rel);
     if (shared) return shared;
     const d = makeDoc(rel, true);

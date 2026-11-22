@@ -403,7 +403,7 @@ async function stashOwnWorkspace() {
   await flushAutosave();
   const snap: Snapshot = { root: app.root, mode: app.mode, active: activeTab()?.path ?? null, tabs: [] };
   for (const tab of [...app.tabs]) {
-    if (isRemote(tab.path)) continue;
+    if (isRemote(tab.path) || tab.headOf) continue; // a too large file's read-only view isn't kept
     // Files on disk are autosaved. Unsaved "Untitled" tabs and files whose autosave failed (e.g.
     // read-only) keep their text in the snapshot (#129).
     snap.tabs.push(tab.path && !tab.dirty ? { path: tab.path, name: tab.name } : { path: tab.path, name: tab.name, content: ed.getText(tab.id) });
