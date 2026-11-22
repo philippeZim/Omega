@@ -10,6 +10,7 @@ import { t } from "../i18n/index.svelte";
 import { clientFor, fileUri, lspState, realPathOf, registerShadow, releasePrivate, restartListeners, restartServer, setLspRoute, setLspWorkspace, uriPath, type LspClient, type ServerKind } from "./lsp.svelte";
 import { formattingOptions, type LangInfo } from "./languages";
 import { keepFileIndent, syncPrivateStyle } from "./clangFormat";
+import { signatureHelp } from "./lspSignature";
 import { isForeignLang } from "./langOverride.svelte";
 import { clangdCommand, shadowForLsp } from "./langRun";
 import { runsAlone } from "./projects";
@@ -439,6 +440,7 @@ export function lspExtension(path: string, lang: LangInfo): Extension {
     plugin,
     autocompletion({ override: [completionSource(() => client, () => uri, flush)], icons: true, activateOnTypingDelay: 60 }),
     hover,
+    signatureHelp(() => client, () => uri, flush, renderDoc),
     viewActions.of({
       "lsp.gotoDefinition": (v) => (gotoDefinition(v), true),
       "lsp.format": (v) => (format(v), true),

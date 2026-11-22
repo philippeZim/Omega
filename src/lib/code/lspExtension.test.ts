@@ -256,6 +256,17 @@ describe("lspExtension formatting", () => {
   });
 });
 
+describe("lspExtension signature help", () => {
+  test("typing a trigger character shows the server's signature", async () => {
+    const help = { signatures: [{ label: "f(int a)", parameters: [{ label: "int a" }] }], activeParameter: 0 };
+    const c = fakeClient({ capabilities: { signatureHelpProvider: { triggerCharacters: ["("] } }, request: vi.fn(async () => help) });
+    const v = await mountWith(c, "f");
+    v.dispatch({ changes: { from: 1, insert: "(" }, selection: { anchor: 2 }, userEvent: "input.type" });
+    await vi.waitFor(() => expect(v.dom.querySelector(".lsp-signature-active")?.textContent).toBe("int a"));
+    expect(c.request).toHaveBeenCalledWith("textDocument/signatureHelp", expect.objectContaining({ textDocument: { uri: URI } }), 5000);
+  });
+});
+
 describe("lspExtension diagnostics", () => {
   beforeEach(() => {
     m.client = null;
