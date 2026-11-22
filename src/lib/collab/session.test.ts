@@ -50,6 +50,7 @@ vi.mock("./share.svelte", () => ({
 
 type Tab = { id: string; path: string | null; name: string; dirty: boolean };
 const texts = new Map<string, string>();
+const opened: [string, boolean | undefined][] = [];
 const app = { root: "/home/g" as string | null, tabs: [] as Tab[], activeId: null as string | null, mode: "text" };
 let seq = 0;
 const addTab = (path: string | null, name: string, text: string, dirty = false) => {
@@ -70,7 +71,8 @@ vi.mock("../state.svelte", () => ({
   // The guest's file can't be saved (read-only): autosave leaves dirty tabs dirty.
   flushAutosave: async () => {},
   newFile: () => addTab(null, "Untitled", ""),
-  openFile: async (path: string) => {
+  openFile: async (path: string, quiet?: boolean) => {
+    opened.push([path, quiet]);
     if (!app.tabs.some((t) => t.path === path)) addTab(path, path.split("/").pop()!, fs.files.get(path) ?? "");
   },
   setMode: vi.fn(),
@@ -141,6 +143,15 @@ test("joining keeps a large file with unsaved edits open, out of the snapshot (#
   expect(ui.toast).toHaveBeenCalled();
   for (const h of endHooks) await h(true);
   expect(app.tabs.find((t) => t.path === "/home/g/mid.log")?.dirty).toBe(true);
+});
+
+test("leaving a session reopens saved tabs quietly, so a large file raises no dialog (#174)", async () => {
+  fs.files.set("/home/g/clean.txt", "clean\n");
+  addTab("/home/g/clean.txt", "clean.txt", "clean\n");
+  await join();
+  opened.length = 0;
+  for (const h of endHooks) await h(true);
+  expect(opened).toEqual([["/home/g/clean.txt", true]]);
 });
 
 test("joining keeps unsaved edits of a file whose autosave failed, leaving brings them back (#129)", async () => {

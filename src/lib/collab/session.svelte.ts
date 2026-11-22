@@ -432,7 +432,7 @@ async function restoreOwnWorkspace() {
   setMode(snap.mode);
   for (const tab of snap.tabs) {
     const onDisk = !!tab.path && (await fsApi.exists(tab.path));
-    if (onDisk) await openFile(tab.path!);
+    if (onDisk) await openFile(tab.path!, true); // quiet: a large file gets a notice, no dialog (#174)
     if (tab.content === undefined || (!tab.path && !tab.content)) continue;
     // Unsaved text: back into the reopened file's tab (still unsaved), or a new tab.
     let x = onDisk ? app.tabs.find((y) => y.path === tab.path) : undefined;
