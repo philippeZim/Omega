@@ -1191,6 +1191,47 @@ describe("viewer tabs (#159)", () => {
     expect(viewer("/p/a.svg")).toBeDefined();
   });
 
+  test("a line-targeted open shows an SVG as text, also over its viewer tab", async () => {
+    await viewerSetup({ "/p/a.svg": "<svg/>", "/p/b.svg": "<svg/>" });
+    await st.openFile("/p/a.svg", false, true);
+    expect(st.app.tabs.find((t) => t.path === "/p/a.svg")).toBeDefined();
+    await st.openFile("/p/b.svg");
+    expect(viewer("/p/b.svg")).toBeDefined();
+    await st.openFile("/p/b.svg", false, true);
+    expect(viewer("/p/b.svg")).toBeUndefined();
+    expect(st.activeTab()?.path).toBe("/p/b.svg");
+  });
+
+  test("a line-targeted open leaves binary kinds in their viewer", async () => {
+    await viewerSetup({ "/p/a.png": "x", "/p/a.pdf": "x" });
+    await st.openFile("/p/a.png", false, true);
+    await st.openFile("/p/a.pdf", false, true);
+    expect(viewer("/p/a.png")).toBeDefined();
+    expect(viewer("/p/a.pdf")).toBeDefined();
+    expect(fs.calls.some((c) => c.cmd === "read_file")).toBe(false);
+  });
+
+  test("closing the read-only head of an SVG clears its text choice", async () => {
+    await viewerSetup({ "/p/a.svg": "<svg/>" });
+    await st.openFile("/p/a.svg");
+    const other = fs.other;
+    fs.other = (cmd: string, args: any) => {
+      if (cmd === "file_info") return { size: 1e9, too_large: true, preview: true, modified: 1 };
+      if (cmd === "read_file_head") return { text: "<svg", size: 1e9 };
+      return other(cmd, args);
+    };
+    fs.beforeRead = async () => {
+      throw "fs:too_large";
+    };
+    ui.nextChoice = "head";
+    await st.openViewerAsText(viewer("/p/a.svg").id);
+    const head = st.app.tabs.find((t) => t.headOf === "/p/a.svg")!;
+    expect(head).toBeDefined();
+    await st.closeTab(head.id);
+    await st.openFile("/p/a.svg");
+    expect(viewer("/p/a.svg")).toBeDefined();
+  });
+
   test("a language override keeps an SVG as text", async () => {
     await viewerSetup({ "/p/a.svg": "<svg/>" });
     const { setLanguageOverride } = await import("./code/langOverride.svelte");

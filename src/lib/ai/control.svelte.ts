@@ -216,7 +216,7 @@ export const TOOLS: Tool[] = [
     inputSchema: obj({ path: str("Dateipfad"), line: num("Zeile (1-basiert)") }, ["path"]),
     run: async ({ path, line }) => {
       const abs = path.startsWith("/") ? path : `${app.root}/${path}`;
-      await openFile(abs);
+      await openFile(abs, false, !!line);
       if (line) {
         const v = ed.getView();
         v?.dispatch({ selection: { anchor: posOf(line, 1) }, scrollIntoView: true });

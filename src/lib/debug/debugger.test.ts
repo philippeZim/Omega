@@ -258,7 +258,7 @@ describe("debugger controller with a fake adapter", () => {
   test("selecting a frame in another file opens it", async () => {
     await startAndStop();
     await D.selectFrame(S.dbg.frames[0]);
-    expect(m.openFile).toHaveBeenCalledWith("/usr/lib/runpy.py");
+    expect(m.openFile).toHaveBeenCalledWith("/usr/lib/runpy.py", false, true);
     expect(S.dbg.exec).toEqual({ path: "/usr/lib/runpy.py", line: 5 });
     await D.selectFrame(S.dbg.frames[2]);
     expect(S.dbg.exec).toBeNull();

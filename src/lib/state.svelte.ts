@@ -26,7 +26,7 @@ setLspHooks({
   askInstall: (_kind, name) =>
     ui.confirm(t("app.lspInstallTitle"), t("app.lspInstallMessage", { name }), t("app.install")),
   navigate: async (path, line, ch) => {
-    await openFile(path);
+    await openFile(path, false, true);
     // The open can be cancelled (large file) or fail: the cursor must not jump in another file.
     const wanted = resolveDots(normPath(path));
     const tab = activeTab();
@@ -475,9 +475,13 @@ export function activate(id: string) {
   touchRecent(activeTab()?.path ?? (isRemotePath(activeTab()?.viewOf) ? null : activeTab()?.viewOf));
 }
 
-/** `quiet`: nobody asked for this file right now (session restore), so a too large one is only reported. */
-export async function openFile(path: string, quiet = false) {
+/**
+ * `quiet`: nobody asked for this file right now (session restore), so a too large one is only reported.
+ * `atLine`: the caller goes on to a line or selection in it, so an SVG opens as text. Binary kinds stay viewers.
+ */
+export async function openFile(path: string, quiet = false, atLine = false) {
   path = resolveDots(normPath(path));
+  if (atLine && isSvgPath(path)) return openSvgAsText(path, quiet);
   const existing = app.tabs.find((t) => t.path === path || t.headOf === path || t.viewOf === path);
   if (existing) return activate(existing.id);
   if (isRemotePath(path)) return collabHooks.openRemote(path);
@@ -538,19 +542,27 @@ export function openRemoteViewer(path: string, viewer: ViewerKind) {
   activate(open ? open.id : addViewerTab(path, viewer));
 }
 
+/** The next open of this SVG gives text; a viewer tab of it closes. True if there was one. */
+export async function preferText(path: string) {
+  textViews.add(path);
+  const viewer = app.tabs.find((x) => x.viewOf === path);
+  if (viewer) await closeTab(viewer.id, true);
+  return !!viewer;
+}
+
+async function openSvgAsText(path: string, quiet: boolean) {
+  const hadViewer = await preferText(path);
+  await openFile(path, quiet);
+  // Not readable as text (a toast said why), or the large-file question was declined. A guest's tab arrives later.
+  if (isRemotePath(path) || app.tabs.some((x) => x.path === path || x.headOf === path)) return;
+  textViews.delete(path);
+  if (hadViewer && !app.tabs.some((x) => x.viewOf === path)) await openFile(path, quiet);
+}
+
 /** "Open as Text" on an SVG viewer: replaces the tab by a normal editor tab. */
 export async function openViewerAsText(id: string) {
-  const tab = app.tabs.find((x) => x.id === id);
-  const path = tab?.viewOf;
-  if (!path) return;
-  textViews.add(path);
-  await closeTab(id, true);
-  await openFile(path);
-  // Not readable as text (a toast said why): back to the image. A guest's tab arrives later.
-  if (!isRemotePath(path) && !app.tabs.some((x) => x.path === path || x.headOf === path)) {
-    textViews.delete(path);
-    await openFile(path);
-  }
+  const path = app.tabs.find((x) => x.id === id)?.viewOf;
+  if (path) await openSvgAsText(path, false);
 }
 
 /** 8 to 64 MiB: warns, then opens the whole file, editable, without the expensive features (#174). */
@@ -705,7 +717,8 @@ export async function closeTab(id: string, force = false) {
     closedPaths.push(closedFile);
     if (closedPaths.length > 30) closedPaths.shift();
   }
-  if (tab.path) textViews.delete(tab.path);
+  const textFile = tab.path ?? tab.headOf;
+  if (textFile) textViews.delete(textFile);
   ed.disposeDoc(id);
   diskStamps.delete(id);
   staleNoticed.delete(id);

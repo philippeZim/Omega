@@ -532,7 +532,7 @@ test("following a guest never opens a path outside the project or in .git", asyn
     expect(openFile).not.toHaveBeenCalled();
 
     await receive("g1", { t: "presence", file: "a.txt", line: 1, name: "G", color: "#333333" });
-    await vi.waitFor(() => expect(openFile).toHaveBeenCalledWith("/p/a.txt", true));
+    await vi.waitFor(() => expect(openFile).toHaveBeenCalledWith("/p/a.txt", true, true));
   } finally {
     share.follow("g1");
   }

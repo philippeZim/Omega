@@ -75,7 +75,7 @@ const TOOLS: { name: string; description: string; inputSchema: object; run: (a: 
     description: "Open a file in the editor and optionally select a range of text",
     inputSchema: { type: "object", properties: { filePath: { type: "string" }, preview: { type: "boolean" }, startText: { type: "string" }, endText: { type: "string" }, startLine: { type: "integer" }, endLine: { type: "integer" }, selectToEndOfLine: { type: "boolean" }, makeFrontmost: { type: "boolean" } }, required: ["filePath"] },
     run: async (a) => {
-      await openFile(a.filePath);
+      await openFile(a.filePath, false, !!(a.startText || a.startLine));
       const v = ed.getView();
       if (v) {
         const doc = v.state.doc;

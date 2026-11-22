@@ -18,8 +18,8 @@ import { guestMayWrite, hookLocked, refreshHookLocks, resetHookLocks } from "./h
 import { moveGuestChange, noteGuestChange } from "./guestChanges";
 import { checkUpdate } from "./yjsDeps";
 import { call, fits, forgetRpcPeer, hasCapability, isApproved, isObj, onCapabilitiesChanged, registerMethod, rpcErrorText, RpcFail } from "./rpc.svelte";
-import { app, openFile, activeTab, activate, collabHooks, setMode, pathMoved, openRemoteViewer, wantsText, type Tab } from "../state.svelte";
-import { viewerKind } from "../viewer";
+import { app, openFile, activeTab, activate, collabHooks, setMode, pathMoved, openRemoteViewer, preferText, wantsText, type Tab } from "../state.svelte";
+import { isSvgPath, viewerKind } from "../viewer";
 import type { Mode } from "../modes";
 import { MODES } from "../modeList";
 import { onFilesChanged } from "../fsWatch.svelte";
@@ -754,6 +754,8 @@ const pendingOpens = new Map<string, { line?: number; range?: [number, number] }
  */
 export async function openRemote(rel: string, line?: number, range?: [number, number]) {
   const viewer = rel.startsWith("tab:") ? null : viewerKind(rel);
+  // Going to a line: an SVG is text there. Binary kinds stay viewers.
+  if (viewer && line && isSvgPath(rel)) await preferText(REMOTE + rel);
   if (viewer && !wantsText(REMOTE + rel)) return openRemoteViewer(REMOTE + rel, viewer);
   const existing = docs.get(rel);
   if (existing?.tabId && app.tabs.some((t) => t.id === existing.tabId)) {
@@ -1144,7 +1146,7 @@ async function applyFollow() {
     scrollToLine(p.line);
   } else if (app.root && (await guestPathOk(p.file))) {
     // Quiet: following a guest must never start the read of a large file on the host (#174).
-    await openFile(joinPath(app.root, p.file), true);
+    await openFile(joinPath(app.root, p.file), true, !!p.line);
     scrollToLine(p.line);
   }
 }

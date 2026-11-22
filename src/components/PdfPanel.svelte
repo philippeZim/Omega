@@ -140,7 +140,7 @@
   async function openAt(file: string, line: number) {
     if (otherFile(file)) {
       if (file.startsWith("collab:")) return remoteLatex.openAt(file, line); // opens asynchronously
-      await openFile(file);
+      await openFile(file, false, true);
       if (activeTab()?.path !== file) return;
     }
     gotoLine(line);
