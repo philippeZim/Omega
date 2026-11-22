@@ -285,7 +285,7 @@
   .tool.round { width: 26px; padding: 0; }
   .zoom { display: flex; align-items: center; flex-shrink: 0; gap: 2px; padding: 2px; border-radius: 999px; background: var(--recess); box-shadow: var(--recess-shadow); }
   .pct { min-width: 46px; text-align: center; font-size: 11.5px; color: var(--label-2); font-variant-numeric: tabular-nums; }
-  .scroller { position: relative; flex: 1; min-height: 0; overflow: auto; padding: 16px; }
+  .scroller { position: relative; flex: 1; min-height: 0; overflow: auto; overflow-anchor: none; padding: 16px; }
   .scroller.gone { display: none; }
   .pages { display: flex; flex-direction: column; align-items: center; gap: 14px; width: max-content; min-width: 100%; }
   .pages :global(.page) { position: relative; flex-shrink: 0; border-radius: 6px; overflow: hidden; box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5); background: white; }
