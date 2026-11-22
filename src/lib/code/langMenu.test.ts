@@ -4,11 +4,14 @@ const m = vi.hoisted(() => ({
   st: { status: null as string | null, message: undefined as string | undefined },
   lang: null as { id: string; label: string; server?: string } | null,
   restart: vi.fn(),
+  active: null as { path: string; large?: boolean } | null,
+  toast: vi.fn(),
+  menu: vi.fn(),
 }));
 
-vi.mock("../state.svelte", () => ({ app: { tabs: [] }, activeTab: () => null, isRemotePath: () => false }));
+vi.mock("../state.svelte", () => ({ app: { tabs: [] }, activeTab: () => m.active, isRemotePath: () => false }));
 vi.mock("../editor", () => ({ refreshLanguage: () => {} }));
-vi.mock("../ui.svelte", () => ({ ui: { openMenu: () => {}, toast: () => {} } }));
+vi.mock("../ui.svelte", () => ({ ui: { openMenu: m.menu, toast: m.toast } }));
 vi.mock("./lsp.svelte", () => ({ closeLspDoc: () => {}, statusFor: () => m.st }));
 vi.mock("./lspExtension", () => ({ restartLanguageServer: m.restart }));
 vi.mock("./langOverride.svelte", () => ({
@@ -18,7 +21,7 @@ vi.mock("./langOverride.svelte", () => ({
   setLanguageOverride: async () => {},
 }));
 
-import { languageMenuItems } from "./langMenu";
+import { languageMenuItems, openLanguageMenu } from "./langMenu";
 
 const python = { id: "python", label: "Python", server: "python" };
 
@@ -65,3 +68,12 @@ describe("language menu", () => {
     expect(items.filter((i) => i.separator)).toHaveLength(1);
   });
 });
+
+test("a large file: the menu says why instead of offering languages (#174)", () => {
+  m.active = { path: "/p/big.py", large: true };
+  openLanguageMenu();
+  m.active = null;
+  expect(m.menu).not.toHaveBeenCalled();
+  expect(m.toast).toHaveBeenCalledTimes(1);
+});
+

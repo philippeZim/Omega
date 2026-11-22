@@ -293,6 +293,9 @@ export const en = {
   "code.lang.noCustomRun": "This file runs on its own in the language you chose, so the folder's custom command doesn't apply.",
   "code.lang.copyFailed": "Could not prepare the file for running: {error}",
   "code.ad.javaNeedsJdk": "Debugging Java needs a full JDK (javac and its debug interface), not just a JRE.",
+  "code.large.noRun": "This file is too large to run from Omega.",
+  "code.large.noDebug": "This file is too large to debug in Omega.",
+  "code.large.noLang": "Language features are off for this large file.",
 };
 export const de: Record<keyof typeof en, string> = {
   "code.key.ctrl": "Strg",
@@ -578,6 +581,9 @@ export const de: Record<keyof typeof en, string> = {
   "code.lang.noCustomRun": "Diese Datei läuft für sich in der gewählten Sprache, der eigene Befehl des Ordners gilt hier nicht.",
   "code.lang.copyFailed": "Die Datei konnte nicht zum Ausführen vorbereitet werden: {error}",
   "code.ad.javaNeedsJdk": "Zum Debuggen von Java braucht es ein vollständiges JDK (javac und seine Debug-Schnittstelle), nicht nur eine JRE.",
+  "code.large.noRun": "Diese Datei ist zu groß, um sie aus Omega auszuführen.",
+  "code.large.noDebug": "Diese Datei ist zu groß zum Debuggen in Omega.",
+  "code.large.noLang": "Sprachfunktionen sind für diese große Datei aus.",
 };
 export const fr: Record<keyof typeof en, string> = {
   "code.key.ctrl": "Ctrl",
@@ -863,4 +869,7 @@ export const fr: Record<keyof typeof en, string> = {
   "code.lang.noCustomRun": "Ce fichier s’exécute seul dans le langage choisi : la commande personnalisée du dossier ne s’applique pas.",
   "code.lang.copyFailed": "Impossible de préparer le fichier pour l’exécution : {error}",
   "code.ad.javaNeedsJdk": "Le débogage Java nécessite un JDK complet (javac et son interface de débogage), pas seulement un JRE.",
+  "code.large.noRun": "Ce fichier est trop volumineux pour être exécuté depuis Omega.",
+  "code.large.noDebug": "Ce fichier est trop volumineux pour être débogué dans Omega.",
+  "code.large.noLang": "Les fonctions de langage sont désactivées pour ce gros fichier.",
 };

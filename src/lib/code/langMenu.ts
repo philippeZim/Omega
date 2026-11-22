@@ -43,7 +43,9 @@ export function languageMenuItems(path: string): MenuItem[] {
 }
 
 export function openLanguageMenu(x?: number, y?: number) {
-  const path = activeTab()?.path;
+  const tab = activeTab();
+  const path = tab?.path;
+  if (tab?.large) return ui.toast(t("code.large.noLang"));
   if (!path || isRemotePath(path)) return ui.toast(t("code.lang.needsFile"));
   ui.openMenu(new MouseEvent("contextmenu", { clientX: x ?? window.innerWidth / 2 - 120, clientY: y ?? 90 }), languageMenuItems(path));
 }

@@ -148,7 +148,12 @@ export function kind(c: Change): "new" | "modified" | "deleted" | "renamed" | "c
 export const absPath = (rel: string) => (asGuest() ? `collab:${rel}` : joinPath(git.top, rel));
 
 async function saveAll() {
-  for (const t of app.tabs) if (t.dirty && t.path && !t.deleted) await save(t.id);
+  for (const x of app.tabs) {
+    if (!x.dirty || !x.path || x.deleted) continue;
+    // Large files are only saved by hand (#174).
+    if (x.large) ui.toast(t("app.large.notSaved", { name: x.name }));
+    else await save(x.id);
+  }
 }
 
 // ------------------------------------------------------------------ commit / push / pull
