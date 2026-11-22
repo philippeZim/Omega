@@ -4,6 +4,7 @@ import { DapSession } from "./dap";
 import { planFor, type Plan } from "./adapters";
 import { dbg, dbgHooks, dbgRemote, saveWatches, SHARED_BP, type Frame, type VarNode } from "./store.svelte";
 import { debugRefresh } from "./editorExt";
+import { mojoThreads, mojoValue } from "./mojoValues";
 import { app, activeTab, openFile, save, setMode, inRoot } from "../state.svelte";
 import { ui } from "../ui.svelte";
 import * as ed from "../editor";
@@ -18,6 +19,8 @@ type Json = any;
 
 let root: DapSession | null = null;
 let active: DapSession | null = null;
+/** The running session is Mojo: its values and threads need tidying up for display. */
+let mojo = false;
 let sessions: DapSession[] = [];
 let tcpPort: number | null = null;
 let serverProcId: string | null = null;
@@ -205,6 +208,7 @@ async function runStart(gen: number, file: string, actor: string, byGuest: boole
   }
   if (stale()) return;
 
+  mojo = plan.launch?.type === "mojo-lldb";
   sourcePath = plan.sourcePath;
   shadow = plan.shadow;
   dbg.label = plan.label;
@@ -502,7 +506,8 @@ async function onStopped(s: DapSession, b: Json) {
     if (text) log(t("code.dbg.exception", { text }), "error");
   }
   try {
-    dbg.threads = (await s.request("threads")).threads ?? [];
+    const threads: Json[] = (await s.request("threads")).threads ?? [];
+    dbg.threads = mojo ? mojoThreads(threads, b.threadId) : threads;
   } catch {
     dbg.threads = [];
   }
@@ -634,9 +639,36 @@ function markChanged(prev: Map<string, string>) {
   }
 }
 
+const rawVars = async (s: DapSession, ref: number): Promise<Json[]> => (await s.request("variables", { variablesReference: ref })).variables ?? [];
+
+async function readVars(s: DapSession, ref: number): Promise<Json[]> {
+  const vars = await rawVars(s, ref);
+  if (!mojo) return vars;
+  return Promise.all(
+    vars.map(async (v) => {
+      const m = await mojoValue({ value: v.value, type: v.type, ref: v.variablesReference }, (r) => rawVars(s, r));
+      return { ...v, value: m.value, type: m.type, variablesReference: m.ref };
+    }),
+  );
+}
+
+async function readEvaluate(s: DapSession, args: Json): Promise<Json> {
+  const r = await s.request("evaluate", args);
+  if (!mojo) return r;
+  const m = await mojoValue({ value: r.result, type: r.type, ref: r.variablesReference ?? 0 }, (ref) => rawVars(s, ref));
+  return { ...r, result: m.value, type: m.type, variablesReference: m.ref };
+}
+
+/** A new value from setVariable, in the same form the Variables panel shows. */
+async function setVar(s: DapSession, args: Json): Promise<string> {
+  const r = await s.request("setVariable", args);
+  if (!mojo) return r.value;
+  return (await mojoValue({ value: r.value, type: r.type, ref: r.variablesReference ?? 0 }, (ref) => rawVars(s, ref))).value;
+}
+
 async function fetchVars(ref: number, prefix: string): Promise<VarNode[]> {
   if (!active || !ref) return [];
-  const vars: Json[] = (await active.request("variables", { variablesReference: ref })).variables ?? [];
+  const vars = await readVars(active, ref);
   return vars.map((v) => {
     const node: VarNode & { _path?: string } = {
       name: v.name,
@@ -673,8 +705,7 @@ export async function setVariable(n: VarNode, value: string) {
   if (remoteImpl) return remoteImpl.setVariable(n, value);
   if (!active?.capabilities.supportsSetVariable) return ui.toast(t("code.dbg.noSetVariable"), "error");
   try {
-    const r = await active.request("setVariable", { variablesReference: n.parentRef, name: n.name, value });
-    n.value = r.value;
+    n.value = await setVar(active, { variablesReference: n.parentRef, name: n.name, value });
     n.changed = true;
     await evaluateWatches();
   } catch (e) {
@@ -686,7 +717,7 @@ export async function setVariable(n: VarNode, value: string) {
 
 export async function evaluate(expression: string, context: "watch" | "repl" | "hover") {
   if (!active) throw new Error(t("code.dbg.noSession"));
-  return active.request("evaluate", { expression, frameId: dbg.frameId ?? undefined, context });
+  return readEvaluate(active, { expression, frameId: dbg.frameId ?? undefined, context });
 }
 
 export async function evaluateWatches() {
@@ -831,17 +862,17 @@ export const hostDebug = {
   },
   async variables(ref: number): Promise<Json[]> {
     if (!active) throw new Error("no session");
-    return (await active.request("variables", { variablesReference: ref })).variables ?? [];
+    return readVars(active, ref);
   },
   async evaluate(expression: string, context: "watch" | "repl" | "hover", frameId: number) {
     if (!active) throw new Error("no session");
-    return active.request("evaluate", { expression, frameId, context });
+    return readEvaluate(active, { expression, frameId, context });
   },
   async setVariable(ref: number, name: string, value: string) {
     if (!active?.capabilities.supportsSetVariable) return null;
-    const r = await active.request("setVariable", { variablesReference: ref, name, value });
+    const shown = await setVar(active, { variablesReference: ref, name, value });
     await refreshAfterChange();
-    return r.value as string;
+    return shown;
   },
   refresh: refreshAfterChange,
   log,

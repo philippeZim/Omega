@@ -510,6 +510,45 @@ describe("debugger controller with a fake adapter", () => {
   });
 });
 
+describe("Mojo values and threads", () => {
+  const raw = "5600000000000000  86";
+  const type = "__mlir_type.`!kgen.scalar<index>`";
+
+  function script() {
+    fake.replies.threads = () => ({ threads: [{ id: 2, name: "🔥 Thread0" }, { id: 1, name: "prog" }, { id: 3, name: "🔥 Thread1" }] });
+    fake.replies.variables = (a) =>
+      a.variablesReference === 100
+        ? { variables: [{ name: "z", value: raw, type, variablesReference: 7 }, { name: "s", value: '"hi"', type: "String", variablesReference: 8 }, { name: "p", value: "Point", type: "Point", variablesReference: 9 }] }
+        : { variables: [] };
+    fake.replies.evaluate = () => ({ result: raw, type, variablesReference: 7 });
+    fake.replies.setVariable = () => ({ value: "0700000000000000  7", type, variablesReference: 7 });
+  }
+
+  test("a Mojo session shows real values and hides idle runtime threads", async () => {
+    m.plan.launch = { type: "mojo-lldb", request: "launch", program: "/p/main" };
+    script();
+    await startAndStop();
+    expect(S.dbg.scopes[0].children!.map((v) => [v.name, v.value, v.type, v.ref])).toEqual([
+      ["z", "86", "Int", 0],
+      ["s", '"hi"', "String", 8],
+      ["p", "Point", "Point", 9],
+    ]);
+    expect(S.dbg.threads.map((x) => x.name)).toEqual(["prog"]);
+    expect(await D.hoverValue("z")).toBe("86");
+    const z = S.dbg.scopes[0].children![0];
+    await D.setVariable(z, "7");
+    expect(z.value).toBe("7");
+  });
+
+  test("another language keeps the adapter's text and all its threads", async () => {
+    script();
+    await startAndStop();
+    expect(S.dbg.scopes[0].children![0]).toMatchObject({ value: raw, type, ref: 7 });
+    expect(S.dbg.threads).toHaveLength(3);
+    expect(await D.hoverValue("z")).toBe(raw);
+  });
+});
+
 describe("a stop or a second start during a start", () => {
   const deferred = <T = void>() => {
     let resolve!: (v: T) => void;
