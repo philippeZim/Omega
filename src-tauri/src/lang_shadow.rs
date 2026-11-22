@@ -441,7 +441,7 @@ mod tests {
         let source = root.path().join("prog");
         fs::write(&source, "x").unwrap();
         assert!(copy_into(root.path(), source.to_str().unwrap(), "a/B.java", true).is_err());
-        let huge = root.path().join("huge.java");
+        let huge = root.path().join("source.java");
         fs::File::create(&huge).unwrap().set_len(crate::fs::MAX_TEXT_FILE + 1).unwrap();
         assert_eq!(copy_into(root.path(), huge.to_str().unwrap(), "Huge.java", false).unwrap_err(), "fs:too_large");
         assert!(!root.path().join("Huge.java").exists());

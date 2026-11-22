@@ -673,10 +673,12 @@ mod tests {
     #[test]
     fn head_file_refuses_a_huge_blob() {
         let t = tempfile::tempdir().unwrap();
-        let root = t.path().to_string_lossy().to_string();
+        // macOS temp folders sit behind a symlink, git reports the real path.
+        let real = t.path().canonicalize().unwrap();
+        let root = real.to_string_lossy().to_string();
         let run = |args: &[&str]| assert!(quiet_git_cmd(&root).args(args).output().unwrap().status.success());
         run(&["init", "-q"]);
-        let (big, small) = (t.path().join("big.log"), t.path().join("small.txt"));
+        let (big, small) = (real.join("big.log"), real.join("small.txt"));
         std::fs::File::create(&big).unwrap().set_len(crate::fs::MAX_TEXT_FILE + 1).unwrap();
         std::fs::write(&small, "hi").unwrap();
         run(&["add", "."]);
