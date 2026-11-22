@@ -401,6 +401,12 @@ struct FsChanged {
 ///    included file was edited outside the editor).
 /// Changes inside HIDDEN folders (.git, node_modules, target, …) are ignored.
 /// Calling it again replaces the previous watch; `None` stops watching.
+/// Whether a changed path sits in a skipped folder inside the project. Folders above the project
+/// don't count: a project in `~/target/app` still gets live updates.
+fn hidden_below(root: &Path, path: &Path) -> bool {
+    path.strip_prefix(root).unwrap_or(path).components().any(|c| HIDDEN.contains(&c.as_os_str().to_string_lossy().as_ref()))
+}
+
 #[tauri::command]
 pub fn watch_dir(app: tauri::AppHandle, window: tauri::WebviewWindow, path: Option<String>) -> Result<(), String> {
     use notify::{EventKind, RecursiveMode, Watcher};
@@ -422,6 +428,7 @@ pub fn watch_dir(app: tauri::AppHandle, window: tauri::WebviewWindow, path: Opti
 
     // (path, structural): structural = created/removed/renamed, i.e. the parent listing changed.
     let (tx, rx) = mpsc::channel::<(PathBuf, bool)>();
+    let root = PathBuf::from(&path);
     let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
         let Ok(ev) = res else { return };
         let structural = matches!(ev.kind, EventKind::Create(_) | EventKind::Remove(_) | EventKind::Modify(notify::event::ModifyKind::Name(_)));
@@ -429,7 +436,7 @@ pub fn watch_dir(app: tauri::AppHandle, window: tauri::WebviewWindow, path: Opti
             return; // access events etc.
         }
         for p in ev.paths {
-            if p.components().any(|c| HIDDEN.contains(&c.as_os_str().to_string_lossy().as_ref())) {
+            if hidden_below(&root, &p) {
                 continue;
             }
             let _ = tx.send((p, structural));
@@ -470,6 +477,14 @@ pub fn watch_dir(app: tauri::AppHandle, window: tauri::WebviewWindow, path: Opti
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn only_folders_inside_the_project_are_skipped() {
+        let root = Path::new("/home/me/build/target/app");
+        assert!(!hidden_below(root, &root.join("src/main.rs")));
+        assert!(hidden_below(root, &root.join("target/debug/x")));
+        assert!(hidden_below(root, &root.join("sub/node_modules/a.js")));
+    }
 
     #[test]
     fn create_file_keeps_existing_content() {
