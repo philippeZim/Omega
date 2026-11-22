@@ -25,6 +25,12 @@ function elementName(e: string): string | null {
   return `${m[1] === "si" ? "Int" : m[1] === "ui" ? "UInt" : "Float"}${m[2]}`;
 }
 
+function list(items: string[]): string {
+  const shown = items.slice(0, SIMD_SHOWN);
+  if (items.length > SIMD_SHOWN) shown.push("…");
+  return `[${shown.join(", ")}]`;
+}
+
 /** The value to show for a Mojo variable. Anything it can't read stays exactly as it came. */
 export async function mojoValue(v: DapValue, children: Children): Promise<DapValue> {
   const type = v.type ?? "";
@@ -37,18 +43,23 @@ export async function mojoValue(v: DapValue, children: Children): Promise<DapVal
     const kids = v.ref ? await children(v.ref).catch(() => []) : [];
     if (kids.length !== 1) return { ...v, type: shownType };
     const only = kids[0].value;
-    const value = scalar[1] === "bool" ? ({ "0": "False", "1": "True" } as Record<string, string>)[only] ?? only : only;
-    return { value, type: shownType, ref: 0 };
+    if (scalar[1] !== "bool") return { value: only, type: shownType, ref: 0 };
+    const bool = only === "1" ? "True" : only === "0" ? "False" : null;
+    return bool ? { value: bool, type: shownType, ref: 0 } : { ...v, type: shownType };
   }
   const simd = SIMD.exec(type);
   if (simd) {
     const element = elementName(simd[2]);
     const shownType = element ? `SIMD[${element}, ${simd[1]}]` : type;
+    if (simd[2] === "bool") {
+      // The children of a bool vector read the wrong memory (5, 85, 255 …), so they are never shown.
+      // The value text holds the right elements.
+      const items = [...v.value.matchAll(/\[\d+\] = (True|False)\b/g)].map((x) => x[1]);
+      return items.length === Number(simd[1]) ? { value: list(items), type: shownType, ref: 0 } : { ...v, type: shownType, ref: 0 };
+    }
     const kids = v.ref ? await children(v.ref).catch(() => []) : [];
     if (!kids.length) return { ...v, type: shownType };
-    const items = kids.slice(0, SIMD_SHOWN).map((k) => k.value);
-    if (kids.length > SIMD_SHOWN) items.push("…");
-    return { value: `[${items.join(", ")}]`, type: shownType, ref: v.ref };
+    return { value: list(kids.map((k) => k.value)), type: shownType, ref: v.ref };
   }
   return v;
 }

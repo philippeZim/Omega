@@ -47,6 +47,19 @@ describe("mojoValue", () => {
     expect(await mojoValue({ value: simd(4, "si32"), type: simd(4, "si32"), ref: 9 }, kids)).toEqual({ value: "[1, -2, 3, -4]", type: "SIMD[Int32, 4]", ref: 9 });
   });
 
+  test("a bool SIMD uses its text and never its wrong children", async () => {
+    const wrong = async () => ["5", "85", "255", "1"].map((value) => ({ value }));
+    const value = "{\n  (bool) [0] = True\n  (bool) [1] = False\n  (bool) [2] = True\n  (bool) [3] = False\n}";
+    expect(await mojoValue({ value, type: simd(4, "bool"), ref: 9 }, wrong)).toEqual({ value: "[True, False, True, False]", type: "SIMD[Bool, 4]", ref: 0 });
+    const unreadable = simd(4, "bool");
+    expect(await mojoValue({ value: unreadable, type: unreadable, ref: 9 }, wrong)).toEqual({ value: unreadable, type: "SIMD[Bool, 4]", ref: 0 });
+  });
+
+  test("a bool scalar never shows a child that isn't 0 or 1", async () => {
+    const wrong = async () => [{ value: "85" }];
+    expect(await mojoValue({ value: "55", type: scalar("bool"), ref: 4 }, wrong)).toEqual({ value: "55", type: "Bool", ref: 4 });
+  });
+
   test("a long SIMD is cut off visibly", async () => {
     const kids = async () => Array.from({ length: 32 }, () => ({ value: "7" }));
     const { value } = await mojoValue({ value: simd(32, "si64"), type: simd(32, "si64"), ref: 9 }, kids);
