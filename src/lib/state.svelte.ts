@@ -299,6 +299,20 @@ async function syncViewerTab(tab: Tab & { viewOf: string }) {
   tab.viewRev = (tab.viewRev ?? 0) + 1;
 }
 
+/** The open document no longer matches its file: loads the file again, also outside the watched folder. */
+export async function reloadViewerTab(id: string) {
+  const tab = app.tabs.find((x) => x.id === id);
+  if (!tab?.viewOf || isRemotePath(tab.viewOf)) return;
+  const info = await fsApi.fileInfo(tab.viewOf).catch(() => null);
+  if (!info) {
+    if (!tab.deleted && !(await fsApi.exists(tab.viewOf).catch(() => true))) markDeleted(tab);
+    return;
+  }
+  tab.deleted = false;
+  diskStamps.set(tab.id, stampOf(info));
+  tab.viewRev = (tab.viewRev ?? 0) + 1;
+}
+
 /** `raw`: the file content as read from disk. */
 function reloadTab(tab: Tab, raw: string) {
   tab.eol = detectEol(raw);

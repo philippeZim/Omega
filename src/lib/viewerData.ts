@@ -4,11 +4,14 @@ import { t } from "./i18n/index.svelte";
 import { formatSize } from "./largeFile";
 import { imageMime, MAX_PDF_BYTES, MAX_VIEW_BYTES, type ViewerKind } from "./viewer";
 
+/** A PDF on disk as it was when opened: reads fail once it no longer has this size and time. */
+export type PdfFile = { path: string; size: number; modified: number };
+
 /** A PDF isn't loaded here: pdf.js reads the parts it needs from `file`. */
 export type ViewerData =
   | { bytes: Uint8Array; size: number; url?: undefined; file?: undefined }
   | { url: string; size: number; bytes?: undefined; file?: undefined }
-  | { file: { path: string; size: number }; size: number; bytes?: undefined; url?: undefined };
+  | { file: PdfFile; size: number; bytes?: undefined; url?: undefined };
 
 /** Set by collab/assets.svelte.ts (avoids an import cycle). */
 export const viewerHooks = {
@@ -28,7 +31,7 @@ export async function loadViewerData(path: string, kind: ViewerKind): Promise<Vi
   if (kind === "pdf") {
     if (info.size > MAX_PDF_BYTES) throw t("app.viewer.tooLarge", { size: formatSize(info.size), max: formatSize(MAX_PDF_BYTES) });
     if (info.size === 0) throw t("app.viewer.brokenPdf");
-    return { file: { path, size: info.size }, size: info.size };
+    return { file: { path, size: info.size, modified: info.modified }, size: info.size };
   }
   if (info.size > MAX_VIEW_BYTES) throw t("app.viewer.tooLarge", { size: formatSize(info.size), max: formatSize(MAX_VIEW_BYTES) });
   const bytes = await fsApi.readFileView(path);

@@ -26,9 +26,9 @@ test("a too large image is refused before its bytes are read", async () => {
 });
 
 test("a PDF isn't read at all when opening, also above the image limit", async () => {
-  api.fileInfo.mockResolvedValue({ size: MAX_VIEW_BYTES * 8 });
+  api.fileInfo.mockResolvedValue({ size: MAX_VIEW_BYTES * 8, modified: 7 });
   const d = await loadViewerData("/p/a.pdf", "pdf");
-  expect(d.file).toEqual({ path: "/p/a.pdf", size: MAX_VIEW_BYTES * 8 });
+  expect(d.file).toEqual({ path: "/p/a.pdf", size: MAX_VIEW_BYTES * 8, modified: 7 });
   expect(api.readFileView).not.toHaveBeenCalled();
 });
 

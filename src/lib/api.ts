@@ -28,8 +28,9 @@ export const fsApi = {
     fsCall<ArrayBuffer>("read_file_large", { path }, path).then((b) => new TextDecoder("utf-8", { ignoreBOM: true }).decode(b)),
   /** The raw bytes of an image or PDF for a viewer tab, up to 64 MiB. */
   readFileView: (path: string) => fsCall<ArrayBuffer>("read_file_view", { path }, path).then((b) => new Uint8Array(b)),
-  /** A piece of a PDF, at most 4 MiB; shorter at the end of the file. */
-  readFileRange: (path: string, offset: number, length: number) => fsCall<ArrayBuffer>("read_file_range", { path, offset, length }, path).then((b) => new Uint8Array(b)),
+  /** A piece of a PDF, at most 4 MiB. Rejects with "fs:changed" if the file no longer has this size and time. */
+  readFileRange: (path: string, offset: number, length: number, size: number, modified: number) =>
+    fsCall<ArrayBuffer>("read_file_range", { path, offset, length, size, modified }, path).then((b) => new Uint8Array(b)),
   /** Size and change time of a file. `too_large`: readFile refuses it; `preview`: readFileLarge does too. */
   fileInfo: (path: string) => fsCall<{ size: number; too_large: boolean; preview: boolean; modified: number }>("file_info", { path }, path),
   writeFile: (path: string, content: string) => fsCall<void>("write_file", { path, content: wellFormed(content) }, path),

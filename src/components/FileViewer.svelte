@@ -1,7 +1,7 @@
 <script lang="ts">
   import ImageView from "./ImageView.svelte";
   import PdfView from "./PdfView.svelte";
-  import { openViewerAsText, syncFromDisk, type Tab } from "../lib/state.svelte";
+  import { openViewerAsText, reloadViewerTab, syncFromDisk, type Tab } from "../lib/state.svelte";
   import { share } from "../lib/collab/share.svelte";
   import { loadViewerData, type ViewerData } from "../lib/viewerData";
   import { isSvgPath } from "../lib/viewer";
@@ -49,7 +49,7 @@
   {:else if tab.viewer === "image"}
     <ImageView {data} path={tab.viewOf!} onText={svg ? () => openViewerAsText(tab.id) : null} />
   {:else if data.file}
-    <PdfView tabId={tab.id} source={data.file} onReadFailed={() => syncFromDisk([tab.viewOf!])} />
+    <PdfView tabId={tab.id} source={data.file} onReadFailed={(changed) => (changed ? reloadViewerTab(tab.id) : syncFromDisk([tab.viewOf!]))} />
   {/if}
 </div>
 

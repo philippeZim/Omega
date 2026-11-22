@@ -1170,6 +1170,16 @@ describe("viewer tabs (#159)", () => {
     expect(memory.viewerPlace(tab.id)).toBeUndefined();
   });
 
+  test("a changed file reloads the view even when the stamp already looks known", async () => {
+    await viewerSetup({ "/p/a.pdf": "" });
+    await st.openFile("/p/a.pdf");
+    const tab = viewer("/p/a.pdf");
+    await st.reloadViewerTab(tab.id);
+    expect(tab.viewRev).toBe(1);
+    await st.syncFromDisk(["/p/a.pdf"]);
+    expect(tab.viewRev).toBe(1); // the reload took the stamp, so no second one follows
+  });
+
   test("a rename moves the tab", async () => {
     await viewerSetup({ "/p/d/a.png": "" });
     await st.openFile("/p/d/a.png");
