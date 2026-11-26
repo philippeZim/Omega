@@ -2,6 +2,11 @@
   // Expanded folders survive tree reloads (treeVersion bumps).
   const expanded = new Set<string>(JSON.parse(localStorage.getItem("expanded") || "[]"));
   const persist = () => localStorage.setItem("expanded", JSON.stringify([...expanded]));
+  /** Keeps `path` open across the tree reload that follows a paste or drop into it. */
+  export function keepExpanded(path: string) {
+    expanded.add(path);
+    persist();
+  }
 </script>
 
 <script lang="ts">
@@ -10,12 +15,13 @@
   import { untrack } from "svelte";
   import { fsApi, basename, type Entry } from "../lib/api";
   import { renameTarget } from "../lib/pathName";
-  import { app, openFile, pathMoved, activeTab, inRoot, createEntry } from "../lib/state.svelte";
+  import { app, openFile, openToSide, pathMoved, activeTab, inRoot, createEntry } from "../lib/state.svelte";
   import { ui } from "../lib/ui.svelte";
   import { git, kind } from "../lib/git/git.svelte";
   import { t } from "../lib/i18n/index.svelte";
   import { fileDrag, startFileDrag } from "../lib/fileDrag.svelte";
   import { treeKeyAction, focusTreeRow } from "../lib/treeNav";
+  import { externalDrop, pasteInto, copyToClipboard } from "../lib/fileImport.svelte";
 
   const gitKind = $derived.by(() => {
     if (!git.repo || !git.top || !path.startsWith(git.top + "/")) return null;
@@ -30,7 +36,26 @@
   let open = $state(untrack(() => root || expanded.has(path)));
   let children = $state<Entry[] | null>(null);
   const isDir = $derived(root || entry?.is_dir);
-  const active = $derived((activeTab()?.path ?? activeTab()?.viewOf) === path);
+  const activePath = $derived(activeTab()?.path ?? activeTab()?.viewOf);
+  const active = $derived(activePath === path);
+  let rowEl = $state<HTMLElement>();
+
+  // The active file is revealed: its folders open (#298) …
+  $effect(() => {
+    const p = activePath;
+    if (!p || !isDir || root || !p.startsWith(path + "/")) return;
+    untrack(() => {
+      if (open) return;
+      open = true;
+      expanded.add(path);
+      persist();
+    });
+  });
+
+  // … and its row scrolls into view.
+  $effect(() => {
+    if (active && rowEl) rowEl.scrollIntoView({ block: "nearest" });
+  });
 
   async function load() {
     try {
@@ -53,7 +78,7 @@
     });
   });
 
-  const dropTarget = $derived(!root && isDir && fileDrag.target === path);
+  const dropTarget = $derived(!root && isDir && (fileDrag.target === path || externalDrop.target === path));
   const dragging = $derived(fileDrag.from === path);
 
   // Hovering a closed folder while dragging opens it after a moment.
@@ -102,6 +127,13 @@
     }
   }
 
+  // Pasting into a file pastes next to it.
+  function paste() {
+    const dir = isDir ? path : path.slice(0, path.lastIndexOf("/"));
+    if (isDir) keepExpanded(path);
+    pasteInto(dir);
+  }
+
   async function remove() {
     const ok = await ui.confirm(t("app.deleteConfirm", { name: basename(path) }), t("app.cannotUndo"), t("common.delete"), true);
     if (!ok) return;
@@ -121,6 +153,14 @@
 
   // Arrows move the focus and open/close folders, F2 renames, Delete deletes (#39).
   function onKey(e: KeyboardEvent) {
+    // Ctrl+C / Ctrl+V copy and paste files (#299).
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && (e.key === "c" || e.key === "v")) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.key === "c") copyToClipboard([path]);
+      else paste();
+      return;
+    }
     const a = treeKeyAction(e, { isDir: !!isDir, open });
     if (!a) return;
     e.preventDefault();
@@ -139,7 +179,10 @@
             { label: t("app.newFolder"), action: () => create(true) },
             { separator: true, label: "" },
           ]
-        : [{ label: t("common.open"), action: () => openFile(path) }, { separator: true, label: "" }]),
+        : [{ label: t("common.open"), action: () => openFile(path) }, { label: t("app.openToSide"), action: () => openToSide(path) }, { separator: true, label: "" }]),
+      { label: t("app.import.copy"), action: () => copyToClipboard([path]) },
+      { label: t("app.import.paste"), action: paste },
+      { separator: true, label: "" },
       { label: t("common.rename"), action: rename },
       { label: t("app.copyPath"), action: () => navigator.clipboard.writeText(path) },
       ...(app.root && inRoot(path, app.root) && path !== app.root
@@ -152,7 +195,7 @@
 </script>
 
 {#if !root}
-  <button class="row" class:active style="padding-left: {8 + (depth - 1) * 14}px" class:drop-target={dropTarget} class:dragging data-tree-path={path} data-tree-dir={isDir ? "1" : "0"}
+  <button bind:this={rowEl} class="row" class:active style="padding-left: {8 + (depth - 1) * 14}px" class:drop-target={dropTarget} class:dragging data-tree-path={path} data-tree-dir={isDir ? "1" : "0"}
     onpointerdown={(e) => startFileDrag(e, path)} onclick={onClick} onkeydown={onKey} oncontextmenu={menu} role="treeitem" aria-level={depth} aria-selected={active} aria-expanded={isDir ? open : undefined}>
     {#if isDir}
       <svg class="chev" class:open width="10" height="10" viewBox="0 0 10 10"><path d="M3.5 2l3 3-3 3" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>

@@ -7,7 +7,7 @@
   import { PdfPager } from "../lib/pdfPager";
   import { wheelZoom } from "../lib/wheelZoom";
   import { latex, setDark, reverseSync, forwardSync, installLatex, remoteLatex, remotePdfBytes, compileNow } from "../lib/latex/controller.svelte";
-  import { app, activeTab, openFile } from "../lib/state.svelte";
+  import { app, activeTab, openFile, focusLatexGroup } from "../lib/state.svelte";
   import * as ed from "../lib/editor";
   import { t } from "../lib/i18n/index.svelte";
 
@@ -103,6 +103,7 @@
 
   /** Opens `file` (if it isn't the active tab) and jumps to `line` there; nothing if it failed to open. */
   async function openAt(file: string, line: number) {
+    focusLatexGroup();
     if (otherFile(file)) {
       if (file.startsWith("collab:")) return remoteLatex.openAt(file, line); // opens asynchronously
       await openFile(file, false, true);
@@ -120,6 +121,7 @@
   }
 
   export function syncFromEditor() {
+    focusLatexGroup();
     const view = ed.getView();
     if (!view) return;
     const line = view.state.doc.lineAt(view.state.selection.main.head).number;

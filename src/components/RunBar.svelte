@@ -11,7 +11,9 @@
   import { guestCanStop } from "../lib/collab/guard";
 
   /** Width of the tab bar: below ~640px labels collapse to icons, below ~460px build/test/version move into the "more" menu. */
-  let { width = 1000 }: { width?: number } = $props();
+  /** `path`: the file of this editor group (#219); by default the active tab's. */
+  let { width = 1000, path }: { width?: number; path?: string | null } = $props();
+  const file = $derived(path === undefined ? (activeTab()?.path ?? null) : path);
   const level = $derived(width < 460 ? 2 : width < 640 ? 1 : 0);
 
   function terminal() {
@@ -19,7 +21,7 @@
     if (isShown("terminal")) requestAnimationFrame(() => focusTerm());
   }
 
-  const lang = $derived(effectiveLang(activeTab()?.path ?? null));
+  const lang = $derived(effectiveLang(file));
   const canDebug = $derived(!!lang?.server);
   const debugging = $derived(dbg.status === "running" || dbg.status === "stopped" || dbg.status === "starting");
 

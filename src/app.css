@@ -57,6 +57,28 @@
   color-scheme: dark;
 }
 
+/* Find (Ctrl+F) match highlights, used by the editor and by Find in Files (issue #301):
+   solid accent-blue matches, the current match white with a blue ring. */
+:root {
+  --find-bg: #3478f6;
+  --find-fg: #ffffff;
+  --find-bg-sel: #ffffff;
+  --find-fg-sel: #1d1d1f;
+  --find-shadow: none;
+  --find-shadow-sel: 0 0 0 2px #3478f6;
+  --find-deco: none;
+  --find-weight: 600;
+}
+
+/* Ctrl+F option toggles (match case, regexp, by word), issue #300: pills. Each option is a chip;
+   the active one is filled with the accent. The native checkbox is visually hidden but stays
+   focusable, so keyboard use still works. */
+.cm-panel.cm-search label { display: inline-flex; align-items: center; position: relative; margin-left: 4px; padding: 3px 10px; border-radius: 999px; background: var(--fill); color: var(--label-2); cursor: pointer; user-select: none; }
+.cm-panel.cm-search label:hover { background: var(--fill-hover); }
+.cm-panel.cm-search label:has(input:checked) { background: var(--accent-fill); color: #fff; }
+.cm-panel.cm-search label:has(input:focus-visible) { box-shadow: 0 0 0 2px var(--accent-soft); }
+.cm-panel.cm-search label input[type=checkbox] { position: absolute; opacity: 0; width: 0; height: 0; margin: 0; pointer-events: none; }
+
 /* iOS-style light palette (frosted white glass on a soft grey canvas). */
 :root[data-theme="light"] {
   --fg-rgb: 0, 0, 0;
@@ -147,10 +169,11 @@ input {
 }
 input:focus { box-shadow: var(--recess-shadow), 0 0 0 1px rgba(var(--fg-rgb), 0.14); }
 
-/* Floating glass panel */
+/* Floating glass panel (workspace, dock zones). No backdrop-filter on purpose (#297): these panels
+   only ever lie on the static window background (floating docks are opaque), where a blur changes
+   no pixel – but WebKitGTK recomputes it on every frame, so scrolling inside them stuttered. */
 .glass {
   background: var(--glass);
-  backdrop-filter: var(--blur);
   border-radius: var(--radius-panel);
   box-shadow: var(--glass-highlight), var(--glass-shadow);
 }

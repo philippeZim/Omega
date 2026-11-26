@@ -4,10 +4,16 @@ import { flushSync, mount, tick, unmount } from "svelte";
 
 vi.mock("../lib/state.svelte", async () => ({
   app: (await import("./TabBar.fixture.svelte")).app,
-  activate: vi.fn(),
-  closeTab: vi.fn(),
+  activateIn: vi.fn(),
+  closeInGroup: vi.fn(),
   newFileInSession: vi.fn(),
   foreignProject: () => null,
+  focusGroup: vi.fn(),
+  groupMode: () => null,
+  groupCount: () => 1,
+  setMode: vi.fn(),
+  splitGroup: vi.fn(),
+  joinGroups: vi.fn(),
 }));
 vi.mock("./RunBar.svelte", () => ({ default: () => {} }));
 vi.mock("../lib/commands.svelte", () => ({ shortcutLabel: () => "Ctrl W", withShortcut: (s: string) => s }));
@@ -28,18 +34,24 @@ test("the active tab is scrolled into view (#117)", async () => {
     scrolled.push(this.querySelector(".name")?.textContent ?? "");
   });
   app.tabs = Array.from({ length: 8 }, (_, i) => ({ id: `t${i}`, path: `/p/f${i}.txt`, name: `f${i}.txt`, dirty: false }));
-  app.activeId = "t0";
-  cmp = mount(TabBar, { target: document.body });
+  const g = app.groups.groups.main;
+  const show = (id: string) => {
+    if (!g.tabs.includes(id)) g.tabs.push(id);
+    g.active = app.activeId = id;
+  };
+  g.tabs = app.tabs.map((x) => x.id);
+  show("t0");
+  cmp = mount(TabBar, { target: document.body, props: { gid: "main" } });
   flushSync();
   await tick();
   scrolled.length = 0;
   app.tabs.push({ id: "t8", path: "/p/code.py", name: "code.py", dirty: false });
-  app.activeId = "t8";
+  show("t8");
   flushSync();
   await tick();
   await tick();
   expect(scrolled).toContain("code.py");
-  app.activeId = "t3";
+  show("t3");
   flushSync();
   await tick();
   await tick();

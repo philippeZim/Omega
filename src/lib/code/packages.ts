@@ -116,6 +116,7 @@ const norm = (s: string) => s.toLowerCase().replace(/[-_.]+/g, "-");
 // ------------------------------------------------------------------ PyPI
 
 const PYPI_KEY = "pypiTopNames";
+// A new host here also needs an entry in connect-src of the CSP (src-tauri/tauri.conf.json, #166).
 const PYPI_URL = "https://hugovk.dev/top-pypi-packages/top-pypi-packages.min.json";
 let pypiNames: Promise<string[]> | null = null;
 
@@ -289,6 +290,7 @@ export function suggestNodeAdd(root: string, dev: boolean): Suggest {
     const tag = (n: string) => (installed.has(n) ? "installed" : undefined);
     if (!q.trim()) return (dev ? NPM_DEV : NPM_POPULAR).map(([value, detail]) => ({ value, detail, tag: tag(value) }));
     try {
+      // Allowed by connect-src of the CSP (#166), like the other two package hosts.
       const r = await fetch(`https://registry.npmjs.org/-/v1/search?text=${encodeURIComponent(q.trim())}&size=20`);
       const objs = ((await r.json()) as { objects: { package: { name: string; description?: string } }[] }).objects;
       return objs.filter((o) => isNodeName(o.package.name)).map((o) => ({ value: o.package.name, detail: o.package.description, tag: tag(o.package.name) }));

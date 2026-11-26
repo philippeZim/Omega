@@ -21,6 +21,7 @@ import { toolsBeforeSave } from "./collab/guestChanges";
 import { byteLength, formatSize } from "./largeFile";
 import { isSvgPath, viewerKind, type ViewerKind } from "./viewer";
 import { forgetViewer } from "./viewerMemory";
+import { emptyGroup, groupOrder, initialGroups, neighbour, nextActive, removeFrom, splitAt, type Group, type Groups, type Side } from "./editorGroups";
 
 setLspHooks({
   workspace: () => app.root,
@@ -92,13 +93,18 @@ export interface Tab {
   viewer?: ViewerKind;
   /** Bumped when the viewed file changed, so the view loads it again. */
   viewRev?: number;
+  /** The mode this tab is shown in; switching to the tab brings it back (#302). */
+  mode?: Mode;
 }
 
 export const app = $state({
   mode: (localStorage.getItem("mode") as Mode) || "text",
   root: localStorage.getItem("root") as string | null,
+  /** Open documents. Each is shown in one or more editor groups (#219). */
   tabs: [] as Tab[],
+  /** The focused group's active tab. */
   activeId: null as string | null,
+  groups: initialGroups() as Groups,
   cursor: { line: 1, col: 1, selected: 0 },
   treeVersion: 0,
   spellEnabled: localStorage.getItem("spellEnabled") === "true",
@@ -109,15 +115,16 @@ export function spellLangFor(path: string | null): SpellLang {
   return (path && spellLangs[path]) || app.spellDefault;
 }
 
-function cfg(): ed.EditorConfig {
-  const tab = activeTab();
+function cfgFor(tab: Tab | null, mode: Mode): ed.EditorConfig {
   const path = tab?.path ?? null;
-  if (tab?.headOf) return { mode: app.mode, path, spell: null, headNote: tab.headNote };
+  if (tab?.headOf) return { mode, path, spell: null, headNote: tab.headNote };
   // The (empty, hidden) buffer behind a viewer tab must not accept text from any command.
-  if (tab?.viewOf) return { mode: app.mode, path, spell: null, headNote: tab.name };
-  if (tab?.large) return { mode: app.mode, path, spell: null, largeNote: t("app.large.reduced") };
-  return { mode: app.mode, path, spell: app.spellEnabled ? spellLangFor(path) : null };
+  if (tab?.viewOf) return { mode, path, spell: null, headNote: tab.name };
+  if (tab?.large) return { mode, path, spell: null, largeNote: t("app.large.reduced") };
+  return { mode, path, spell: app.spellEnabled ? spellLangFor(path) : null };
 }
+
+const cfg = () => cfgFor(activeTab(), app.mode);
 
 export function setSpellLang(lang: SpellLang) {
   const path = activeTab()?.path;
@@ -132,7 +139,7 @@ export function setSpellLang(lang: SpellLang) {
   }
   if (!app.spellEnabled) app.spellEnabled = true;
   localStorage.setItem("spellEnabled", "true");
-  ed.configure(cfg());
+  refreshGroups();
 }
 
 // Changed in another window.
@@ -142,13 +149,13 @@ onGlobalChange(["spellEnabled", "spellDefault", "spellLangs"], () => {
   const langs: Record<string, SpellLang> = JSON.parse(localStorage.getItem("spellLangs") || "{}");
   for (const k of Object.keys(spellLangs)) delete spellLangs[k];
   Object.assign(spellLangs, langs);
-  ed.configure(cfg());
+  refreshGroups();
 });
 
 export function toggleSpell() {
   app.spellEnabled = !app.spellEnabled;
   localStorage.setItem("spellEnabled", String(app.spellEnabled));
-  ed.configure(cfg());
+  refreshGroups();
 }
 
 let untitledCounter = 1;
@@ -486,28 +493,307 @@ ed.setCallbacks({
     app.cursor = { line, col, selected };
   },
   onChange(id) {
-    // Only the active buffer: a background tab reloaded from disk must not be compiled under the
-    // active tab's path (#50). The controller recompiles on dependency changes by itself.
-    if (app.mode === "latex" && id === app.activeId && !activeTab()?.large) {
-      if (collabHooks.editBlocksCompile()) latexCtl.schedule(id, activeTab()?.path ?? null, undefined, false);
-      else latexCtl.schedule(id, activeTab()?.path ?? null);
-    }
+    // Only a buffer shown as LaTeX in some group: a background tab reloaded from disk must not be
+    // compiled under another tab's path (#50). The controller recompiles on dependency changes by itself.
+    const tab = app.tabs.find((x) => x.id === id);
+    if (!tab || tab.large || !shownAs(id, "latex")) return;
+    if (collabHooks.editBlocksCompile()) latexCtl.schedule(id, tab.path, undefined, false);
+    else latexCtl.schedule(id, tab.path);
   },
 });
+
+/** The group last focused in LaTeX mode: the PDF and outline belong to it (#219). */
+let latexGroup: string | null = null;
 
 /** Kick off LaTeX compilation when entering LaTeX mode or switching tabs within it. */
 function latexHook() {
   const t = activeTab();
+  if (app.mode === "latex") latexGroup = app.groups.focused;
   if (app.mode === "latex" && t && !t.headOf && !t.large && !t.viewOf) latexCtl.schedule(t.id, t.path, 0);
 }
 
-export function setMode(mode: Mode) {
-  autosave(app.activeId);
-  const leavingLatex = app.mode === "latex" && mode !== "latex";
+/** PDF and outline act on the LaTeX group: it gets the focus if another group has it. */
+export function focusLatexGroup() {
+  if (app.mode === "latex" || !latexGroup || !app.groups.groups[latexGroup]) return;
+  if (groupMode(latexGroup) === "latex") focusGroup(latexGroup);
+}
+
+/** The mode a file belongs in by its name or language override; null = no clear one. */
+const suggestedMode = (path: string): Mode | null => (overrideFor(path) ? "code" : modeForPath(path));
+
+/**
+ * Switches the window's mode without reconfiguring the editor (the caller does that). `samePane`:
+ * the focused editor itself leaves LaTeX, so its compile errors go; focusing another group keeps them.
+ */
+function enterMode(mode: Mode, samePane = true) {
+  if (mode === app.mode) return;
+  const leavingLatex = app.mode === "latex";
   app.mode = mode;
   localStorage.setItem("mode", mode);
+  if (leavingLatex && samePane) ed.clearDiagnostics();
+}
+
+/**
+ * The user (or a feature) picks a mode: it applies to the active tab in the focused group and stays
+ * with it there. Other groups showing the same file keep their own mode (#219).
+ */
+export function setMode(mode: Mode) {
+  autosave(app.activeId);
+  const tab = activeTab();
+  if (tab && !tab.viewOf) {
+    tab.mode = mode;
+    focusedGroup().modes[tab.id] = mode;
+  }
+  enterMode(mode);
   ed.configure(cfg());
-  if (leavingLatex) ed.clearDiagnostics();
+  latexHook();
+}
+
+// ------------------------------------------------------------------ editor groups (#219)
+
+export const focusedGroup = (): Group => app.groups.groups[app.groups.focused];
+const tabById = (id: string | null) => (id ? (app.tabs.find((t) => t.id === id) ?? null) : null);
+export const groupCount = () => Object.keys(app.groups.groups).length;
+
+/** The mode a text tab shows in group `g`: chosen there, else the tab's last one, else by its name. */
+function modeIn(g: Group, tab: Tab): Mode | null {
+  if (tab.viewOf) return null;
+  return g.modes[tab.id] ?? tab.mode ?? (tab.path ? suggestedMode(tab.path) : null);
+}
+
+/** Mode of the active tab of group `gid`; null for an empty group or a viewer. */
+export function groupMode(gid: string): Mode | null {
+  const g = app.groups.groups[gid];
+  const tab = g && tabById(g.active);
+  return tab ? modeIn(g, tab) : null;
+}
+
+/** Modes of what the groups show right now (the dock zones open for any of them, #219). */
+export function shownModes(): Mode[] {
+  const out = new Set<Mode>();
+  for (const id of Object.keys(app.groups.groups)) {
+    const m = groupMode(id);
+    if (m) out.add(m);
+  }
+  return [...out];
+}
+
+/** Document `id` is the active tab of some group that shows it in `mode`. */
+export function shownAs(id: string, mode: Mode): boolean {
+  // The focused group shows in the window's mode.
+  return Object.values(app.groups.groups).some((g) => g.active === id && (g.id === app.groups.focused ? app.mode : g.modes[id]) === mode);
+}
+
+/** Puts group `gid`'s active tab into its editor pane (or hides the editor). */
+function showGroup(gid: string, focus = false) {
+  const g = app.groups.groups[gid];
+  if (!g) return;
+  const tab = tabById(g.active);
+  if (!tab) return ed.show(gid, null, cfgFor(null, app.mode), false);
+  const mode = modeIn(g, tab) ?? app.mode;
+  if (!tab.viewOf) g.modes[tab.id] = mode;
+  ed.show(gid, tab.id, cfgFor(tab, mode), focus);
+}
+
+/** Every group's editor again (spellcheck setting changed …). */
+function refreshGroups() {
+  for (const gid of Object.keys(app.groups.groups)) showGroup(gid);
+}
+
+/** A group's editor pane was created (it shows nothing until then). */
+export function paneReady(gid: string) {
+  showGroup(gid, gid === app.groups.focused);
+}
+
+function setFocused(gid: string) {
+  app.groups.focused = gid;
+  ed.setFocusedPane(gid);
+}
+
+/** Click or focus into a group: its active tab becomes the window's, the mode switcher follows it. */
+export function focusGroup(gid: string) {
+  const g = app.groups.groups[gid];
+  if (!g || app.groups.focused === gid) return;
+  autosave(app.activeId);
+  setFocused(gid);
+  app.activeId = g.active;
+  const tab = activeTab();
+  const mode = tab && modeIn(g, tab);
+  if (mode) enterMode(mode, false);
+  latexHook();
+}
+
+/** Makes `id` the active tab of group `gid` and focuses the group. */
+export function activateIn(gid: string, id: string) {
+  const g = app.groups.groups[gid];
+  const tab = tabById(id);
+  if (!g || !tab) return;
+  if (app.activeId !== id) autosave(app.activeId);
+  const samePane = app.groups.focused === gid;
+  if (!g.tabs.includes(id)) g.tabs.splice(g.active ? g.tabs.indexOf(g.active) + 1 : g.tabs.length, 0, id);
+  setFocused(gid);
+  g.active = id;
+  app.activeId = id;
+  // A text tab comes back in its own mode (#302). Viewers and untitled tabs without one keep the current mode.
+  if (!tab.viewOf) {
+    const mode = modeIn(g, tab);
+    if (mode) {
+      g.modes[id] = tab.mode = mode;
+      enterMode(mode, samePane);
+    }
+  }
+  ed.activate(id, cfg());
+  latexHook();
+  touchRecent(tab.path ?? (isRemotePath(tab.viewOf) ? null : tab.viewOf));
+}
+
+/** Removes group `gid` (not the last one); its tabs that are nowhere else close. */
+function removeGroup(gid: string) {
+  if (groupCount() < 2 || !app.groups.groups[gid]) return;
+  const next = neighbour(app.groups.root, gid)!;
+  app.groups.root = removeFrom(app.groups.root, gid);
+  delete app.groups.groups[gid];
+  ed.destroyPane(gid);
+  if (app.groups.focused === gid) {
+    const g = app.groups.groups[next];
+    setFocused(next);
+    app.activeId = null;
+    if (g.active) activateIn(next, g.active);
+    else ed.activate(null, cfg());
+  }
+}
+
+/** Takes `id` out of group `gid`: the next tab there takes over, an emptied group goes (unless it's the last). */
+function dropFromGroup(gid: string, id: string) {
+  const g = app.groups.groups[gid];
+  if (!g?.tabs.includes(id)) return;
+  const next = g.active === id ? nextActive(g.tabs, id) : g.active;
+  g.tabs.splice(g.tabs.indexOf(id), 1);
+  delete g.modes[id];
+  if (!g.tabs.length && groupCount() > 1) return removeGroup(gid);
+  g.active = next;
+  if (gid !== app.groups.focused) return showGroup(gid);
+  if (next) activateIn(gid, next);
+  else {
+    app.activeId = null;
+    ed.activate(null, cfg());
+  }
+}
+
+/** Closes a tab in one group: the file stays open if another group shows it, else it closes. */
+export async function closeInGroup(gid: string, id: string) {
+  if (!Object.values(app.groups.groups).some((g) => g.id !== gid && g.tabs.includes(id))) return closeTab(id);
+  dropFromGroup(gid, id);
+}
+
+/** Splits group `gid`: a new group on `side` shows its active tab too (the same file, kept in sync). */
+export function splitGroup(side: Side, gid = app.groups.focused, tabId?: string | null) {
+  const src = app.groups.groups[gid];
+  if (!src) return;
+  const id = uid();
+  const g = emptyGroup(id);
+  // `null`: the new group starts empty.
+  const t = tabId === undefined ? src.active : tabId;
+  if (t) {
+    g.tabs = [t];
+    g.active = t;
+    if (src.modes[t]) g.modes[t] = src.modes[t];
+  }
+  app.groups.groups[id] = g;
+  app.groups.root = splitAt(app.groups.root, gid, side, id);
+  autosave(app.activeId);
+  setFocused(id);
+  app.activeId = t ?? null;
+  const tab = tabById(t ?? null);
+  const mode = tab && modeIn(g, tab);
+  if (mode) enterMode(mode, false);
+  // The new group's editor pane shows the tab once it's mounted (paneReady).
+  return id;
+}
+
+/** Drag and drop: moves tab `id` from group `from` into group `to` (at `index`), or next to it on `side`. */
+export function moveTab(id: string, from: string, to: string, opts: { index?: number; side?: Side } = {}) {
+  const src = app.groups.groups[from];
+  if (!src?.tabs.includes(id) || !app.groups.groups[to]) return;
+  if (opts.side) {
+    if (from === to && src.tabs.length === 1) return; // nothing would change
+    const mode = src.modes[id];
+    const gid = splitGroup(opts.side, to, id)!;
+    if (mode) app.groups.groups[gid].modes[id] = mode;
+    dropFromGroup(from, id);
+    return;
+  }
+  const dst = app.groups.groups[to];
+  if (from === to && opts.index === undefined) return activateIn(to, id);
+  if (from === to) {
+    const i = dst.tabs.indexOf(id);
+    let j = Math.max(0, Math.min(opts.index ?? dst.tabs.length, dst.tabs.length));
+    if (j > i) j--;
+    dst.tabs.splice(i, 1);
+    dst.tabs.splice(j, 0, id);
+    return activateIn(to, id);
+  }
+  if (!dst.tabs.includes(id)) {
+    dst.tabs.splice(Math.max(0, Math.min(opts.index ?? dst.tabs.length, dst.tabs.length)), 0, id);
+    if (src.modes[id] && !dst.modes[id]) dst.modes[id] = src.modes[id];
+  }
+  activateIn(to, id);
+  dropFromGroup(from, id);
+}
+
+/** All tabs back into the focused group, in reading order; the other groups go. */
+export function joinGroups() {
+  const order = groupOrder(app.groups.root);
+  if (order.length < 2) return;
+  const keep = focusedGroup();
+  for (const gid of order) {
+    if (gid === keep.id) continue;
+    const g = app.groups.groups[gid];
+    for (const id of g.tabs) {
+      if (keep.tabs.includes(id)) continue;
+      keep.tabs.push(id);
+      if (g.modes[id]) keep.modes[id] = g.modes[id];
+    }
+  }
+  for (const gid of order) if (gid !== keep.id) removeGroup(gid);
+}
+
+/** Moves the focus to the next (`1`) or previous group in reading order. */
+export function cycleGroup(dir: 1 | -1) {
+  const order = groupOrder(app.groups.root);
+  if (order.length < 2) return;
+  const i = order.indexOf(app.groups.focused);
+  const gid = order[(i + dir + order.length) % order.length];
+  focusGroup(gid);
+  ed.focus();
+}
+
+/** "Open to the Side": opens `path` in the group to the right, splitting if there is none. */
+export async function openToSide(path: string) {
+  const order = groupOrder(app.groups.root);
+  const right = order[order.indexOf(app.groups.focused) + 1];
+  const gid = right ?? splitGroup("right", app.groups.focused, null)!;
+  if (right) focusGroup(right);
+  path = resolveDots(normPath(path));
+  const open = app.tabs.find((t) => t.path === path || t.viewOf === path || t.headOf === path);
+  if (open) return activateIn(gid, open.id);
+  await openFile(path);
+  // Not opened (error, declined): the new empty group goes again.
+  if (!right && app.groups.groups[gid] && !app.groups.groups[gid].tabs.length) removeGroup(gid);
+}
+
+/** Replaces the groups (session restore). Groups whose panes exist show their tab at once, the others once mounted. */
+export function setGroups(next: Groups) {
+  const gone = Object.keys(app.groups.groups).filter((id) => !(id in next.groups));
+  app.groups = next;
+  for (const id of gone) ed.destroyPane(id);
+  setFocused(next.focused);
+  const g = focusedGroup();
+  app.activeId = g.active;
+  const tab = activeTab();
+  const mode = tab && modeIn(g, tab);
+  if (mode) enterMode(mode, false);
+  refreshGroups();
   latexHook();
 }
 
@@ -523,12 +809,17 @@ function touchRecent(path: string | null | undefined) {
 }
 onGlobalChange("recentFiles", (v) => void recent.splice(0, recent.length, ...(JSON.parse(v || "[]") as string[])));
 
+/**
+ * Shows tab `id`: in the focused group if it's there; else in the group that already shows it;
+ * else it's added to the focused group.
+ */
 export function activate(id: string) {
-  if (app.activeId !== id) autosave(app.activeId);
-  app.activeId = id;
-  ed.activate(id, cfg());
-  latexHook();
-  touchRecent(activeTab()?.path ?? (isRemotePath(activeTab()?.viewOf) ? null : activeTab()?.viewOf));
+  let gid = app.groups.focused;
+  if (!focusedGroup()?.tabs.includes(id)) {
+    const other = groupOrder(app.groups.root).find((g) => app.groups.groups[g].active === id);
+    if (other) gid = other;
+  }
+  activateIn(gid, id);
 }
 
 /**
@@ -557,12 +848,9 @@ export async function openFile(path: string, quiet = false, atLine = false) {
   }
   const id = uid();
   ed.createDoc(id, content);
-  app.tabs.push({ id, path, name: basename(path), dirty: false, root: inRoot(path, app.root) ? app.root : null, eol: detectEol(content) });
-  const suggested = overrideFor(path) ? "code" : modeForPath(path);
-  if (suggested && suggested !== app.mode) {
-    app.mode = suggested;
-    localStorage.setItem("mode", suggested);
-  }
+  // A file without a clear mode opens in the current one, and keeps it.
+  const mode = suggestedMode(path) ?? app.mode;
+  app.tabs.push({ id, path, name: basename(path), dirty: false, root: inRoot(path, app.root) ? app.root : null, eol: detectEol(content), mode });
   activate(id);
   collabHooks.tabOpened(id, path);
 }
@@ -710,12 +998,7 @@ export function openVirtual(path: string, name: string, content: string): string
   }
   const id = uid();
   ed.createDoc(id, content);
-  app.tabs.push({ id, path, name, dirty: false });
-  const suggested = modeForPath(path);
-  if (suggested && suggested !== app.mode) {
-    app.mode = suggested;
-    localStorage.setItem("mode", suggested);
-  }
+  app.tabs.push({ id, path, name, dirty: false, mode: modeForPath(path) ?? app.mode });
   activate(id);
   return id;
 }
@@ -767,6 +1050,7 @@ export async function closeTab(id: string, force = false) {
     if (choice === "save" && !(await save(id))) return;
   }
   app.tabs.splice(idx, 1);
+  const wasActive = app.activeId === id;
   collabHooks.tabClosed(tab.path, tab.id);
   const closedFile = tab.path ?? tab.viewOf;
   if (closedFile && !isRemotePath(closedFile)) {
@@ -781,13 +1065,13 @@ export async function closeTab(id: string, force = false) {
   diskStamps.delete(id);
   staleNoticed.delete(id);
   if (tab.path) closeLspDoc(tab.path);
-  if (app.activeId === id) {
-    const next = app.tabs[idx] ?? app.tabs[idx - 1];
-    if (next) activate(next.id);
-    else {
-      app.activeId = null;
-      ed.activate(null, cfg());
-    }
+  const holders = groupOrder(app.groups.root).filter((g) => app.groups.groups[g].tabs.includes(id));
+  // The focused group last, so the focus ends up where it was.
+  holders.sort((a, b) => Number(a === app.groups.focused) - Number(b === app.groups.focused));
+  for (const gid of holders) dropFromGroup(gid, id);
+  if (wasActive && !holders.length) {
+    app.activeId = null;
+    ed.activate(null, cfg());
   }
 }
 
@@ -863,7 +1147,7 @@ export async function save(id = app.activeId, forceDialog = false, overwrite = f
     tab.path = path;
     tab.name = basename(path);
     app.treeVersion++;
-    if (tab.id === app.activeId) ed.configure(cfg());
+    refreshGroups();
   }
   tab.dirty = ed.isDirty(tab.id);
   if (tab.dirty) scheduleAutosave(tab.id);
@@ -938,9 +1222,10 @@ export function pathMoved(from: string, to: string | null) {
   app.treeVersion++;
 }
 
+/** Ctrl+Tab: the next tab of the focused group. */
 export function cycleTab(dir: 1 | -1) {
-  if (!app.tabs.length) return;
-  const i = app.tabs.findIndex((t) => t.id === app.activeId);
-  const next = app.tabs[(i + dir + app.tabs.length) % app.tabs.length];
-  activate(next.id);
+  const tabs = focusedGroup().tabs;
+  if (!tabs.length) return;
+  const i = tabs.indexOf(app.activeId ?? "");
+  activateIn(app.groups.focused, tabs[(i + dir + tabs.length) % tabs.length]);
 }

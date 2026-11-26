@@ -7,7 +7,7 @@ vi.mock("../lib/fsWatch.svelte", () => ({ onFilesChanged: vi.fn() }));
 vi.mock("../lib/tools.svelte", () => ({ ensureTools: vi.fn() }));
 vi.mock("../lib/native", () => ({ openUrl: vi.fn() }));
 const st = vi.hoisted(() => ({ active: null as string | null, view: null as unknown, openFile: async (_p: string) => {} }));
-vi.mock("../lib/state.svelte", () => ({ app: { root: "/p" }, activeTab: () => (st.active ? { path: st.active } : null), openFile: (p: string) => st.openFile(p) }));
+vi.mock("../lib/state.svelte", () => ({ app: { root: "/p" }, activeTab: () => (st.active ? { path: st.active } : null), openFile: (p: string) => st.openFile(p), focusLatexGroup: () => {} }));
 vi.mock("../lib/editor", () => ({ getView: () => st.view, getText: () => "" }));
 vi.mock("pdfjs-dist/build/pdf.worker.min.mjs?url", () => ({ default: "" }));
 

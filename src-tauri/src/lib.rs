@@ -1,4 +1,6 @@
+mod asset;
 mod fs;
+mod clipfiles;
 mod spell;
 mod latex;
 mod latex_guest;
@@ -32,6 +34,8 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        // Omega's own asset:// (convertFileSrc), checked per window (#167).
+        .register_asynchronous_uri_scheme_protocol("asset", asset::handle)
         .manage(spell::SpellState::default())
         .manage(pty::PtyState::default())
         .manage(proc::ProcState::default())
@@ -104,6 +108,10 @@ pub fn run() {
             fs::write_file_base64,
             fs::create_dir,
             fs::rename_path,
+            fs::copy_into,
+            fs::create_file_base64,
+            clipfiles::clipboard_files,
+            clipfiles::clipboard_set_files,
             fs::delete_path,
             fs::path_exists,
             fs::home_dir,

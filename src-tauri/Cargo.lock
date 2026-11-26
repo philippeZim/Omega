@@ -2167,12 +2167,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "http-range"
-version = "0.1.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2149c4b4b83390c71fab669730347d578ec6bdf759f2160c581ad8b8819733b4"
-
-[[package]]
 name = "httparse"
 version = "1.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2375,19 +2369,24 @@ dependencies = [
 
 [[package]]
 name = "ide"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "base64 0.23.1",
  "flate2",
  "futures-util",
+ "gdk",
  "getrandom 0.4.3",
  "globset",
+ "gtk",
  "icu_normalizer",
  "ignore",
  "iroh",
  "libc",
  "mimalloc",
  "notify",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
  "portable-pty",
  "regex",
  "serde",
@@ -5726,7 +5725,6 @@ dependencies = [
  "gtk",
  "heck 0.5.0",
  "http",
- "http-range",
  "image",
  "jni 0.21.1",
  "libc",

@@ -2,6 +2,29 @@
 
 All notable changes to Omega are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Omega uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-11-26
+
+### Added
+
+- **Editor splits and tab groups:** split the editor right or down from the tab menu, with a shortcut or by dragging a tab to a group's edge. The same file can be open in several groups, each with its own cursor and mode. The layout is restored with your session.
+- **Files from outside into the explorer:** drop files from your file manager onto the file tree, or copy and paste them. A clipboard image is saved as a PNG, and files copied in the explorer paste in your file manager too.
+
+### Changed
+
+- Ctrl+F options (match case, regular expression, by word) are pill toggles that fit the rest of the interface.
+- Find highlights all matches in solid blue and the current match in white, so they are easier to spot.
+
+### Fixed
+
+- **Smooth scrolling:** mouse wheel scrolling is smooth and steady in all modes, line numbers no longer flicker, and formulas and tables no longer make the view jump.
+- Every tab keeps its mode when you switch between tabs.
+- The file tree opens folders and scrolls to the active file, also when you open it with Ctrl+P.
+
+### Security
+
+- **Strict Content Security Policy:** the app only runs its own scripts and only connects to the package registries it needs.
+- **Narrower file access:** the app's file protocol serves files from the open project and the LaTeX output; anywhere else it only serves images.
+
 ## [0.2.0] - 2026-11-22
 
 ### Added

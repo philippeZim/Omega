@@ -218,7 +218,7 @@ async function run() {
       sync = r.sync;
     }
     // The user may have left LaTeX mode (or switched tabs) while the compile ran.
-    if (ed.isActive(job.id) && ed.activeMode() === "latex") applyDiagnostics(job.path);
+    applyDiagnostics(job.id, job.path);
   } catch (e) {
     latex.status = "error";
     latex.diagnostics = [{ file: "", line: 0, message: String(e), severity: "error" }];
@@ -232,9 +232,12 @@ async function run() {
   }
 }
 
-function applyDiagnostics(path: string | null) {
-  const view = ed.getView();
-  if (!view) return;
+/** Shows the errors in every editor group that shows the document as LaTeX (#219). */
+function applyDiagnostics(id: string, path: string | null) {
+  for (const { view, mode } of ed.viewsOf(id)) if (mode === "latex") applyDiagnosticsTo(view, path);
+}
+
+function applyDiagnosticsTo(view: import("@codemirror/view").EditorView, path: string | null) {
   const doc = view.state.doc;
   const diags: CmDiagnostic[] = latex.diagnostics
     .filter((d) => d.line > 0 && (!d.file || !path || d.file === path || d.file.endsWith("untitled.tex")))

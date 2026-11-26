@@ -7,6 +7,7 @@ vi.mock("../editor", () => ({
   getView: () => view,
   isActive: () => true,
   activeMode: () => mode,
+  viewsOf: () => (view ? [{ view, mode, pane: "main" }] : []),
 }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn() }));
 vi.mock("../fsWatch.svelte", () => ({ onFilesChanged: vi.fn() }));

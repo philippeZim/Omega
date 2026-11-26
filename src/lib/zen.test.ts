@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
-vi.mock("./state.svelte", () => ({ app: { mode: "code", activeId: null } }));
+vi.mock("./state.svelte", () => ({ app: { mode: "code", activeId: null }, shownModes: () => [] }));
 vi.mock("./debug/store.svelte", () => ({ dbg: { status: "idle", console: [] } }));
 vi.mock("./search/search.svelte", () => ({ find: { docked: false } }));
 vi.mock("./editor", () => ({ getView: () => null, focus: vi.fn() }));

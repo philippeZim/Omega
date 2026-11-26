@@ -101,3 +101,80 @@ describe("large file in full (#174)", () => {
   });
 });
 
+
+// #219: one document in two editor groups.
+describe("the same document in two panes", () => {
+  const cfg = (mode: "code" | "markdown" = "code") => ({ mode, path: "/p/a.md", spell: null });
+  const panes = () => {
+    ed.mount(document.createElement("div"), "L");
+    ed.mount(document.createElement("div"), "R");
+  };
+  const viewOf = (pane: string) => ed.viewsOf("doc").find((v) => v.pane === pane)!.view;
+
+  test("edits in either pane show in both, with their own cursor and mode", () => {
+    panes();
+    ed.createDoc("doc", "hello");
+    ed.show("L", "doc", cfg("code"));
+    ed.show("R", "doc", cfg("markdown"));
+    expect(ed.viewsOf("doc").map((v) => [v.pane, v.mode]).sort()).toEqual([["L", "code"], ["R", "markdown"]]);
+    viewOf("R").dispatch({ changes: { from: 5, insert: " world" }, selection: { anchor: 11 } });
+    expect(viewOf("L").state.doc.toString()).toBe("hello world");
+    expect(ed.getText("doc")).toBe("hello world");
+    viewOf("L").dispatch({ changes: { from: 0, insert: "> " } });
+    expect(viewOf("R").state.doc.toString()).toBe("> hello world");
+    // Each pane kept its own cursor (R's moved with the insertion before it).
+    expect(viewOf("R").state.selection.main.head).toBe(13);
+    expect(viewOf("L").state.selection.main.head).toBe(0);
+    ed.disposeDoc("doc");
+  });
+
+  test("external changes reach every pane; the dirty flag follows the document", () => {
+    panes();
+    const dirty: boolean[] = [];
+    ed.setCallbacks({ onDirty: (_id, d) => void dirty.push(d), onCursor: () => {}, onChange: () => {} });
+    ed.createDoc("doc", "abc");
+    ed.show("L", "doc", cfg());
+    ed.show("R", "doc", cfg());
+    ed.applyChanges("doc", { changes: { from: 3, insert: "d" } });
+    expect(viewOf("L").state.doc.toString()).toBe("abcd");
+    expect(viewOf("R").state.doc.toString()).toBe("abcd");
+    expect(ed.isDirty("doc")).toBe(true);
+    // Reported once per change, not once per pane.
+    expect(dirty).toEqual([true]);
+    ed.disposeDoc("doc");
+  });
+
+  test("when the owning pane moves on, the other one keeps the document live", () => {
+    panes();
+    ed.createDoc("doc", "one");
+    ed.createDoc("other", "two");
+    ed.show("L", "doc", cfg());
+    ed.show("R", "doc", cfg());
+    ed.show("L", "other", cfg());
+    expect(ed.isActive("doc")).toBe(true);
+    viewOf("R").dispatch({ changes: { from: 3, insert: "!" } });
+    expect(ed.getText("doc")).toBe("one!");
+    // Closing the last pane on it stores the state with the document.
+    ed.show("R", null, cfg());
+    expect(ed.isActive("doc")).toBe(false);
+    expect(ed.getText("doc")).toBe("one!");
+    ed.destroyPane("R");
+    ed.disposeDoc("doc");
+    ed.disposeDoc("other");
+  });
+
+  test("a pane returning to a document gets its cursor back", () => {
+    panes();
+    ed.createDoc("doc", "line 1\nline 2\nline 3");
+    ed.createDoc("x", "x");
+    ed.show("R", "doc", cfg());
+    viewOf("R").dispatch({ selection: { anchor: 9 } });
+    ed.show("R", "x", cfg());
+    ed.show("R", "doc", cfg());
+    expect(viewOf("R").state.selection.main.head).toBe(9);
+    ed.destroyPane("R");
+    ed.destroyPane("L");
+    ed.disposeDoc("doc");
+    ed.disposeDoc("x");
+  });
+});
