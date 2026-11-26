@@ -30,7 +30,26 @@
   let open = $state(untrack(() => root || expanded.has(path)));
   let children = $state<Entry[] | null>(null);
   const isDir = $derived(root || entry?.is_dir);
-  const active = $derived((activeTab()?.path ?? activeTab()?.viewOf) === path);
+  const activePath = $derived(activeTab()?.path ?? activeTab()?.viewOf);
+  const active = $derived(activePath === path);
+  let rowEl = $state<HTMLElement>();
+
+  // The active file is revealed: its folders open (#298) …
+  $effect(() => {
+    const p = activePath;
+    if (!p || !isDir || root || !p.startsWith(path + "/")) return;
+    untrack(() => {
+      if (open) return;
+      open = true;
+      expanded.add(path);
+      persist();
+    });
+  });
+
+  // … and its row scrolls into view.
+  $effect(() => {
+    if (active && rowEl) rowEl.scrollIntoView({ block: "nearest" });
+  });
 
   async function load() {
     try {
@@ -152,7 +171,7 @@
 </script>
 
 {#if !root}
-  <button class="row" class:active style="padding-left: {8 + (depth - 1) * 14}px" class:drop-target={dropTarget} class:dragging data-tree-path={path} data-tree-dir={isDir ? "1" : "0"}
+  <button bind:this={rowEl} class="row" class:active style="padding-left: {8 + (depth - 1) * 14}px" class:drop-target={dropTarget} class:dragging data-tree-path={path} data-tree-dir={isDir ? "1" : "0"}
     onpointerdown={(e) => startFileDrag(e, path)} onclick={onClick} onkeydown={onKey} oncontextmenu={menu} role="treeitem" aria-level={depth} aria-selected={active} aria-expanded={isDir ? open : undefined}>
     {#if isDir}
       <svg class="chev" class:open width="10" height="10" viewBox="0 0 10 10"><path d="M3.5 2l3 3-3 3" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
