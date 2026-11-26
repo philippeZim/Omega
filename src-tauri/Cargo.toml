@@ -1,6 +1,6 @@
 [package]
 name = "ide"
-version = "0.2.0"
+version = "0.2.1"
 description = "Omega – an editor for text, Markdown, LaTeX and code"
 authors = ["philippeZim"]
 repository = "https://github.com/philippeZim/Omega"
