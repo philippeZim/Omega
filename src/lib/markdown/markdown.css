@@ -191,7 +191,7 @@
 .mode-markdown .cm-line:hover .md-code-header button { opacity: 1; }
 
 /* Math */
-.mode-markdown .md-math-block { text-align: center; padding: 10px 0; overflow-x: auto; }
+.mode-markdown .md-math-block { text-align: center; padding: 10px 0; overflow-x: auto; overflow-y: hidden; /* only sideways: a wheel must scroll the editor (#297) */ }
 .mode-markdown .md-math-inline { padding: 0 1px; }
 .mode-markdown .md-math-src,
 .mode-markdown .cm-line.md-math-src-line { font-family: var(--mono); font-size: 0.88em; color: var(--teal); }
@@ -204,6 +204,7 @@
   margin: 10px 0;
   padding: 0 0 22px 0;
   overflow-x: auto;
+  overflow-y: hidden; /* only sideways: a wheel must scroll the editor (#297) */
 }
 .md-table-wrap table {
   border-collapse: separate;

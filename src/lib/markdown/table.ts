@@ -2,6 +2,7 @@
 import { WidgetType, type EditorView } from "@codemirror/view";
 import { Annotation } from "@codemirror/state";
 import { t as tr } from "../i18n/index.svelte";
+import { knownHeight, trackHeight, untrackHeight } from "./widgetHeights";
 
 type Align = "left" | "center" | "right" | null;
 interface Table {
@@ -74,11 +75,21 @@ export class TableWidget extends WidgetType {
     return other.text === this.text;
   }
 
+  /** The height it had when last rendered, else a guess from its rows (#297). */
+  get estimatedHeight() {
+    return knownHeight("table:" + this.text) ?? 62 + 37 * (this.text.trim().split("\n").length - 1);
+  }
+
   toDOM(view: EditorView) {
     const wrap = document.createElement("div") as TableDom;
     wrap.className = "md-table-wrap";
     this.fill(wrap, view);
+    trackHeight(wrap, "table:" + this.text);
     return wrap;
+  }
+
+  destroy(dom: HTMLElement) {
+    untrackHeight(dom);
   }
 
   updateDOM(dom: HTMLElement, view: EditorView) {

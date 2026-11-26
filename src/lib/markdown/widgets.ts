@@ -4,6 +4,7 @@ import katex from "katex";
 import "katex/dist/katex.min.css";
 import { t } from "../i18n/index.svelte";
 import { imageHost, isStoredPath, type ImageScope } from "./remoteImages.svelte";
+import { knownHeight, trackHeight, untrackHeight } from "./widgetHeights";
 
 const mathCache = new Map<string, string>();
 
@@ -32,11 +33,23 @@ export class MathWidget extends WidgetType {
   eq(o: MathWidget) {
     return o.tex === this.tex && o.display === this.display;
   }
+  private get key() {
+    return "math:" + this.tex;
+  }
+  /** Formula blocks: the height they had when last rendered, else a guess from their content (#297). */
+  get estimatedHeight() {
+    if (!this.display) return -1;
+    return knownHeight(this.key) ?? (/\\(frac|int|sum|prod|lim|begin)|\\\\/.test(this.tex) ? 70 : 50);
+  }
   toDOM() {
     const el = document.createElement(this.display ? "div" : "span");
     el.className = this.display ? "md-math-block" : "md-math-inline";
     el.innerHTML = renderMath(this.tex, this.display);
+    if (this.display) trackHeight(el, this.key);
     return el;
+  }
+  destroy(dom: HTMLElement) {
+    if (this.display) untrackHeight(dom);
   }
   ignoreEvent() {
     return false;
