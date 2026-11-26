@@ -24,6 +24,10 @@ export function fakeEditor() {
     },
     disposeDoc: (id: string) => void docs.delete(id),
     activate: vi.fn(),
+    show: vi.fn(),
+    setFocusedPane: vi.fn(),
+    destroyPane: vi.fn(),
+    focus: vi.fn(),
     configure: vi.fn(),
     refreshLanguage: vi.fn(),
     clearDiagnostics: vi.fn(),
@@ -50,7 +54,7 @@ export function fakeEditor() {
       docs.clear();
       cb = null;
       self.dropLive = false;
-      for (const f of [self.activate, self.configure, self.refreshLanguage, self.clearDiagnostics]) f.mockClear();
+      for (const f of [self.activate, self.show, self.setFocusedPane, self.destroyPane, self.focus, self.configure, self.refreshLanguage, self.clearDiagnostics]) f.mockClear();
     },
     /** Test helper: the user changes the whole text (fires onDirty like the real editor). */
     type: (id: string, text: string) => {

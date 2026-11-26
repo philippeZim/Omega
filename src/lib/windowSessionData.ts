@@ -1,7 +1,11 @@
 // What a window's session holds (no app imports, so it stays testable on its own).
+import { parseLayout, type SavedLayout } from "./editorGroups";
+
 export interface Session {
   files: string[];
   active: string | null;
+  /** Split editor groups (#219); absent with one group. */
+  layout?: SavedLayout | null;
 }
 
 /** What survives a restart: tabs with a file on this machine (no unsaved or shared ones). */
@@ -27,7 +31,8 @@ export function parseSession(text: string | null): Session | null {
   try {
     const v = JSON.parse(text ?? "null");
     if (!v || !Array.isArray(v.files)) return null;
-    return { files: v.files.filter((f: unknown): f is string => typeof f === "string"), active: typeof v.active === "string" ? v.active : null };
+    const layout = parseLayout(v.layout);
+    return { files: v.files.filter((f: unknown): f is string => typeof f === "string"), active: typeof v.active === "string" ? v.active : null, ...(layout ? { layout } : {}) };
   } catch {
     return null;
   }

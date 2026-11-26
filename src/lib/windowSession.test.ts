@@ -40,4 +40,10 @@ describe("window session", () => {
     expect(parseSession('{"files":3}')).toBeNull();
     expect(parseSession('{"files":["/a",5],"active":7}')).toEqual({ files: ["/a"], active: null });
   });
+
+  it("keeps a saved split layout and drops a broken one (#219)", () => {
+    const layout = { root: { dir: "row", children: [{ group: 0 }, { group: 1 }], sizes: [0.5, 0.5] }, groups: [{ files: ["/a"], active: "/a", modes: {} }, { files: ["/a"], active: "/a", modes: { "/a": "code" } }], focused: 1 };
+    expect(parseSession(JSON.stringify({ files: ["/a"], active: "/a", layout }))?.layout).toEqual(layout);
+    expect(parseSession(JSON.stringify({ files: ["/a"], active: "/a", layout: { groups: [] } }))).toEqual({ files: ["/a"], active: "/a" });
+  });
 });

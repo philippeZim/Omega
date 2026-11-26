@@ -26,6 +26,7 @@ const VSCODE: Record<string, string[]> = {
   "tab.close": ["Mod-w", "Mod-F4"],
   "tab.next": ["Mod-Tab", "Mod-PageDown"],
   "tab.prev": ["Mod-Shift-Tab", "Mod-PageUp"],
+  "group.splitRight": ["Mod-Backslash"],
   "git.commit": [],
   "git.push": [],
   "git.pull": [],

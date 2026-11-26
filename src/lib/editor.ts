@@ -1,9 +1,14 @@
 /**
- * Owns the single CodeMirror view. Every tab keeps its own EditorState (doc, selection,
- * undo history). Mode switches only reconfigure a compartment, so undo history and cursor
- * survive switching between Text / Markdown / LaTeX / Code.
+ * Owns the CodeMirror views: one per editor group (pane, #219). Every document keeps its own
+ * EditorState (doc, selection, undo history). Mode switches only reconfigure a compartment, so
+ * undo history and cursor survive switching between Text / Markdown / LaTeX / Code.
+ *
+ * A document shown in several panes at once: one pane holds its own state (the owner, with the
+ * live-collaboration binding), the others get a mirror state on the same text. Every change in
+ * one is forwarded to the others, so they stay equal; each keeps its own cursor, scroll, mode
+ * and undo history. When the owner moves on, a mirror becomes the owner.
  */
-import { Compartment, EditorState, type Text } from "@codemirror/state";
+import { Annotation, Compartment, EditorState, Transaction, type Text } from "@codemirror/state";
 import { setDiagnostics } from "@codemirror/lint";
 import {
   EditorView, keymap, drawSelection, dropCursor, highlightSpecialChars,
@@ -47,7 +52,22 @@ interface Doc {
   cfg: EditorConfig | null;
   /** Live-collaboration binding (yCollab) while the file is shared. */
   collab: import("@codemirror/state").Extension | null;
+  /** Pane whose view holds this document's state; null = `state` is current (not shown). */
+  owner: string | null;
 }
+
+interface Pane {
+  view: EditorView;
+  /** Document shown, null = none (the view is hidden). */
+  doc: string | null;
+  /** Config of what the pane shows. */
+  cfg: EditorConfig | null;
+}
+
+/** Marks changes forwarded from another pane on the same document. */
+const synced = Annotation.define<boolean>();
+/** The pane a test or a caller without groups uses. */
+export const MAIN_PANE = "main";
 
 // The editor owns live view/document state; hot-swapping this module would leave a second,
 // orphaned view behind. Force a full reload instead.
@@ -78,13 +98,29 @@ const headView = (note: string) => [plainView(note, "cm-head-note"), EditorState
 
 const modeExt = (cfg: EditorConfig) =>
   cfg.headNote ? headView(cfg.headNote) : cfg.largeNote ? plainView(cfg.largeNote, "cm-large-note") : modeExtensions(cfg.mode, cfg.path);
-let view: EditorView | null = null;
-let activeId: string | null = null;
+const panes = new Map<string, Pane>();
+let focusedPane = MAIN_PANE;
+/** Cursor and scroll of a document in a pane, for when the pane shows it again (key: pane + doc). */
+const places = new Map<string, { anchor: number; head: number; scroll: import("@codemirror/state").StateEffect<unknown> }>();
+const placeKey = (pane: string, id: string) => `${pane}\u001f${id}`;
 let cb = {
   onDirty: (_id: string, _d: boolean) => {},
   onCursor: (_l: number, _c: number, _s: number) => {},
   onChange: (_id: string) => {},
 };
+
+const focused = () => panes.get(focusedPane) ?? null;
+/** Panes showing `id`. */
+const panesOf = (id: string) => [...panes.entries()].filter(([, p]) => p.doc === id);
+/** The view holding document `id`'s own state, if it's shown. */
+function ownerView(id: string): EditorView | null {
+  const o = docs.get(id)?.owner;
+  return (o && panes.get(o)?.view) || null;
+}
+/** Current state of document `id`, wherever it lives. */
+function stateOf(id: string): EditorState | null {
+  return ownerView(id)?.state ?? docs.get(id)?.state ?? null;
+}
 
 export function setCallbacks(c: typeof cb) {
   cb = c;
@@ -93,13 +129,11 @@ export function setCallbacks(c: typeof cb) {
 // Re-translate CodeMirror's own UI in every configured document when the UI language changes.
 onLocaleChange(() => {
   const effects = phraseConf.reconfigure(phrases());
-  for (const [id, d] of docs) {
-    if (id === activeId && view) view.dispatch({ effects });
-    else if (d.cfg) d.state = d.state.update({ effects }).state;
-  }
+  for (const p of panes.values()) if (p.doc) p.view.dispatch({ effects });
+  for (const d of docs.values()) if (!d.owner && d.cfg) d.state = d.state.update({ effects }).state;
 });
 
-function baseExtensions(cfg: EditorConfig, collab: import("@codemirror/state").Extension | null = null) {
+function baseExtensions(id: string, cfg: EditorConfig, collab: import("@codemirror/state").Extension | null = null) {
   return [
     highlightSpecialChars(),
     history(),
@@ -119,13 +153,15 @@ function baseExtensions(cfg: EditorConfig, collab: import("@codemirror/state").E
     spellConf.of(cfg.spell ? spellcheck(cfg.spell, cfg.mode) : []),
     phraseConf.of(phrases()),
     EditorView.updateListener.of((u) => {
-      if (!activeId) return;
-      if (u.docChanged) {
-        const d = docs.get(activeId);
-        if (d) cb.onDirty(activeId, !u.state.doc.eq(d.saved));
-        cb.onChange(activeId);
+      if (u.docChanged && !u.transactions.some((tr) => tr.annotation(synced))) {
+        // The same document in other panes follows (their own undo history leaves it out).
+        for (const [, p] of panesOf(id))
+          if (p.view !== u.view) p.view.dispatch({ changes: u.changes, annotations: [synced.of(true), Transaction.addToHistory.of(false)] });
+        const d = docs.get(id);
+        if (d) cb.onDirty(id, !u.state.doc.eq(d.saved));
+        cb.onChange(id);
       }
-      if (u.docChanged || u.selectionSet) reportCursor(u.state);
+      if ((u.docChanged || u.selectionSet) && u.view === focused()?.view) reportCursor(u.state);
     }),
   ];
 }
@@ -136,22 +172,73 @@ function reportCursor(s: EditorState) {
   cb.onCursor(line.number, r.head - line.from + 1, Math.abs(r.to - r.from));
 }
 
-export function mount(parent: HTMLElement) {
+function emptyState() {
+  return EditorState.create({ doc: "" });
+}
+
+/** Creates the view of pane `pane` in `parent`, or moves the existing one there (UI rebuilt). */
+export function mount(parent: HTMLElement, pane = MAIN_PANE) {
   // If the UI is rebuilt, re-attach the existing view. Creating a fresh (empty) view while a
   // tab is active would make autosave write an empty document over the real file.
-  if (view) {
-    parent.appendChild(view.dom);
+  const p = panes.get(pane);
+  if (p) {
+    parent.appendChild(p.view.dom);
     return;
   }
-  view = new EditorView({ parent, state: EditorState.create({ doc: "" }) });
-  view.dom.style.display = activeId ? "" : "none";
+  const view = new EditorView({ parent, state: emptyState() });
+  view.dom.style.display = "none";
+  panes.set(pane, { view, doc: null, cfg: null });
+}
+
+/** The pane's group is gone: its document is handed on, its view removed. */
+export function destroyPane(pane: string) {
+  const p = panes.get(pane);
+  if (!p) return;
+  release(pane, p);
+  p.view.destroy();
+  panes.delete(pane);
+  for (const k of places.keys()) if (k.startsWith(pane + "\u001f")) places.delete(k);
+}
+
+/** Pane `pane` stops showing its document: remembers its place; the state goes back to the document or to another pane. */
+function release(pane: string, p: Pane) {
+  const id = p.doc;
+  if (!id) return;
+  const { anchor, head } = p.view.state.selection.main;
+  places.set(placeKey(pane, id), { anchor, head, scroll: p.view.scrollSnapshot() });
+  const d = docs.get(id);
+  p.doc = null;
+  if (d && d.owner === pane) {
+    d.owner = null;
+    d.state = p.view.state;
+    // Another pane on the same document takes over: its own state gets the collaboration binding.
+    const heir = panesOf(id)[0];
+    if (heir) {
+      d.owner = heir[0];
+      d.cfg = heir[1].cfg;
+      heir[1].view.dispatch({ effects: collabConf.reconfigure(d.collab ?? []) });
+    }
+  }
+  p.view.setState(emptyState());
+}
+
+/** The pane commands, the cursor display and `getView` refer to. */
+export function setFocusedPane(pane: string) {
+  if (focusedPane === pane) return;
+  focusedPane = pane;
+  const p = focused();
+  if (p?.doc) reportCursor(p.view.state);
+}
+
+export function getFocusedPane() {
+  return focusedPane;
 }
 
 export function createDoc(id: string, content: string) {
   // The state is created lazily with the right extensions on first activation.
   // The BOM is not part of the text (it would show as a special character); save writes it back (eol.ts).
   const state = EditorState.create({ doc: stripBom(content) });
-  docs.set(id, { state, saved: state.doc, cfg: null, collab: null });
+  docs.set(id, { state, saved: state.doc, cfg: null, collab: null, owner: null });
 }
 
 /** Cursor of recently closed files (by path), restored when the file is opened again in this session. */
@@ -161,51 +248,87 @@ export function disposeDoc(id: string) {
   const d = docs.get(id);
   const path = d?.cfg?.path;
   if (d && path) {
-    const { anchor, head } = (id === activeId && view ? view.state : d.state).selection.main;
+    const { anchor, head } = (stateOf(id) ?? d.state).selection.main;
     closedPos.delete(path);
     closedPos.set(path, { anchor, head });
     if (closedPos.size > 100) closedPos.delete(closedPos.keys().next().value!);
   }
+  for (const [pane, p] of panesOf(id)) {
+    release(pane, p);
+    p.view.dom.style.display = "none";
+  }
+  for (const k of places.keys()) if (k.endsWith("\u001f" + id)) places.delete(k);
   docs.delete(id);
 }
 
+/** Shows document `id` (null = nothing) in the focused pane. */
 export function activate(id: string | null, cfg: EditorConfig) {
-  if (!view) return;
-  // Persist the outgoing tab's state.
-  if (activeId && docs.has(activeId)) docs.get(activeId)!.state = view.state;
-  activeId = id;
-  if (!id) {
-    view.dom.style.display = "none";
+  show(focusedPane, id, cfg, true);
+}
+
+/** Shows document `id` (null = nothing) in pane `pane`, configured with `cfg`. */
+export function show(pane: string, id: string | null, cfg: EditorConfig, focus = pane === focusedPane) {
+  const p = panes.get(pane);
+  if (!p) return;
+  if (p.doc === id && id) {
+    if (!sameCfg(p.cfg, cfg)) configurePane(pane, cfg);
+    if (pane === focusedPane) reportCursor(p.view.state);
+    if (focus) p.view.focus();
+    return;
+  }
+  release(pane, p);
+  if (!id || !docs.has(id)) {
+    p.view.dom.style.display = "none";
+    p.cfg = null;
     return;
   }
   const d = docs.get(id)!;
+  const place = places.get(placeKey(pane, id));
+  const clip = (s: { anchor: number; head: number }, len: number) => ({ anchor: Math.min(s.anchor, len), head: Math.min(s.head, len) });
   let restored: number | null = null;
-  if (d.cfg === null) {
-    const pos = cfg.path ? closedPos.get(cfg.path) : undefined;
-    const len = d.state.doc.length;
-    const selection = pos && { anchor: Math.min(pos.anchor, len), head: Math.min(pos.head, len) };
-    d.state = EditorState.create({ doc: d.state.doc, selection, extensions: baseExtensions(cfg, d.collab) });
-    d.cfg = cfg;
-    if (selection) restored = selection.head;
+  p.view.dom.style.display = "";
+  if (d.owner === null) {
+    if (d.cfg === null) {
+      const pos = cfg.path ? closedPos.get(cfg.path) : undefined;
+      const selection = pos && clip(pos, d.state.doc.length);
+      d.state = EditorState.create({ doc: d.state.doc, selection, extensions: baseExtensions(id, cfg, d.collab) });
+      d.cfg = cfg;
+      if (selection) restored = selection.head;
+    }
+    d.owner = pane;
+    p.cfg = d.cfg;
+    p.view.setState(place ? d.state.update({ selection: clip(place, d.state.doc.length) }).state : d.state);
+  } else {
+    // Already shown in another pane: a mirror on the same text.
+    const doc = stateOf(id)!.doc;
+    const at = place ?? (ownerView(id)?.state.selection.main);
+    p.cfg = cfg;
+    p.view.setState(EditorState.create({ doc, selection: at && clip(at, doc.length), extensions: baseExtensions(id, cfg) }));
   }
-  view.dom.style.display = "";
-  view.setState(d.state);
-  if (restored !== null) view.dispatch({ effects: EditorView.scrollIntoView(restored, { y: "center" }) });
-  if (!sameCfg(d.cfg, cfg)) configure(cfg);
-  reportCursor(view.state);
-  view.focus();
+  p.doc = id;
+  if (place) p.view.dispatch({ effects: place.scroll });
+  else if (restored !== null) p.view.dispatch({ effects: EditorView.scrollIntoView(restored, { y: "center" }) });
+  if (!sameCfg(p.cfg, cfg)) configurePane(pane, cfg);
+  if (pane === focusedPane) reportCursor(p.view.state);
+  if (focus) p.view.focus();
 }
 
-/** Reconfigures the active tab (mode switch, rename, spellcheck language). */
+/** Reconfigures the focused pane's document (mode switch, rename, spellcheck language). */
 export function configure(cfg: EditorConfig) {
-  if (!view || !activeId) return;
-  const d = docs.get(activeId)!;
-  const prev = d.cfg;
-  d.cfg = cfg;
+  configurePane(focusedPane, cfg);
+}
+
+export function configurePane(pane: string, cfg: EditorConfig) {
+  const p = panes.get(pane);
+  if (!p?.doc) return;
+  const d = docs.get(p.doc)!;
+  const prev = p.cfg;
+  p.cfg = cfg;
+  if (d.owner === pane) d.cfg = cfg;
   const effects = [];
   if (!prev || prev.mode !== cfg.mode || prev.path !== cfg.path || prev.headNote !== cfg.headNote || prev.largeNote !== cfg.largeNote) effects.push(modeConf.reconfigure(modeExt(cfg)));
   if (!prev || prev.spell !== cfg.spell || prev.mode !== cfg.mode) effects.push(spellConf.reconfigure(cfg.spell ? spellcheck(cfg.spell, cfg.mode) : []));
-  if (effects.length) view.dispatch({ effects });
+  if (effects.length) p.view.dispatch({ effects });
 }
 
 /**
@@ -216,19 +339,20 @@ export function refreshLanguage(id: string, path: string | null) {
   const d = docs.get(id);
   if (!d?.cfg) return; // not shown yet: it's configured with the current path when activated
   d.cfg = { ...d.cfg, path };
-  const effects = modeConf.reconfigure(modeExt(d.cfg));
-  if (id === activeId && view) view.dispatch({ effects });
-  else d.state = d.state.update({ effects }).state;
+  const shown = panesOf(id);
+  for (const [, p] of shown) {
+    p.cfg = { ...(p.cfg ?? d.cfg), path };
+    p.view.dispatch({ effects: modeConf.reconfigure(modeExt(p.cfg)) });
+  }
+  if (!d.owner) d.state = d.state.update({ effects: modeConf.reconfigure(modeExt(d.cfg)) }).state;
 }
 
 export function getText(id: string): string {
-  if (id === activeId && view) return view.state.doc.toString();
-  return docs.get(id)?.state.doc.toString() ?? "";
+  return stateOf(id)?.doc.toString() ?? "";
 }
 
 export function getDoc(id: string): Text | null {
-  if (id === activeId && view) return view.state.doc;
-  return docs.get(id)?.state.doc ?? null;
+  return stateOf(id)?.doc ?? null;
 }
 
 /** Marks `doc` (the snapshot that was written) as saved; edits made during the write stay dirty. */
@@ -250,11 +374,25 @@ export function isDirty(id: string): boolean {
 }
 
 export function focus() {
-  view?.focus();
+  focused()?.view.focus();
 }
 
+/** The focused pane's view. */
 export function getView() {
-  return view;
+  return focused()?.view ?? null;
+}
+
+/** Views showing document `id`, with the mode each shows it in (the focused pane first). */
+export function viewsOf(id: string): { view: EditorView; mode: Mode | null; pane: string }[] {
+  return panesOf(id)
+    .sort(([a], [b]) => Number(b === focusedPane) - Number(a === focusedPane))
+    .map(([pane, p]) => ({ view: p.view, mode: p.cfg?.mode ?? null, pane }));
+}
+
+/** The pane a view belongs to. */
+export function paneOfView(view: EditorView): string | null {
+  for (const [id, p] of panes) if (p.view === view) return id;
+  return null;
 }
 
 /**
@@ -264,7 +402,8 @@ export function getView() {
 export function applyChanges(id: string, spec: Pick<import("@codemirror/state").TransactionSpec, "changes" | "annotations">) {
   const d = docs.get(id);
   if (!d) return;
-  if (id === activeId && view) {
+  const view = ownerView(id);
+  if (view) {
     view.dispatch({ ...spec, userEvent: "input.external" });
     return;
   }
@@ -286,6 +425,7 @@ export function replaceDocText(id: string, text: string) {
 
 /** Removes lint diagnostics (e.g. LaTeX errors) from the active document. */
 export function clearDiagnostics() {
+  const view = getView();
   if (view) view.dispatch(setDiagnostics(view.state, []));
 }
 
@@ -296,17 +436,20 @@ export function setCollab(id: string, ext: import("@codemirror/state").Extension
   d.collab = ext;
   if (d.cfg === null) return; // state created lazily with the binding
   const effects = collabConf.reconfigure(ext ?? []);
-  if (id === activeId && view) view.dispatch({ effects });
+  const view = ownerView(id);
+  if (view) view.dispatch({ effects });
   else d.state = d.state.update({ effects }).state;
 }
 
-/** Mode the active document is configured for (null without an active document). */
+/** Mode the focused pane's document is configured for (null without a document there). */
 export function activeMode(): Mode | null {
-  return (activeId && docs.get(activeId)?.cfg?.mode) || null;
+  const p = focused();
+  return (p?.doc && p.cfg?.mode) || null;
 }
 
+/** The document is shown in some pane (its state lives in a view, with the collaboration binding). */
 export function isActive(id: string) {
-  return id === activeId;
+  return !!docs.get(id)?.owner;
 }
 
 export function hasDoc(id: string) {

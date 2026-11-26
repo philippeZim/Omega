@@ -15,7 +15,7 @@
   import { untrack } from "svelte";
   import { fsApi, basename, type Entry } from "../lib/api";
   import { renameTarget } from "../lib/pathName";
-  import { app, openFile, pathMoved, activeTab, inRoot, createEntry } from "../lib/state.svelte";
+  import { app, openFile, openToSide, pathMoved, activeTab, inRoot, createEntry } from "../lib/state.svelte";
   import { ui } from "../lib/ui.svelte";
   import { git, kind } from "../lib/git/git.svelte";
   import { t } from "../lib/i18n/index.svelte";
@@ -179,7 +179,7 @@
             { label: t("app.newFolder"), action: () => create(true) },
             { separator: true, label: "" },
           ]
-        : [{ label: t("common.open"), action: () => openFile(path) }, { separator: true, label: "" }]),
+        : [{ label: t("common.open"), action: () => openFile(path) }, { label: t("app.openToSide"), action: () => openToSide(path) }, { separator: true, label: "" }]),
       { label: t("app.import.copy"), action: () => copyToClipboard([path]) },
       { label: t("app.import.paste"), action: paste },
       { separator: true, label: "" },

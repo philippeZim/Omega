@@ -1391,3 +1391,97 @@ describe("every tab keeps its mode (#302)", () => {
     expect(st.app.mode).toBe("text");
   });
 });
+
+describe("editor groups (#219)", () => {
+  const groupIds = () => Object.keys(st.app.groups.groups);
+  const tabsOf = (gid: string) => st.app.groups.groups[gid].tabs;
+
+  test("split shows the active file in a new focused group; closing it there keeps the file open", async () => {
+    await setup({ "/p/a.py": "x = 1\n", "/p/n.md": "# n\n" });
+    const a = await open("/p/a.py");
+    const gid = st.splitGroup("right")!;
+    expect(groupIds()).toHaveLength(2);
+    expect(st.app.groups.focused).toBe(gid);
+    expect(tabsOf(gid)).toEqual([a.id]);
+    expect(st.app.activeId).toBe(a.id);
+    await st.closeInGroup(gid, a.id);
+    expect(groupIds()).toEqual(["main"]);
+    expect(st.app.tabs.map((t) => t.id)).toEqual([a.id]);
+    expect(st.app.activeId).toBe(a.id);
+  });
+
+  test("opening a file goes to the focused group; one shown elsewhere gets that group focused", async () => {
+    await setup({ "/p/a.py": "x = 1\n", "/p/n.md": "# n\n" });
+    const a = await open("/p/a.py");
+    const gid = st.splitGroup("right", "main", null)!;
+    const n = await open("/p/n.md");
+    expect(tabsOf(gid)).toEqual([n.id]);
+    expect(tabsOf("main")).toEqual([a.id]);
+    await st.openFile("/p/a.py");
+    expect(st.app.groups.focused).toBe("main");
+    expect(st.app.activeId).toBe(a.id);
+  });
+
+  test("each group keeps its own mode for the same file; the window mode follows the focus", async () => {
+    modeMap.on = true;
+    await setup({ "/p/n.md": "# n\n" });
+    const n = await open("/p/n.md");
+    modeMap.on = false;
+    expect(st.app.mode).toBe("markdown");
+    const gid = st.splitGroup("right")!;
+    st.setMode("code");
+    expect(st.app.groups.groups[gid].modes[n.id]).toBe("code");
+    expect(st.app.groups.groups.main.modes[n.id]).toBe("markdown");
+    st.focusGroup("main");
+    expect(st.app.mode).toBe("markdown");
+    expect(st.shownModes().sort()).toEqual(["code", "markdown"]);
+    expect(st.groupMode(gid)).toBe("code");
+  });
+
+  test("closing a file closes it in every group; an emptied group goes", async () => {
+    await setup({ "/p/a.py": "x = 1\n", "/p/b.py": "y = 2\n" });
+    const a = await open("/p/a.py");
+    const b = await open("/p/b.py");
+    const gid = st.splitGroup("right", "main", a.id)!;
+    await st.closeTab(a.id);
+    expect(groupIds()).toEqual(["main"]);
+    expect(tabsOf("main")).toEqual([b.id]);
+    expect(st.app.groups.focused).toBe("main");
+    expect(st.app.activeId).toBe(b.id);
+    expect(ed.destroyPane).toHaveBeenCalledWith(gid);
+  });
+
+  test("dragging a tab: into another group, to a group's edge, and joining all back", async () => {
+    await setup({ "/p/a.py": "", "/p/b.py": "", "/p/c.py": "" });
+    const a = await open("/p/a.py");
+    const b = await open("/p/b.py");
+    const c = await open("/p/c.py");
+    st.moveTab(c.id, "main", "main", { side: "down" });
+    const down = st.app.groups.focused;
+    expect(tabsOf("main")).toEqual([a.id, b.id]);
+    expect(tabsOf(down)).toEqual([c.id]);
+    st.moveTab(a.id, "main", down, { index: 0 });
+    expect(tabsOf(down)).toEqual([a.id, c.id]);
+    expect(tabsOf("main")).toEqual([b.id]);
+    // Moving the last tab out removes its group.
+    st.moveTab(b.id, "main", down, {});
+    expect(groupIds()).toEqual([down]);
+    st.splitGroup("right");
+    st.joinGroups();
+    expect(groupIds()).toHaveLength(1);
+    expect(new Set(tabsOf(st.app.groups.focused))).toEqual(new Set([a.id, b.id, c.id]));
+  });
+
+  test("Ctrl+Tab cycles within the focused group", async () => {
+    await setup({ "/p/a.py": "", "/p/b.py": "", "/p/c.py": "" });
+    const a = await open("/p/a.py");
+    await open("/p/b.py");
+    const gid = st.splitGroup("right", "main", null)!;
+    const c = await open("/p/c.py");
+    st.activateIn(gid, a.id);
+    st.cycleTab(1);
+    expect(st.app.activeId).toBe(c.id);
+    st.cycleTab(1);
+    expect(st.app.activeId).toBe(a.id);
+  });
+});
