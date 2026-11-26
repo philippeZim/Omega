@@ -67,35 +67,41 @@
   --find-shadow: none;
   --find-shadow-sel: none;
   --find-deco: none;
+  --find-weight: 400;
 }
 :root[data-find-hl="a"] {
-  /* A: solid, saturated amber; dark text for contrast. */
-  --find-bg: rgba(214, 163, 95, 0.6);
-  --find-bg-sel: #e8ad5c;
-  --find-fg: #1a1408;
-  --find-fg-sel: #1a1408;
+  /* A: bright yellow fill, black text; current match orange with a white ring. */
+  --find-bg: #ffd60a;
+  --find-fg: #000000;
+  --find-weight: 600;
+  --find-bg-sel: #ff7a00;
+  --find-fg-sel: #000000;
+  --find-shadow-sel: 0 0 0 2px #ffffff;
 }
 :root[data-find-hl="b"] {
-  /* B: accent-coloured: soft tint and ring, filled accent on the current match. */
-  --find-bg: var(--accent-soft);
-  --find-shadow: inset 0 0 0 1px var(--accent);
-  --find-bg-sel: var(--accent-fill);
-  --find-fg-sel: #ffffff;
-  --find-shadow-sel: none;
+  /* B: solid accent-coloured pills (blue); current match white with a blue border. */
+  --find-bg: #3478f6;
+  --find-fg: #ffffff;
+  --find-weight: 600;
+  --find-bg-sel: #ffffff;
+  --find-fg-sel: #1d1d1f;
+  --find-shadow-sel: 0 0 0 2px #3478f6;
 }
 :root[data-find-hl="c"] {
-  /* C: underline instead of a fill for every match; the current one also gets a fill. */
-  --find-bg: rgba(214, 163, 95, 0.12);
-  --find-deco: underline 2px #e0a85a;
-  --find-bg-sel: rgba(214, 163, 95, 0.5);
+  /* C: neon. Solid pink matches with white text; current match cyan with black text. */
+  --find-bg: #ff3d9a;
+  --find-fg: #ffffff;
+  --find-weight: 700;
+  --find-bg-sel: #00e5ff;
+  --find-fg-sel: #000000;
 }
 :root[data-find-hl="d"] {
-  /* D: outlined boxes; the current match is filled and outlined heavier. */
-  --find-bg: rgba(214, 163, 95, 0.1);
-  --find-shadow: inset 0 0 0 1.5px rgba(214, 163, 95, 0.95);
-  --find-bg-sel: rgba(214, 163, 95, 0.6);
-  --find-fg-sel: #1a1408;
-  --find-shadow-sel: inset 0 0 0 2px #f4c77e;
+  /* D: highlighter look: yellow marker with bold black text; current match hot orange. */
+  --find-bg: #fff176;
+  --find-fg: #111111;
+  --find-weight: 700;
+  --find-bg-sel: #ff6a00;
+  --find-fg-sel: #ffffff;
 }
 
 /* iOS-style light palette (frosted white glass on a soft grey canvas). */
