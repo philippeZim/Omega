@@ -57,6 +57,8 @@ for (const level of ["error", "warn", "log", "info"] as const) {
 }
 window.addEventListener("error", (e) => capture("error", [e.message, e.error?.stack ?? ""]));
 window.addEventListener("unhandledrejection", (e) => capture("error", ["Unhandled rejection:", e.reason]));
+// The browser reports what the CSP (#166) blocked only in its own console.
+document.addEventListener("securitypolicyviolation", (e) => capture("error", [`CSP blocked ${e.blockedURI || "inline"} (${e.effectiveDirective})`]));
 
 // Recent toasts (what the user saw).
 const toastLog: { text: string; kind: string; time: string }[] = [];
