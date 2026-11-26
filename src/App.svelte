@@ -2,8 +2,7 @@
   import "./lib/collab/assets.svelte";
   import "./lib/collab/latexRemote.svelte";
   import TopBar from "./components/TopBar.svelte";
-  import TabBar from "./components/TabBar.svelte";
-  import EditorPane from "./components/EditorPane.svelte";
+  import EditorArea from "./components/groups/EditorArea.svelte";
   import Dialog from "./components/Dialog.svelte";
   import ContextMenu from "./components/ContextMenu.svelte";
   import Toasts from "./components/Toasts.svelte";
@@ -96,10 +95,7 @@
   <div class="main" class:floating onpointerdowncapture={centerDown}>
     <DockZone zone="left" />
     <div class="center" class:full={isOverlay("left") && isOverlay("right")}>
-      <section class="workspace glass">
-        <TabBar />
-        <EditorPane />
-      </section>
+      <EditorArea />
       <DockZone zone="bottom" />
     </div>
     <DockZone zone="right" />
@@ -162,22 +158,14 @@
   }
   /* Side zones float over the editor (narrow window): the editor column takes everything. */
   .center.full { min-width: 0; }
-  .workspace {
-    flex: 1;
-    min-height: 120px;
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-  }
   /* Zen mode only hides things with CSS: terminals, debugger and PDF stay mounted and keep running.
      No transition on purpose (never animate transform/opacity on or over glass). */
   .shell.zen { padding: 0; }
   .shell.zen > :global(.topbar),
   .shell.zen :global(.dock),
-  .shell.zen .workspace > :global(:not(.pane)),
+  .shell.zen :global(.workspace > :not(.pane)),
   .shell.zen :global(.cm-gutters) { display: none; }
   .shell.zen .center { min-width: 0; }
-  .shell.zen .workspace { border-radius: 0; box-shadow: none; }
+  .shell.zen :global(.workspace) { border-radius: 0; box-shadow: none; }
   .shell.zen :global(.cm-editor .cm-content) { max-width: var(--prose-width, 1000px); margin: 0 auto; padding: 48px 32px 40vh; }
 </style>

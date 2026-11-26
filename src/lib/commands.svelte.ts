@@ -11,7 +11,7 @@ import { EDITOR_COMMANDS, type CommandGroup } from "./editorCommands";
 import { KEYMAPS, type KeymapId } from "./keymaps";
 import { t, type Key } from "./i18n/index.svelte";
 import * as ed from "./editor";
-import { app, newFileInSession, save, openFolder, closeTab, setMode, cycleTab, toggleSpell, reopenClosedTab } from "./state.svelte";
+import { app, newFileInSession, save, openFolder, closeInGroup, setMode, cycleTab, toggleSpell, reopenClosedTab, splitGroup, joinGroups, cycleGroup, groupCount } from "./state.svelte";
 import { ui } from "./ui.svelte";
 import { checkForUpdates } from "./updater.svelte";
 import { report } from "./report.svelte";
@@ -89,10 +89,15 @@ const APP_COMMANDS: CommandDef[] = [
   { id: "file.save", group: "files", keys: ["Mod-s"], run: () => save() },
   { id: "file.saveAs", group: "files", keys: ["Mod-Shift-s"], run: () => save(app.activeId, true) },
   { id: "project.new", group: "files", keys: [], run: () => openNewProject() },
-  { id: "tab.close", group: "files", keys: ["Mod-w"], run: () => app.activeId && closeTab(app.activeId) },
+  { id: "tab.close", group: "files", keys: ["Mod-w"], run: () => app.activeId && closeInGroup(app.groups.focused, app.activeId) },
   { id: "tab.reopen", group: "files", keys: ["Mod-Shift-t"], run: reopenClosedTab },
   { id: "tab.next", group: "files", keys: ["Mod-Tab"], run: () => cycleTab(1), inTerminal: true },
   { id: "tab.prev", group: "files", keys: ["Mod-Shift-Tab"], run: () => cycleTab(-1), inTerminal: true },
+  { id: "group.splitRight", group: "window", keys: ["Mod-Alt-Backslash"], run: () => void splitGroup("right") },
+  { id: "group.splitDown", group: "window", keys: [], run: () => void splitGroup("down") },
+  { id: "group.join", group: "window", keys: [], run: joinGroups, when: () => groupCount() > 1 },
+  { id: "group.focusNext", group: "window", keys: ["Mod-Alt-PageDown"], run: () => cycleGroup(1), when: () => groupCount() > 1 },
+  { id: "group.focusPrev", group: "window", keys: ["Mod-Alt-PageUp"], run: () => cycleGroup(-1), when: () => groupCount() > 1 },
 
   { id: "git.commit", group: "git", keys: ["Mod-k"], run: () => {
     showView("changes");

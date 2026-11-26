@@ -3,8 +3,11 @@
  * the editor – left, right, bottom – and can be moved by drag and drop or shortcut. Views in the
  * same zone are tabs. The arrangement and sizes are global; whether a zone is open is remembered
  * per mode (e.g. terminal open in Code, closed in Markdown).
+ *
+ * With split editor groups (#219) several modes are on screen at once: a zone is open if any of
+ * them wants it, so moving the focus between a Code and a Markdown group doesn't open and close it.
  */
-import { app } from "./state.svelte";
+import { app, shownModes } from "./state.svelte";
 import { dbg } from "./debug/store.svelte";
 import { find } from "./search/search.svelte";
 import * as ed from "./editor";
@@ -138,15 +141,22 @@ function save() {
 
 // ------------------------------------------------------------------ queries
 
+/** Modes on screen: the focused one and those of the other editor groups. */
+function modesShown(): Mode[] {
+  const m = shownModes();
+  return m.includes(app.mode) ? m : [app.mode, ...m];
+}
+const shows = (mode: Mode) => modesShown().includes(mode);
+
 /** Views that make sense right now (PDF only in LaTeX, debugger only while debugging …). */
 export function available(v: ViewId): boolean {
   switch (v) {
     case "outline":
-      return app.mode === "latex";
+      return shows("latex");
     case "pdf":
-      return app.mode === "latex" && !!app.activeId;
+      return app.mode === "latex" ? !!app.activeId : shownModes().includes("latex");
     case "debug":
-      return app.mode === "code" && dbg.status !== "idle";
+      return shows("code") && dbg.status !== "idle";
     case "console":
       return dbg.status !== "idle" || dbg.console.length > 0;
     case "search":
@@ -173,7 +183,12 @@ function defaultOpen(z: Zone, mode: Mode): boolean {
   return mode === "code" && localStorage.getItem("termVisible") !== "false";
 }
 
-export const isOpen = (z: Zone): boolean => layout.open[app.mode]?.[z] ?? defaultOpen(z, app.mode);
+const openIn = (z: Zone, mode: Mode): boolean => layout.open[mode]?.[z] ?? defaultOpen(z, mode);
+/**
+ * The focused mode decides, plus any other mode on screen that was explicitly set to open: one
+ * that merely defaults to open doesn't bring back a zone the user closed.
+ */
+export const isOpen = (z: Zone): boolean => openIn(z, app.mode) || modesShown().some((m) => m !== app.mode && layout.open[m]?.[z] === true);
 
 /** Whether a side zone fits next to the editor column (else it floats over the editor). */
 export function isOverlay(z: Zone): boolean {
@@ -198,8 +213,11 @@ export function setOpen(z: Zone, open: boolean) {
     if (open) for (const o of ZONES) if (o !== z) peek[o] = false;
   }
   // Assign first and read back: the value of the assignment would be the plain object, not the proxy.
-  layout.open[app.mode] ??= {};
-  layout.open[app.mode]![z] = open;
+  // Closing applies to every mode on screen (else another group's mode would keep it open).
+  for (const m of open ? [app.mode] : modesShown()) {
+    layout.open[m] ??= {};
+    layout.open[m]![z] = open;
+  }
   save();
 }
 

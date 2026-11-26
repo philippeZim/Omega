@@ -1,9 +1,11 @@
 <script lang="ts">
   import { latex } from "../../lib/latex/controller.svelte";
   import * as ed from "../../lib/editor";
+  import { focusLatexGroup } from "../../lib/state.svelte";
   import { t } from "../../lib/i18n/index.svelte";
 
   function gotoPos(pos: number) {
+    focusLatexGroup();
     const v = ed.getView();
     if (!v) return;
     v.dispatch({ selection: { anchor: Math.min(pos, v.state.doc.length) }, scrollIntoView: true });

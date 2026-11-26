@@ -2,7 +2,7 @@
   import { IS_MAC } from "../lib/platform";
   import { onMount } from "svelte";
   import * as ed from "../lib/editor";
-  import { app, newFileInSession, openFolder } from "../lib/state.svelte";
+  import { app, newFileInSession, openFolder, paneReady } from "../lib/state.svelte";
   import { MODES } from "../lib/modes";
 
   import { ui, type MenuItem } from "../lib/ui.svelte";
@@ -20,12 +20,18 @@
 
   const NAV_COMMANDS = ["lsp.gotoDefinition", ...GOTO_IDS];
 
+  /** The editor group this pane belongs to (#219). */
+  let { gid }: { gid: string } = $props();
+
   let host: HTMLDivElement;
-  onMount(() => ed.mount(host));
+  onMount(() => {
+    ed.mount(host, gid);
+    paneReady(gid);
+  });
 
   async function contextMenu(e: MouseEvent) {
     const view = ed.getView();
-    if (!view || !app.activeId) return;
+    if (!view || !app.activeId || app.groups.focused !== gid) return;
     e.preventDefault();
     const pos = view.posAtCoords({ x: e.clientX, y: e.clientY });
     const sel = view.state.selection.main;
@@ -75,7 +81,9 @@
     ui.menu = { x: e.clientX, y: e.clientY, items };
   }
 
-  const viewerTab = $derived(activeTab()?.viewOf ? activeTab() : null);
+  const active = $derived(app.groups.groups[gid]?.active ?? null);
+  const shownTab = $derived(active ? (app.tabs.find((x) => x.id === active) ?? null) : null);
+  const viewerTab = $derived(shownTab?.viewOf ? shownTab : null);
   const modeLabel = $derived(MODES.find((m) => m.id === app.mode)?.label);
   /** Hints follow the configured keymap; unbound commands are left out. */
   const newKey = $derived(shortcutLabel("file.new"));
@@ -87,11 +95,11 @@
 </script>
 
 <div class="pane">
-  <div class="host" class:hidden={!app.activeId || !!viewerTab} bind:this={host} oncontextmenu={contextMenu} role="presentation"></div>
+  <div class="host" class:hidden={!active || !!viewerTab} bind:this={host} oncontextmenu={contextMenu} role="presentation"></div>
   {#if viewerTab}
     {#key viewerTab.id}<FileViewer tab={viewerTab} />{/key}
   {/if}
-  {#if !app.activeId}
+  {#if !active}
     <div class="welcome">
       <div class="inner">
       <h1>{modeLabel}</h1>

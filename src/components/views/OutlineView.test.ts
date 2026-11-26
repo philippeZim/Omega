@@ -6,6 +6,7 @@ vi.mock("../../lib/latex/controller.svelte", () => ({
   latex: { outline: [{ level: 2, title: "A very long section title that does not fit into the outline column", line: 3, pos: 10 }] },
 }));
 vi.mock("../../lib/editor", () => ({ getView: () => null }));
+vi.mock("../../lib/state.svelte", () => ({ focusLatexGroup: () => {} }));
 
 import OutlineView from "./OutlineView.svelte";
 

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { activeTab, isRemotePath } from "../lib/state.svelte";
+  import { activeTab, isRemotePath, type Tab } from "../lib/state.svelte";
   import { openLanguageMenu } from "../lib/code/langMenu";
   import { effectiveLang, overrideFor } from "../lib/code/langOverride.svelte";
   import { statusFor } from "../lib/code/lsp.svelte";
@@ -7,11 +7,13 @@
   import LspDot from "./LspDot.svelte";
 
   /** The active file's language and server state in Code mode; a click opens the menu for both. */
-  let { compact = false }: { compact?: boolean } = $props();
+  /** `tab`: the file of this editor group (#219); by default the active one. */
+  let { compact = false, tab }: { compact?: boolean; tab?: Tab | null } = $props();
+  const shown = $derived(tab === undefined ? activeTab() : tab);
 
-  const path = $derived(activeTab()?.path ?? null);
+  const path = $derived(shown?.path ?? null);
   // A large file has no language features; a click on the picker says why (#174).
-  const large = $derived(!!activeTab()?.large);
+  const large = $derived(!!shown?.large);
   const lang = $derived(large ? null : effectiveLang(path));
   const chosen = $derived(!large && !!overrideFor(path));
   const text = $derived(lang?.label ?? t("code.lang.plain"));
