@@ -169,10 +169,11 @@ input {
 }
 input:focus { box-shadow: var(--recess-shadow), 0 0 0 1px rgba(var(--fg-rgb), 0.14); }
 
-/* Floating glass panel */
+/* Floating glass panel (workspace, dock zones). No backdrop-filter on purpose (#297): these panels
+   only ever lie on the static window background (floating docks are opaque), where a blur changes
+   no pixel – but WebKitGTK recomputes it on every frame, so scrolling inside them stuttered. */
 .glass {
   background: var(--glass);
-  backdrop-filter: var(--blur);
   border-radius: var(--radius-panel);
   box-shadow: var(--glass-highlight), var(--glass-shadow);
 }

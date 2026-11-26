@@ -109,3 +109,14 @@ describe("no transform or opacity animation on glass (#151)", () => {
     expect(rule).not.toMatch(/transition[^;]*opacity/);
   });
 });
+
+// Issue #297: the big panels (workspace, docks) lie on the static window background, where a blur
+// shows nothing, but WebKitGTK recomputes it on every scroll frame and scrolling stutters.
+describe("big panels without backdrop blur", () => {
+  test(".glass has no backdrop-filter", () => {
+    const css = read("app.css");
+    const rules = [...css.matchAll(/([^{}]*\.glass\b[^{}]*)\{([^}]*)\}/g)];
+    expect(rules.length).toBeGreaterThan(0);
+    for (const [, , body] of rules) expect(body).not.toMatch(/backdrop-filter/);
+  });
+});
