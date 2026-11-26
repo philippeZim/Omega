@@ -1136,19 +1136,21 @@ export function follow(peer: string | null) {
 async function applyFollow() {
   const p = share.following ? share.presence[share.following] : null;
   if (!p) return;
-  // Following someone also follows their mode (Text/Markdown/LaTeX/Code).
-  if (p.mode && p.mode !== app.mode) setMode(p.mode);
-  if (!p.file) return;
-  if (collab.role === "guest") await openRemote(p.file, p.line);
-  else if (p.file.startsWith("tab:")) {
-    const id = p.file.slice(4);
-    if (app.tabs.some((t) => t.id === id && !t.path)) activate(id);
-    scrollToLine(p.line);
-  } else if (app.root && (await guestPathOk(p.file))) {
-    // Quiet: following a guest must never start the read of a large file on the host (#174).
-    await openFile(joinPath(app.root, p.file), true, !!p.line);
-    scrollToLine(p.line);
+  if (p.file) {
+    if (collab.role === "guest") await openRemote(p.file, p.line);
+    else if (p.file.startsWith("tab:")) {
+      const id = p.file.slice(4);
+      if (app.tabs.some((t) => t.id === id && !t.path)) activate(id);
+      scrollToLine(p.line);
+    } else if (app.root && (await guestPathOk(p.file))) {
+      // Quiet: following a guest must never start the read of a large file on the host (#174).
+      await openFile(joinPath(app.root, p.file), true, !!p.line);
+      scrollToLine(p.line);
+    }
   }
+  // Following someone also follows their mode (Text/Markdown/LaTeX/Code). After switching to
+  // their file, since every tab brings its own mode back (#302).
+  if (p.mode && p.mode !== app.mode) setMode(p.mode);
 }
 
 const presenceOrder = new Map<string, number>();
