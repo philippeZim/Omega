@@ -12,6 +12,7 @@ import {
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { searchKeymap, highlightSelectionMatches, search } from "@codemirror/search";
 import { modeExtensions, type Mode } from "./modes";
+import { stickyGuttersWhenScrolled } from "./stickyGutters";
 import { spellcheck, type SpellLang } from "./spell";
 
 export interface EditorConfig {
@@ -112,6 +113,7 @@ function baseExtensions(cfg: EditorConfig, collab: import("@codemirror/state").E
     Prec.highest(EditorView.domEventHandlers({ keydown: (e, view) => keyHandler(e, view) })),
     keymap.of([...builtinKeys, indentWithTab]),
     baseTheme,
+    stickyGuttersWhenScrolled,
     modeConf.of(modeExt(cfg)),
     collabConf.of(collab ?? []),
     spellConf.of(cfg.spell ? spellcheck(cfg.spell, cfg.mode) : []),
