@@ -105,14 +105,15 @@ export async function copyToClipboard(paths: string[]) {
 }
 
 /**
- * Turns a drag position from Tauri into CSS pixels. On Linux it arrives in GTK (logical) pixels,
- * elsewhere in physical ones; the UI zoom (`setZoom`) scales CSS pixels on top of that.
+ * Turns a drag position from Tauri into CSS pixels. Despite its type it arrives in logical pixels
+ * on Linux (GTK) and macOS (AppKit points), in physical ones on Windows (wry's drag_drop.rs); the
+ * UI zoom (`setZoom`) scales CSS pixels on top of that.
  */
 async function positionScale(): Promise<number> {
   const win = getCurrentWindow();
   const [size, factor] = await Promise.all([win.innerSize(), win.scaleFactor()]);
   const physPerCss = size.width / window.innerWidth;
-  return OS === "linux" ? physPerCss / factor : physPerCss;
+  return OS === "windows" ? physPerCss : physPerCss / factor;
 }
 
 let listeners = 0;
