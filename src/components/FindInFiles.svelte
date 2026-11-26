@@ -354,7 +354,7 @@
   .phint { font-size: 11px; color: var(--label-3); }
   .preview { flex: 1; min-height: 0; position: relative; background: var(--well); }
   .preview :global(.cm-editor) { position: absolute; inset: 0; }
-  .preview :global(.find-match) { background: rgba(216, 194, 122, 0.3); border-radius: 2px; }
+  .preview :global(.find-match) { background: var(--find-bg); color: var(--find-fg); box-shadow: var(--find-shadow); text-decoration: var(--find-deco); text-underline-offset: 3px; border-radius: 2px; }
   footer { display: flex; align-items: center; gap: 8px; padding: 10px 14px 12px 20px; border-top: 1px solid rgba(var(--fg-rgb), 0.05); }
   .keys { min-width: 0; font-size: 11.5px; color: var(--label-3); }
   /* Button labels stay on one line; the key hint wraps instead. */

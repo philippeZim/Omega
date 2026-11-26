@@ -50,8 +50,9 @@ export const baseTheme = EditorView.theme(
     },
     ".cm-panel.cm-search button[name=close]": { top: "8px", transform: "none" },
     ".cm-panel.cm-search button[name=close]:hover, .cm-dialog button.cm-dialog-close:hover": { background: "var(--fill-hover)", color: "var(--label)" },
-    ".cm-searchMatch": { backgroundColor: "rgba(214, 163, 95,0.28)", borderRadius: "2px" },
-    ".cm-searchMatch-selected": { backgroundColor: "rgba(214, 163, 95,0.55)" },
+    // Find highlights: colours from the --find-* tokens in app.css (issue #301).
+    ".cm-searchMatch": { backgroundColor: "var(--find-bg)", color: "var(--find-fg)", boxShadow: "var(--find-shadow)", textDecoration: "var(--find-deco)", textUnderlineOffset: "3px", borderRadius: "2px" },
+    ".cm-searchMatch-selected": { backgroundColor: "var(--find-bg-sel)", color: "var(--find-fg-sel)", boxShadow: "var(--find-shadow-sel)" },
     ".cm-tooltip": { backgroundColor: "var(--glass-strong)", backdropFilter: "var(--blur)", border: "none", borderRadius: "14px", boxShadow: "var(--glass-highlight), 0 14px 40px rgba(0,0,0,0.6)", overflow: "hidden", padding: "4px" },
     ".cm-tooltip-autocomplete > ul": { fontFamily: "var(--mono)", fontSize: "13px", maxHeight: "18em" },
     ".cm-tooltip-autocomplete > ul > li": { padding: "3px 10px !important", borderRadius: "8px" },
