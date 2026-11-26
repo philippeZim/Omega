@@ -2,6 +2,11 @@
   // Expanded folders survive tree reloads (treeVersion bumps).
   const expanded = new Set<string>(JSON.parse(localStorage.getItem("expanded") || "[]"));
   const persist = () => localStorage.setItem("expanded", JSON.stringify([...expanded]));
+  /** Keeps `path` open across the tree reload that follows a paste or drop into it. */
+  export function keepExpanded(path: string) {
+    expanded.add(path);
+    persist();
+  }
 </script>
 
 <script lang="ts">
@@ -16,6 +21,7 @@
   import { t } from "../lib/i18n/index.svelte";
   import { fileDrag, startFileDrag } from "../lib/fileDrag.svelte";
   import { treeKeyAction, focusTreeRow } from "../lib/treeNav";
+  import { externalDrop, pasteInto, copyToClipboard } from "../lib/fileImport.svelte";
 
   const gitKind = $derived.by(() => {
     if (!git.repo || !git.top || !path.startsWith(git.top + "/")) return null;
@@ -72,7 +78,7 @@
     });
   });
 
-  const dropTarget = $derived(!root && isDir && fileDrag.target === path);
+  const dropTarget = $derived(!root && isDir && (fileDrag.target === path || externalDrop.target === path));
   const dragging = $derived(fileDrag.from === path);
 
   // Hovering a closed folder while dragging opens it after a moment.
@@ -121,6 +127,13 @@
     }
   }
 
+  // Pasting into a file pastes next to it.
+  function paste() {
+    const dir = isDir ? path : path.slice(0, path.lastIndexOf("/"));
+    if (isDir) keepExpanded(path);
+    pasteInto(dir);
+  }
+
   async function remove() {
     const ok = await ui.confirm(t("app.deleteConfirm", { name: basename(path) }), t("app.cannotUndo"), t("common.delete"), true);
     if (!ok) return;
@@ -140,6 +153,14 @@
 
   // Arrows move the focus and open/close folders, F2 renames, Delete deletes (#39).
   function onKey(e: KeyboardEvent) {
+    // Ctrl+C / Ctrl+V copy and paste files (#299).
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && (e.key === "c" || e.key === "v")) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.key === "c") copyToClipboard([path]);
+      else paste();
+      return;
+    }
     const a = treeKeyAction(e, { isDir: !!isDir, open });
     if (!a) return;
     e.preventDefault();
@@ -159,6 +180,9 @@
             { separator: true, label: "" },
           ]
         : [{ label: t("common.open"), action: () => openFile(path) }, { separator: true, label: "" }]),
+      { label: t("app.import.copy"), action: () => copyToClipboard([path]) },
+      { label: t("app.import.paste"), action: paste },
+      { separator: true, label: "" },
       { label: t("common.rename"), action: rename },
       { label: t("app.copyPath"), action: () => navigator.clipboard.writeText(path) },
       ...(app.root && inRoot(path, app.root) && path !== app.root

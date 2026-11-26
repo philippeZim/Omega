@@ -9,6 +9,21 @@
   import { share, remoteCreate } from "../../lib/collab/share.svelte";
   import { fileDrag } from "../../lib/fileDrag.svelte";
   import { shortcutLabel } from "../../lib/commands.svelte";
+  import { externalDrop, listenExternalDrops, pasteInto } from "../../lib/fileImport.svelte";
+  import { onMount } from "svelte";
+
+  // Files dragged in from a file manager are copied into the folder under the pointer (#299).
+  onMount(listenExternalDrops);
+
+  // Ctrl+V on the empty area of the tree pastes into the project folder.
+  function treeKey(e: KeyboardEvent) {
+    if (e.target !== e.currentTarget || !app.root) return;
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key === "v") {
+      e.preventDefault();
+      e.stopPropagation();
+      pasteInto(app.root);
+    }
+  }
 
   const guestView = $derived(collab.role === "guest" && collab.status === "connected");
 
@@ -35,6 +50,7 @@
     ui.openMenu(e, [
       { label: t("app.newFile"), action: () => newEntry(false) },
       { label: t("app.newFolder"), action: () => newEntry(true) },
+      { label: t("app.import.paste"), action: () => pasteInto(app.root!) },
       { separator: true, label: "" },
       { label: t("app.refresh"), action: () => app.treeVersion++ },
       { label: t("app.closeFolder"), action: () => setRoot(null) },
@@ -73,7 +89,7 @@
         </button>
       </div>
     </div>
-    <div class="tree" class:drop-target={fileDrag.from && fileDrag.target === app.root} role="tree" tabindex="-1" oncontextmenu={rootMenu}
+    <div class="tree" class:drop-target={(fileDrag.from && fileDrag.target === app.root) || externalDrop.target === app.root} role="tree" tabindex="-1" oncontextmenu={rootMenu} onkeydown={treeKey}
       data-tree-path={app.root} data-tree-dir="1">
       {#key app.treeVersion}
         <TreeNode path={app.root} depth={0} root />
