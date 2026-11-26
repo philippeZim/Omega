@@ -130,6 +130,7 @@ async function node(root: string): Promise<VersionSetting> {
     async options() {
       let opts: Suggestion[] = [];
       try {
+        // Allowed by connect-src of the CSP (#166).
         const list = (await (await fetch("https://nodejs.org/dist/index.json")).json()) as { version: string; lts: string | false }[];
         const seen = new Set<string>();
         for (const r of list) {

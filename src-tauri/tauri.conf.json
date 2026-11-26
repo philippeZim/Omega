@@ -29,7 +29,7 @@
         "style-src": ["'self'", "'unsafe-inline'"],
         "img-src": ["'self'", "asset:", "http://asset.localhost", "data:", "blob:", "http:", "https:"],
         "font-src": ["'self'", "data:"],
-        "connect-src": ["'self'", "ipc:", "http://ipc.localhost", "asset:", "http://asset.localhost", "data:", "blob:", "http:", "https:"],
+        "connect-src": ["'self'", "ipc:", "http://ipc.localhost", "asset:", "http://asset.localhost", "data:", "blob:", "https://registry.npmjs.org", "https://hugovk.dev", "https://nodejs.org"],
         "worker-src": ["'self'"],
         "object-src": ["'none'"],
         "base-uri": ["'none'"],

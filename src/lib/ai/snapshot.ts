@@ -46,6 +46,7 @@ export async function snapshotPng(node: HTMLElement, options: Options = {}): Pro
   if (!clone) throw new Error("nothing to draw");
   applyScroll(node, clone, options.filter as ((n: Node) => boolean) | undefined);
   await embedWebFonts(clone, options);
+  // Remote images stay empty: the CSP (#166) lets fetch reach only the package hosts.
   await embedImages(clone, options);
   applyStyle(clone, options);
   const img = await createImage(await nodeToDataURL(clone, width, height));

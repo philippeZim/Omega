@@ -27,9 +27,10 @@ describe("Content Security Policy", () => {
       "img-src": ["'self'", "asset:", "http://asset.localhost", "data:", "blob:", "http:", "https:"],
       // Small fonts are inlined into the CSS as data: URLs.
       "font-src": ["'self'", "data:"],
-      // IPC, PDFs and images over the asset protocol, package lists (npm, PyPI, Node), and the
-      // control MCP screenshot fetching what an <img> shows.
-      "connect-src": ["'self'", "ipc:", "http://ipc.localhost", "asset:", "http://asset.localhost", "data:", "blob:", "http:", "https:"],
+      // IPC, PDFs and images over the asset protocol, data:/blob: images for screenshots, and
+      // exactly the three hosts the package and version lists come from: npm search, the top
+      // PyPI packages (hugovk.dev) and Node releases. No other host: fetch could send data out.
+      "connect-src": ["'self'", "ipc:", "http://ipc.localhost", "asset:", "http://asset.localhost", "data:", "blob:", "https://registry.npmjs.org", "https://hugovk.dev", "https://nodejs.org"],
       // The pdf.js worker is a bundled file.
       "worker-src": ["'self'"],
       "object-src": ["'none'"],
@@ -53,6 +54,9 @@ describe("Content Security Policy", () => {
       expect(list, d).not.toContain("*");
       if (d !== "style-src") expect(list, d).not.toContain("'unsafe-inline'");
     }
+    // fetch reaches only named hosts, never every http(s) server.
+    expect(sources("connect-src")).not.toContain("http:");
+    expect(sources("connect-src")).not.toContain("https:");
     expect(csp["script-src-elem"]).toBeUndefined();
     expect(csp["script-src-attr"]).toBeUndefined();
   });
@@ -78,9 +82,12 @@ describe("Content Security Policy", () => {
 });
 
 describe("policy in development", () => {
-  test("Vite sends the release policy", () => {
-    const vite = readFileSync("vite.config.ts", "utf8") as string;
-    expect(vite).toMatch(/"Content-Security-Policy":\s*devCsp\(tauriConf\.app\.security\.csp/);
+  test("Vite sends the release policy", async () => {
+    // Through a variable, so svelte-check doesn't pull the Node-typed config into the app's types.
+    const file = "../vite.config";
+    const config = (await import(/* @vite-ignore */ file)).default;
+    const server = (typeof config === "function" ? await config({ command: "serve", mode: "development" }) : config).server;
+    expect(server.headers["Content-Security-Policy"]).toBe(devCsp(csp));
   });
 
   test("adds only the HMR socket and Vite's reconnect worker", () => {
