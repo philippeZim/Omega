@@ -70,6 +70,15 @@
   --find-weight: 600;
 }
 
+/* Ctrl+F option toggles (match case, regexp, by word), issue #300: pills. Each option is a chip;
+   the active one is filled with the accent. The native checkbox is visually hidden but stays
+   focusable, so keyboard use still works. */
+.cm-panel.cm-search label { display: inline-flex; align-items: center; position: relative; margin-left: 4px; padding: 3px 10px; border-radius: 999px; background: var(--fill); color: var(--label-2); cursor: pointer; user-select: none; }
+.cm-panel.cm-search label:hover { background: var(--fill-hover); }
+.cm-panel.cm-search label:has(input:checked) { background: var(--accent-fill); color: #fff; }
+.cm-panel.cm-search label:has(input:focus-visible) { box-shadow: 0 0 0 2px var(--accent-soft); }
+.cm-panel.cm-search label input[type=checkbox] { position: absolute; opacity: 0; width: 0; height: 0; margin: 0; pointer-events: none; }
+
 /* iOS-style light palette (frosted white glass on a soft grey canvas). */
 :root[data-theme="light"] {
   --fg-rgb: 0, 0, 0;
