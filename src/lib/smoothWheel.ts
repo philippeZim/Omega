@@ -27,6 +27,9 @@ const NOTCH_MIN_PX = 40;
 const TOUCHPAD_MS = 250;
 /** WebKitGTK's px per wheel "line": a notch arrives as 3 × 53 = 159 px. */
 const NATIVE_LINE_PX = 53;
+const NATIVE_NOTCH_PX = 3 * NATIVE_LINE_PX;
+/** Lines of text one notch scrolls. */
+export const LINES_PER_NOTCH = 4;
 /** Line height assumed for scrollers that aren't an editor (file tree, lists, PDF). */
 const FALLBACK_LINE_PX = 20;
 /** Longest time step per frame (s). */
@@ -52,12 +55,12 @@ export function notchDelta(e: Pick<WheelEvent, "deltaX" | "deltaY" | "deltaMode"
 }
 
 /**
- * How far a wheel delta moves `el`: WebKit's 159 px per notch were ~7 lines of code. Like most
- * editors, a notch now moves 3 lines of the text being scrolled (#297); a raised system scroll
+ * How far a wheel delta moves `el`: WebKit's 159 px per notch were ~7 lines of code, 3 felt a bit
+ * too little; a notch now moves 4 lines of the text being scrolled (#297). A raised system scroll
  * factor still scales it.
  */
 export function wheelDistance(nativePx: number, lineHeight: number) {
-  return (nativePx / NATIVE_LINE_PX) * lineHeight;
+  return (nativePx / NATIVE_NOTCH_PX) * LINES_PER_NOTCH * lineHeight;
 }
 
 function lineHeightOf(el: HTMLElement) {

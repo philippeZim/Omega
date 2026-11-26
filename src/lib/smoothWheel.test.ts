@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { OMEGA, notchDelta, springStep, wheelDistance } from "./smoothWheel";
+import { LINES_PER_NOTCH, OMEGA, notchDelta, springStep, wheelDistance } from "./smoothWheel";
 
 const wheel = (deltaY: number, o: Partial<WheelEvent> = {}) =>
   ({ deltaX: 0, deltaY, deltaMode: 0, ctrlKey: false, shiftKey: false, altKey: false, metaKey: false, ...o }) as WheelEvent;
@@ -37,9 +37,9 @@ describe("notchDelta", () => {
 });
 
 describe("wheelDistance", () => {
-  test("a notch moves 3 lines of the scrolled text", () => {
-    expect(wheelDistance(159, 23)).toBeCloseTo(69);
-    expect(wheelDistance(-159, 27)).toBeCloseTo(-81);
+  test("a notch moves LINES_PER_NOTCH lines of the scrolled text", () => {
+    expect(wheelDistance(159, 23)).toBeCloseTo(LINES_PER_NOTCH * 23);
+    expect(wheelDistance(-159, 27)).toBeCloseTo(-LINES_PER_NOTCH * 27);
   });
-  test("a raised system scroll factor still scales it", () => expect(wheelDistance(318, 20)).toBeCloseTo(120));
+  test("a raised system scroll factor still scales it", () => expect(wheelDistance(318, 20)).toBeCloseTo(2 * LINES_PER_NOTCH * 20));
 });
