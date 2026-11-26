@@ -70,6 +70,52 @@
   --find-weight: 600;
 }
 
+/* Ctrl+F option checkboxes (match case, regexp, by word), issue #300. Baseline = native checkboxes.
+   data-find-toggle on <html> picks an experimental variant (see below). */
+:root[data-find-toggle] .cm-panel.cm-search label { display: inline-flex; align-items: center; gap: 0; cursor: pointer; user-select: none; }
+:root[data-find-toggle] .cm-panel.cm-search label input[type=checkbox] { margin: 0; cursor: pointer; }
+/* A: pills. Each option is a chip; the active one is filled with the accent. */
+:root[data-find-toggle="a"] .cm-panel.cm-search label {
+  position: relative; margin-left: 4px; padding: 3px 10px; border-radius: 999px;
+  background: var(--fill); color: var(--label-2);
+}
+:root[data-find-toggle="a"] .cm-panel.cm-search label:hover { background: var(--fill-hover); }
+:root[data-find-toggle="a"] .cm-panel.cm-search label:has(input:checked) { background: var(--accent-fill); color: #fff; }
+:root[data-find-toggle="a"] .cm-panel.cm-search label input[type=checkbox] { position: absolute; opacity: 0; width: 0; height: 0; pointer-events: none; }
+:root[data-find-toggle="a"] .cm-panel.cm-search label:has(input:focus-visible) { box-shadow: 0 0 0 2px var(--accent-soft); }
+/* B: square boxes in the app's recess style, filled with the accent and a white tick when on. */
+:root[data-find-toggle="b"] .cm-panel.cm-search label { margin-left: 8px; color: var(--label-2); }
+:root[data-find-toggle="b"] .cm-panel.cm-search label input[type=checkbox] {
+  appearance: none; -webkit-appearance: none; display: inline-grid; place-content: center;
+  width: 14px; height: 14px; margin: 0 6px 0 0; border-radius: 4px; background: var(--recess); box-shadow: var(--recess-shadow);
+}
+:root[data-find-toggle="b"] .cm-panel.cm-search label input[type=checkbox]:checked { background: var(--accent-fill); box-shadow: none; }
+:root[data-find-toggle="b"] .cm-panel.cm-search label input[type=checkbox]:checked::after {
+  content: ""; width: 3px; height: 7px; border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg) translate(-1px, -1px);
+}
+/* C: switches. A small track with a knob; the accent colour when on. No transition: WebKitGTK flashes stale frames. */
+:root[data-find-toggle="c"] .cm-panel.cm-search label { margin-left: 8px; color: var(--label-2); }
+:root[data-find-toggle="c"] .cm-panel.cm-search label input[type=checkbox] {
+  appearance: none; -webkit-appearance: none; position: relative; width: 24px; height: 14px; margin: 0 7px 0 0;
+  border-radius: 999px; background: var(--recess); box-shadow: var(--recess-shadow);
+}
+:root[data-find-toggle="c"] .cm-panel.cm-search label input[type=checkbox]::before {
+  content: ""; position: absolute; top: 2px; left: 2px; width: 10px; height: 10px; border-radius: 50%; background: var(--label-2);
+}
+:root[data-find-toggle="c"] .cm-panel.cm-search label input[type=checkbox]:checked { background: var(--accent-fill); box-shadow: none; }
+:root[data-find-toggle="c"] .cm-panel.cm-search label input[type=checkbox]:checked::before { left: 12px; background: #fff; }
+/* D: text tabs. Off = muted text; on = full label colour with an accent bar underneath. */
+:root[data-find-toggle="d"] .cm-panel.cm-search label {
+  position: relative; margin-left: 14px; padding: 4px 2px 6px; color: var(--label-3);
+}
+:root[data-find-toggle="d"] .cm-panel.cm-search label:hover { color: var(--label-2); }
+:root[data-find-toggle="d"] .cm-panel.cm-search label:has(input:checked) { color: var(--label); font-weight: 600; }
+:root[data-find-toggle="d"] .cm-panel.cm-search label::after {
+  content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 2px; border-radius: 1px; background: transparent;
+}
+:root[data-find-toggle="d"] .cm-panel.cm-search label:has(input:checked)::after { background: var(--accent-fill); }
+:root[data-find-toggle="d"] .cm-panel.cm-search label input[type=checkbox] { position: absolute; opacity: 0; width: 0; height: 0; pointer-events: none; }
+
 /* iOS-style light palette (frosted white glass on a soft grey canvas). */
 :root[data-theme="light"] {
   --fg-rgb: 0, 0, 0;
