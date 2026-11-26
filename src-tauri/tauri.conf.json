@@ -35,16 +35,7 @@
         "base-uri": ["'none'"],
         "form-action": ["'none'"]
       },
-      "dangerousDisableAssetCspModification": ["style-src"],
-      "assetProtocol": {
-        "enable": true,
-        "scope": {
-          "allow": [
-            "**"
-          ],
-          "requireLiteralLeadingDot": false
-        }
-      }
+      "dangerousDisableAssetCspModification": ["style-src"]
     }
   },
   "bundle": {

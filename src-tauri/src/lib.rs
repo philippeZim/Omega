@@ -1,3 +1,4 @@
+mod asset;
 mod fs;
 mod clipfiles;
 mod spell;
@@ -33,6 +34,8 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        // Omega's own asset:// (convertFileSrc), checked per window (#167).
+        .register_asynchronous_uri_scheme_protocol("asset", asset::handle)
         .manage(spell::SpellState::default())
         .manage(pty::PtyState::default())
         .manage(proc::ProcState::default())

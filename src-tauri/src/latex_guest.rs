@@ -29,7 +29,7 @@ pub struct GuestImage {
 
 /// The image type by its content (never the file name). SVG is only ever shown through `<img>` with
 /// a `data:` URL on the guest, where scripts and external loads don't run.
-fn sniff_image(b: &[u8]) -> Option<&'static str> {
+pub(crate) fn sniff_image(b: &[u8]) -> Option<&'static str> {
     if b.starts_with(b"\x89PNG\r\n\x1a\n") {
         Some("image/png")
     } else if b.starts_with(&[0xff, 0xd8, 0xff]) {
