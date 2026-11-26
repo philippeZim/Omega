@@ -22,7 +22,11 @@ vi.mock("./code/lspExtension", () => ({ setLspHooks: vi.fn() }));
 const lspDocs = vi.hoisted(() => ({ close: vi.fn(), save: vi.fn(async () => {}) }));
 vi.mock("./code/lsp.svelte", () => ({ allClients: () => [], fileUri: (p: string) => "file://" + p, closeLspDoc: lspDocs.close, saveLspDoc: lspDocs.save }));
 vi.mock("./markdown/livePreview", () => ({ setLinkHandler: vi.fn(), resolvePath: vi.fn() }));
-vi.mock("./modes", () => ({ modeForPath: () => null }));
+// Off by default; the tab mode tests (#302) switch it on.
+const modeMap = vi.hoisted(() => ({ on: false }));
+vi.mock("./modes", () => ({
+  modeForPath: (p: string) => (!modeMap.on ? null : p.endsWith(".md") ? "markdown" : p.endsWith(".ts") ? "code" : p.endsWith(".txt") ? "text" : null),
+}));
 vi.mock("./fsWatch.svelte", () => ({ onFilesChanged: vi.fn(), watchRoot: vi.fn() }));
 vi.mock("./i18n/index.svelte", () => ({ t: (k: string, p?: object) => (p ? `${k} ${JSON.stringify(p)}` : k) }));
 
@@ -1344,5 +1348,46 @@ describe("viewer tabs (#159)", () => {
     await st.openFile("/p/a.png");
     expect(viewer("/p/a.png")).toBeDefined();
     setLanguageOverride("/p/a.png", null);
+  });
+});
+
+describe("every tab keeps its mode (#302)", () => {
+  beforeEach(async () => {
+    modeMap.on = true;
+    onTestFinished(() => void (modeMap.on = false));
+    await setup({ "/p/a.ts": "x", "/p/b.md": "y", "/p/c.txt": "z", "/p/d.log": "w" });
+  });
+
+  test("switching tabs brings back the mode of each file", async () => {
+    const ts = await open("/p/a.ts");
+    const md = await open("/p/b.md");
+    expect(st.app.mode).toBe("markdown");
+    st.activate(ts.id);
+    expect(st.app.mode).toBe("code");
+    st.activate(md.id);
+    expect(st.app.mode).toBe("markdown");
+  });
+
+  test("a mode picked for a tab stays with it", async () => {
+    const md = await open("/p/b.md");
+    st.setMode("text");
+    const ts = await open("/p/a.ts");
+    expect(st.app.mode).toBe("code");
+    st.activate(md.id);
+    expect(st.app.mode).toBe("text");
+    st.activate(ts.id);
+    expect(st.app.mode).toBe("code");
+  });
+
+  test("a file without a clear mode keeps the one it was opened in", async () => {
+    await open("/p/b.md");
+    const log = await open("/p/d.log");
+    expect(st.app.mode).toBe("markdown");
+    const txt = await open("/p/c.txt");
+    expect(st.app.mode).toBe("text");
+    st.activate(log.id);
+    expect(st.app.mode).toBe("markdown");
+    st.activate(txt.id);
+    expect(st.app.mode).toBe("text");
   });
 });

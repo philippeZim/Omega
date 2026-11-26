@@ -92,6 +92,8 @@ export interface Tab {
   viewer?: ViewerKind;
   /** Bumped when the viewed file changed, so the view loads it again. */
   viewRev?: number;
+  /** The mode this tab is shown in; switching to the tab brings it back (#302). */
+  mode?: Mode;
 }
 
 export const app = $state({
@@ -501,13 +503,25 @@ function latexHook() {
   if (app.mode === "latex" && t && !t.headOf && !t.large && !t.viewOf) latexCtl.schedule(t.id, t.path, 0);
 }
 
-export function setMode(mode: Mode) {
-  autosave(app.activeId);
-  const leavingLatex = app.mode === "latex" && mode !== "latex";
+/** The mode a file belongs in by its name or language override; null = no clear one. */
+const suggestedMode = (path: string): Mode | null => (overrideFor(path) ? "code" : modeForPath(path));
+
+/** Switches the window's mode without reconfiguring the editor (the caller does that). */
+function enterMode(mode: Mode) {
+  if (mode === app.mode) return;
+  const leavingLatex = app.mode === "latex";
   app.mode = mode;
   localStorage.setItem("mode", mode);
-  ed.configure(cfg());
   if (leavingLatex) ed.clearDiagnostics();
+}
+
+/** The user (or a feature) picks a mode: it applies to the active tab and stays with it. */
+export function setMode(mode: Mode) {
+  autosave(app.activeId);
+  const tab = activeTab();
+  if (tab && !tab.viewOf) tab.mode = mode;
+  enterMode(mode);
+  ed.configure(cfg());
   latexHook();
 }
 
@@ -526,6 +540,12 @@ onGlobalChange("recentFiles", (v) => void recent.splice(0, recent.length, ...(JS
 export function activate(id: string) {
   if (app.activeId !== id) autosave(app.activeId);
   app.activeId = id;
+  // A text tab comes back in its own mode (#302). Viewers and untitled tabs without one keep the current mode.
+  const tab = activeTab();
+  if (tab && !tab.viewOf) {
+    const mode = tab.mode ?? (tab.path ? suggestedMode(tab.path) : null);
+    if (mode) enterMode((tab.mode = mode));
+  }
   ed.activate(id, cfg());
   latexHook();
   touchRecent(activeTab()?.path ?? (isRemotePath(activeTab()?.viewOf) ? null : activeTab()?.viewOf));
@@ -557,12 +577,9 @@ export async function openFile(path: string, quiet = false, atLine = false) {
   }
   const id = uid();
   ed.createDoc(id, content);
-  app.tabs.push({ id, path, name: basename(path), dirty: false, root: inRoot(path, app.root) ? app.root : null, eol: detectEol(content) });
-  const suggested = overrideFor(path) ? "code" : modeForPath(path);
-  if (suggested && suggested !== app.mode) {
-    app.mode = suggested;
-    localStorage.setItem("mode", suggested);
-  }
+  // A file without a clear mode opens in the current one, and keeps it.
+  const mode = suggestedMode(path) ?? app.mode;
+  app.tabs.push({ id, path, name: basename(path), dirty: false, root: inRoot(path, app.root) ? app.root : null, eol: detectEol(content), mode });
   activate(id);
   collabHooks.tabOpened(id, path);
 }
@@ -710,12 +727,7 @@ export function openVirtual(path: string, name: string, content: string): string
   }
   const id = uid();
   ed.createDoc(id, content);
-  app.tabs.push({ id, path, name, dirty: false });
-  const suggested = modeForPath(path);
-  if (suggested && suggested !== app.mode) {
-    app.mode = suggested;
-    localStorage.setItem("mode", suggested);
-  }
+  app.tabs.push({ id, path, name, dirty: false, mode: modeForPath(path) ?? app.mode });
   activate(id);
   return id;
 }
