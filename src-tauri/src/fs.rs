@@ -328,6 +328,91 @@ fn rename_path_for(owner: &str, from: String, to: String) -> Result<(), String> 
     fs::rename(&from, &to).map_err(io_err)
 }
 
+/// A free path for `name` in `dir`: the name itself, else "stem (2).ext", "stem (3).ext" … (#299).
+fn free_target(dir: &Path, name: &str, is_dir: bool) -> PathBuf {
+    let first = dir.join(name);
+    if fs::symlink_metadata(&first).is_err() {
+        return first;
+    }
+    // Folders and dotfiles (".env") keep their whole name in front of the number.
+    let (stem, ext) = match name.rfind('.') {
+        Some(i) if !is_dir && i > 0 => (&name[..i], &name[i..]),
+        _ => (name, ""),
+    };
+    (2..)
+        .map(|n| dir.join(format!("{stem} ({n}){ext}")))
+        .find(|p| fs::symlink_metadata(p).is_err())
+        .unwrap()
+}
+
+/// Copies a file, folder (recursively) or symlink (as a link) from `from` to the new path `to`.
+fn copy_entry(from: &Path, to: &Path) -> std::io::Result<()> {
+    let meta = fs::symlink_metadata(from)?;
+    if meta.file_type().is_symlink() {
+        #[cfg(unix)]
+        return std::os::unix::fs::symlink(fs::read_link(from)?, to);
+        #[cfg(not(unix))]
+        return fs::copy(from, to).map(|_| ());
+    }
+    if meta.is_dir() {
+        fs::create_dir(to)?;
+        for e in fs::read_dir(from)? {
+            let e = e?;
+            copy_entry(&e.path(), &to.join(e.file_name()))?;
+        }
+        return Ok(());
+    }
+    fs::copy(from, to).map(|_| ())
+}
+
+fn copy_into_for(owner: &str, sources: Vec<String>, dir: String) -> Result<Vec<String>, String> {
+    let dir = PathBuf::from(dir);
+    if !dir.is_dir() {
+        return Err("fs:not_dir".into());
+    }
+    let real_dir = dir.canonicalize().map_err(io_err)?;
+    let mut out = Vec::new();
+    for src in sources {
+        let from = PathBuf::from(&src);
+        let meta = fs::symlink_metadata(&from).map_err(io_err)?;
+        let Some(name) = from.file_name().map(|n| n.to_string_lossy().to_string()) else { continue };
+        // A folder can't be copied into itself or one of its subfolders.
+        if meta.is_dir() && from.canonicalize().is_ok_and(|f| real_dir.starts_with(f)) {
+            return Err("fs:into_itself".into());
+        }
+        let to = free_target(&dir, &name, meta.is_dir());
+        check_new_entry(owner, &to)?;
+        copy_entry(&from, &to).map_err(io_err)?;
+        out.push(crate::env::norm(&to));
+    }
+    Ok(out)
+}
+
+/// Copies files and folders into `dir`, under a free name each; returns the new paths (#299).
+#[tauri::command]
+pub async fn copy_into(window: tauri::WebviewWindow, sources: Vec<String>, dir: String) -> Result<Vec<String>, String> {
+    let owner = window.label().to_string();
+    tauri::async_runtime::spawn_blocking(move || copy_into_for(&owner, sources, dir))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Writes base64 bytes as a new file `name` in `dir` (a free name if taken); returns its path.
+#[tauri::command]
+pub fn create_file_base64(window: tauri::WebviewWindow, dir: String, name: String, data: String) -> Result<String, String> {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD.decode(data).map_err(err)?;
+    let to = free_target(Path::new(&dir), &name, false);
+    check_new_entry(window.label(), &to)?;
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&to)
+        .and_then(|mut f| std::io::Write::write_all(&mut f, &bytes))
+        .map_err(io_err)?;
+    Ok(crate::env::norm(&to))
+}
+
 #[tauri::command]
 pub fn delete_path(path: String) -> Result<(), String> {
     let p = PathBuf::from(&path);
@@ -667,6 +752,39 @@ mod tests {
         for _ in 0..5 {
             assert_eq!(list_files(s(r)).await.unwrap(), first);
         }
+    }
+
+    #[test]
+    fn copy_into_picks_free_names_and_copies_folders() {
+        let t = tempfile::tempdir().unwrap();
+        let (src, dst) = (t.path().join("src"), t.path().join("dst"));
+        fs::create_dir_all(src.join("sub/deep")).unwrap();
+        fs::write(src.join("sub/deep/x.txt"), "X").unwrap();
+        fs::write(src.join("pic.png"), "P").unwrap();
+        fs::write(src.join(".env"), "E").unwrap();
+        fs::create_dir(&dst).unwrap();
+        fs::write(dst.join("pic.png"), "old").unwrap();
+        let out = copy_into_for("t", vec![s(&src.join("pic.png")), s(&src.join("sub")), s(&src.join(".env"))], s(&dst)).unwrap();
+        assert_eq!(out, vec![s(&dst.join("pic (2).png")), s(&dst.join("sub")), s(&dst.join(".env"))]);
+        assert_eq!(fs::read_to_string(dst.join("pic.png")).unwrap(), "old");
+        assert_eq!(fs::read_to_string(dst.join("pic (2).png")).unwrap(), "P");
+        assert_eq!(fs::read_to_string(dst.join("sub/deep/x.txt")).unwrap(), "X");
+        // Again: the folder and the dotfile get numbers in front of nothing.
+        let out = copy_into_for("t", vec![s(&src.join("sub")), s(&src.join(".env"))], s(&dst)).unwrap();
+        assert_eq!(out, vec![s(&dst.join("sub (2)")), s(&dst.join(".env (2)"))]);
+        // The source itself stays untouched.
+        assert_eq!(fs::read_to_string(src.join("pic.png")).unwrap(), "P");
+    }
+
+    #[test]
+    fn copy_into_refuses_folder_into_itself() {
+        let t = tempfile::tempdir().unwrap();
+        let a = t.path().join("a");
+        fs::create_dir_all(a.join("b")).unwrap();
+        assert_eq!(copy_into_for("t", vec![s(&a)], s(&a.join("b"))).unwrap_err(), "fs:into_itself");
+        assert_eq!(copy_into_for("t", vec![s(&a)], s(&a)).unwrap_err(), "fs:into_itself");
+        // Into its own parent is a duplicate.
+        assert_eq!(copy_into_for("t", vec![s(&a)], s(t.path())).unwrap(), vec![s(&t.path().join("a (2)"))]);
     }
 
     #[test]

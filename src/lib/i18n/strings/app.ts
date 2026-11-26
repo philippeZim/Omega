@@ -1,5 +1,13 @@
 /** UI strings for the "app" area. Keys are prefixed "app.". */
 export const en = {
+  "app.fsErr.into_itself": "A folder can't be copied into itself (\"{name}\")",
+  "app.import.copy": "Copy",
+  "app.import.paste": "Paste",
+  "app.import.copiedOne": "Added \"{name}\"",
+  "app.import.copied": "Added {n} items",
+  "app.import.nothing": "No files or image on the clipboard",
+  "app.import.onClipboard": "\"{name}\" copied",
+  "app.import.onClipboardN": "{n} items copied",
   "app.report.button": "Report a problem or idea",
   "app.report.title": "Report a Problem",
   "app.report.bug": "Bug",
@@ -259,6 +267,14 @@ export const en = {
   "app.fsErr.not_file": "\"{name}\" is not a regular file",
 };
 export const de: Record<keyof typeof en, string> = {
+  "app.fsErr.into_itself": "Ein Ordner kann nicht in sich selbst kopiert werden („{name}“)",
+  "app.import.copy": "Kopieren",
+  "app.import.paste": "Einfügen",
+  "app.import.copiedOne": "„{name}“ hinzugefügt",
+  "app.import.copied": "{n} Elemente hinzugefügt",
+  "app.import.nothing": "Keine Dateien oder Bilder in der Zwischenablage",
+  "app.import.onClipboard": "„{name}“ kopiert",
+  "app.import.onClipboardN": "{n} Elemente kopiert",
   "app.report.button": "Problem oder Idee melden",
   "app.report.title": "Problem melden",
   "app.report.bug": "Bug",
@@ -513,6 +529,14 @@ export const de: Record<keyof typeof en, string> = {
   "app.fsErr.not_file": "„{name}“ ist keine normale Datei",
 };
 export const fr: Record<keyof typeof en, string> = {
+  "app.fsErr.into_itself": "Un dossier ne peut pas être copié dans lui-même (« {name} »)",
+  "app.import.copy": "Copier",
+  "app.import.paste": "Coller",
+  "app.import.copiedOne": "« {name} » ajouté",
+  "app.import.copied": "{n} éléments ajoutés",
+  "app.import.nothing": "Aucun fichier ni image dans le presse-papiers",
+  "app.import.onClipboard": "« {name} » copié",
+  "app.import.onClipboardN": "{n} éléments copiés",
   "app.report.button": "Signaler un problème ou une idée",
   "app.report.title": "Signaler un problème",
   "app.report.bug": "Bug",
