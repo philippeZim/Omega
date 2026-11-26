@@ -57,6 +57,19 @@
   color-scheme: dark;
 }
 
+/* Find (Ctrl+F) match highlights, used by the editor and by Find in Files (issue #301):
+   solid accent-blue matches, the current match white with a blue ring. */
+:root {
+  --find-bg: #3478f6;
+  --find-fg: #ffffff;
+  --find-bg-sel: #ffffff;
+  --find-fg-sel: #1d1d1f;
+  --find-shadow: none;
+  --find-shadow-sel: 0 0 0 2px #3478f6;
+  --find-deco: none;
+  --find-weight: 600;
+}
+
 /* iOS-style light palette (frosted white glass on a soft grey canvas). */
 :root[data-theme="light"] {
   --fg-rgb: 0, 0, 0;
