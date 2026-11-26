@@ -24,6 +24,7 @@
 {/if}
 
 <style>
+  :global(body.tab-dragging), :global(body.tab-dragging *) { cursor: grabbing !important; user-select: none !important; }
   .area { flex: 1; min-height: 120px; min-width: 0; display: flex; }
   .drop { position: fixed; z-index: 900; pointer-events: none; border-radius: 14px; background: var(--accent-soft); border: 1.5px solid var(--accent); }
   .line { position: fixed; z-index: 900; pointer-events: none; width: 2px; border-radius: 1px; background: var(--accent); }

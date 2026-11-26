@@ -142,7 +142,11 @@
     flex-shrink: 0;
     max-width: 220px;
     transition: background 0.12s, color 0.12s;
+    /* Tabs can be dragged into other groups (#219). */
+    cursor: grab;
+    user-select: none;
   }
+  .tab .close { cursor: default; }
   .tab:hover { background: var(--fill-hover); color: var(--label); }
   .tab.dragging { background: var(--fill-2); }
   /* The mode this group shows its file in; only with several groups (#219). */

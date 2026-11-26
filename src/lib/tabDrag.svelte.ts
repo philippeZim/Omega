@@ -81,11 +81,16 @@ export function pressTab(e: PointerEvent, id: string, from: string, name: string
   if (e.button !== 0) return;
   const sx = e.clientX, sy = e.clientY;
   let started = false;
+  // No text selection starts from a press on a tab, also not while the pointer crosses the editor.
+  const noSelect = (ev: Event) => ev.preventDefault();
+  document.addEventListener("selectstart", noSelect);
   const move = (ev: PointerEvent) => {
     if (!started && Math.hypot(ev.clientX - sx, ev.clientY - sy) < THRESHOLD) return;
     if (!started) {
       started = true;
       Object.assign(tabDrag, { id, from, name });
+      document.body.classList.add("tab-dragging");
+      window.getSelection()?.removeAllRanges();
     }
     tabDrag.x = ev.clientX;
     tabDrag.y = ev.clientY;
@@ -95,6 +100,8 @@ export function pressTab(e: PointerEvent, id: string, from: string, name: string
     window.removeEventListener("pointermove", move);
     window.removeEventListener("pointerup", up);
     window.removeEventListener("keydown", key, true);
+    document.removeEventListener("selectstart", noSelect);
+    document.body.classList.remove("tab-dragging");
     if (!started) return;
     const target = tabDrag.target;
     Object.assign(tabDrag, { id: null, from: null, name: "", target: null });
