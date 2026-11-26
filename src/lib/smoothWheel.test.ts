@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { OMEGA, notchDelta, springStep } from "./smoothWheel";
+import { OMEGA, notchDelta, springStep, wheelDistance } from "./smoothWheel";
 
 const wheel = (deltaY: number, o: Partial<WheelEvent> = {}) =>
   ({ deltaX: 0, deltaY, deltaMode: 0, ctrlKey: false, shiftKey: false, altKey: false, metaKey: false, ...o }) as WheelEvent;
@@ -26,7 +26,7 @@ describe("springStep", () => {
 
 describe("notchDelta", () => {
   test("a wheel notch is animated", () => expect(notchDelta(wheel(159), Infinity)).toBe(159));
-  test("line mode counts lines", () => expect(notchDelta(wheel(3, { deltaMode: 1 }), Infinity)).toBe(120));
+  test("line mode counts lines", () => expect(notchDelta(wheel(3, { deltaMode: 1 }), Infinity)).toBe(159));
   test("touchpad deltas stay native", () => expect(notchDelta(wheel(6), Infinity)).toBe(0));
   test("a big delta inside a touchpad gesture stays native", () => expect(notchDelta(wheel(80), 30)).toBe(0));
   test("modifiers and sideways scrolling stay native", () => {
@@ -34,4 +34,12 @@ describe("notchDelta", () => {
     expect(notchDelta(wheel(159, { shiftKey: true }), Infinity)).toBe(0);
     expect(notchDelta(wheel(159, { deltaX: 20 }), Infinity)).toBe(0);
   });
+});
+
+describe("wheelDistance", () => {
+  test("a notch moves 3 lines of the scrolled text", () => {
+    expect(wheelDistance(159, 23)).toBeCloseTo(69);
+    expect(wheelDistance(-159, 27)).toBeCloseTo(-81);
+  });
+  test("a raised system scroll factor still scales it", () => expect(wheelDistance(318, 20)).toBeCloseTo(120));
 });

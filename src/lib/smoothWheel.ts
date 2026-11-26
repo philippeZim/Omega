@@ -1,3 +1,5 @@
+import { EditorView } from "@codemirror/view";
+
 /**
  * Smooth mouse-wheel scrolling (#297).
  *
@@ -23,7 +25,10 @@ const RHYTHM_MAX_S = 0.2;
 const NOTCH_MIN_PX = 40;
 /** A small delta this recently marks the stream as a touchpad gesture. */
 const TOUCHPAD_MS = 250;
-const LINE_PX = 40;
+/** WebKitGTK's px per wheel "line": a notch arrives as 3 × 53 = 159 px. */
+const NATIVE_LINE_PX = 53;
+/** Line height assumed for scrollers that aren't an editor (file tree, lists, PDF). */
+const FALLBACK_LINE_PX = 20;
 /** Longest time step per frame (s). */
 const MAX_STEP_S = 0.022;
 
@@ -41,9 +46,23 @@ export function springStep(d: number, v: number, omega: number, dt: number): [nu
 export function notchDelta(e: Pick<WheelEvent, "deltaX" | "deltaY" | "deltaMode" | "ctrlKey" | "shiftKey" | "altKey" | "metaKey">, sinceSmall: number): number {
   if (e.ctrlKey || e.shiftKey || e.altKey || e.metaKey) return 0;
   if (e.deltaX !== 0 || e.deltaY === 0) return 0;
-  const px = e.deltaMode === 1 ? e.deltaY * LINE_PX : e.deltaMode === 2 ? 0 : e.deltaY;
+  const px = e.deltaMode === 1 ? e.deltaY * NATIVE_LINE_PX : e.deltaMode === 2 ? 0 : e.deltaY;
   if (Math.abs(px) < NOTCH_MIN_PX || sinceSmall < TOUCHPAD_MS) return 0;
   return px;
+}
+
+/**
+ * How far a wheel delta moves `el`: WebKit's 159 px per notch were ~7 lines of code. Like most
+ * editors, a notch now moves 3 lines of the text being scrolled (#297); a raised system scroll
+ * factor still scales it.
+ */
+export function wheelDistance(nativePx: number, lineHeight: number) {
+  return (nativePx / NATIVE_LINE_PX) * lineHeight;
+}
+
+function lineHeightOf(el: HTMLElement) {
+  const editor = el.classList.contains("cm-scroller") && el.parentElement ? EditorView.findFromDOM(el.parentElement) : null;
+  return editor?.defaultLineHeight || FALLBACK_LINE_PX;
 }
 
 const maxTop = (el: HTMLElement) => Math.max(0, el.scrollHeight - el.clientHeight);
@@ -128,10 +147,11 @@ export function installSmoothWheel(win: Window = window): () => void {
     if (e.defaultPrevented || reduced?.matches) return;
     const raw = e.deltaMode === 0 ? Math.abs(e.deltaY) : Infinity;
     if (raw > 0 && raw < NOTCH_MIN_PX) lastSmall = e.timeStamp;
-    const dy = notchDelta(e, e.timeStamp - lastSmall);
-    if (!dy) return;
-    const el = scrollTarget(e.target as Element, dy);
+    const native = notchDelta(e, e.timeStamp - lastSmall);
+    if (!native) return;
+    const el = scrollTarget(e.target as Element, native);
     if (!el) return;
+    const dy = wheelDistance(native, lineHeightOf(el));
     e.preventDefault();
     const now = performance.now();
     if (!anim || anim.el !== el) {
