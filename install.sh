@@ -131,8 +131,8 @@ EOF
 
 install_macos() {
   case "$(uname -m)" in
-    arm64) asset="Omega_aarch64.app.tar.gz" ;;
-    x86_64) asset="Omega_x64.app.tar.gz" ;;
+    arm64) arch=aarch64 ;;
+    x86_64) arch=x64 ;;
     *) die "unsupported Mac: $(uname -m)" ;;
   esac
   dest=/Applications
@@ -140,8 +140,15 @@ install_macos() {
 
   tmp=$(mktemp -d)
   trap 'rm -rf "$tmp"' EXIT
-  say "Downloading Omega…"
-  fetch "$LATEST/$asset" "$tmp/omega.tar.gz"
+  say "Looking up the latest version…"
+  fetch "$LATEST/latest.json" "$tmp/latest.json" 2>/dev/null
+  version=$(sed -n 's/.*"version" *: *"\([^"]*\)".*/\1/p' "$tmp/latest.json" | head -n 1)
+  [ -n "$version" ] || die "couldn't read the latest version"
+
+  say "Downloading Omega $version…"
+  # Since v0.2.1 the archive name has the version in it; releases before that don't.
+  fetch "$LATEST/Omega_${version}_${arch}.app.tar.gz" "$tmp/omega.tar.gz" 2>/dev/null \
+    || fetch "$LATEST/Omega_${arch}.app.tar.gz" "$tmp/omega.tar.gz"
   tar -xzf "$tmp/omega.tar.gz" -C "$tmp"
   rm -rf "$dest/Omega.app"
   mv "$tmp/Omega.app" "$dest/Omega.app"

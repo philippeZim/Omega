@@ -656,6 +656,11 @@ mod tests {
         p.to_string_lossy().to_string()
     }
 
+    /// A path as the commands return it (forward slashes on Windows).
+    fn n(p: &Path) -> String {
+        crate::env::norm(p)
+    }
+
     #[test]
     fn list_dir_dirs_first_case_insensitive_hidden_skipped() {
         let t = tempfile::tempdir().unwrap();
@@ -765,13 +770,13 @@ mod tests {
         fs::create_dir(&dst).unwrap();
         fs::write(dst.join("pic.png"), "old").unwrap();
         let out = copy_into_for("t", vec![s(&src.join("pic.png")), s(&src.join("sub")), s(&src.join(".env"))], s(&dst)).unwrap();
-        assert_eq!(out, vec![s(&dst.join("pic (2).png")), s(&dst.join("sub")), s(&dst.join(".env"))]);
+        assert_eq!(out, vec![n(&dst.join("pic (2).png")), n(&dst.join("sub")), n(&dst.join(".env"))]);
         assert_eq!(fs::read_to_string(dst.join("pic.png")).unwrap(), "old");
         assert_eq!(fs::read_to_string(dst.join("pic (2).png")).unwrap(), "P");
         assert_eq!(fs::read_to_string(dst.join("sub/deep/x.txt")).unwrap(), "X");
         // Again: the folder and the dotfile get numbers in front of nothing.
         let out = copy_into_for("t", vec![s(&src.join("sub")), s(&src.join(".env"))], s(&dst)).unwrap();
-        assert_eq!(out, vec![s(&dst.join("sub (2)")), s(&dst.join(".env (2)"))]);
+        assert_eq!(out, vec![n(&dst.join("sub (2)")), n(&dst.join(".env (2)"))]);
         // The source itself stays untouched.
         assert_eq!(fs::read_to_string(src.join("pic.png")).unwrap(), "P");
     }
@@ -784,7 +789,7 @@ mod tests {
         assert_eq!(copy_into_for("t", vec![s(&a)], s(&a.join("b"))).unwrap_err(), "fs:into_itself");
         assert_eq!(copy_into_for("t", vec![s(&a)], s(&a)).unwrap_err(), "fs:into_itself");
         // Into its own parent is a duplicate.
-        assert_eq!(copy_into_for("t", vec![s(&a)], s(t.path())).unwrap(), vec![s(&t.path().join("a (2)"))]);
+        assert_eq!(copy_into_for("t", vec![s(&a)], s(t.path())).unwrap(), vec![n(&t.path().join("a (2)"))]);
     }
 
     #[test]

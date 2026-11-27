@@ -21,7 +21,7 @@ const pdf = vi.hoisted(() => {
     page(n: number) {
       const h = n === 2500 ? 400 : 200;
       return {
-        getViewport: ({ scale }: { scale: number }) => ({ width: 100 * scale, height: h * scale, scale, convertToViewportRectangle: () => [0, 0, 10, 10] }),
+        getViewport: ({ scale }: { scale: number }) => ({ width: 100 * scale, height: h * scale, scale, convertToViewportPoint: (x: number, y: number) => [x ? 10 : 0, y ? 10 : 0] }),
         render: () => {
           s.rendered.push(n);
           let done = () => {};
@@ -56,7 +56,7 @@ const pdf = vi.hoisted(() => {
         },
         getPageIndex: async (ref: { num: number }) => ref.num,
         getDestination: async () => null,
-        destroy: async () => void s.destroyed++,
+        loadingTask: { destroy: async () => void s.destroyed++ },
       };
     },
   };
