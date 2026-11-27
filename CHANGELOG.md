@@ -13,6 +13,7 @@ All notable changes to Omega are documented here. The format follows [Keep a Cha
 
 - Ctrl+F options (match case, regular expression, by word) are pill toggles that fit the rest of the interface.
 - Find highlights all matches in solid blue and the current match in white, so they are easier to spot.
+- The PDF viewer uses pdf.js 6, and Omega's downloads of languages and tools use an updated HTTP client.
 
 ### Fixed
 
