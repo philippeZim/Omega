@@ -20,7 +20,7 @@ const pdf = vi.hoisted(() => {
     docs: [] as { destroyed: boolean; destroy: () => void }[],
     make() {
       const pending: ((e: Error) => void)[] = [];
-      const vp = { width: 100, height: 140, convertToViewportRectangle: () => [0, 0, 0, 0] };
+      const vp = { width: 100, height: 140, convertToViewportPoint: () => [0, 0] };
       const page = {
         getViewport: () => vp,
         render: () => ({
@@ -38,6 +38,7 @@ const pdf = vi.hoisted(() => {
           return page;
         },
         getPageIndex: async (ref: { num: number }) => ref.num,
+        loadingTask: { destroy: async () => doc.destroy() },
         destroy() {
           doc.destroyed = true;
           pending.splice(0).forEach((r) => r(new Error("Worker was destroyed")));

@@ -3,7 +3,7 @@
   import { onDestroy } from "svelte";
   import { convertFileSrc } from "@tauri-apps/api/core";
   import { openUrl } from "../lib/native";
-  import { loadPdf, type PageLink } from "../lib/pdfPages";
+  import { closePdf, loadPdf, type PageLink } from "../lib/pdfPages";
   import { PdfPager } from "../lib/pdfPager";
   import { wheelZoom } from "../lib/wheelZoom";
   import { latex, setDark, reverseSync, forwardSync, installLatex, remoteLatex, remotePdfBytes, compileNow } from "../lib/latex/controller.svelte";
@@ -42,16 +42,16 @@
     // pdf.js takes the buffer over, and a retry on a new worker needs it again.
     const next = await loadPdf(() => (data ? { data: data.slice() } : { url })).promise.catch(() => null);
     if (!next) return;
-    if (seq !== renderSeq) return void next.destroy();
+    if (seq !== renderSeq) return void closePdf(next);
     const first = await next.getPage(1).catch(() => null);
-    if (!first || seq !== renderSeq) return void next.destroy();
-    void getPager().attach(next, first)?.destroy();
+    if (!first || seq !== renderSeq) return void closePdf(next);
+    void closePdf(getPager().attach(next, first));
   }
 
   /** Drops the rendered pages (e.g. after switching to a .tex tab without a PDF). */
   function clear() {
     renderSeq++;
-    void pager?.clear()?.destroy();
+    void closePdf(pager?.clear());
   }
 
   $effect(() => {
@@ -160,7 +160,7 @@
   onDestroy(() => {
     renderSeq++;
     clearTimeout(flashTimer);
-    void pager?.clear()?.destroy();
+    void closePdf(pager?.clear());
   });
 </script>
 

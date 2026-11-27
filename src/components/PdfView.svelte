@@ -2,7 +2,7 @@
   import Glyph from "./Glyph.svelte";
   import { onDestroy, tick, untrack } from "svelte";
   import * as pdfjs from "pdfjs-dist";
-  import { loadPdf, type PageLink } from "../lib/pdfPages";
+  import { closePdf, loadPdf, type PageLink } from "../lib/pdfPages";
   import { PdfPager } from "../lib/pdfPager";
   import { FileRangeTransport, RANGE_CHUNK } from "../lib/pdfRange";
   import { MAX_PDF_ZOOM, MIN_ZOOM, safePdfUrl, stepZoom } from "../lib/viewer";
@@ -55,7 +55,7 @@
   }
 
   function teardown() {
-    void pager?.clear()?.destroy();
+    void closePdf(pager?.clear());
     transport?.close();
     transport = null;
   }
@@ -108,7 +108,7 @@
       // Without a document on screen (first load, or after a failed read) it returns to the tab's
       // latest place; a reload over a document stays where the reader is.
       const old = p.attach(opened, first, p.hasDocument ? null : (tabId ? viewerPlace(tabId) : place)?.anchor);
-      void old?.destroy();
+      void closePdf(old);
       transport?.close();
       transport = next;
     } catch {
