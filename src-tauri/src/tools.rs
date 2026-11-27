@@ -58,7 +58,7 @@ struct Progress<'a> {
 }
 
 fn agent() -> ureq::Agent {
-    ureq::AgentBuilder::new().user_agent("omega-ide").timeout_connect(std::time::Duration::from_secs(20)).build()
+    ureq::Agent::config_builder().user_agent("omega-ide").timeout_connect(Some(std::time::Duration::from_secs(20))).build().new_agent()
 }
 
 pub fn http_text(url: &str) -> Result<String, String> {
@@ -66,7 +66,9 @@ pub fn http_text(url: &str) -> Result<String, String> {
 }
 
 fn get_text(url: &str) -> Result<String, String> {
-    agent().get(url).call().map_err(|e| format!("{url}: {e}"))?.into_string().map_err(|e| e.to_string())
+    let mut resp = agent().get(url).call().map_err(|e| format!("{url}: {e}"))?;
+    // Release lists (Go, Node, GitHub) can be large; ureq's default cap is 10 MB.
+    resp.body_mut().with_config().limit(64 * 1024 * 1024).read_to_string().map_err(|e| e.to_string())
 }
 
 fn get_json(url: &str) -> Result<Value, String> {
@@ -79,10 +81,11 @@ pub fn download(app: &AppHandle, id: &str, url: &str, out: &Path) -> Result<Stri
 }
 
 fn download_with(agent: &ureq::Agent, app: &AppHandle, id: &str, url: &str, out: &Path) -> Result<String, String> {
+    use ureq::ResponseExt;
     let resp = agent.get(url).call().map_err(|e| format!("tools:download_failed:{url}: {e}"))?;
-    let final_url = resp.get_url().to_string();
-    let total: u64 = resp.header("Content-Length").and_then(|v| v.parse().ok()).unwrap_or(0);
-    let mut reader = resp.into_reader();
+    let final_url = resp.get_uri().to_string();
+    let total: u64 = resp.headers().get("Content-Length").and_then(|v| v.to_str().ok()?.parse().ok()).unwrap_or(0);
+    let mut reader = resp.into_body().into_reader();
     let mut file = std::fs::File::create(out).map_err(|e| e.to_string())?;
     let mut buf = vec![0u8; 256 * 1024];
     let (mut done, mut last) = (0u64, 0u64);
@@ -688,8 +691,15 @@ pub fn sha256_hex(path: &Path) -> Result<String, String> {
     use sha2::{Digest, Sha256};
     let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let mut hash = Sha256::new();
-    std::io::copy(&mut file, &mut hash).map_err(|e| e.to_string())?;
-    Ok(format!("{:x}", hash.finalize()))
+    let mut buf = vec![0u8; 256 * 1024];
+    loop {
+        let n = file.read(&mut buf).map_err(|e| e.to_string())?;
+        if n == 0 {
+            break;
+        }
+        hash.update(&buf[..n]);
+    }
+    Ok(hash.finalize().iter().map(|b| format!("{b:02x}")).collect())
 }
 
 fn fetch_pixi(app: &AppHandle, progress: &str) -> Result<(), String> {
@@ -697,7 +707,12 @@ fn fetch_pixi(app: &AppHandle, progress: &str) -> Result<(), String> {
     let url = format!("https://github.com/prefix-dev/pixi/releases/download/v{PIXI_VERSION}/pixi-{target}.tar.gz");
     let tmp = mojo_dir().join(".pixi.download");
     // Runs under the install lock: a stalled connection must not hold it.
-    let stalls = ureq::AgentBuilder::new().user_agent("omega-ide").timeout_connect(std::time::Duration::from_secs(20)).timeout_read(std::time::Duration::from_secs(60)).build();
+    let stalls = ureq::Agent::config_builder()
+        .user_agent("omega-ide")
+        .timeout_connect(Some(std::time::Duration::from_secs(20)))
+        .timeout_per_read(Some(std::time::Duration::from_secs(60)))
+        .build()
+        .new_agent();
     let result = download_with(&stalls, app, progress, &url, &tmp).and_then(|_| {
         if sha256_hex(&tmp)? != sum {
             return Err("tools:mojo_failed:pixi checksum mismatch".to_string());
@@ -1634,7 +1649,7 @@ mod tests {
             let p = plan(id).unwrap();
             let tmp = root.join(format!(".{id}.dl"));
             std::fs::create_dir_all(&root).unwrap();
-            let mut resp = agent().get(&p.url).call().unwrap().into_reader();
+            let mut resp = agent().get(&p.url).call().unwrap().into_body().into_reader();
             std::io::copy(&mut resp, &mut std::fs::File::create(&tmp).unwrap()).unwrap();
             let dest = root.join(id);
             unpack(&tmp, "", &dest, &exe_name(p.exe)).unwrap();
