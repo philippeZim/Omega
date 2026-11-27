@@ -38,7 +38,7 @@ globset = "0.4.21"
 iroh = "1.5.0"
 tokio = { version = "1.54.1", features = ["sync", "time", "rt", "net", "io-util", "signal"] }
 tiny_http = "0.12.0"
-tokio-tungstenite = "0.28"
+tokio-tungstenite = "0.30"
 getrandom = "0.4.3"
 futures-util = { version = "0.3.34", default-features = false, features = ["sink"] }
 ureq = "2"
