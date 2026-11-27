@@ -81,13 +81,18 @@ export interface PageLink {
   dest?: string | unknown[];
 }
 
+/** Closes a document and its worker resources (pdf.js 6 has no `destroy` on the document itself). */
+export function closePdf(doc: pdfjs.PDFDocumentProxy | null | undefined) {
+  return doc?.loadingTask.destroy();
+}
+
 /** Renders on a canvas that isn't in the page yet, so what's on screen stays until it's done. */
 export function renderPage(page: pdfjs.PDFPageProxy, vp: pdfjs.PageViewport, dpr: number) {
   const ratio = canvasRatio(vp.width, vp.height, dpr);
   const canvas = document.createElement("canvas");
   canvas.width = Math.floor(vp.width * ratio);
   canvas.height = Math.floor(vp.height * ratio);
-  const task = page.render({ canvasContext: canvas.getContext("2d")!, viewport: vp, transform: ratio !== 1 ? [ratio, 0, 0, ratio, 0, 0] : undefined });
+  const task = page.render({ canvas, viewport: vp, transform: ratio !== 1 ? [ratio, 0, 0, ratio, 0, 0] : undefined });
   return { canvas, task };
 }
 
@@ -99,7 +104,8 @@ export async function addPageLinks(page: pdfjs.PDFPageProxy, vp: pdfjs.PageViewp
   const annots = await page.getAnnotations({ intent: "display" }).catch(() => []);
   for (const a of annots) {
     if (a.subtype !== "Link" || (!a.dest && !a.url)) continue;
-    const [x1, y1, x2, y2] = vp.convertToViewportRectangle(a.rect);
+    const [x1, y1] = vp.convertToViewportPoint(a.rect[0], a.rect[1]);
+    const [x2, y2] = vp.convertToViewportPoint(a.rect[2], a.rect[3]);
     const el = document.createElement("a");
     el.className = "link";
     el.style.left = `${Math.min(x1, x2)}px`;
